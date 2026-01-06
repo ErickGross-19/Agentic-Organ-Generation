@@ -30,6 +30,31 @@ def _build_adjacency(network: VascularNetwork) -> dict:
     return adjacency
 
 
+def _compute_distances_from_root(
+    network: VascularNetwork,
+    root_node_id: int,
+) -> dict:
+    """
+    Compute BFS distances from root to all reachable nodes.
+    
+    Returns dict mapping node_id -> distance (hop count from root).
+    """
+    adjacency = _build_adjacency(network)
+    distances = {root_node_id: 0}
+    queue = [root_node_id]
+    
+    while queue:
+        current = queue.pop(0)
+        current_dist = distances[current]
+        
+        for neighbor_id, _ in adjacency.get(current, []):
+            if neighbor_id not in distances:
+                distances[neighbor_id] = current_dist + 1
+                queue.append(neighbor_id)
+    
+    return distances
+
+
 def _find_downstream_nodes(
     network: VascularNetwork,
     start_node_id: int,
@@ -38,7 +63,8 @@ def _find_downstream_nodes(
     """
     Find all nodes downstream from start_node_id relative to root_node_id.
     
-    Uses BFS from start_node_id, avoiding paths that go through root_node_id.
+    Uses BFS from start_node_id, only traversing to nodes with strictly
+    greater distance from root (i.e., truly downstream nodes).
     
     Parameters
     ----------
@@ -58,9 +84,18 @@ def _find_downstream_nodes(
     """
     adjacency = _build_adjacency(network)
     
+    # Compute distances from root to determine upstream/downstream
+    distances = _compute_distances_from_root(network, root_node_id)
+    
+    # If start_node is not reachable from root, return empty
+    if start_node_id not in distances:
+        return set(), set()
+    
+    start_distance = distances[start_node_id]
+    
     downstream_nodes = set()
     downstream_segments = set()
-    visited = {root_node_id}  # Don't traverse back through root
+    visited = set()
     queue = [start_node_id]
     
     while queue:
@@ -70,8 +105,21 @@ def _find_downstream_nodes(
         visited.add(current)
         downstream_nodes.add(current)
         
+        current_dist = distances.get(current, float('inf'))
+        
         for neighbor_id, seg_id in adjacency.get(current, []):
-            if neighbor_id not in visited:
+            if neighbor_id in visited:
+                continue
+            
+            neighbor_dist = distances.get(neighbor_id, float('inf'))
+            
+            # Only traverse to nodes that are strictly downstream
+            # (greater distance from root) or at same level but not toward root
+            if neighbor_dist > current_dist:
+                downstream_segments.add(seg_id)
+                queue.append(neighbor_id)
+            elif neighbor_dist == current_dist and neighbor_dist > start_distance:
+                # Same level but both are downstream of start - include
                 downstream_segments.add(seg_id)
                 queue.append(neighbor_id)
     

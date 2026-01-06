@@ -209,9 +209,13 @@ def network_to_liver_tree(
     )
     
     # Clear the auto-created root node (we'll add our own)
+    # Also reinitialize spatial_index to avoid stale data
     tree.nodes.clear()
     tree.nodes_by_id.clear()
     tree.active_tips.clear()
+    tree.spatial_index.nodes.clear()
+    tree.spatial_index.segments.clear()
+    tree.spatial_index.grid.clear()
     
     # Build tree structure using BFS from root
     core_to_liver_node_id: Dict[int, int] = {}
