@@ -1,15 +1,21 @@
 """
 Unit conversion utilities for vascular library.
 
-The library uses DIMENSIONLESS internal units where 1 internal unit = 1 output unit.
-All internal calculations use dimensionless values (1 is 1), and scaling to user-specified
-units (mm, cm, m, etc.) happens only at export/output time.
+INTERNAL UNITS: The library uses METER-SCALE values internally.
+All coordinates, lengths, and radii are stored in meters throughout the codebase.
 
-**IMPORTANT**: The current codebase uses meter-scale values internally (e.g., 
-EllipsoidSpec defaults to semi_axes=(0.05, 0.045, 0.035) which is 50mm, 45mm, 35mm).
-When output_units="mm", internal value 0.05 becomes 50mm in the output STL file.
+For example:
+- EllipsoidSpec defaults to semi_axes=(0.05, 0.045, 0.035) which is 50mm, 45mm, 35mm
+- A vessel radius of 0.002 represents 2mm
+- A segment length of 0.01 represents 10mm
 
-This ensures consistent behavior regardless of the unit system chosen.
+OUTPUT UNITS: At export time (STL, JSON, etc.), internal meter values are converted
+to the user-specified output_units via UnitContext:
+- output_units="mm" (default): internal 0.05 becomes 50.0 in output
+- output_units="m": internal 0.05 stays 0.05 in output
+- output_units="cm": internal 0.05 becomes 5.0 in output
+
+This design ensures consistent internal calculations while allowing flexible output formats.
 """
 
 from dataclasses import dataclass

@@ -7,6 +7,7 @@ from .space_colonization import space_colonization_step, SpaceColonizationParams
 from .anastomosis import create_anastomosis, check_tree_interactions
 from .pathfinding import grow_toward_targets, CostWeights
 from .embedding import embed_tree_as_negative_space
+from .tree_ops import prune, add_branch
 
 __all__ = [
     "create_network",
@@ -24,4 +25,6 @@ __all__ = [
     "grow_toward_targets",
     "CostWeights",
     "embed_tree_as_negative_space",
+    "prune",
+    "add_branch",
 ]

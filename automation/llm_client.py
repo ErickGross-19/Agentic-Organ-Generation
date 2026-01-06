@@ -16,7 +16,13 @@ class LLMProvider(Enum):
     """Supported LLM providers."""
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
-    LOCAL = "local"  # For local models
+    LOCAL = "local"  # For local models via OpenAI-compatible API
+    XAI = "xai"  # Grok models via xAI API (OpenAI-compatible)
+    GROK = "grok"  # Alias for xAI
+    GOOGLE = "google"  # Google Gemini models
+    GEMINI = "gemini"  # Alias for Google
+    MISTRAL = "mistral"  # Mistral AI models
+    GROQ = "groq"  # Groq inference (OpenAI-compatible)
 
 
 @dataclass
@@ -52,10 +58,19 @@ class LLMConfig:
     def __post_init__(self):
         # Try to get API key from environment if not provided
         if self.api_key is None:
-            if self.provider == "openai":
+            provider = self.provider.lower()
+            if provider == "openai":
                 self.api_key = os.environ.get("OPENAI_API_KEY")
-            elif self.provider == "anthropic":
+            elif provider == "anthropic":
                 self.api_key = os.environ.get("ANTHROPIC_API_KEY")
+            elif provider in ("xai", "grok"):
+                self.api_key = os.environ.get("XAI_API_KEY")
+            elif provider in ("google", "gemini"):
+                self.api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+            elif provider == "mistral":
+                self.api_key = os.environ.get("MISTRAL_API_KEY")
+            elif provider == "groq":
+                self.api_key = os.environ.get("GROQ_API_KEY")
 
 
 @dataclass
@@ -207,6 +222,14 @@ class LLMClient:
             return self._call_anthropic(messages, temperature, max_tokens)
         elif provider == "local":
             return self._call_local(messages, temperature, max_tokens)
+        elif provider in ("xai", "grok"):
+            return self._call_xai(messages, temperature, max_tokens)
+        elif provider in ("google", "gemini"):
+            return self._call_google(messages, temperature, max_tokens)
+        elif provider == "mistral":
+            return self._call_mistral(messages, temperature, max_tokens)
+        elif provider == "groq":
+            return self._call_groq(messages, temperature, max_tokens)
         else:
             raise ValueError(f"Unsupported provider: {provider}")
     
@@ -323,6 +346,202 @@ class LLMClient:
         
         response = client.chat.completions.create(
             model=self.config.model,
+            messages=[{"role": m.role, "content": m.content} for m in messages],
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        
+        return LLMResponse(
+            content=response.choices[0].message.content,
+            model=response.model,
+            usage={
+                "prompt_tokens": getattr(response.usage, 'prompt_tokens', 0),
+                "completion_tokens": getattr(response.usage, 'completion_tokens', 0),
+                "total_tokens": getattr(response.usage, 'total_tokens', 0),
+            },
+            finish_reason=response.choices[0].finish_reason,
+            raw_response=response.model_dump() if hasattr(response, 'model_dump') else None,
+        )
+    
+    def _call_xai(
+        self,
+        messages: List[Message],
+        temperature: float,
+        max_tokens: int,
+    ) -> LLMResponse:
+        """Call xAI/Grok API (OpenAI-compatible)."""
+        try:
+            import openai
+        except ImportError:
+            raise ImportError("openai package not installed. Run: pip install openai")
+        
+        if self.config.api_key is None:
+            raise ValueError("xAI API key not provided. Set XAI_API_KEY or pass api_key.")
+        
+        base_url = self.config.api_base or "https://api.x.ai/v1"
+        
+        client = openai.OpenAI(
+            api_key=self.config.api_key,
+            base_url=base_url,
+        )
+        
+        model = self.config.model
+        if model in ("gpt-4", "default"):
+            model = "grok-beta"
+        
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": m.role, "content": m.content} for m in messages],
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        
+        return LLMResponse(
+            content=response.choices[0].message.content,
+            model=response.model,
+            usage={
+                "prompt_tokens": getattr(response.usage, 'prompt_tokens', 0),
+                "completion_tokens": getattr(response.usage, 'completion_tokens', 0),
+                "total_tokens": getattr(response.usage, 'total_tokens', 0),
+            },
+            finish_reason=response.choices[0].finish_reason,
+            raw_response=response.model_dump() if hasattr(response, 'model_dump') else None,
+        )
+    
+    def _call_google(
+        self,
+        messages: List[Message],
+        temperature: float,
+        max_tokens: int,
+    ) -> LLMResponse:
+        """Call Google Gemini API."""
+        try:
+            import google.generativeai as genai
+        except ImportError:
+            raise ImportError("google-generativeai package not installed. Run: pip install google-generativeai")
+        
+        if self.config.api_key is None:
+            raise ValueError("Google API key not provided. Set GOOGLE_API_KEY or pass api_key.")
+        
+        genai.configure(api_key=self.config.api_key)
+        
+        model_name = self.config.model
+        if model_name in ("gpt-4", "default"):
+            model_name = "gemini-1.5-pro"
+        
+        model = genai.GenerativeModel(model_name)
+        
+        system_content = None
+        chat_messages = []
+        
+        for m in messages:
+            if m.role == "system":
+                system_content = m.content
+            elif m.role == "user":
+                chat_messages.append({"role": "user", "parts": [m.content]})
+            elif m.role == "assistant":
+                chat_messages.append({"role": "model", "parts": [m.content]})
+        
+        generation_config = genai.GenerationConfig(
+            temperature=temperature,
+            max_output_tokens=max_tokens,
+        )
+        
+        if system_content:
+            model = genai.GenerativeModel(
+                model_name,
+                system_instruction=system_content,
+            )
+        
+        chat = model.start_chat(history=chat_messages[:-1] if chat_messages else [])
+        
+        last_message = chat_messages[-1]["parts"][0] if chat_messages else ""
+        response = chat.send_message(last_message, generation_config=generation_config)
+        
+        usage_metadata = getattr(response, 'usage_metadata', None)
+        prompt_tokens = getattr(usage_metadata, 'prompt_token_count', 0) if usage_metadata else 0
+        completion_tokens = getattr(usage_metadata, 'candidates_token_count', 0) if usage_metadata else 0
+        
+        return LLMResponse(
+            content=response.text,
+            model=model_name,
+            usage={
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens,
+            },
+            finish_reason="stop",
+            raw_response=None,
+        )
+    
+    def _call_mistral(
+        self,
+        messages: List[Message],
+        temperature: float,
+        max_tokens: int,
+    ) -> LLMResponse:
+        """Call Mistral AI API."""
+        try:
+            from mistralai import Mistral
+        except ImportError:
+            raise ImportError("mistralai package not installed. Run: pip install mistralai")
+        
+        if self.config.api_key is None:
+            raise ValueError("Mistral API key not provided. Set MISTRAL_API_KEY or pass api_key.")
+        
+        client = Mistral(api_key=self.config.api_key)
+        
+        model = self.config.model
+        if model in ("gpt-4", "default"):
+            model = "mistral-large-latest"
+        
+        response = client.chat.complete(
+            model=model,
+            messages=[{"role": m.role, "content": m.content} for m in messages],
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        
+        return LLMResponse(
+            content=response.choices[0].message.content,
+            model=response.model,
+            usage={
+                "prompt_tokens": response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "total_tokens": response.usage.total_tokens,
+            },
+            finish_reason=response.choices[0].finish_reason,
+            raw_response=None,
+        )
+    
+    def _call_groq(
+        self,
+        messages: List[Message],
+        temperature: float,
+        max_tokens: int,
+    ) -> LLMResponse:
+        """Call Groq API (OpenAI-compatible)."""
+        try:
+            import openai
+        except ImportError:
+            raise ImportError("openai package not installed. Run: pip install openai")
+        
+        if self.config.api_key is None:
+            raise ValueError("Groq API key not provided. Set GROQ_API_KEY or pass api_key.")
+        
+        base_url = self.config.api_base or "https://api.groq.com/openai/v1"
+        
+        client = openai.OpenAI(
+            api_key=self.config.api_key,
+            base_url=base_url,
+        )
+        
+        model = self.config.model
+        if model in ("gpt-4", "default"):
+            model = "llama-3.3-70b-versatile"
+        
+        response = client.chat.completions.create(
+            model=model,
             messages=[{"role": m.role, "content": m.content} for m in messages],
             temperature=temperature,
             max_tokens=max_tokens,

@@ -166,13 +166,15 @@ def _compute_structure_metrics(network: VascularNetwork, config: EvalConfig) -> 
     
     degree_histogram = {}
     for node in network.nodes.values():
-        degree = len(node.connected_segment_ids)
+        connected_seg_ids = network.get_connected_segment_ids(node.id)
+        degree = len(connected_seg_ids)
         degree_histogram[degree] = degree_histogram.get(degree, 0) + 1
     
     branching_angles = []
     for node in network.nodes.values():
-        if node.node_type == "junction" and len(node.connected_segment_ids) >= 2:
-            seg_ids = list(node.connected_segment_ids)
+        connected_seg_ids = network.get_connected_segment_ids(node.id)
+        if node.node_type == "junction" and len(connected_seg_ids) >= 2:
+            seg_ids = list(connected_seg_ids)
             for i in range(len(seg_ids)):
                 for j in range(i + 1, len(seg_ids)):
                     seg1 = network.segments.get(seg_ids[i])
@@ -189,7 +191,8 @@ def _compute_structure_metrics(network: VascularNetwork, config: EvalConfig) -> 
     murray_deviations = []
     for node in network.nodes.values():
         if node.node_type == "junction":
-            segs = [network.segments.get(sid) for sid in node.connected_segment_ids]
+            connected_seg_ids = network.get_connected_segment_ids(node.id)
+            segs = [network.segments.get(sid) for sid in connected_seg_ids]
             segs = [s for s in segs if s is not None]
             if len(segs) >= 2:
                 radii = [s.attributes.get("radius", 0.001) for s in segs]
