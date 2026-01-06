@@ -36,7 +36,7 @@ def check_outlets_open(
     Parameters
     ----------
     mesh : trimesh.Trimesh
-        The embedded mesh (domain with void)
+        The vessel/channel mesh (fluid volume, NOT the domain scaffold)
     expected_outlets : int
         Expected number of outlet openings
     pitch : float
@@ -147,7 +147,7 @@ def check_domain_coverage(
     Parameters
     ----------
     mesh : trimesh.Trimesh
-        The embedded mesh (domain with void)
+        The vessel/channel mesh (fluid volume, NOT the domain scaffold)
     domain_bounds : tuple of arrays, optional
         (min_corner, max_corner) of the domain. If None, uses mesh bounds.
     min_coverage_fraction : float
@@ -253,7 +253,7 @@ def run_all_domain_checks(
     Parameters
     ----------
     mesh : trimesh.Trimesh
-        The embedded mesh (domain with void)
+        The vessel/channel mesh (fluid volume, NOT the domain scaffold)
     expected_outlets : int
         Expected number of outlet openings
     pitch : float

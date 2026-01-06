@@ -73,7 +73,7 @@ def check_port_accessibility(
     Parameters
     ----------
     mesh : trimesh.Trimesh
-        The embedded mesh (domain with void)
+        The vessel/channel mesh (fluid volume, NOT the domain scaffold)
     pitch : float
         Voxel pitch for analysis
     min_port_components : int
@@ -153,7 +153,7 @@ def check_trapped_fluid(
     Parameters
     ----------
     mesh : trimesh.Trimesh
-        The embedded mesh (domain with void)
+        The vessel/channel mesh (fluid volume, NOT the domain scaffold)
     pitch : float
         Voxel pitch for analysis
     max_trapped_fraction : float
@@ -256,7 +256,7 @@ def check_channel_continuity(
     Parameters
     ----------
     mesh : trimesh.Trimesh
-        The embedded mesh (domain with void)
+        The vessel/channel mesh (fluid volume, NOT the domain scaffold)
     pitch : float
         Voxel pitch for analysis
     require_single_component : bool
@@ -345,7 +345,7 @@ def run_all_connectivity_checks(
     Parameters
     ----------
     mesh : trimesh.Trimesh
-        The embedded mesh (domain with void)
+        The vessel/channel mesh (fluid volume, NOT the domain scaffold)
     pitch : float
         Voxel pitch for analysis
     min_port_components : int
