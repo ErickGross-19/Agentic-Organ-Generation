@@ -253,25 +253,53 @@ class DualTreeSpec:
 
 @dataclass
 class DesignSpec:
-    """Top-level design specification for vascular networks."""
+    """Top-level design specification for vascular networks.
+    
+    The library uses DIMENSIONLESS internal units where 1 internal unit = 1 output unit.
+    All internal calculations use dimensionless values (1 is 1), and scaling to 
+    user-specified units happens only at export/output time.
+    
+    When output_units="mm", then 1 internal unit = 1 mm in the output STL file.
+    
+    Attributes
+    ----------
+    domain : DomainSpec
+        Domain specification (ellipsoid or box)
+    tree : TreeSpec, optional
+        Single tree specification
+    dual_tree : DualTreeSpec, optional
+        Dual tree specification (arterial + venous)
+    seed : int, optional
+        Random seed for reproducibility
+    metadata : dict
+        Additional metadata
+    output_units : str
+        Units for exported files (STL, JSON, etc.). Default: "mm"
+        Supported: "m", "mm", "cm", "um"
+        When output_units="mm", 1 internal unit = 1 mm in output files.
+    """
     
     domain: DomainSpec
     tree: Optional[TreeSpec] = None
     dual_tree: Optional[DualTreeSpec] = None
     seed: Optional[int] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    output_units: str = "mm"
     
     def __post_init__(self):
         if self.tree is None and self.dual_tree is None:
             raise ValueError("Must specify either 'tree' or 'dual_tree'")
         if self.tree is not None and self.dual_tree is not None:
             raise ValueError("Cannot specify both 'tree' and 'dual_tree'")
+        if self.output_units not in ("m", "mm", "cm", "um"):
+            raise ValueError(f"Unknown output_units '{self.output_units}'. Supported: m, mm, cm, um")
     
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "domain": self.domain.to_dict(),
             "seed": self.seed,
             "metadata": self.metadata,
+            "output_units": self.output_units,
         }
         if self.tree is not None:
             result["tree"] = self.tree.to_dict()
@@ -291,6 +319,7 @@ class DesignSpec:
             dual_tree=DualTreeSpec.from_dict(d["dual_tree"]) if "dual_tree" in d else None,
             seed=d.get("seed"),
             metadata=d.get("metadata", {}),
+            output_units=d.get("output_units", "mm"),
         )
     
     @staticmethod

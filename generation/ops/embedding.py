@@ -130,6 +130,7 @@ def embed_tree_as_negative_space(
     stl_units: str = "auto",
     geometry_units: str = CANONICAL_UNIT,
     use_morphological_shell: bool = True,
+    output_units: str = "mm",
 ) -> Dict[str, Optional[trimesh.Trimesh]]:
     """
     Embed a vascular tree STL mesh into a domain as negative space (void).
@@ -137,7 +138,8 @@ def embed_tree_as_negative_space(
     This creates a solid domain mesh with the tree carved out as a void.
     Useful for creating molds, scaffolds, or perfusion chambers.
     
-    **Units**: All spatial parameters are in millimeters by default.
+    **Units**: The library uses DIMENSIONLESS internal units where 1 internal unit = 1 output unit.
+    When output_units="mm", 1 internal unit = 1 mm in the output meshes.
     
     Parameters
     ----------
@@ -170,6 +172,11 @@ def embed_tree_as_negative_space(
         If True (default), use morphological dilation for shell generation which
         is much more memory-efficient. If False, use distance_transform_edt which
         gives continuous thickness in world units but allocates a full float64 grid.
+    output_units : str
+        Units for the output meshes. Default: "mm"
+        Supported: "m", "mm", "cm", "um"
+        Since internal units are dimensionless (1 = 1mm equivalent),
+        this controls the scale of coordinates in the output meshes.
     
     Returns
     -------
@@ -558,6 +565,20 @@ def embed_tree_as_negative_space(
         },
         'dilation_voxels': dilation_voxels,
         'smoothing_iters': smoothing_iters,
+        'output_units': output_units,
     }
+    
+    from ..utils.units import UnitContext
+    unit_ctx = UnitContext(output_units=output_units)
+    
+    if result['domain_with_void'] is not None:
+        result['domain_with_void'] = unit_ctx.scale_mesh(result['domain_with_void'])
+    if result['void'] is not None:
+        result['void'] = unit_ctx.scale_mesh(result['void'])
+    if result['shell'] is not None:
+        result['shell'] = unit_ctx.scale_mesh(result['shell'])
+    
+    result['metadata']['scale_factor'] = unit_ctx.scale_factor
+    result['metadata']['unit_metadata'] = unit_ctx.get_metadata()
     
     return result

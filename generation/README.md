@@ -226,6 +226,55 @@ G = to_networkx(network)
 # Now use NetworkX for graph analysis
 ```
 
+## Unit System
+
+The library uses **meter-scale values internally** (legacy convention). For example, `EllipsoidSpec` defaults to `semi_axes=(0.05, 0.045, 0.035)` which represents 50mm, 45mm, 35mm in meters.
+
+At export time, values are converted to user-specified output units using the `UnitContext` class:
+
+```python
+from generation.utils.units import UnitContext
+
+# Create context for mm output
+ctx = UnitContext(output_units="mm")
+
+# Internal value 0.05 (meters) becomes 50mm in output
+output_value = ctx.to_output(0.05)  # Returns 50.0
+
+# Scale factors:
+# - output_units="mm": scale_factor = 1000 (m -> mm)
+# - output_units="m": scale_factor = 1.0 (no change)
+# - output_units="cm": scale_factor = 100 (m -> cm)
+# - output_units="um": scale_factor = 1e6 (m -> um)
+```
+
+### Specifying Output Units in DesignSpec
+
+```python
+from generation.specs import DesignSpec
+
+spec = DesignSpec(
+    domain_type="ellipsoid",
+    domain_params={"a": 0.05, "b": 0.04, "c": 0.03},  # Internal: meters
+    output_units="mm",  # Output STL will be in mm
+)
+```
+
+### Export with Unit Scaling
+
+```python
+from generation.adapters.mesh_adapter import export_stl
+
+# Export with mm units (default)
+export_stl(network, "output.stl", output_units="mm")
+
+# Export with meters
+export_stl(network, "output_m.stl", output_units="m")
+
+# A sidecar JSON file is created with unit metadata
+# output.stl.units.json contains: {"units": "mm", "scale_factor_applied": 1000.0, ...}
+```
+
 ## Manufacturing Constraints
 
 Manufacturing constraints are provided by the user at runtime and should be passed to the generation functions:

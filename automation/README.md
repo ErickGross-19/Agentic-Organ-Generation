@@ -4,11 +4,12 @@ The Automation module provides scripts for LLM API calls and agent behavior. It 
 
 ## Overview
 
-The automation module consists of three main components:
+The automation module consists of four main components:
 
 1. **LLM Client**: A unified client for interacting with various LLM APIs
 2. **Agent Runner**: An orchestrator for running generation and validation tasks
 3. **Task Templates**: Pre-built prompts for common operations
+4. **Single Agent Organ Generator V1**: An interactive workflow for guided organ structure generation
 
 ## Directory Structure
 
@@ -17,6 +18,7 @@ automation/
 ├── __init__.py              # Main entry point
 ├── llm_client.py            # LLM API client
 ├── agent_runner.py          # Agent orchestration
+├── workflow.py              # Single Agent Organ Generator V1 workflow
 ├── cli.py                   # Command-line interface
 └── task_templates/          # Pre-built task prompts
     ├── __init__.py
@@ -390,6 +392,96 @@ See the `examples/` directory for complete working examples:
 - `examples/interactive_session.py` - Interactive design session
 - `examples/batch_generation.py` - Generate multiple structures
 - `examples/validation_workflow.py` - Complete validation workflow
+
+## Single Agent Organ Generator V1 Workflow
+
+The Single Agent Organ Generator V1 is an interactive workflow that guides users through the complete organ structure generation process.
+
+### Workflow States
+
+The workflow progresses through the following states:
+
+| State | Description |
+|-------|-------------|
+| `INIT` | Ask for project name and output units |
+| `REQUIREMENTS` | Ask for structure description |
+| `GENERATING` | Generate structure using the library |
+| `VISUALIZING` | Show 3D visualization and generated files |
+| `REVIEW` | Ask if user is satisfied |
+| `CLARIFYING` | If not satisfied, ask what's wrong |
+| `FINALIZING` | Output embedded structure, STL mesh, and code |
+| `COMPLETE` | Workflow finished |
+
+### Usage
+
+#### Programmatic Usage
+
+```python
+from automation.workflow import SingleAgentOrganGeneratorV1, run_single_agent_workflow
+from automation.agent_runner import create_agent
+
+# Option 1: Use convenience function
+context = run_single_agent_workflow(
+    provider="openai",
+    model="gpt-4",
+    base_output_dir="./my_projects"
+)
+
+# Option 2: Create workflow manually for more control
+agent = create_agent(provider="openai", model="gpt-4")
+workflow = SingleAgentOrganGeneratorV1(
+    agent=agent,
+    base_output_dir="./my_projects",
+    verbose=True,
+)
+
+# Run interactively
+context = workflow.run()
+
+# Or step through programmatically
+workflow.step("my_project")  # INIT -> REQUIREMENTS
+workflow.step("Generate a liver vascular network")  # REQUIREMENTS -> GENERATING
+# ... etc
+```
+
+#### CLI Usage
+
+```bash
+# Run the workflow interactively
+python -m automation.cli workflow
+
+# With custom output directory
+python -m automation.cli workflow --output ./my_projects
+
+# With specific LLM provider
+python -m automation.cli workflow --provider openai --model gpt-4
+```
+
+### Generated Artifacts
+
+The workflow generates the following artifacts in the project output directory:
+
+| File | Description |
+|------|-------------|
+| `design_spec.json` | The design specification used for generation |
+| `network.json` | The generated vascular network |
+| `structure.stl` | Surface mesh of the vascular structure |
+| `embedded_structure.stl` | Domain with void carved out |
+| `generation_code.py` | Python code to reproduce the generation |
+| `project_summary.json` | Summary of the project with all file paths |
+
+### State Persistence
+
+The workflow supports saving and loading state for resuming interrupted sessions:
+
+```python
+# Save state
+workflow.save_state("workflow_state.json")
+
+# Load state later
+workflow.load_state("workflow_state.json")
+workflow.run()  # Resume from saved state
+```
 
 ## Future: Devin Integration
 

@@ -218,10 +218,15 @@ def export_stl(
     output_path: str,
     mode: Literal["fast", "robust"] = "fast",
     repair: bool = True,
+    output_units: str = "mm",
+    write_metadata: bool = True,
     **kwargs,
 ) -> OperationResult:
     """
-    Export VascularNetwork to STL file.
+    Export VascularNetwork to STL file with unit scaling.
+    
+    The library uses DIMENSIONLESS internal units where 1 internal unit = 1 output unit.
+    When output_units="mm", 1 internal unit = 1 mm in the output STL file.
     
     Parameters
     ----------
@@ -233,6 +238,14 @@ def export_stl(
         Export mode
     repair : bool
         Whether to repair mesh before export
+    output_units : str
+        Units for the output STL file. Default: "mm"
+        Supported: "m", "mm", "cm", "um"
+        Since internal units are dimensionless (1 = 1mm equivalent),
+        this controls the scale of coordinates in the output file.
+    write_metadata : bool
+        Whether to write a sidecar JSON file with unit metadata.
+        The sidecar file will be named {output_path}.units.json
     **kwargs
         Additional arguments passed to to_trimesh
         
@@ -240,7 +253,17 @@ def export_stl(
     -------
     OperationResult
         Result of export operation
+        
+    Notes
+    -----
+    STL files do not encode units. The output_units parameter controls
+    the numeric scale of vertex coordinates. A sidecar JSON file is
+    written to document the units used.
     """
+    from generation.utils.units import UnitContext
+    import json
+    from pathlib import Path
+    
     result = to_trimesh(network, mode=mode, **kwargs)
     
     if not result.is_success():
@@ -259,10 +282,25 @@ def export_stl(
             result.add_warning(f"Mesh repair failed: {e}")
             result.metadata['repair_failed'] = True
     
+    unit_ctx = UnitContext(output_units=output_units)
+    scaled_mesh = unit_ctx.scale_mesh(mesh)
+    
+    result.metadata['output_units'] = output_units
+    result.metadata['scale_factor'] = unit_ctx.scale_factor
+    
     try:
-        mesh.export(output_path)
-        result.message = f"Exported to {output_path}"
+        scaled_mesh.export(output_path)
+        result.message = f"Exported to {output_path} (units: {output_units})"
         result.metadata['output_path'] = output_path
+        
+        if write_metadata:
+            metadata_path = str(output_path) + ".units.json"
+            metadata = unit_ctx.get_metadata()
+            metadata['stl_file'] = str(output_path)
+            with open(metadata_path, 'w') as f:
+                json.dump(metadata, f, indent=2)
+            result.metadata['metadata_path'] = metadata_path
+        
         return result
     except Exception as e:
         return OperationResult.failure(
@@ -706,13 +744,18 @@ def export_hollow_tube_stl(
     output_path: str,
     wall_thickness: float,
     repair: bool = True,
+    output_units: str = "mm",
+    write_metadata: bool = True,
     **kwargs,
 ) -> OperationResult:
     """
-    Export VascularNetwork as a hollow tube STL file.
+    Export VascularNetwork as a hollow tube STL file with unit scaling.
     
     Creates a hollow tube mesh where water can flow through the entire
     network from inlet to terminal nodes, then exports to STL.
+    
+    The library uses DIMENSIONLESS internal units where 1 internal unit = 1 output unit.
+    When output_units="mm", 1 internal unit = 1 mm in the output STL file.
     
     Parameters
     ----------
@@ -721,9 +764,14 @@ def export_hollow_tube_stl(
     output_path : str
         Path to output STL file
     wall_thickness : float
-        Thickness of tube walls (in same units as network)
+        Thickness of tube walls (in internal dimensionless units)
     repair : bool
         Whether to attempt mesh repair before export
+    output_units : str
+        Units for the output STL file. Default: "mm"
+        Supported: "m", "mm", "cm", "um"
+    write_metadata : bool
+        Whether to write a sidecar JSON file with unit metadata.
     **kwargs
         Additional arguments passed to to_hollow_tube_mesh
         
@@ -738,9 +786,13 @@ def export_hollow_tube_stl(
     >>> result = export_hollow_tube_stl(
     ...     network,
     ...     output_path='hollow_network.stl',
-    ...     wall_thickness=1.0,  # 1mm walls
+    ...     wall_thickness=1.0,  # 1 internal unit (= 1mm if output_units="mm")
+    ...     output_units="mm",
     ... )
     """
+    from generation.utils.units import UnitContext
+    import json
+    
     result = to_hollow_tube_mesh(network, wall_thickness=wall_thickness, **kwargs)
     
     if not result.is_success():
@@ -759,10 +811,27 @@ def export_hollow_tube_stl(
             result.add_warning(f"Mesh repair failed: {e}")
             result.metadata['repair_failed'] = True
     
+    unit_ctx = UnitContext(output_units=output_units)
+    scaled_mesh = unit_ctx.scale_mesh(mesh)
+    
+    result.metadata['output_units'] = output_units
+    result.metadata['scale_factor'] = unit_ctx.scale_factor
+    
     try:
-        mesh.export(output_path)
-        result.message = f"Exported hollow tube to {output_path}"
+        scaled_mesh.export(output_path)
+        result.message = f"Exported hollow tube to {output_path} (units: {output_units})"
         result.metadata['output_path'] = output_path
+        
+        if write_metadata:
+            metadata_path = str(output_path) + ".units.json"
+            metadata = unit_ctx.get_metadata()
+            metadata['stl_file'] = str(output_path)
+            metadata['wall_thickness_internal'] = wall_thickness
+            metadata['wall_thickness_output'] = unit_ctx.to_output(wall_thickness)
+            with open(metadata_path, 'w') as f:
+                json.dump(metadata, f, indent=2)
+            result.metadata['metadata_path'] = metadata_path
+        
         return result
     except Exception as e:
         return OperationResult.failure(
