@@ -9,6 +9,12 @@ Main Components:
     - agent_runner: Generic agent runner that works with standard LLM APIs
     - llm_client: Client for interacting with LLM APIs (OpenAI, Anthropic, etc.)
     - task_templates: Pre-built task prompts for common operations
+    - workflow: Single Agent Organ Generator V1 workflow
+
+Workflows:
+    - SingleAgentOrganGeneratorV1: Interactive workflow for organ structure generation
+      that guides users through project setup, requirements, generation, review,
+      and finalization.
 
 Example:
     >>> from automation import AgentRunner, LLMClient
@@ -25,10 +31,21 @@ Example:
     ...         constraints={"plate_size": (200, 200, 200)}
     ...     )
     ... )
+    
+    >>> # Or use the workflow
+    >>> from automation import SingleAgentOrganGeneratorV1
+    >>> workflow = SingleAgentOrganGeneratorV1(runner)
+    >>> context = workflow.run()
 """
 
-from .agent_runner import AgentRunner, AgentConfig, TaskResult
+from .agent_runner import AgentRunner, AgentConfig, TaskResult, create_agent
 from .llm_client import LLMClient, LLMConfig
+from .workflow import (
+    SingleAgentOrganGeneratorV1,
+    WorkflowState,
+    ProjectContext,
+    run_single_agent_workflow,
+)
 
 __all__ = [
     "AgentRunner",
@@ -36,4 +53,9 @@ __all__ = [
     "TaskResult",
     "LLMClient",
     "LLMConfig",
+    "create_agent",
+    "SingleAgentOrganGeneratorV1",
+    "WorkflowState",
+    "ProjectContext",
+    "run_single_agent_workflow",
 ]

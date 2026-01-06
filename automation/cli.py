@@ -19,6 +19,7 @@ from .task_templates import (
     validate_structure_prompt,
     iterate_design_prompt,
 )
+from .workflow import SingleAgentOrganGeneratorV1
 
 
 def main():
@@ -133,8 +134,20 @@ def main():
         help="Initial task to start with",
     )
     
+    # Workflow command (Single Agent Organ Generator V1)
+    wf_parser = subparsers.add_parser(
+        "workflow",
+        help="Run Single Agent Organ Generator V1 workflow"
+    )
+    wf_parser.add_argument(
+        "--output-dir", "-O",
+        type=str,
+        default="./projects",
+        help="Base directory for project outputs (default: ./projects)",
+    )
+    
     # Common arguments for all commands
-    for p in [gen_parser, val_parser, iter_parser, int_parser]:
+    for p in [gen_parser, val_parser, iter_parser, int_parser, wf_parser]:
         p.add_argument(
             "--provider",
             type=str,
@@ -184,6 +197,8 @@ def main():
         run_iterate(agent, args)
     elif args.command == "interactive":
         run_interactive(agent, args)
+    elif args.command == "workflow":
+        run_workflow(agent, args)
 
 
 def run_generate(agent: AgentRunner, args):
@@ -267,6 +282,21 @@ def run_iterate(agent: AgentRunner, args):
 def run_interactive(agent: AgentRunner, args):
     """Run interactive mode."""
     agent.run_interactive(initial_task=args.task)
+
+
+def run_workflow(agent: AgentRunner, args):
+    """Run the Single Agent Organ Generator V1 workflow."""
+    workflow = SingleAgentOrganGeneratorV1(
+        agent=agent,
+        base_output_dir=args.output_dir,
+        verbose=args.verbose,
+    )
+    
+    context = workflow.run()
+    
+    print(f"\nWorkflow completed!")
+    print(f"Project: {context.project_name}")
+    print(f"Output directory: {context.output_dir}")
 
 
 if __name__ == "__main__":
