@@ -107,6 +107,29 @@ result = runner.run_task(
 )
 ```
 
+### Single Agent Organ Generator V1 Workflow
+
+The library includes an interactive workflow that guides users through organ structure generation:
+
+```python
+from automation.workflow import run_single_agent_workflow
+
+# Run the interactive workflow
+context = run_single_agent_workflow(
+    provider="openai",
+    model="gpt-4",
+    base_output_dir="./my_projects"
+)
+
+# The workflow will:
+# 1. Ask for project name and output units
+# 2. Ask for structure description
+# 3. Generate the structure using the library
+# 4. Show visualization and generated files
+# 5. Ask if satisfied (if no, ask for clarification and regenerate)
+# 6. Output final embedded structure, STL mesh, and generation code
+```
+
 ### Command-Line Interface
 
 ```bash
@@ -115,6 +138,9 @@ python -m automation.cli generate --organ liver --segments 500
 
 # Validate a structure
 python -m automation.cli validate --input structure.stl --stage both
+
+# Run the Single Agent Organ Generator V1 workflow
+python -m automation.cli workflow
 
 # Interactive session
 python -m automation.cli interactive
@@ -222,6 +248,30 @@ The automation module enables LLM-driven generation and validation.
 - `iterate_design_prompt()` - Iteratively improve designs
 
 See [automation/README.md](automation/README.md) for detailed documentation.
+
+## Unit System
+
+The library uses **meter-scale values internally** (e.g., `semi_axes=(0.05, 0.045, 0.035)` = 50mm, 45mm, 35mm). At export time, values are converted to user-specified output units.
+
+```python
+from generation.specs import DesignSpec
+
+# Specify output units in the design spec
+spec = DesignSpec(
+    domain_type="ellipsoid",
+    domain_params={"a": 0.05, "b": 0.04, "c": 0.03},  # Internal: meters
+    output_units="mm",  # Output STL will be in mm (50mm, 40mm, 30mm)
+)
+
+# Or use different output units
+spec_meters = DesignSpec(
+    domain_type="ellipsoid",
+    domain_params={"a": 0.05, "b": 0.04, "c": 0.03},
+    output_units="m",  # Output STL will be in meters (0.05, 0.04, 0.03)
+)
+```
+
+Supported output units: `"m"`, `"mm"`, `"cm"`, `"um"`
 
 ## Manufacturing Constraints
 
