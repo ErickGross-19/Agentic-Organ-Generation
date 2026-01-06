@@ -3,9 +3,11 @@ numpy>=1.20.0
 scipy>=1.7.0
 trimesh>=3.10.0
 networkx>=2.6.0
+tqdm>=4.60.0
 
 # Mesh processing
 pymeshfix>=0.16.0
+scikit-image>=0.18.0
 
 # Optional: LLM automation
 openai>=1.0.0
