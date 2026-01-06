@@ -75,8 +75,12 @@ python -m automation.cli interactive
 
 | Provider | Model Examples | Environment Variable |
 |----------|---------------|---------------------|
-| OpenAI | gpt-4, gpt-3.5-turbo | `OPENAI_API_KEY` |
+| OpenAI | gpt-4, gpt-3.5-turbo, gpt-5 | `OPENAI_API_KEY` |
 | Anthropic | claude-3-opus, claude-3-sonnet | `ANTHROPIC_API_KEY` |
+| xAI/Grok | grok-beta, grok-2 | `XAI_API_KEY` |
+| Google/Gemini | gemini-pro, gemini-1.5-pro | `GOOGLE_API_KEY` or `GEMINI_API_KEY` |
+| Mistral | mistral-large, mistral-medium | `MISTRAL_API_KEY` |
+| Groq | llama-3.1-70b, mixtral-8x7b | `GROQ_API_KEY` |
 | Local | Any OpenAI-compatible API | N/A (use `api_base`) |
 
 ### Configuration
@@ -386,12 +390,9 @@ Report any validation issues and suggest fixes.
 
 ## Examples
 
-See the `examples/` directory for complete working examples:
+See the `examples/` directory for working examples:
 
-- `examples/basic_generation.py` - Basic structure generation
-- `examples/interactive_session.py` - Interactive design session
-- `examples/batch_generation.py` - Generate multiple structures
-- `examples/validation_workflow.py` - Complete validation workflow
+- `examples/single_agent_organgenerator_v1.ipynb` - Interactive Jupyter notebook demonstrating the Single Agent Organ Generator V1 workflow with all features including basic generation, interactive sessions, and validation workflows
 
 ## Single Agent Organ Generator V1 Workflow
 

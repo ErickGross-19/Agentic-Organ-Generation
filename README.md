@@ -237,8 +237,12 @@ The automation module enables LLM-driven generation and validation.
 
 ### Supported LLM Providers
 
-- OpenAI (GPT-4, GPT-3.5)
+- OpenAI (GPT-4, GPT-3.5, GPT-5)
 - Anthropic (Claude 3)
+- xAI/Grok (provider: `"xai"` or `"grok"`)
+- Google Gemini (provider: `"google"` or `"gemini"`)
+- Mistral AI (provider: `"mistral"`)
+- Groq (provider: `"groq"`)
 - Local models (OpenAI-compatible APIs)
 
 ### Task Templates
@@ -300,12 +304,16 @@ manufacturing_config = {
 
 ## Examples
 
-See the `examples/` directory for complete working examples:
+See the `examples/` directory for working examples:
 
-- `examples/generate_liver.py` - Generate a liver vascular network
-- `examples/validate_structure.py` - Validate a structure
-- `examples/llm_generation.py` - Use LLM for generation
-- `examples/iterative_design.py` - Iteratively improve a design
+- `examples/single_agent_organgenerator_v1.ipynb` - Interactive Jupyter notebook demonstrating the Single Agent Organ Generator V1 workflow, including:
+  - Quick start with `run_single_agent_workflow()`
+  - Detailed workflow control with `SingleAgentOrganGeneratorV1` class
+  - Programmatic state transitions with `step()` method
+  - State persistence (save/load workflow state)
+  - Visualization of generated STL meshes
+  - Configuration for different LLM providers
+  - Direct generation without LLM
 
 ## Contributing
 

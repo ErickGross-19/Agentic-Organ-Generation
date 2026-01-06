@@ -374,8 +374,6 @@ else:
 
 ## Examples
 
-See the `examples/` directory for complete working examples:
+See the `examples/` directory for working examples:
 
-- `examples/validate_mesh.py` - Validate a mesh file
-- `examples/full_validation.py` - Run complete pre and post validation
-- `examples/custom_constraints.py` - Use custom manufacturing constraints
+- `examples/single_agent_organgenerator_v1.ipynb` - Interactive Jupyter notebook that demonstrates the complete workflow including validation integration with the generation library
