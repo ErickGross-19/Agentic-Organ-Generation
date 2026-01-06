@@ -31,9 +31,10 @@ generation/
 ├── params/              # Parameter presets
 │   └── presets.py       # liver_arterial_dense, etc.
 ├── adapters/            # Export adapters
-│   ├── stl_export.py    # STL export
+│   ├── mesh_adapter.py      # STL export and mesh operations
 │   ├── networkx_adapter.py  # NetworkX conversion
-│   └── reports.py       # Report generation
+│   ├── liver_adapter.py     # Liver VascularTree <-> VascularNetwork conversion
+│   └── report_adapter.py    # Report generation
 ├── organ_generators/    # Organ-specific generators
 │   └── liver.py         # Liver vascular generator
 └── utils/               # Utility functions
@@ -319,8 +320,6 @@ if pre_report.passed:
 
 ## Examples
 
-See the `examples/` directory for complete working examples:
+See the `examples/` directory for working examples:
 
-- `examples/generate_liver.py` - Generate a liver vascular network
-- `examples/custom_organ.py` - Generate a custom organ structure
-- `examples/iterative_design.py` - Iteratively improve a design
+- `examples/single_agent_organgenerator_v1.ipynb` - Interactive Jupyter notebook demonstrating the complete workflow including direct generation without LLM (see Section 10: "Direct Generation Without LLM")
