@@ -61,6 +61,16 @@ class VesselSegment:
     vessel_type: str  # "arterial", "venous"
     attributes: Dict[str, Any] = field(default_factory=dict)
     
+    @property
+    def length(self) -> float:
+        """Get segment length from geometry."""
+        return self.geometry.length()
+    
+    @property
+    def direction(self):
+        """Get segment direction from geometry."""
+        return self.geometry.direction()
+    
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
         return {
@@ -154,6 +164,26 @@ class VascularNetwork:
     def get_segment(self, segment_id: int) -> Optional[VesselSegment]:
         """Get segment by ID."""
         return self.segments.get(segment_id)
+    
+    def get_connected_segment_ids(self, node_id: int) -> List[int]:
+        """
+        Get IDs of all segments connected to a node.
+        
+        Parameters
+        ----------
+        node_id : int
+            ID of the node
+            
+        Returns
+        -------
+        List[int]
+            List of segment IDs connected to this node
+        """
+        connected = []
+        for seg_id, seg in self.segments.items():
+            if seg.start_node_id == node_id or seg.end_node_id == node_id:
+                connected.append(seg_id)
+        return connected
     
     def get_spatial_index(self):
         """Get or create spatial index."""

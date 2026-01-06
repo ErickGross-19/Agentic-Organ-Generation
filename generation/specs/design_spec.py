@@ -255,11 +255,15 @@ class DualTreeSpec:
 class DesignSpec:
     """Top-level design specification for vascular networks.
     
-    The library uses DIMENSIONLESS internal units where 1 internal unit = 1 output unit.
-    All internal calculations use dimensionless values (1 is 1), and scaling to 
-    user-specified units happens only at export/output time.
+    INTERNAL UNITS: The library uses METER-SCALE values internally.
+    All coordinates, lengths, and radii are stored in meters throughout the codebase.
+    For example, EllipsoidSpec defaults to semi_axes=(0.05, 0.045, 0.035) which 
+    represents 50mm, 45mm, 35mm in meters.
     
-    When output_units="mm", then 1 internal unit = 1 mm in the output STL file.
+    OUTPUT UNITS: At export time (STL, JSON, etc.), internal meter values are 
+    converted to the user-specified output_units:
+    - output_units="mm" (default): internal 0.05 becomes 50.0 in output
+    - output_units="m": internal 0.05 stays 0.05 in output
     
     Attributes
     ----------
@@ -276,7 +280,7 @@ class DesignSpec:
     output_units : str
         Units for exported files (STL, JSON, etc.). Default: "mm"
         Supported: "m", "mm", "cm", "um"
-        When output_units="mm", 1 internal unit = 1 mm in output files.
+        Internal meter values are scaled to this unit on export.
     """
     
     domain: DomainSpec

@@ -12,6 +12,11 @@ from enum import Enum
 import json
 import time
 import os
+import re
+import sys
+import traceback
+from io import StringIO
+from contextlib import redirect_stdout, redirect_stderr
 
 from .llm_client import LLMClient, LLMConfig, LLMResponse
 
@@ -23,6 +28,268 @@ class TaskStatus(Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     NEEDS_INPUT = "needs_input"
+
+
+@dataclass
+class CodeExecutionResult:
+    """
+    Result of code execution.
+    
+    Attributes
+    ----------
+    success : bool
+        Whether execution succeeded
+    output : str
+        Captured stdout
+    error : str
+        Captured stderr or exception message
+    return_value : Any
+        Return value from executed code (if any)
+    variables : Dict[str, Any]
+        Variables defined during execution
+    """
+    success: bool
+    output: str
+    error: str
+    return_value: Any = None
+    variables: Dict[str, Any] = field(default_factory=dict)
+
+
+class CodeExecutor:
+    """
+    Safe code executor for LLM-generated Python code.
+    
+    Provides sandboxed execution with configurable allowed modules,
+    timeout handling, and output capture.
+    
+    Parameters
+    ----------
+    allowed_modules : List[str], optional
+        List of module names that can be imported. If None, allows
+        a default safe set of modules.
+    timeout : float
+        Maximum execution time in seconds (default: 30)
+    working_dir : str, optional
+        Working directory for code execution
+        
+    Examples
+    --------
+    >>> executor = CodeExecutor()
+    >>> result = executor.execute('''
+    ... import numpy as np
+    ... x = np.array([1, 2, 3])
+    ... print(f"Sum: {x.sum()}")
+    ... ''')
+    >>> print(result.output)  # "Sum: 6"
+    """
+    
+    # Default allowed modules for organ generation tasks
+    DEFAULT_ALLOWED_MODULES = [
+        # Standard library
+        "os", "sys", "json", "math", "time", "datetime", "pathlib",
+        "collections", "itertools", "functools", "typing", "dataclasses",
+        "re", "copy", "io", "tempfile",
+        # Scientific computing
+        "numpy", "scipy", "trimesh", "networkx",
+        # Generation library
+        "generation", "generation.api", "generation.ops", "generation.core",
+        "generation.specs", "generation.params", "generation.adapters",
+        "generation.organ_generators", "generation.analysis",
+        # Validation library
+        "validity",
+    ]
+    
+    # Dangerous operations to block
+    BLOCKED_PATTERNS = [
+        r"\bexec\s*\(",
+        r"\beval\s*\(",
+        r"\bcompile\s*\(",
+        r"\b__import__\s*\(",
+        r"\bopen\s*\([^)]*['\"]w['\"]",  # Block write mode
+        r"\bos\.system\s*\(",
+        r"\bos\.popen\s*\(",
+        r"\bsubprocess\.",
+        r"\bshutil\.rmtree\s*\(",
+        r"\bos\.remove\s*\(",
+        r"\bos\.unlink\s*\(",
+    ]
+    
+    def __init__(
+        self,
+        allowed_modules: Optional[List[str]] = None,
+        timeout: float = 30.0,
+        working_dir: Optional[str] = None,
+    ):
+        self.allowed_modules = allowed_modules or self.DEFAULT_ALLOWED_MODULES
+        self.timeout = timeout
+        self.working_dir = working_dir
+        self._execution_namespace: Dict[str, Any] = {}
+    
+    def extract_code_blocks(self, text: str) -> List[str]:
+        """
+        Extract Python code blocks from LLM response text.
+        
+        Looks for code in markdown code blocks (```python ... ```)
+        or indented code blocks.
+        
+        Parameters
+        ----------
+        text : str
+            LLM response text
+            
+        Returns
+        -------
+        List[str]
+            List of extracted code blocks
+        """
+        code_blocks = []
+        
+        # Match ```python ... ``` blocks
+        pattern = r"```(?:python)?\s*\n(.*?)```"
+        matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
+        code_blocks.extend(matches)
+        
+        # If no markdown blocks found, look for indented code after "code:" or similar
+        if not code_blocks:
+            lines = text.split('\n')
+            in_code_block = False
+            current_block = []
+            
+            for line in lines:
+                if line.strip().lower() in ('code:', 'python:', 'script:'):
+                    in_code_block = True
+                    continue
+                
+                if in_code_block:
+                    if line.startswith('    ') or line.startswith('\t') or not line.strip():
+                        current_block.append(line)
+                    elif current_block:
+                        code_blocks.append('\n'.join(current_block))
+                        current_block = []
+                        in_code_block = False
+            
+            if current_block:
+                code_blocks.append('\n'.join(current_block))
+        
+        return code_blocks
+    
+    def validate_code(self, code: str) -> tuple:
+        """
+        Validate code for safety before execution.
+        
+        Parameters
+        ----------
+        code : str
+            Python code to validate
+            
+        Returns
+        -------
+        tuple
+            (is_safe: bool, issues: List[str])
+        """
+        issues = []
+        
+        # Check for blocked patterns
+        for pattern in self.BLOCKED_PATTERNS:
+            if re.search(pattern, code):
+                issues.append(f"Blocked pattern detected: {pattern}")
+        
+        # Parse and check imports
+        try:
+            import ast
+            tree = ast.parse(code)
+            
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        module_name = alias.name.split('.')[0]
+                        if module_name not in self.allowed_modules:
+                            issues.append(f"Import not allowed: {alias.name}")
+                
+                elif isinstance(node, ast.ImportFrom):
+                    if node.module:
+                        module_name = node.module.split('.')[0]
+                        if module_name not in self.allowed_modules:
+                            issues.append(f"Import not allowed: {node.module}")
+        
+        except SyntaxError as e:
+            issues.append(f"Syntax error: {e}")
+        
+        return len(issues) == 0, issues
+    
+    def execute(self, code: str, namespace: Optional[Dict[str, Any]] = None) -> CodeExecutionResult:
+        """
+        Execute Python code in a sandboxed environment.
+        
+        Parameters
+        ----------
+        code : str
+            Python code to execute
+        namespace : dict, optional
+            Pre-populated namespace for execution
+            
+        Returns
+        -------
+        CodeExecutionResult
+            Result of execution with output, errors, and variables
+        """
+        # Validate code first
+        is_safe, issues = self.validate_code(code)
+        if not is_safe:
+            return CodeExecutionResult(
+                success=False,
+                output="",
+                error=f"Code validation failed:\n" + "\n".join(issues),
+            )
+        
+        # Prepare execution namespace
+        exec_namespace = namespace.copy() if namespace else {}
+        exec_namespace.update(self._execution_namespace)
+        exec_namespace["__builtins__"] = __builtins__
+        
+        # Capture stdout and stderr
+        stdout_capture = StringIO()
+        stderr_capture = StringIO()
+        
+        # Change to working directory if specified
+        original_dir = os.getcwd()
+        if self.working_dir:
+            os.chdir(self.working_dir)
+        
+        try:
+            # Execute with output capture
+            with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
+                exec(code, exec_namespace)
+            
+            # Extract user-defined variables (exclude builtins and modules)
+            user_vars = {
+                k: v for k, v in exec_namespace.items()
+                if not k.startswith('_') and not isinstance(v, type(sys))
+            }
+            
+            # Update persistent namespace
+            self._execution_namespace.update(user_vars)
+            
+            return CodeExecutionResult(
+                success=True,
+                output=stdout_capture.getvalue(),
+                error=stderr_capture.getvalue(),
+                variables=user_vars,
+            )
+        
+        except Exception as e:
+            return CodeExecutionResult(
+                success=False,
+                output=stdout_capture.getvalue(),
+                error=f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}",
+            )
+        
+        finally:
+            os.chdir(original_dir)
+    
+    def clear_namespace(self) -> None:
+        """Clear the persistent execution namespace."""
+        self._execution_namespace.clear()
 
 
 @dataclass
@@ -157,6 +424,11 @@ Explain your approach and any trade-offs made.'''
         
         # Ensure output directory exists
         os.makedirs(self.config.output_dir, exist_ok=True)
+        
+        # Initialize code executor for auto-execution
+        self.code_executor = CodeExecutor(
+            working_dir=self.config.repo_path,
+        )
     
     def run_task(
         self,
@@ -210,6 +482,47 @@ Explain your approach and any trade-offs made.'''
                 
                 if on_message:
                     on_message("assistant", response.content)
+                
+                # Auto-execute code if enabled
+                if self.config.auto_execute_code:
+                    code_blocks = self.code_executor.extract_code_blocks(response.content)
+                    
+                    if code_blocks:
+                        execution_results = []
+                        for i, code in enumerate(code_blocks):
+                            if self.config.verbose:
+                                print(f"Executing code block {i + 1}/{len(code_blocks)}...")
+                            
+                            exec_result = self.code_executor.execute(code)
+                            execution_results.append(exec_result)
+                            
+                            if self.config.verbose:
+                                if exec_result.success:
+                                    print(f"Code block {i + 1} executed successfully")
+                                    if exec_result.output:
+                                        print(f"Output: {exec_result.output[:500]}")
+                                else:
+                                    print(f"Code block {i + 1} failed: {exec_result.error[:500]}")
+                        
+                        # Build execution feedback for LLM
+                        feedback_parts = ["Code execution results:"]
+                        for i, result in enumerate(execution_results):
+                            if result.success:
+                                feedback_parts.append(f"\nBlock {i + 1}: SUCCESS")
+                                if result.output:
+                                    feedback_parts.append(f"Output:\n{result.output}")
+                            else:
+                                feedback_parts.append(f"\nBlock {i + 1}: FAILED")
+                                feedback_parts.append(f"Error:\n{result.error}")
+                        
+                        # Add execution feedback to messages
+                        execution_feedback = "\n".join(feedback_parts)
+                        messages.append({"role": "system", "content": execution_feedback})
+                        
+                        # If any execution failed, ask LLM to fix it
+                        if any(not r.success for r in execution_results):
+                            prompt = f"Some code blocks failed to execute. Please review the errors and provide corrected code:\n\n{execution_feedback}"
+                            continue
                 
                 # Check if task is complete
                 if self._is_task_complete(response.content):

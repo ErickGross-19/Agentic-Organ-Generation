@@ -45,11 +45,11 @@ def design_from_spec(spec: DesignSpec) -> VascularNetwork:
         for inlet_spec in tree.inlets:
             direction = tuple(-np.array(inlet_spec.position) / (np.linalg.norm(inlet_spec.position) + 1e-9))
             add_inlet(network, position=Point3D(*inlet_spec.position), 
-                     radius=inlet_spec.radius, vessel_type=inlet_spec.vessel_type, direction=Point3D(*direction))
+                     radius=inlet_spec.radius, vessel_type=inlet_spec.vessel_type, direction=direction)
         for outlet_spec in tree.outlets:
             direction = tuple(np.array(outlet_spec.position) / (np.linalg.norm(outlet_spec.position) + 1e-9))
             add_outlet(network, position=Point3D(*outlet_spec.position),
-                      radius=outlet_spec.radius, vessel_type=outlet_spec.vessel_type, direction=Point3D(*direction))
+                      radius=outlet_spec.radius, vessel_type=outlet_spec.vessel_type, direction=direction)
         
         tissue_points = domain.sample_points(n_points=1000, seed=spec.seed)
         col_spec = tree.colonization
@@ -78,11 +78,11 @@ def design_from_spec(spec: DesignSpec) -> VascularNetwork:
         for inlet_spec in dual.arterial_inlets:
             direction = tuple(-np.array(inlet_spec.position) / (np.linalg.norm(inlet_spec.position) + 1e-9))
             add_inlet(network, position=Point3D(*inlet_spec.position),
-                     radius=inlet_spec.radius, vessel_type="arterial", direction=Point3D(*direction))
+                     radius=inlet_spec.radius, vessel_type="arterial", direction=direction)
         for outlet_spec in dual.venous_outlets:
             direction = tuple(np.array(outlet_spec.position) / (np.linalg.norm(outlet_spec.position) + 1e-9))
             add_outlet(network, position=Point3D(*outlet_spec.position),
-                      radius=outlet_spec.radius, vessel_type="venous", direction=Point3D(*direction))
+                      radius=outlet_spec.radius, vessel_type="venous", direction=direction)
         
         tissue_points = domain.sample_points(n_points=1000, seed=spec.seed)
         

@@ -123,7 +123,7 @@ def from_networkx_graph(
         if nx_id in nx_to_vascular:
             vascular_id = nx_to_vascular[nx_id]
         else:
-            vascular_id = network.id_gen.next_node_id()
+            vascular_id = network.id_gen.next_id()
             nx_to_vascular[nx_id] = vascular_id
         
         coord = node_data.get('coord', [0, 0, 0])
@@ -152,7 +152,7 @@ def from_networkx_graph(
         radius = edge_data.get('radius', 0.001)
         
         segment = VesselSegment(
-            id=network.id_gen.next_segment_id(),
+            id=network.id_gen.next_id(),
             start_node_id=u_vascular,
             end_node_id=v_vascular,
             geometry=TubeGeometry(
