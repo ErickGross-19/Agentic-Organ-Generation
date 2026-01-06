@@ -1,10 +1,11 @@
 """
 Tests for the unit conversion system.
 
-These tests validate the dimensionless internal units system where:
-- All internal calculations use dimensionless values (1 is 1)
-- Scaling to user-specified units happens only at export/output time
-- When output_units="mm", 1 internal unit = 1 mm in output files
+These tests validate the unit conversion system where:
+- Internal calculations use meter-scale values (legacy convention)
+- For example, EllipsoidSpec defaults to semi_axes=(0.05, 0.045, 0.035) = 50mm, 45mm, 35mm
+- Scaling to user-specified units happens at export/output time
+- When output_units="mm", internal value 0.05 becomes 50mm in output files
 """
 
 import pytest
@@ -107,56 +108,77 @@ class TestUnitContext:
     """Tests for the UnitContext class."""
     
     def test_unit_context_default(self):
-        """Test default UnitContext (mm output)."""
+        """Test default UnitContext (mm output).
+        
+        Internal units are meters, so scale_factor converts m -> mm = 1000.
+        """
         from generation.utils.units import UnitContext
         
         ctx = UnitContext()
         assert ctx.output_units == "mm"
-        assert ctx.scale_factor == pytest.approx(1.0)
+        assert ctx.scale_factor == pytest.approx(1000.0)
     
     def test_unit_context_mm(self):
-        """Test UnitContext with mm output."""
+        """Test UnitContext with mm output.
+        
+        Internal units are meters, so scale_factor converts m -> mm = 1000.
+        """
         from generation.utils.units import UnitContext
         
         ctx = UnitContext(output_units="mm")
-        assert ctx.scale_factor == pytest.approx(1.0)
+        assert ctx.scale_factor == pytest.approx(1000.0)
     
     def test_unit_context_m(self):
-        """Test UnitContext with m output."""
+        """Test UnitContext with m output.
+        
+        Internal units are meters, so scale_factor converts m -> m = 1.0.
+        """
         from generation.utils.units import UnitContext
         
         ctx = UnitContext(output_units="m")
-        assert ctx.scale_factor == pytest.approx(0.001)
+        assert ctx.scale_factor == pytest.approx(1.0)
     
     def test_unit_context_cm(self):
-        """Test UnitContext with cm output."""
+        """Test UnitContext with cm output.
+        
+        Internal units are meters, so scale_factor converts m -> cm = 100.
+        """
         from generation.utils.units import UnitContext
         
         ctx = UnitContext(output_units="cm")
-        assert ctx.scale_factor == pytest.approx(0.1)
+        assert ctx.scale_factor == pytest.approx(100.0)
     
     def test_unit_context_um(self):
-        """Test UnitContext with um output."""
+        """Test UnitContext with um output.
+        
+        Internal units are meters, so scale_factor converts m -> um = 1e6.
+        """
         from generation.utils.units import UnitContext
         
         ctx = UnitContext(output_units="um")
-        assert ctx.scale_factor == pytest.approx(1000.0)
+        assert ctx.scale_factor == pytest.approx(1e6)
     
     def test_unit_context_to_output(self):
-        """Test converting internal value to output units."""
+        """Test converting internal value to output units.
+        
+        Internal value 0.05 (meters) with output_units="mm" becomes 50mm.
+        """
         from generation.utils.units import UnitContext
         
-        ctx = UnitContext(output_units="m")
-        result = ctx.to_output(50.0)
-        assert result == pytest.approx(0.05)
+        ctx = UnitContext(output_units="mm")
+        result = ctx.to_output(0.05)
+        assert result == pytest.approx(50.0)
     
     def test_unit_context_from_output(self):
-        """Test converting output value to internal units."""
+        """Test converting output value to internal units.
+        
+        Output value 50mm with output_units="mm" becomes 0.05 (meters) internally.
+        """
         from generation.utils.units import UnitContext
         
-        ctx = UnitContext(output_units="m")
-        result = ctx.from_output(0.05)
-        assert result == pytest.approx(50.0)
+        ctx = UnitContext(output_units="mm")
+        result = ctx.from_output(50.0)
+        assert result == pytest.approx(0.05)
     
     def test_unit_context_roundtrip(self):
         """Test that to_output and from_output are inverses."""
@@ -169,22 +191,28 @@ class TestUnitContext:
         assert back == pytest.approx(original)
     
     def test_unit_context_to_dict(self):
-        """Test serialization to dict."""
+        """Test serialization to dict.
+        
+        Internal units are meters, so cm output has scale_factor = 100.
+        """
         from generation.utils.units import UnitContext
         
         ctx = UnitContext(output_units="cm")
         d = ctx.to_dict()
         assert d["output_units"] == "cm"
-        assert d["scale_factor"] == pytest.approx(0.1)
+        assert d["scale_factor"] == pytest.approx(100.0)
     
     def test_unit_context_from_dict(self):
-        """Test deserialization from dict."""
+        """Test deserialization from dict.
+        
+        Internal units are meters, so um output has scale_factor = 1e6.
+        """
         from generation.utils.units import UnitContext
         
         d = {"output_units": "um"}
         ctx = UnitContext.from_dict(d)
         assert ctx.output_units == "um"
-        assert ctx.scale_factor == pytest.approx(1000.0)
+        assert ctx.scale_factor == pytest.approx(1e6)
     
     def test_unit_context_get_metadata(self):
         """Test getting metadata dict."""
@@ -204,11 +232,15 @@ class TestUnitContext:
             UnitContext(output_units="invalid")
     
     def test_unit_context_array_conversion(self):
-        """Test conversion with numpy arrays."""
+        """Test conversion with numpy arrays.
+        
+        Internal values in meters (0.01, 0.02, 0.03) with output_units="cm"
+        become (1.0, 2.0, 3.0) cm (scale_factor = 100).
+        """
         from generation.utils.units import UnitContext
         
         ctx = UnitContext(output_units="cm")
-        values = np.array([10.0, 20.0, 30.0])
+        values = np.array([0.01, 0.02, 0.03])
         result = ctx.to_output(values)
         expected = np.array([1.0, 2.0, 3.0])
         np.testing.assert_array_almost_equal(result, expected)
@@ -250,13 +282,17 @@ class TestSameGeometryDifferentUnits:
     """Tests to verify same physical design produces same internal geometry."""
     
     def test_same_internal_geometry_mm_vs_m(self):
-        """Test that same physical design in mm vs m produces same internal geometry."""
+        """Test that same internal value produces correct output in different units.
+        
+        Internal value 0.05 (meters) = 50mm = 5cm = 0.05m
+        The physical size is preserved across unit choices.
+        """
         from generation.utils.units import UnitContext
         
         ctx_mm = UnitContext(output_units="mm")
         ctx_m = UnitContext(output_units="m")
         
-        internal_value = 50.0
+        internal_value = 0.05
         
         output_mm = ctx_mm.to_output(internal_value)
         output_m = ctx_m.to_output(internal_value)

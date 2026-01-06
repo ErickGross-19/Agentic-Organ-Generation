@@ -5,7 +5,10 @@ The library uses DIMENSIONLESS internal units where 1 internal unit = 1 output u
 All internal calculations use dimensionless values (1 is 1), and scaling to user-specified
 units (mm, cm, m, etc.) happens only at export/output time.
 
-When a user specifies output_units="mm", then 1 internal unit = 1 mm in the output STL file.
+**IMPORTANT**: The current codebase uses meter-scale values internally (e.g., 
+EllipsoidSpec defaults to semi_axes=(0.05, 0.045, 0.035) which is 50mm, 45mm, 35mm).
+When output_units="mm", internal value 0.05 becomes 50mm in the output STL file.
+
 This ensures consistent behavior regardless of the unit system chosen.
 """
 
@@ -13,8 +16,11 @@ from dataclasses import dataclass
 from typing import Union, Literal
 import numpy as np
 
-# Internal units are dimensionless - 1 is 1
-# The CANONICAL_UNIT specifies what 1 internal unit represents in the output
+# Internal units are meter-scale (legacy convention from the codebase)
+# The INTERNAL_UNIT specifies what internal coordinates represent
+INTERNAL_UNIT = "m"
+
+# CANONICAL_UNIT is kept for backward compatibility but INTERNAL_UNIT is the truth
 CANONICAL_UNIT = "mm"
 
 # Supported unit types
@@ -204,11 +210,12 @@ class UnitContext:
     """
     Context for unit handling in the library.
     
-    The library uses DIMENSIONLESS internal units where 1 internal unit = 1 output unit.
-    All internal calculations use dimensionless values (1 is 1), and scaling to 
-    user-specified units happens only at export/output time.
+    The library uses meter-scale values internally (legacy convention).
+    For example, EllipsoidSpec defaults to semi_axes=(0.05, 0.045, 0.035) 
+    which represents 50mm, 45mm, 35mm in meters.
     
-    When output_units="mm", then 1 internal unit = 1 mm in the output STL file.
+    At export time, internal values are converted to the user-specified output_units.
+    When output_units="mm", internal value 0.05 becomes 50mm in the output STL file.
     
     Attributes
     ----------
@@ -219,13 +226,13 @@ class UnitContext:
     Examples
     --------
     >>> ctx = UnitContext(output_units="mm")
-    >>> # Internal value of 50 (dimensionless) becomes 50mm in output
-    >>> ctx.to_output(50.0)
+    >>> # Internal value of 0.05 (meters) becomes 50mm in output
+    >>> ctx.to_output(0.05)
     50.0
     >>> 
     >>> ctx = UnitContext(output_units="m")
-    >>> # Internal value of 50 (dimensionless) becomes 0.05m in output
-    >>> ctx.to_output(50.0)
+    >>> # Internal value of 0.05 (meters) stays 0.05m in output
+    >>> ctx.to_output(0.05)
     0.05
     """
     
@@ -244,20 +251,20 @@ class UnitContext:
         """
         Get scale factor for converting internal units to output units.
         
-        Internal units are dimensionless where 1 = 1mm equivalent.
-        This factor converts to the requested output units.
+        Internal units are meter-scale (legacy convention from the codebase).
+        This factor converts from meters to the requested output units.
         
         Returns
         -------
         float
             Scale factor to multiply internal values by for output.
-            - output_units="mm": 1.0 (no scaling)
-            - output_units="m": 0.001 (divide by 1000)
-            - output_units="cm": 0.1 (divide by 10)
-            - output_units="um": 1000.0 (multiply by 1000)
+            - output_units="mm": 1000.0 (multiply by 1000)
+            - output_units="m": 1.0 (no scaling)
+            - output_units="cm": 100.0 (multiply by 100)
+            - output_units="um": 1000000.0 (multiply by 1e6)
         """
-        # Internal units are mm-equivalent, so convert from mm to output
-        return convert_length(1.0, "mm", self.output_units)
+        # Internal units are meters, so convert from m to output
+        return convert_length(1.0, INTERNAL_UNIT, self.output_units)
     
     def to_output(self, value: Union[float, np.ndarray]) -> Union[float, np.ndarray]:
         """
@@ -342,7 +349,7 @@ class UnitContext:
         return {
             "units": self.output_units,
             "scale_factor_applied": self.scale_factor,
-            "internal_units": "dimensionless (1 = 1mm equivalent)",
+            "internal_units": f"meters (converted to {self.output_units} on export)",
         }
 
 
