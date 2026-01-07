@@ -33,13 +33,12 @@ Usage:
 """
 
 from dataclasses import dataclass, field, asdict
-from typing import Optional, List, Dict, Any, Tuple, Literal
+from typing import Optional, List, Dict, Any, Tuple
 from enum import Enum
 from pathlib import Path
 import json
 import time
 import os
-import shutil
 
 from .agent_runner import AgentRunner, TaskResult, TaskStatus
 
