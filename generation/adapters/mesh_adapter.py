@@ -285,7 +285,7 @@ def _create_frustum(
     vertices = np.vstack([vertices, [[0, 0, z_bottom]]])
     for i in range(sections):
         next_i = (i + 1) % sections
-        faces.append([bottom_center_idx, next_i, i])
+        faces.append([bottom_center_idx, i, next_i])
     
     top_center_idx = len(vertices)
     vertices = np.vstack([vertices, [[0, 0, z_top]]])
