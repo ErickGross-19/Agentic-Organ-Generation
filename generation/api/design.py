@@ -268,8 +268,6 @@ def _run_colonization_with_retry(
     OperationResult
         Result from the last colonization attempt
     """
-    from ..core.result import OperationResult
-    
     params_dict = base_params.copy()
     
     for attempt in range(max_retries + 1):
