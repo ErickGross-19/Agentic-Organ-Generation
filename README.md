@@ -109,7 +109,7 @@ result = runner.run_task(
 
 ### Single Agent Organ Generator V1 Workflow
 
-The library includes an interactive workflow that guides users through organ structure generation:
+The library includes an interactive workflow that guides users through organ structure generation with an **adaptive rule engine** for requirements capture:
 
 ```python
 from automation.workflow import run_single_agent_workflow
@@ -122,13 +122,26 @@ context = run_single_agent_workflow(
 )
 
 # The workflow will:
-# 1. Ask for project name and output units
-# 2. Ask for structure description
-# 3. Generate the structure using the library
-# 4. Show visualization and generated files
-# 5. Ask if satisfied (if no, ask for clarification and regenerate)
-# 6. Output final embedded structure, STL mesh, and generation code
+# 1. Ask for project name and output directory
+# 2. Plan objects (count, names, variants)
+# 3. Establish coordinate conventions
+# 4. Capture requirements adaptively (rule engine asks only what's needed)
+# 5. Compile requirements to design spec
+# 6. Generate the structure using the library
+# 7. Analyze and validate the structure
+# 8. Allow iteration on design
+# 9. Embed and export final artifacts
 ```
+
+#### Rule Engine Features
+
+The workflow uses a rule engine that adaptively determines what questions to ask:
+
+- **Family A (Completeness)**: Checks for missing required fields
+- **Family B (Ambiguity)**: Detects unclear language ("left/right", "dense/thin")
+- **Family C (Conflict)**: Identifies feasibility issues before generation
+
+The attempt strategy is: **Infer from text → Propose defaults → Ask targeted questions**
 
 ### Command-Line Interface
 
