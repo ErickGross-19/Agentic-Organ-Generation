@@ -1,106 +1,112 @@
-# Automation Scripts (Part C)
+# Automation Module
 
-The Automation module provides scripts for LLM API calls and agent behavior. It enables programmatic interaction with LLM APIs (OpenAI, Anthropic, etc.) to generate and validate organ structures using natural language instructions.
+This module provides the LLM integration layer for AI-driven organ structure generation and validation. It enables natural language interaction with the generation and validation libraries through a unified interface supporting multiple LLM providers.
 
 ## Overview
 
-The automation module consists of four main components:
+The automation module comprises four integrated components:
 
-1. **LLM Client**: A unified client for interacting with various LLM APIs
-2. **Agent Runner**: An orchestrator for running generation and validation tasks
-3. **Task Templates**: Pre-built prompts for common operations
-4. **Single Agent Organ Generator V1**: An interactive workflow for guided organ structure generation
+| Component | Purpose |
+|-----------|---------|
+| **LLM Client** | Unified interface for multiple LLM providers (OpenAI, Anthropic, etc.) |
+| **Agent Runner** | Task orchestration with iteration control and artifact management |
+| **Task Templates** | Pre-built prompts for generation, validation, and iteration workflows |
+| **Single Agent Workflow** | Interactive, guided workflow for complete organ structure generation |
 
-## What This Actually Does Today
+## Execution Modes
 
-**Important:** Understanding the current execution modes is critical for using this module effectively.
+Understanding the available execution modes is essential for effective use of this module.
 
-### Execution Modes
+### Available Modes
 
-| Mode | Description | Files Created | Use Case |
-|------|-------------|---------------|----------|
-| **Prompt-only** (default) | LLM returns text responses, no code execution | None | Planning, prototyping, spec generation |
-| **Execution-enabled** | LLM code runs in sandbox with restrictions | Only in allowed directories | Testing with controlled output |
-| **Spec-only** (recommended) | LLM produces structured spec → Python runs generation locally | Full artifacts | Production workflows |
+| Mode | Description | Artifacts Created | Recommended Use Case |
+|------|-------------|-------------------|---------------------|
+| **Prompt-only** (default) | LLM returns text responses without code execution | None | Planning, prototyping, specification generation |
+| **Execution-enabled** | LLM-generated code runs in a sandboxed environment | Only in allowed directories | Testing with controlled output |
+| **Spec-only** (recommended) | LLM produces structured specification; Python executes generation locally | Full artifact set | Production workflows |
 
-### Current Limitations
+### Important Considerations
 
-1. **Default mode produces text, not files**: `AgentRunner` has `auto_execute_code=False` by default. The LLM will describe what it would do, but won't actually create files.
+**Default Behavior**: The `AgentRunner` has `auto_execute_code=False` by default. In this mode, the LLM describes intended actions but does not create files.
 
-2. **Sandbox restrictions**: Even with `auto_execute_code=True`, the `CodeExecutor` restricts file operations:
-   - Writes only allowed in configured `allowed_output_dirs`
-   - Blocked patterns: `exec()`, `eval()`, `__import__()`, `subprocess`, etc.
-   - Timeout enforcement (default 30 seconds)
+**Sandbox Restrictions**: When execution is enabled, the `CodeExecutor` enforces security restrictions:
+- File writes are permitted only in configured `allowed_output_dirs`
+- Blocked patterns include `exec()`, `eval()`, `__import__()`, and `subprocess`
+- Execution timeout is enforced (default: 30 seconds)
 
-3. **Artifact extraction is regex-based**: When the LLM mentions file paths like `*.stl`, these are extracted from text but may not exist.
+**Artifact Extraction**: File paths mentioned by the LLM (e.g., `*.stl`) are extracted via pattern matching but may not correspond to existing files.
 
-### Enabling Execution with Output Directories
+### Enabling Code Execution
+
+To enable code execution with controlled output directories:
 
 ```python
 from automation.agent_runner import AgentRunner, AgentConfig, CodeExecutor
 
-# Configure executor with allowed output directories
+# Configure the agent with execution enabled
 config = AgentConfig(
     output_dir="./output",
-    auto_execute_code=True,  # Enable execution
+    auto_execute_code=True,
 )
 
 runner = AgentRunner(client=client, config=config)
 
-# The CodeExecutor will allow writes only to ./output
+# Restrict file writes to the output directory
 runner.code_executor.allowed_output_dirs = ["./output"]
 ```
 
-### Recommended Approach: Spec-Only Mode
+### Recommended Approach: Specification-Based Generation
 
-For production use, we recommend having the LLM produce a structured specification, then running generation locally:
+For production workflows, we recommend using the LLM to produce a structured specification, then executing generation locally:
 
 ```python
 from automation import SingleAgentOrganGeneratorV1
 from generation import design_from_spec
 
-# Use workflow to capture requirements
+# Use the workflow to capture requirements
 workflow = SingleAgentOrganGeneratorV1(provider="openai")
 workflow.run()
 
-# Get the compiled spec
+# Extract the compiled specification
 spec = workflow.context.get_current_object().spec
 
-# Run generation locally (not via LLM)
+# Execute generation locally
 network = design_from_spec(spec)
 ```
 
-## Directory Structure
+This approach provides the benefits of LLM-assisted specification while maintaining deterministic, reproducible generation.
+
+## Module Structure
 
 ```
 automation/
-├── __init__.py              # Main entry point
-├── llm_client.py            # LLM API client
-├── agent_runner.py          # Agent orchestration
-├── workflow.py              # Single Agent Organ Generator V1 workflow
+├── __init__.py              # Public API exports
+├── llm_client.py            # Multi-provider LLM client
+├── agent_runner.py          # Task orchestration and execution
+├── workflow.py              # Interactive workflow implementation
 ├── cli.py                   # Command-line interface
-└── task_templates/          # Pre-built task prompts
+└── task_templates/          # Structured prompt templates
     ├── __init__.py
-    ├── generate_structure.py   # Generation prompts
-    ├── validate_structure.py   # Validation prompts
-    └── iterate_design.py       # Iteration prompts
+    ├── generate_structure.py   # Generation task prompts
+    ├── validate_structure.py   # Validation task prompts
+    └── iterate_design.py       # Iteration task prompts
 ```
 
 ## Quick Start
 
-### Basic Usage
+### Programmatic Usage
 
 ```python
 from automation import AgentRunner, LLMClient
 from automation.task_templates import generate_structure_prompt
 
-# Initialize client
+# Initialize the LLM client
 client = LLMClient(provider="openai", api_key="sk-...")
 
-# Create agent runner
+# Create the agent runner
 runner = AgentRunner(client=client, output_dir="./output")
 
-# Run a generation task
+# Execute a generation task
 result = runner.run_task(
     task=generate_structure_prompt(
         organ_type="liver",
@@ -112,38 +118,40 @@ print(f"Status: {result.status}")
 print(f"Artifacts: {result.artifacts}")
 ```
 
-### Using the CLI
+### Command-Line Usage
 
 ```bash
-# Generate a liver structure
+# Generate a liver vascular structure
 python -m automation.cli generate --organ liver --segments 500 --output ./output
 
-# Validate a structure
+# Validate an existing structure
 python -m automation.cli validate --input structure.stl --stage both
 
-# Iteratively improve a design
+# Iteratively refine a design
 python -m automation.cli iterate --input design.stl --max-iterations 5
 
-# Start interactive session
+# Launch an interactive session
 python -m automation.cli interactive
 ```
 
 ## LLM Client
 
+The LLM client provides a unified interface for interacting with multiple language model providers.
+
 ### Supported Providers
 
-| Provider | Model Examples | Environment Variable |
-|----------|---------------|---------------------|
-| OpenAI | gpt-4, gpt-3.5-turbo, gpt-5 | `OPENAI_API_KEY` |
-| Anthropic | claude-3-opus, claude-3-sonnet | `ANTHROPIC_API_KEY` |
-| xAI/Grok | grok-beta, grok-2 | `XAI_API_KEY` |
-| Google/Gemini | gemini-pro, gemini-1.5-pro | `GOOGLE_API_KEY` or `GEMINI_API_KEY` |
-| Mistral | mistral-large, mistral-medium | `MISTRAL_API_KEY` |
-| Groq | llama-3.1-70b, mixtral-8x7b | `GROQ_API_KEY` |
-| Devin | devin (session-based) | `DEVIN_API_KEY` |
-| Local | Any OpenAI-compatible API | N/A (use `api_base`) |
+| Provider | Available Models | Environment Variable |
+|----------|-----------------|---------------------|
+| **OpenAI** | gpt-4, gpt-3.5-turbo, gpt-5 | `OPENAI_API_KEY` |
+| **Anthropic** | claude-3-opus, claude-3-sonnet | `ANTHROPIC_API_KEY` |
+| **xAI/Grok** | grok-beta, grok-2 | `XAI_API_KEY` |
+| **Google/Gemini** | gemini-pro, gemini-1.5-pro | `GOOGLE_API_KEY` or `GEMINI_API_KEY` |
+| **Mistral** | mistral-large, mistral-medium | `MISTRAL_API_KEY` |
+| **Groq** | llama-3.1-70b, mixtral-8x7b | `GROQ_API_KEY` |
+| **Devin** | devin (session-based) | `DEVIN_API_KEY` |
+| **Local** | Any OpenAI-compatible API | N/A (use `api_base`) |
 
-### Configuration
+### Client Configuration
 
 ```python
 from automation.llm_client import LLMClient, LLMConfig
@@ -176,26 +184,26 @@ client = LLMClient(
 )
 ```
 
-### Chat Interface
+### Conversation Interface
 
 ```python
-# Single message
+# Single message interaction
 response = client.chat("Generate a vascular network design spec")
 print(response.content)
 print(f"Tokens used: {response.usage['total_tokens']}")
 
-# Conversation mode
+# Multi-turn conversation
 response1 = client.chat("Create a liver network", continue_conversation=True)
 response2 = client.chat("Now add a venous tree", continue_conversation=True)
 
-# Clear history
-client.clear_history()
-
-# Get conversation history
-history = client.get_history()
+# Conversation management
+client.clear_history()           # Reset conversation state
+history = client.get_history()   # Retrieve conversation history
 ```
 
 ## Agent Runner
+
+The Agent Runner orchestrates task execution, managing iterations, artifacts, and conversation state.
 
 ### Configuration
 
@@ -206,7 +214,7 @@ config = AgentConfig(
     repo_path="/path/to/Agentic-Organ-Generation",
     output_dir="./output",
     max_iterations=10,
-    auto_execute_code=False,  # Safety: don't auto-execute generated code
+    auto_execute_code=False,  # Disabled by default for safety
     verbose=True,
     save_conversation=True,
 )
@@ -214,7 +222,7 @@ config = AgentConfig(
 runner = AgentRunner(client=client, config=config)
 ```
 
-### Running Tasks
+### Task Execution
 
 ```python
 # Run a task
@@ -245,19 +253,20 @@ print(f"Total tokens: {result.total_tokens}")
 ### Interactive Mode
 
 ```python
-# Start interactive session
+# Launch an interactive session
 runner.run_interactive(initial_task="Help me design a kidney network")
 
-# Or from CLI
+# Alternatively, use the CLI
 # python -m automation.cli interactive --task "Design a kidney network"
 ```
 
 ### Convenience Function
 
+The `create_agent` function provides a simplified setup for common use cases:
+
 ```python
 from automation.agent_runner import create_agent
 
-# Quick setup
 agent = create_agent(
     provider="openai",
     model="gpt-4",
@@ -269,6 +278,8 @@ result = agent.run_task("Generate a liver network")
 ```
 
 ## Task Templates
+
+Task templates provide structured prompts for common operations, ensuring consistent and effective LLM interactions.
 
 ### Generation Templates
 
@@ -290,7 +301,7 @@ prompt = generate_structure_prompt(
     output_format="domain_with_void",
 )
 
-# Liver-specific generation
+# Liver-specific generation with dual vascular trees
 prompt = generate_liver_prompt(
     arterial_segments=500,
     venous_segments=500,
@@ -298,7 +309,7 @@ prompt = generate_liver_prompt(
     seed=42,
 )
 
-# Custom organ with specific domain
+# Custom organ with explicit domain and port configuration
 prompt = generate_custom_organ_prompt(
     organ_name="pancreas",
     domain_shape="ellipsoid",
@@ -456,97 +467,94 @@ See the `examples/` directory for working examples:
 
 ## Single Agent Organ Generator V1 Workflow
 
-The Single Agent Organ Generator V1 is an interactive workflow that guides users through the complete organ structure generation process.
+The Single Agent Organ Generator V1 provides an interactive, guided workflow for complete organ structure generation. It combines LLM-assisted requirements capture with deterministic generation and validation.
 
 ### Workflow States
 
-The workflow progresses through the following states:
+The workflow progresses through a defined sequence of states:
 
 | State | Description |
 |-------|-------------|
-| `PROJECT_INIT` | Ask for project name and output directory |
-| `OBJECT_PLANNING` | Plan objects (count, names, variants) |
-| `FRAME_OF_REFERENCE` | Establish coordinate conventions |
-| `REQUIREMENTS_CAPTURE` | Adaptive rule-based requirements gathering |
-| `SPEC_COMPILATION` | Compile requirements to design spec |
-| `GENERATION` | Generate structure using the library |
-| `ANALYSIS_VALIDATION` | Analyze and validate the structure |
-| `ITERATION` | Review and iterate on design |
-| `FINALIZATION` | Embed and export final artifacts |
-| `COMPLETE` | Workflow finished |
+| `PROJECT_INIT` | Configure project name and output directory |
+| `OBJECT_PLANNING` | Define object count, names, and variant relationships |
+| `FRAME_OF_REFERENCE` | Establish coordinate conventions and spatial reference |
+| `REQUIREMENTS_CAPTURE` | Adaptive, rule-based requirements gathering |
+| `SPEC_COMPILATION` | Convert requirements to executable design specification |
+| `GENERATION` | Execute vascular network generation algorithm |
+| `ANALYSIS_VALIDATION` | Perform analysis and validation checks |
+| `ITERATION` | Review results and refine design parameters |
+| `FINALIZATION` | Embed network and export production artifacts |
+| `COMPLETE` | Workflow completed successfully |
 
-## Rule Engine (Adaptive Requirements Capture)
+## Rule Engine
 
-The workflow uses a **rule engine** instead of fixed question groups to adaptively determine what questions to ask based on what's missing, what's ambiguous, and what would cause expensive rework if wrong.
+The workflow employs an adaptive rule engine that intelligently determines which questions to ask based on missing information, ambiguous language, and potential feasibility issues.
 
 ### Core Concept
 
-Instead of asking all questions in sequence (Groups A-G), the rule engine runs an adaptive loop:
+Rather than presenting a fixed sequence of questions, the rule engine operates as an adaptive loop:
 
-1. **Parse user intent** → extract explicit values and detect ambiguities
-2. **Run validators** → check for missing fields, ambiguities, and conflicts
-3. **Generate minimal questions** → only ask what's needed (max 4 per turn)
-4. **Apply answers** → update requirements
-5. **Repeat** until generation-ready
+1. **Parse user intent**: Extract explicit values and identify ambiguities
+2. **Evaluate rules**: Check for missing fields, ambiguous language, and conflicts
+3. **Plan questions**: Generate the minimal set of questions needed (maximum 4 per turn)
+4. **Apply responses**: Update requirements based on user answers
+5. **Iterate**: Repeat until the specification is generation-ready
 
-### Three Rule Families
+### Rule Families
 
-#### Family A — Completeness Rules
+The rule engine implements three families of rules, each addressing a different category of specification issues.
 
-Ensure required fields exist before proceeding.
+#### Family A: Completeness Rules
 
-| Rule | Description |
-|------|-------------|
-| A1: Required-field gate | Check for missing required fields (domain, inlets, min_radius, min_clearance) |
-| A2: Generation-ready gate | Verify all fields needed for generation are populated |
-| A3: Finalization-ready gate | Verify embedding/export fields are ready |
+These rules ensure all required fields are populated before proceeding to generation.
 
-#### Family B — Ambiguity Rules
+| Rule | Purpose |
+|------|---------|
+| **A1: Required-field gate** | Verify presence of required fields (domain, inlets, min_radius, min_clearance) |
+| **A2: Generation-ready gate** | Confirm all fields necessary for generation are populated |
+| **A3: Finalization-ready gate** | Verify embedding and export parameters are defined |
 
-Trigger only when user language is ambiguous.
+#### Family B: Ambiguity Rules
 
-| Rule | Description |
-|------|-------------|
-| B1: Spatial-language | Detect "left/right/top/bottom" → require coordinate convention |
-| B2: Vague quantifiers | Detect "dense/thin/big/small" → require numeric mapping |
-| B3: Implicit I/O | Detect "perfusion/flow" → require I/O geometry |
-| B4: Symmetry | Detect "symmetric" → require axis specification |
+These rules trigger when user language contains ambiguous terms that require clarification.
 
-#### Family C — Conflict/Feasibility Rules
+| Rule | Purpose |
+|------|---------|
+| **B1: Spatial language** | Detect relative terms ("left/right/top") and require coordinate convention |
+| **B2: Vague quantifiers** | Detect qualitative terms ("dense/thin/big") and require numeric values |
+| **B3: Implicit I/O** | Detect flow-related terms and require explicit I/O geometry |
+| **B4: Symmetry** | Detect symmetry requirements and require axis specification |
 
-Prevent specs that cannot work or will cause issues.
+#### Family C: Conflict/Feasibility Rules
 
-| Rule | Description |
-|------|-------------|
-| C1: Printability | Check min_radius vs voxel_pitch compatibility |
-| C2: Clearance | Check clearance vs density feasibility |
-| C3: Complexity budget | Check terminals vs configured limits |
-| C4: I/O feasibility | Check inlet radius vs domain size |
+These rules identify specifications that would fail or produce impractical results.
 
-### Attempt Strategy
+| Rule | Purpose |
+|------|---------|
+| **C1: Printability** | Verify min_radius is compatible with voxel_pitch |
+| **C2: Clearance** | Verify clearance requirements are feasible given density targets |
+| **C3: Complexity budget** | Verify terminal count is within configured limits |
+| **C4: I/O feasibility** | Verify inlet/outlet dimensions are compatible with domain size |
 
-Every missing/ambiguous field is handled by a 3-tier approach:
+### Resolution Strategy
 
-1. **Attempt 1: Infer from user text** (high confidence only)
-   - Extract explicit values like "box 2x6x3 cm", "diameter 1mm", "2 inlets"
-   
-2. **Attempt 2: Propose concrete default** (mark as assumed)
-   - Domain → default 0.02×0.06×0.03 m box
-   - Min radius → 100 microns
-   - Min clearance → 200 microns
-   
-3. **Attempt 3: Ask targeted question** (only if needed)
-   - Questions ranked by rework cost (high → medium → low)
+The rule engine employs a three-tier approach to resolve missing or ambiguous fields:
 
-### Rework Cost Ranking
+| Tier | Approach | Example |
+|------|----------|---------|
+| **1. Inference** | Extract explicit values from user text (high confidence only) | "box 2x6x3 cm" → domain size, "diameter 1mm" → min_radius |
+| **2. Defaults** | Propose sensible defaults (marked as assumed) | Domain: 0.02×0.06×0.03 m, Min radius: 100 μm, Min clearance: 200 μm |
+| **3. Questions** | Ask targeted questions (ranked by rework cost) | High-cost fields first (coordinate frame, I/O placement) |
 
-Questions are prioritized by how expensive it would be to change later:
+### Question Prioritization
 
-| Priority | Fields |
-|----------|--------|
-| **High** | Coordinate frame, inlet/outlet placement, domain scale, min radius/clearance |
-| **Medium** | Target terminals/depth, segment length range |
-| **Low** | Aesthetic defaults (angles, tortuosity), export unit preference |
+Questions are prioritized based on the cost of changing the associated field later in the workflow:
+
+| Priority | Fields | Rationale |
+|----------|--------|-----------|
+| **High** | Coordinate frame, inlet/outlet placement, domain scale, min radius/clearance | Changes require complete regeneration |
+| **Medium** | Target terminals/depth, segment length range | Changes require partial regeneration |
+| **Low** | Aesthetic parameters (angles, tortuosity), export units | Changes can be applied post-generation |
 
 ### Using the Rule Engine
 
@@ -556,10 +564,10 @@ from automation import (
     run_rule_based_capture, ObjectRequirements
 )
 
-# Create requirements object
+# Initialize requirements object
 requirements = ObjectRequirements()
 
-# Run adaptive capture
+# Execute adaptive requirements capture
 updated_req, collected_answers = run_rule_based_capture(
     requirements=requirements,
     intent="I want a dense liver-like branching network with inlet/outlet on the same side",
@@ -567,11 +575,11 @@ updated_req, collected_answers = run_rule_based_capture(
     verbose=True
 )
 
-# The function will:
-# 1. Detect ambiguities ("dense", "same side")
-# 2. Propose defaults for missing fields
-# 3. Ask only the questions needed
-# 4. Return updated requirements
+# The function performs the following steps:
+# 1. Detects ambiguities in user intent ("dense", "same side")
+# 2. Proposes defaults for missing required fields
+# 3. Generates only the questions necessary to proceed
+# 4. Returns the updated requirements object
 ```
 
 ### Rule Engine Components
@@ -741,40 +749,42 @@ workflow.run()  # Resume from saved state
 
 ## Devin Integration
 
-Devin AI is now supported as an LLM provider. Unlike traditional chat-based LLMs, Devin uses a session-based API where tasks are executed asynchronously.
+Devin AI is supported as an LLM provider. Unlike traditional chat-based LLMs, Devin operates through a session-based API where tasks are executed asynchronously.
 
-### Using Devin
+### Configuration
 
 ```python
 from automation import LLMClient, create_agent
 
-# Using LLMClient directly
-client = LLMClient(provider="devin")  # Uses DEVIN_API_KEY env var
+# Direct client usage
+client = LLMClient(provider="devin")  # Uses DEVIN_API_KEY environment variable
 response = client.chat("Generate a liver vascular network with 500 segments")
 print(response.content)
 
-# Using create_agent convenience function
+# Using the convenience function
 agent = create_agent(provider="devin", output_dir="./output")
 result = agent.run_task("Generate a liver network")
 ```
 
-### CLI Usage
+### Command-Line Usage
 
 ```bash
-# Set your API key
+# Configure API key
 export DEVIN_API_KEY="your-api-key"
 
-# Run generation with Devin
+# Execute generation with Devin
 python -m automation.cli generate --organ liver --segments 500 --provider devin
 ```
 
-### How It Works
+### Implementation Details
 
-The Devin provider adapts the session-based Devin API to work within the standard LLMClient interface:
+The Devin provider adapts the session-based API to the standard LLMClient interface:
 
-1. **Session Creation**: When you call `chat()`, a new Devin session is created with your prompt
-2. **Polling**: The client polls the session status until completion (blocked/stopped)
-3. **Response Extraction**: Results are extracted from the session's structured output
-4. **Conversation Continuity**: Subsequent `chat()` calls with `continue_conversation=True` send messages to the existing session
+| Step | Description |
+|------|-------------|
+| **Session Creation** | A new Devin session is created when `chat()` is called |
+| **Status Polling** | The client polls session status until completion |
+| **Response Extraction** | Results are extracted from the session's structured output |
+| **Conversation Continuity** | Subsequent `chat()` calls with `continue_conversation=True` send messages to the existing session |
 
-Note: Devin sessions may take longer than traditional LLM calls since Devin executes actual code and tasks. The default timeout is 5 minutes.
+Note: Devin sessions may require more time than traditional LLM calls due to actual code execution. The default timeout is 5 minutes.
