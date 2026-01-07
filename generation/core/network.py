@@ -190,7 +190,7 @@ class VascularNetwork:
                 connected.append(seg_id)
         return connected
     
-    def get_spatial_index(self):
+    def get_spatial_index(self) -> "SpatialIndex":
         """Get or create spatial index."""
         if self._spatial_index is None:
             from ..spatial.grid_index import SpatialIndex
