@@ -13,7 +13,7 @@ generation/
 ├── __init__.py          # Main entry point with high-level exports
 ├── core/                # Core data structures
 │   ├── network.py       # VascularNetwork, Node, Segment classes
-│   ├── domain.py        # Domain representation
+│   ├── domain.py        # Runtime domain representation (EllipsoidDomain, BoxDomain)
 │   └── types.py         # Type definitions
 ├── ops/                 # Low-level operations
 │   ├── space_colonization.py  # Organic growth algorithm
@@ -26,7 +26,8 @@ generation/
 │   ├── design.py        # design_from_spec()
 │   └── experiment.py    # run_experiment()
 ├── specs/               # Design specifications
-│   ├── design_spec.py   # DesignSpec dataclass
+│   ├── design_spec.py   # DesignSpec, EllipsoidSpec, BoxSpec dataclasses
+│   ├── compile.py       # compile_domain() - converts specs to runtime domains
 │   └── tree_spec.py     # TreeSpec for individual trees
 ├── params/              # Parameter presets
 │   └── presets.py       # liver_arterial_dense, etc.
@@ -229,7 +230,81 @@ G = to_networkx(network)
 
 ## Unit System
 
-The library uses **meter-scale values internally** (legacy convention). For example, `EllipsoidSpec` defaults to `semi_axes=(0.05, 0.045, 0.035)` which represents 50mm, 45mm, 35mm in meters.
+The library uses a clear separation between **spec units**, **runtime units**, and **output units**:
+
+### Unit Conventions
+
+| Stage | Units | Description |
+|-------|-------|-------------|
+| **Spec units** | Meters | All values in spec classes (EllipsoidSpec, BoxSpec, InletSpec, etc.) |
+| **Runtime units** | Meters | Internal domain objects and geometric operations |
+| **Output units** | Configurable | STL/JSON exports (default: mm) |
+
+For example, `EllipsoidSpec(semi_axes=(0.05, 0.045, 0.035))` represents 50mm x 45mm x 35mm in meters.
+
+### Coordinate Frame
+
+The default coordinate frame is:
+- **Origin**: Domain center (0, 0, 0)
+- **X-axis**: Left-right (width)
+- **Y-axis**: Front-back (depth)
+- **Z-axis**: Bottom-top (height)
+
+For organ-specific coordinate frames (e.g., anatomical orientation), use the `transform` parameter in `compile_domain()`.
+
+### Domain Compilation with `compile_domain()`
+
+The `compile_domain()` function centralizes the conversion from user-facing spec classes to internal runtime domain objects:
+
+```python
+from generation.specs import EllipsoidSpec, BoxSpec, compile_domain
+
+# Create a spec (values in meters)
+ellipsoid_spec = EllipsoidSpec(center=(0, 0, 0), semi_axes=(0.05, 0.045, 0.035))
+
+# Compile to runtime domain
+domain = compile_domain(ellipsoid_spec)
+
+# The domain is now an EllipsoidDomain ready for use in generation
+print(domain.contains(Point3D(0, 0, 0)))  # True
+
+# Works with BoxSpec too
+box_spec = BoxSpec(center=(0, 0, 0), size=(0.10, 0.09, 0.07))
+box_domain = compile_domain(box_spec)
+```
+
+### Coordinate Transforms
+
+Apply coordinate transforms when compiling domains:
+
+```python
+from generation.specs import (
+    EllipsoidSpec, 
+    compile_domain,
+    make_translation_transform,
+    make_rotation_z_transform,
+)
+import numpy as np
+
+# Create a spec
+spec = EllipsoidSpec(center=(0, 0, 0), semi_axes=(0.05, 0.045, 0.035))
+
+# Apply a translation (shift center by 10mm, 20mm, 30mm)
+transform = make_translation_transform(0.01, 0.02, 0.03)
+domain = compile_domain(spec, transform=transform)
+
+# Apply a rotation (90 degrees around Z axis)
+rotation = make_rotation_z_transform(np.pi / 2)
+rotated_domain = compile_domain(spec, transform=rotation)
+```
+
+Available transform helpers:
+- `make_translation_transform(dx, dy, dz)` - Translation in meters
+- `make_rotation_x_transform(angle_rad)` - Rotation around X axis
+- `make_rotation_y_transform(angle_rad)` - Rotation around Y axis
+- `make_rotation_z_transform(angle_rad)` - Rotation around Z axis
+
+### Unit Conversion with `UnitContext`
 
 At export time, values are converted to user-specified output units using the `UnitContext` class:
 
