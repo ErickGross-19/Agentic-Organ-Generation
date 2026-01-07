@@ -765,6 +765,8 @@ def create_agent(
             model = "gpt-4"
         elif provider == "anthropic":
             model = "claude-3-opus-20240229"
+        elif provider == "devin":
+            model = "devin"  # Devin doesn't have model variants
         else:
             model = "default"
     

@@ -23,6 +23,7 @@ class LLMProvider(Enum):
     GEMINI = "gemini"  # Alias for Google
     MISTRAL = "mistral"  # Mistral AI models
     GROQ = "groq"  # Groq inference (OpenAI-compatible)
+    DEVIN = "devin"  # Devin AI via session-based API
 
 
 @dataclass
@@ -71,6 +72,8 @@ class LLMConfig:
                 self.api_key = os.environ.get("MISTRAL_API_KEY")
             elif provider == "groq":
                 self.api_key = os.environ.get("GROQ_API_KEY")
+            elif provider == "devin":
+                self.api_key = os.environ.get("DEVIN_API_KEY")
 
 
 @dataclass
@@ -142,6 +145,7 @@ class LLMClient:
         
         self.config = config
         self._conversation_history: List[Message] = []
+        self._devin_session_id: Optional[str] = None  # Track Devin session for conversation continuity
         
         # Initialize system prompt if provided
         if config.system_prompt:
@@ -230,6 +234,8 @@ class LLMClient:
             return self._call_mistral(messages, temperature, max_tokens)
         elif provider == "groq":
             return self._call_groq(messages, temperature, max_tokens)
+        elif provider == "devin":
+            return self._call_devin(messages, temperature, max_tokens)
         else:
             raise ValueError(f"Unsupported provider: {provider}")
     
@@ -559,9 +565,148 @@ class LLMClient:
             raw_response=response.model_dump() if hasattr(response, 'model_dump') else None,
         )
     
+    def _call_devin(
+        self,
+        messages: List[Message],
+        temperature: float,
+        max_tokens: int,
+    ) -> LLMResponse:
+        """
+        Call Devin API via session-based interface.
+        
+        Devin uses a session-based model rather than stateless chat completions.
+        This method creates a new session or sends a message to an existing session,
+        then polls for completion and returns the result.
+        
+        Parameters
+        ----------
+        messages : List[Message]
+            Messages to send (system prompt + user message)
+        temperature : float
+            Not used by Devin API (included for interface compatibility)
+        max_tokens : int
+            Not used by Devin API (included for interface compatibility)
+            
+        Returns
+        -------
+        LLMResponse
+            Response from Devin
+        """
+        try:
+            import requests
+        except ImportError:
+            raise ImportError("requests package not installed. Run: pip install requests")
+        
+        if self.config.api_key is None:
+            raise ValueError("Devin API key not provided. Set DEVIN_API_KEY or pass api_key.")
+        
+        base_url = self.config.api_base or "https://api.devin.ai/v1"
+        headers = {
+            "Authorization": f"Bearer {self.config.api_key}",
+            "Content-Type": "application/json",
+        }
+        
+        # Build the prompt from messages
+        prompt_parts = []
+        for m in messages:
+            if m.role == "system":
+                prompt_parts.append(f"[System Instructions]\n{m.content}\n")
+            elif m.role == "user":
+                prompt_parts.append(m.content)
+            elif m.role == "assistant":
+                prompt_parts.append(f"[Previous Response]\n{m.content}\n")
+        
+        prompt = "\n".join(prompt_parts)
+        
+        # Decide whether to create a new session or send message to existing one
+        if self._devin_session_id is None:
+            # Create a new session
+            response = requests.post(
+                f"{base_url}/sessions",
+                headers=headers,
+                json={
+                    "prompt": prompt,
+                    "idempotent": False,
+                },
+            )
+            
+            if response.status_code != 200:
+                raise ValueError(f"Devin API error creating session: {response.status_code} - {response.text}")
+            
+            session_data = response.json()
+            self._devin_session_id = session_data.get("session_id")
+            
+            if not self._devin_session_id:
+                raise ValueError(f"Devin API did not return session_id: {session_data}")
+        else:
+            # Send message to existing session
+            response = requests.post(
+                f"{base_url}/sessions/{self._devin_session_id}/message",
+                headers=headers,
+                json={"message": prompt},
+            )
+            
+            if response.status_code != 200:
+                # Session may have expired, try creating a new one
+                self._devin_session_id = None
+                return self._call_devin(messages, temperature, max_tokens)
+        
+        # Poll for completion
+        import time
+        max_poll_time = 300  # 5 minutes max
+        poll_interval = 2  # Start with 2 seconds
+        max_poll_interval = 30  # Max 30 seconds between polls
+        elapsed = 0
+        
+        while elapsed < max_poll_time:
+            status_response = requests.get(
+                f"{base_url}/sessions/{self._devin_session_id}",
+                headers=headers,
+            )
+            
+            if status_response.status_code != 200:
+                raise ValueError(f"Devin API error polling session: {status_response.status_code} - {status_response.text}")
+            
+            status_data = status_response.json()
+            status_enum = status_data.get("status_enum", "")
+            
+            if status_enum in ("blocked", "stopped"):
+                # Session is complete, extract response
+                structured_output = status_data.get("structured_output", {})
+                
+                # Try to get response content from various possible fields
+                content = (
+                    structured_output.get("response") or
+                    structured_output.get("output") or
+                    structured_output.get("result") or
+                    status_data.get("last_message", {}).get("content") or
+                    str(structured_output) if structured_output else "Task completed."
+                )
+                
+                return LLMResponse(
+                    content=content,
+                    model="devin",
+                    usage={
+                        "prompt_tokens": 0,  # Devin doesn't report token usage
+                        "completion_tokens": 0,
+                        "total_tokens": 0,
+                    },
+                    finish_reason="stop" if status_enum == "stopped" else "blocked",
+                    raw_response=status_data,
+                )
+            
+            # Wait before next poll with exponential backoff
+            time.sleep(poll_interval)
+            elapsed += poll_interval
+            poll_interval = min(poll_interval * 1.5, max_poll_interval)
+        
+        # Timeout reached
+        raise TimeoutError(f"Devin session {self._devin_session_id} did not complete within {max_poll_time} seconds")
+    
     def clear_history(self) -> None:
         """Clear conversation history."""
         self._conversation_history = []
+        self._devin_session_id = None  # Reset Devin session when clearing history
         if self.config.system_prompt:
             self._conversation_history.append(
                 Message(role="system", content=self.config.system_prompt)
