@@ -11,6 +11,65 @@ The automation module consists of four main components:
 3. **Task Templates**: Pre-built prompts for common operations
 4. **Single Agent Organ Generator V1**: An interactive workflow for guided organ structure generation
 
+## What This Actually Does Today
+
+**Important:** Understanding the current execution modes is critical for using this module effectively.
+
+### Execution Modes
+
+| Mode | Description | Files Created | Use Case |
+|------|-------------|---------------|----------|
+| **Prompt-only** (default) | LLM returns text responses, no code execution | None | Planning, prototyping, spec generation |
+| **Execution-enabled** | LLM code runs in sandbox with restrictions | Only in allowed directories | Testing with controlled output |
+| **Spec-only** (recommended) | LLM produces structured spec → Python runs generation locally | Full artifacts | Production workflows |
+
+### Current Limitations
+
+1. **Default mode produces text, not files**: `AgentRunner` has `auto_execute_code=False` by default. The LLM will describe what it would do, but won't actually create files.
+
+2. **Sandbox restrictions**: Even with `auto_execute_code=True`, the `CodeExecutor` restricts file operations:
+   - Writes only allowed in configured `allowed_output_dirs`
+   - Blocked patterns: `exec()`, `eval()`, `__import__()`, `subprocess`, etc.
+   - Timeout enforcement (default 30 seconds)
+
+3. **Artifact extraction is regex-based**: When the LLM mentions file paths like `*.stl`, these are extracted from text but may not exist.
+
+### Enabling Execution with Output Directories
+
+```python
+from automation.agent_runner import AgentRunner, AgentConfig, CodeExecutor
+
+# Configure executor with allowed output directories
+config = AgentConfig(
+    output_dir="./output",
+    auto_execute_code=True,  # Enable execution
+)
+
+runner = AgentRunner(client=client, config=config)
+
+# The CodeExecutor will allow writes only to ./output
+runner.code_executor.allowed_output_dirs = ["./output"]
+```
+
+### Recommended Approach: Spec-Only Mode
+
+For production use, we recommend having the LLM produce a structured specification, then running generation locally:
+
+```python
+from automation import SingleAgentOrganGeneratorV1
+from generation import design_from_spec
+
+# Use workflow to capture requirements
+workflow = SingleAgentOrganGeneratorV1(provider="openai")
+workflow.run()
+
+# Get the compiled spec
+spec = workflow.context.get_current_object().spec
+
+# Run generation locally (not via LLM)
+network = design_from_spec(spec)
+```
+
 ## Directory Structure
 
 ```
