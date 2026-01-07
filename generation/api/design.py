@@ -1,11 +1,22 @@
-"""High-level API for building vascular networks from specifications."""
+"""
+High-level API for building vascular networks from specifications.
+
+UNIT CONVENTIONS
+----------------
+This module uses the compile_domain() function to convert user-facing spec classes
+into runtime domain objects. See generation/specs/compile.py for details on:
+- Spec units (meters)
+- Runtime units (meters)
+- Output units (configurable, default mm)
+- Coordinate frame conventions
+"""
 
 from typing import Optional
 import numpy as np
 
-from ..specs.design_spec import DesignSpec, EllipsoidSpec, BoxSpec
+from ..specs.design_spec import DesignSpec
+from ..specs.compile import compile_domain
 from ..core.network import VascularNetwork
-from ..core.domain import EllipsoidDomain, BoxDomain
 from ..core.types import Point3D
 from ..ops import create_network, add_inlet, add_outlet, space_colonization_step
 from ..ops.space_colonization import SpaceColonizationParams
@@ -16,25 +27,23 @@ def design_from_spec(spec: DesignSpec) -> VascularNetwork:
     Build a vascular network from a design specification.
     
     This is the main entry point for LLM-driven vascular network design.
+    
+    The domain specification is compiled into a runtime domain object using
+    compile_domain(), which centralizes unit handling, defaults, and transforms.
+    
+    Parameters
+    ----------
+    spec : DesignSpec
+        Design specification containing domain, tree/dual_tree config, and metadata.
+        All geometric values (positions, radii, sizes) are in METERS internally.
+        
+    Returns
+    -------
+    VascularNetwork
+        Generated vascular network with nodes and segments.
+        Geometry is in METERS internally; use UnitContext for export conversion.
     """
-    # Create domain
-    if isinstance(spec.domain, EllipsoidSpec):
-        domain = EllipsoidDomain(
-            semi_axis_a=spec.domain.semi_axes[0],
-            semi_axis_b=spec.domain.semi_axes[1],
-            semi_axis_c=spec.domain.semi_axes[2],
-            center=Point3D(*spec.domain.center),
-        )
-    elif isinstance(spec.domain, BoxSpec):
-        center = Point3D(*spec.domain.center)
-        domain = BoxDomain.from_center_and_size(
-            center=center,
-            width=spec.domain.size[0],
-            height=spec.domain.size[1],
-            depth=spec.domain.size[2],
-        )
-    else:
-        raise ValueError(f"Unsupported domain type: {type(spec.domain)}")
+    domain = compile_domain(spec.domain)
     
     # Create network
     network = create_network(domain=domain, seed=spec.seed)

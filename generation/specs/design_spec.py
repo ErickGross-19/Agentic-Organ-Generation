@@ -1,7 +1,36 @@
-"""Design specifications for LLM-driven vascular network design.
+"""
+Design specifications for LLM-driven vascular network design.
 
 This module provides dataclasses for specifying vascular network designs
 in a JSON-serializable format suitable for LLM agents.
+
+UNIT CONVENTIONS
+----------------
+**Spec units**: All geometric values in spec classes (positions, radii, sizes) are in
+METERS. This is the internal unit system used throughout the codebase. For example:
+- EllipsoidSpec(semi_axes=(0.05, 0.045, 0.035)) represents 50mm x 45mm x 35mm
+- InletSpec(radius=0.002) represents a 2mm radius inlet
+- ColonizationSpec(step_size=0.001) represents a 1mm step size
+
+**Runtime units**: When specs are compiled via compile_domain(), the resulting runtime
+domain objects also use METERS internally. All geometric operations operate in meters.
+
+**Output units**: At export time (STL, JSON), values are converted from internal meters
+to the user-specified output_units (default "mm") via UnitContext.
+
+COORDINATE FRAME
+----------------
+The default coordinate frame is:
+- Origin at domain center (0, 0, 0)
+- X-axis: left-right (width)
+- Y-axis: front-back (depth)
+- Z-axis: bottom-top (height)
+
+For organ-specific coordinate frames (e.g., anatomical orientation), use the
+transform parameter in compile_domain() to apply a rotation/translation.
+
+See generation/specs/compile.py for the compile_domain() function that converts
+spec classes to runtime domain objects.
 """
 
 from dataclasses import dataclass, field, asdict
@@ -33,14 +62,17 @@ class DomainSpec:
 
 @dataclass
 class EllipsoidSpec(DomainSpec):
-    """Ellipsoid domain specification.
+    """Ellipsoid domain specification (spec units: METERS).
+    
+    Use compile_domain() to convert to runtime EllipsoidDomain.
     
     Parameters
     ----------
     center : Tuple[float, float, float]
-        Center point (x, y, z)
+        Center point (x, y, z) in METERS. Default: origin (0, 0, 0).
     semi_axes : Tuple[float, float, float]
-        Semi-axes lengths (a, b, c)
+        Semi-axes lengths (a, b, c) in METERS. Default: (0.05, 0.045, 0.035)
+        which represents 50mm x 45mm x 35mm (typical liver dimensions).
     """
     
     type: str = "ellipsoid"
@@ -58,14 +90,17 @@ class EllipsoidSpec(DomainSpec):
 
 @dataclass
 class BoxSpec(DomainSpec):
-    """Box domain specification.
+    """Box domain specification (spec units: METERS).
+    
+    Use compile_domain() to convert to runtime BoxDomain.
     
     Parameters
     ----------
     center : Tuple[float, float, float]
-        Center point (x, y, z)
+        Center point (x, y, z) in METERS. Default: origin (0, 0, 0).
     size : Tuple[float, float, float]
-        Box dimensions (width, height, depth)
+        Box dimensions (width, height, depth) in METERS. Default: (0.10, 0.09, 0.07)
+        which represents 100mm x 90mm x 70mm.
     """
     
     type: str = "box"
@@ -83,7 +118,17 @@ class BoxSpec(DomainSpec):
 
 @dataclass
 class InletSpec:
-    """Inlet specification."""
+    """Inlet specification (spec units: METERS).
+    
+    Parameters
+    ----------
+    position : Tuple[float, float, float]
+        Inlet position (x, y, z) in METERS.
+    radius : float
+        Inlet radius in METERS. Example: 0.002 = 2mm.
+    vessel_type : str
+        Either "arterial" or "venous". Default: "arterial".
+    """
     
     position: Tuple[float, float, float]
     radius: float
@@ -103,7 +148,17 @@ class InletSpec:
 
 @dataclass
 class OutletSpec:
-    """Outlet specification."""
+    """Outlet specification (spec units: METERS).
+    
+    Parameters
+    ----------
+    position : Tuple[float, float, float]
+        Outlet position (x, y, z) in METERS.
+    radius : float
+        Outlet radius in METERS. Example: 0.002 = 2mm.
+    vessel_type : str
+        Either "arterial" or "venous". Default: "venous".
+    """
     
     position: Tuple[float, float, float]
     radius: float
