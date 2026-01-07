@@ -155,7 +155,10 @@ def _create_capsule_mesh(
     include_caps: bool = True,
 ) -> trimesh.Trimesh:
     """
-    Create a capsule mesh (cylinder with optional hemispherical caps).
+    Create a capsule mesh (frustum/tapered cylinder with optional hemispherical caps).
+    
+    This function properly handles tapering by creating a frustum (truncated cone)
+    when r_start != r_end, rather than ignoring the end radius.
     
     Parameters
     ----------
@@ -175,20 +178,21 @@ def _create_capsule_mesh(
     Returns
     -------
     trimesh.Trimesh
-        Capsule mesh
+        Capsule mesh with proper tapering
     """
     direction = end - start
     length = np.linalg.norm(direction)
     direction = direction / length
     
-    cylinder = trimesh.creation.cylinder(
-        radius=r_start,  # Use start radius (could interpolate)
-        height=length,
+    frustum = _create_frustum(
+        length=length,
+        radius_start=r_start,
+        radius_end=r_end,
         sections=radial_resolution,
     )
     
     z_axis = np.array([0, 0, 1])
-    if not np.allclose(direction, z_axis):
+    if not np.allclose(direction, z_axis) and not np.allclose(direction, -z_axis):
         rotation_axis = np.cross(z_axis, direction)
         if np.linalg.norm(rotation_axis) > 1e-6:
             rotation_axis = rotation_axis / np.linalg.norm(rotation_axis)
@@ -196,10 +200,13 @@ def _create_capsule_mesh(
             rotation_matrix = trimesh.transformations.rotation_matrix(
                 angle, rotation_axis
             )
-            cylinder.apply_transform(rotation_matrix)
+            frustum.apply_transform(rotation_matrix)
+    elif np.allclose(direction, -z_axis):
+        rotation_matrix = trimesh.transformations.rotation_matrix(np.pi, [1, 0, 0])
+        frustum.apply_transform(rotation_matrix)
     
     center = (start + end) / 2
-    cylinder.apply_translation(center)
+    frustum.apply_translation(center)
     
     if include_caps:
         cap_start = trimesh.creation.icosphere(subdivisions=1, radius=r_start)
@@ -208,9 +215,87 @@ def _create_capsule_mesh(
         cap_end = trimesh.creation.icosphere(subdivisions=1, radius=r_end)
         cap_end.apply_translation(end)
         
-        return trimesh.util.concatenate([cylinder, cap_start, cap_end])
+        return trimesh.util.concatenate([frustum, cap_start, cap_end])
     
-    return cylinder
+    return frustum
+
+
+def _create_frustum(
+    length: float,
+    radius_start: float,
+    radius_end: float,
+    sections: int = 8,
+) -> trimesh.Trimesh:
+    """
+    Create a frustum (truncated cone) mesh.
+    
+    This is used for tapered vessel segments where the radius changes
+    from start to end.
+    
+    Parameters
+    ----------
+    length : float
+        Length of the frustum along z-axis
+    radius_start : float
+        Radius at z = -length/2 (start)
+    radius_end : float
+        Radius at z = +length/2 (end)
+    sections : int
+        Number of vertices around the circumference
+        
+    Returns
+    -------
+    trimesh.Trimesh
+        Frustum mesh centered at origin, aligned with z-axis
+    """
+    if abs(radius_start - radius_end) < 1e-10:
+        return trimesh.creation.cylinder(
+            radius=radius_start,
+            height=length,
+            sections=sections,
+        )
+    
+    angles = np.linspace(0, 2 * np.pi, sections, endpoint=False)
+    
+    z_bottom = -length / 2
+    z_top = length / 2
+    
+    bottom_vertices = np.column_stack([
+        radius_start * np.cos(angles),
+        radius_start * np.sin(angles),
+        np.full(sections, z_bottom),
+    ])
+    
+    top_vertices = np.column_stack([
+        radius_end * np.cos(angles),
+        radius_end * np.sin(angles),
+        np.full(sections, z_top),
+    ])
+    
+    vertices = np.vstack([bottom_vertices, top_vertices])
+    
+    faces = []
+    for i in range(sections):
+        next_i = (i + 1) % sections
+        
+        faces.append([i, next_i, sections + i])
+        faces.append([next_i, sections + next_i, sections + i])
+    
+    bottom_center_idx = len(vertices)
+    vertices = np.vstack([vertices, [[0, 0, z_bottom]]])
+    for i in range(sections):
+        next_i = (i + 1) % sections
+        faces.append([bottom_center_idx, next_i, i])
+    
+    top_center_idx = len(vertices)
+    vertices = np.vstack([vertices, [[0, 0, z_top]]])
+    for i in range(sections):
+        next_i = (i + 1) % sections
+        faces.append([top_center_idx, sections + i, sections + next_i])
+    
+    faces = np.array(faces)
+    
+    return trimesh.Trimesh(vertices=vertices, faces=faces)
 
 
 def export_stl(
