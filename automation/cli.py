@@ -152,7 +152,7 @@ def main():
             "--provider",
             type=str,
             default="openai",
-            choices=["openai", "anthropic", "local"],
+            choices=["openai", "anthropic", "local", "xai", "grok", "google", "gemini", "mistral", "groq", "devin"],
             help="LLM provider (default: openai)",
         )
         p.add_argument(

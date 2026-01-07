@@ -81,6 +81,7 @@ python -m automation.cli interactive
 | Google/Gemini | gemini-pro, gemini-1.5-pro | `GOOGLE_API_KEY` or `GEMINI_API_KEY` |
 | Mistral | mistral-large, mistral-medium | `MISTRAL_API_KEY` |
 | Groq | llama-3.1-70b, mixtral-8x7b | `GROQ_API_KEY` |
+| Devin | devin (session-based) | `DEVIN_API_KEY` |
 | Local | Any OpenAI-compatible API | N/A (use `api_base`) |
 
 ### Configuration
@@ -484,21 +485,42 @@ workflow.load_state("workflow_state.json")
 workflow.run()  # Resume from saved state
 ```
 
-## Future: Devin Integration
+## Devin Integration
 
-The automation module is designed to be extensible for future Devin API integration. When Devin API becomes available, a `devin_client.py` module can be added:
+Devin AI is now supported as an LLM provider. Unlike traditional chat-based LLMs, Devin uses a session-based API where tasks are executed asynchronously.
+
+### Using Devin
 
 ```python
-# Future API (not yet implemented)
-from automation.devin_client import DevinClient
+from automation import LLMClient, create_agent
 
-client = DevinClient(api_key="...")
-session = client.create_session(
-    task="Generate a liver network",
-    repo_url="https://github.com/user/Agentic-Organ-Generation",
-)
+# Using LLMClient directly
+client = LLMClient(provider="devin")  # Uses DEVIN_API_KEY env var
+response = client.chat("Generate a liver vascular network with 500 segments")
+print(response.content)
 
-# Monitor session
-for event in session.stream_events():
-    print(event)
+# Using create_agent convenience function
+agent = create_agent(provider="devin", output_dir="./output")
+result = agent.run_task("Generate a liver network")
 ```
+
+### CLI Usage
+
+```bash
+# Set your API key
+export DEVIN_API_KEY="your-api-key"
+
+# Run generation with Devin
+python -m automation.cli generate --organ liver --segments 500 --provider devin
+```
+
+### How It Works
+
+The Devin provider adapts the session-based Devin API to work within the standard LLMClient interface:
+
+1. **Session Creation**: When you call `chat()`, a new Devin session is created with your prompt
+2. **Polling**: The client polls the session status until completion (blocked/stopped)
+3. **Response Extraction**: Results are extracted from the session's structured output
+4. **Conversation Continuity**: Subsequent `chat()` calls with `continue_conversation=True` send messages to the existing session
+
+Note: Devin sessions may take longer than traditional LLM calls since Devin executes actual code and tasks. The default timeout is 5 minutes.
