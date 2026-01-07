@@ -5,14 +5,23 @@ This module implements the "Single Agent Organ Generator V1" workflow - a statef
 interactive workflow for organ structure generation using LLM agents.
 
 The workflow follows these steps:
-1. INIT: Ask user for project name and file name
-2. REQUIREMENTS: Ask user for description of the system
-3. GENERATING: Use the library to generate structure and code
-4. VISUALIZING: Output necessary files/code and visualization of 3D object
-5. REVIEW: Ask user if it's what they wanted
-6. CLARIFYING: If no, ask for clarification and what's wrong (then loop back to GENERATING)
-7. FINALIZING: If yes, output embedded structure, STL mesh, and code used to generate
-8. COMPLETE: Close project
+0. PROJECT_INIT: Ask user for project name and global defaults
+1. OBJECT_PLANNING: Ask how many objects and create object folders
+2. FRAME_OF_REFERENCE: Establish coordinate conventions per object
+3. REQUIREMENTS_CAPTURE: Schema-gated requirements gathering
+4. SPEC_COMPILATION: Compile requirements to DesignSpec
+5. GENERATION: Execute generation within object folder
+6. ANALYSIS_VALIDATION: Analyze and validate generated structure
+7. ITERATION: Accept user critique and iterate
+8. FINALIZATION: Embed and produce final outputs
+9. COMPLETE: Close project
+
+Key Features:
+- Per-object folder structure with versioned artifacts
+- Schema-gated requirements capture
+- Fixed frame of reference before spatial discussions
+- Ability to pull context from previous attempts
+- Deterministic, reproducible generation
 
 Usage:
     from automation.workflow import SingleAgentOrganGeneratorV1
@@ -23,7 +32,7 @@ Usage:
     workflow.run()
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from typing import Optional, List, Dict, Any, Tuple
 from enum import Enum
 from pathlib import Path
@@ -36,145 +45,683 @@ from .agent_runner import AgentRunner, TaskResult, TaskStatus
 
 class WorkflowState(Enum):
     """States in the Single Agent Organ Generator V1 workflow."""
-    INIT = "init"                    # Ask project name/filename
-    REQUIREMENTS = "requirements"     # Ask for description
-    GENERATING = "generating"         # Generate structure
-    VISUALIZING = "visualizing"       # Show 3D visualization
-    REVIEW = "review"                 # Ask if satisfied
-    CLARIFYING = "clarifying"         # Ask what's wrong
-    FINALIZING = "finalizing"         # Output final files
-    COMPLETE = "complete"             # Done
+    PROJECT_INIT = "project_init"
+    OBJECT_PLANNING = "object_planning"
+    FRAME_OF_REFERENCE = "frame_of_reference"
+    REQUIREMENTS_CAPTURE = "requirements_capture"
+    SPEC_COMPILATION = "spec_compilation"
+    GENERATION = "generation"
+    ANALYSIS_VALIDATION = "analysis_validation"
+    ITERATION = "iteration"
+    FINALIZATION = "finalization"
+    COMPLETE = "complete"
+
+
+# =============================================================================
+# Requirements Schema Data Classes (9 Sections)
+# =============================================================================
+
+@dataclass
+class IdentitySection:
+    """Section 1: Identity information for an object."""
+    object_name: str = ""
+    object_slug: str = ""
+    version: int = 1
+    notes: str = ""
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+    
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "IdentitySection":
+        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
+
+
+@dataclass
+class FrameOfReferenceSection:
+    """Section 2: Frame of reference and units."""
+    origin: str = "domain.center"
+    axes: Dict[str, str] = field(default_factory=lambda: {
+        "x": "width",
+        "y": "depth", 
+        "z": "height"
+    })
+    viewpoint: str = "front"
+    units_internal: str = "m"
+    units_export: str = "mm"
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "origin": self.origin,
+            "axes": self.axes,
+            "viewpoint": self.viewpoint,
+            "units_internal": self.units_internal,
+            "units_export": self.units_export,
+        }
+    
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "FrameOfReferenceSection":
+        return cls(
+            origin=d.get("origin", "domain.center"),
+            axes=d.get("axes", {"x": "width", "y": "depth", "z": "height"}),
+            viewpoint=d.get("viewpoint", "front"),
+            units_internal=d.get("units_internal", "m"),
+            units_export=d.get("units_export", "mm"),
+        )
+
+
+@dataclass
+class DomainSection:
+    """Section 3: Domain specification."""
+    type: str = "box"
+    size_m: Tuple[float, float, float] = (0.02, 0.06, 0.03)
+    center_m: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    margin_m: float = 0.001
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "type": self.type,
+            "size_m": list(self.size_m),
+            "center_m": list(self.center_m),
+            "margin_m": self.margin_m,
+        }
+    
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "DomainSection":
+        return cls(
+            type=d.get("type", "box"),
+            size_m=tuple(d.get("size_m", [0.02, 0.06, 0.03])),
+            center_m=tuple(d.get("center_m", [0.0, 0.0, 0.0])),
+            margin_m=d.get("margin_m", 0.001),
+        )
+
+
+@dataclass
+class PortSpec:
+    """Specification for an inlet or outlet port."""
+    name: str = ""
+    position_m: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    radius_m: float = 0.001
+    direction_unit: Optional[Tuple[float, float, float]] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "position_m": list(self.position_m),
+            "radius_m": self.radius_m,
+            "direction_unit": list(self.direction_unit) if self.direction_unit else None,
+        }
+    
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "PortSpec":
+        return cls(
+            name=d.get("name", ""),
+            position_m=tuple(d.get("position_m", [0.0, 0.0, 0.0])),
+            radius_m=d.get("radius_m", 0.001),
+            direction_unit=tuple(d["direction_unit"]) if d.get("direction_unit") else None,
+        )
+
+
+@dataclass
+class InletsOutletsSection:
+    """Section 4: Inlets and outlets specification."""
+    inlets: List[PortSpec] = field(default_factory=list)
+    outlets: List[PortSpec] = field(default_factory=list)
+    placement_rule: str = ""
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "inlets": [i.to_dict() for i in self.inlets],
+            "outlets": [o.to_dict() for o in self.outlets],
+            "placement_rule": self.placement_rule,
+        }
+    
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "InletsOutletsSection":
+        return cls(
+            inlets=[PortSpec.from_dict(i) for i in d.get("inlets", [])],
+            outlets=[PortSpec.from_dict(o) for o in d.get("outlets", [])],
+            placement_rule=d.get("placement_rule", ""),
+        )
+
+
+@dataclass
+class ZoneDensity:
+    """Subregion with density multiplier for perfusion zones."""
+    name: str = ""
+    bounds_m: Optional[Dict[str, Tuple[float, float]]] = None
+    density_multiplier: float = 1.0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "bounds_m": {k: list(v) for k, v in self.bounds_m.items()} if self.bounds_m else None,
+            "density_multiplier": self.density_multiplier,
+        }
+    
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "ZoneDensity":
+        bounds = None
+        if d.get("bounds_m"):
+            bounds = {k: tuple(v) for k, v in d["bounds_m"].items()}
+        return cls(
+            name=d.get("name", ""),
+            bounds_m=bounds,
+            density_multiplier=d.get("density_multiplier", 1.0),
+        )
+
+
+@dataclass
+class TopologySection:
+    """Section 5: Topology intent."""
+    style: str = "tree"
+    target_terminals: Optional[int] = None
+    max_depth: Optional[int] = None
+    branching_factor_range: Tuple[int, int] = (2, 2)
+    zone_density: List[ZoneDensity] = field(default_factory=list)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "style": self.style,
+            "target_terminals": self.target_terminals,
+            "max_depth": self.max_depth,
+            "branching_factor_range": list(self.branching_factor_range),
+            "zone_density": [z.to_dict() for z in self.zone_density],
+        }
+    
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "TopologySection":
+        return cls(
+            style=d.get("style", "tree"),
+            target_terminals=d.get("target_terminals"),
+            max_depth=d.get("max_depth"),
+            branching_factor_range=tuple(d.get("branching_factor_range", [2, 2])),
+            zone_density=[ZoneDensity.from_dict(z) for z in d.get("zone_density", [])],
+        )
+
+
+@dataclass
+class GeometrySection:
+    """Section 6: Geometry intent."""
+    segment_length_m: Dict[str, float] = field(default_factory=lambda: {"min": 0.0005, "max": 0.005})
+    tortuosity: float = 0.0
+    branch_angle_deg: Dict[str, float] = field(default_factory=lambda: {"min": 30.0, "max": 90.0})
+    radius_profile: str = "murray"
+    radius_bounds_m: Dict[str, Optional[float]] = field(default_factory=lambda: {"min": 0.0001, "max": None})
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "segment_length_m": self.segment_length_m,
+            "tortuosity": self.tortuosity,
+            "branch_angle_deg": self.branch_angle_deg,
+            "radius_profile": self.radius_profile,
+            "radius_bounds_m": self.radius_bounds_m,
+        }
+    
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "GeometrySection":
+        return cls(
+            segment_length_m=d.get("segment_length_m", {"min": 0.0005, "max": 0.005}),
+            tortuosity=d.get("tortuosity", 0.0),
+            branch_angle_deg=d.get("branch_angle_deg", {"min": 30.0, "max": 90.0}),
+            radius_profile=d.get("radius_profile", "murray"),
+            radius_bounds_m=d.get("radius_bounds_m", {"min": 0.0001, "max": None}),
+        )
+
+
+@dataclass
+class ConstraintsSection:
+    """Section 7: Constraints."""
+    min_radius_m: float = 0.0001
+    min_clearance_m: float = 0.0002
+    avoid_self_intersection: bool = True
+    boundary_buffer_m: float = 0.001
+    max_segments: Optional[int] = None
+    max_runtime_s: Optional[float] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+    
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "ConstraintsSection":
+        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
+
+
+@dataclass
+class EmbeddingExportSection:
+    """Section 8: Embedding and export settings."""
+    domain_override: Optional[Dict[str, Any]] = None
+    voxel_pitch_m: Optional[float] = None
+    shell_thickness_m: Optional[float] = None
+    output_void: bool = True
+    stl_units: str = "mm"
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "domain_override": self.domain_override,
+            "voxel_pitch_m": self.voxel_pitch_m,
+            "shell_thickness_m": self.shell_thickness_m,
+            "output_void": self.output_void,
+            "stl_units": self.stl_units,
+        }
+    
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "EmbeddingExportSection":
+        return cls(
+            domain_override=d.get("domain_override"),
+            voxel_pitch_m=d.get("voxel_pitch_m"),
+            shell_thickness_m=d.get("shell_thickness_m"),
+            output_void=d.get("output_void", True),
+            stl_units=d.get("stl_units", "mm"),
+        )
+
+
+@dataclass
+class AcceptanceCriteriaSection:
+    """Section 9: Acceptance criteria."""
+    min_radius_m: Optional[float] = None
+    min_clearance_m: Optional[float] = None
+    terminals_range: Optional[Tuple[int, int]] = None
+    mesh_watertight_required: bool = True
+    flow_metrics_enabled: bool = False
+    custom_criteria: Dict[str, Any] = field(default_factory=dict)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "min_radius_m": self.min_radius_m,
+            "min_clearance_m": self.min_clearance_m,
+            "terminals_range": list(self.terminals_range) if self.terminals_range else None,
+            "mesh_watertight_required": self.mesh_watertight_required,
+            "flow_metrics_enabled": self.flow_metrics_enabled,
+            "custom_criteria": self.custom_criteria,
+        }
+    
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "AcceptanceCriteriaSection":
+        return cls(
+            min_radius_m=d.get("min_radius_m"),
+            min_clearance_m=d.get("min_clearance_m"),
+            terminals_range=tuple(d["terminals_range"]) if d.get("terminals_range") else None,
+            mesh_watertight_required=d.get("mesh_watertight_required", True),
+            flow_metrics_enabled=d.get("flow_metrics_enabled", False),
+            custom_criteria=d.get("custom_criteria", {}),
+        )
+
+
+@dataclass
+class ObjectRequirements:
+    """Complete requirements schema for a single object (all 9 sections)."""
+    identity: IdentitySection = field(default_factory=IdentitySection)
+    frame_of_reference: FrameOfReferenceSection = field(default_factory=FrameOfReferenceSection)
+    domain: DomainSection = field(default_factory=DomainSection)
+    inlets_outlets: InletsOutletsSection = field(default_factory=InletsOutletsSection)
+    topology: TopologySection = field(default_factory=TopologySection)
+    geometry: GeometrySection = field(default_factory=GeometrySection)
+    constraints: ConstraintsSection = field(default_factory=ConstraintsSection)
+    embedding_export: EmbeddingExportSection = field(default_factory=EmbeddingExportSection)
+    acceptance_criteria: AcceptanceCriteriaSection = field(default_factory=AcceptanceCriteriaSection)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "identity": self.identity.to_dict(),
+            "frame_of_reference": self.frame_of_reference.to_dict(),
+            "domain": self.domain.to_dict(),
+            "inlets_outlets": self.inlets_outlets.to_dict(),
+            "topology": self.topology.to_dict(),
+            "geometry": self.geometry.to_dict(),
+            "constraints": self.constraints.to_dict(),
+            "embedding_export": self.embedding_export.to_dict(),
+            "acceptance_criteria": self.acceptance_criteria.to_dict(),
+        }
+    
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "ObjectRequirements":
+        return cls(
+            identity=IdentitySection.from_dict(d.get("identity", {})),
+            frame_of_reference=FrameOfReferenceSection.from_dict(d.get("frame_of_reference", {})),
+            domain=DomainSection.from_dict(d.get("domain", {})),
+            inlets_outlets=InletsOutletsSection.from_dict(d.get("inlets_outlets", {})),
+            topology=TopologySection.from_dict(d.get("topology", {})),
+            geometry=GeometrySection.from_dict(d.get("geometry", {})),
+            constraints=ConstraintsSection.from_dict(d.get("constraints", {})),
+            embedding_export=EmbeddingExportSection.from_dict(d.get("embedding_export", {})),
+            acceptance_criteria=AcceptanceCriteriaSection.from_dict(d.get("acceptance_criteria", {})),
+        )
+    
+    def to_json(self, path: str) -> None:
+        """Save requirements to JSON file."""
+        with open(path, 'w') as f:
+            json.dump(self.to_dict(), f, indent=2)
+    
+    @classmethod
+    def from_json(cls, path: str) -> "ObjectRequirements":
+        """Load requirements from JSON file."""
+        with open(path, 'r') as f:
+            return cls.from_dict(json.load(f))
+
+
+# =============================================================================
+# Context Classes
+# =============================================================================
+
+@dataclass
+class ObjectContext:
+    """Tracks state for a single object within a project."""
+    name: str = ""
+    slug: str = ""
+    status: str = "draft"
+    created_at: float = field(default_factory=time.time)
+    
+    object_dir: str = ""
+    intent_dir: str = ""
+    spec_dir: str = ""
+    code_dir: str = ""
+    outputs_dir: str = ""
+    mesh_dir: str = ""
+    analysis_dir: str = ""
+    validation_dir: str = ""
+    iterations_dir: str = ""
+    final_dir: str = ""
+    
+    version: int = 1
+    requirements: Optional[ObjectRequirements] = None
+    raw_intent: str = ""
+    
+    spec_path: Optional[str] = None
+    code_path: Optional[str] = None
+    network_path: Optional[str] = None
+    mesh_path: Optional[str] = None
+    analysis_path: Optional[str] = None
+    validation_path: Optional[str] = None
+    
+    final_void_stl: Optional[str] = None
+    final_domain_stl: Optional[str] = None
+    final_manifest: Optional[str] = None
+    
+    feedback_history: List[str] = field(default_factory=list)
+    frame_locked: bool = False
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "slug": self.slug,
+            "status": self.status,
+            "created_at": self.created_at,
+            "object_dir": self.object_dir,
+            "version": self.version,
+            "requirements": self.requirements.to_dict() if self.requirements else None,
+            "raw_intent": self.raw_intent,
+            "spec_path": self.spec_path,
+            "code_path": self.code_path,
+            "network_path": self.network_path,
+            "mesh_path": self.mesh_path,
+            "analysis_path": self.analysis_path,
+            "validation_path": self.validation_path,
+            "final_void_stl": self.final_void_stl,
+            "final_domain_stl": self.final_domain_stl,
+            "final_manifest": self.final_manifest,
+            "feedback_history": self.feedback_history,
+            "frame_locked": self.frame_locked,
+        }
+    
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "ObjectContext":
+        obj = cls(
+            name=d.get("name", ""),
+            slug=d.get("slug", ""),
+            status=d.get("status", "draft"),
+            created_at=d.get("created_at", time.time()),
+            object_dir=d.get("object_dir", ""),
+            version=d.get("version", 1),
+            raw_intent=d.get("raw_intent", ""),
+            spec_path=d.get("spec_path"),
+            code_path=d.get("code_path"),
+            network_path=d.get("network_path"),
+            mesh_path=d.get("mesh_path"),
+            analysis_path=d.get("analysis_path"),
+            validation_path=d.get("validation_path"),
+            final_void_stl=d.get("final_void_stl"),
+            final_domain_stl=d.get("final_domain_stl"),
+            final_manifest=d.get("final_manifest"),
+            feedback_history=d.get("feedback_history", []),
+            frame_locked=d.get("frame_locked", False),
+        )
+        if d.get("requirements"):
+            obj.requirements = ObjectRequirements.from_dict(d["requirements"])
+        return obj
+    
+    def setup_folders(self) -> None:
+        """Create the folder structure for this object."""
+        self.intent_dir = os.path.join(self.object_dir, "00_intent")
+        self.spec_dir = os.path.join(self.object_dir, "01_spec")
+        self.code_dir = os.path.join(self.object_dir, "02_code")
+        self.outputs_dir = os.path.join(self.object_dir, "03_outputs")
+        self.mesh_dir = os.path.join(self.object_dir, "04_mesh")
+        self.analysis_dir = os.path.join(self.object_dir, "05_analysis")
+        self.validation_dir = os.path.join(self.object_dir, "06_validation")
+        self.iterations_dir = os.path.join(self.object_dir, "07_iterations")
+        self.final_dir = os.path.join(self.object_dir, "08_final")
+        
+        for folder in [
+            self.intent_dir, self.spec_dir, self.code_dir, self.outputs_dir,
+            self.mesh_dir, self.analysis_dir, self.validation_dir,
+            self.iterations_dir, self.final_dir,
+            os.path.join(self.final_dir, "embed"),
+        ]:
+            os.makedirs(folder, exist_ok=True)
+    
+    def get_versioned_path(self, folder: str, prefix: str, ext: str) -> str:
+        """Get versioned file path."""
+        return os.path.join(folder, f"{prefix}_v{self.version:03d}.{ext}")
+    
+    def increment_version(self) -> None:
+        """Increment version number."""
+        self.version += 1
 
 
 @dataclass
 class ProjectContext:
-    """
-    Tracks project state across the workflow.
-    
-    Attributes
-    ----------
-    project_name : str
-        Name of the project
-    output_dir : str
-        Directory for output files
-    description : str
-        User's description of the desired structure
-    output_units : str
-        Units for output files (mm, cm, m, um)
-    spec_json : str, optional
-        Path to generated design spec JSON
-    network_json : str, optional
-        Path to generated network JSON
-    stl_path : str, optional
-        Path to generated STL file
-    embedded_stl_path : str, optional
-        Path to embedded structure STL
-    code_path : str, optional
-        Path to generated Python code
-    iteration : int
-        Current iteration number
-    feedback_history : List[str]
-        History of user feedback
-    """
+    """Tracks project state across the workflow."""
     project_name: str = ""
+    project_slug: str = ""
     output_dir: str = ""
-    description: str = ""
-    output_units: str = "mm"
-    spec_json: Optional[str] = None
-    network_json: Optional[str] = None
-    stl_path: Optional[str] = None
-    embedded_stl_path: Optional[str] = None
-    code_path: Optional[str] = None
-    iteration: int = 0
-    feedback_history: List[str] = field(default_factory=list)
+    
+    units_internal: str = "m"
+    units_export: str = "mm"
+    default_embed_domain: Tuple[float, float, float] = (0.02, 0.06, 0.03)
+    flow_solver_enabled: bool = False
+    
+    objects: List[ObjectContext] = field(default_factory=list)
+    current_object_index: int = 0
+    variant_mode: bool = False
+    created_at: float = field(default_factory=time.time)
     
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for serialization."""
         return {
             "project_name": self.project_name,
+            "project_slug": self.project_slug,
             "output_dir": self.output_dir,
-            "description": self.description,
-            "output_units": self.output_units,
-            "spec_json": self.spec_json,
-            "network_json": self.network_json,
-            "stl_path": self.stl_path,
-            "embedded_stl_path": self.embedded_stl_path,
-            "code_path": self.code_path,
-            "iteration": self.iteration,
-            "feedback_history": self.feedback_history,
+            "units_internal": self.units_internal,
+            "units_export": self.units_export,
+            "default_embed_domain": list(self.default_embed_domain),
+            "flow_solver_enabled": self.flow_solver_enabled,
+            "objects": [obj.to_dict() for obj in self.objects],
+            "current_object_index": self.current_object_index,
+            "variant_mode": self.variant_mode,
+            "created_at": self.created_at,
         }
     
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "ProjectContext":
-        """Create from dictionary."""
-        return cls(
+        ctx = cls(
             project_name=d.get("project_name", ""),
+            project_slug=d.get("project_slug", ""),
             output_dir=d.get("output_dir", ""),
-            description=d.get("description", ""),
-            output_units=d.get("output_units", "mm"),
-            spec_json=d.get("spec_json"),
-            network_json=d.get("network_json"),
-            stl_path=d.get("stl_path"),
-            embedded_stl_path=d.get("embedded_stl_path"),
-            code_path=d.get("code_path"),
-            iteration=d.get("iteration", 0),
-            feedback_history=d.get("feedback_history", []),
+            units_internal=d.get("units_internal", "m"),
+            units_export=d.get("units_export", "mm"),
+            default_embed_domain=tuple(d.get("default_embed_domain", [0.02, 0.06, 0.03])),
+            flow_solver_enabled=d.get("flow_solver_enabled", False),
+            current_object_index=d.get("current_object_index", 0),
+            variant_mode=d.get("variant_mode", False),
+            created_at=d.get("created_at", time.time()),
         )
+        ctx.objects = [ObjectContext.from_dict(obj) for obj in d.get("objects", [])]
+        return ctx
+    
+    def get_current_object(self) -> Optional[ObjectContext]:
+        """Get the current object being worked on."""
+        if 0 <= self.current_object_index < len(self.objects):
+            return self.objects[self.current_object_index]
+        return None
+    
+    def add_object(self, name: str, slug: str) -> ObjectContext:
+        """Add a new object to the project."""
+        obj = ObjectContext(
+            name=name,
+            slug=slug,
+            object_dir=os.path.join(self.output_dir, "objects", slug),
+        )
+        obj.setup_folders()
+        
+        obj_json = {
+            "name": name,
+            "slug": slug,
+            "status": "draft",
+            "created_at": obj.created_at,
+        }
+        with open(os.path.join(obj.object_dir, "object.json"), 'w') as f:
+            json.dump(obj_json, f, indent=2)
+        
+        self.objects.append(obj)
+        return obj
+    
+    def save_project_json(self) -> None:
+        """Save project.json file."""
+        project_data = {
+            "project_name": self.project_name,
+            "project_slug": self.project_slug,
+            "units_internal": self.units_internal,
+            "units_export": self.units_export,
+            "default_embed_domain": list(self.default_embed_domain),
+            "flow_solver_enabled": self.flow_solver_enabled,
+            "variant_mode": self.variant_mode,
+            "created_at": self.created_at,
+            "objects": [{"name": obj.name, "slug": obj.slug} for obj in self.objects],
+        }
+        with open(os.path.join(self.output_dir, "project.json"), 'w') as f:
+            json.dump(project_data, f, indent=2)
 
+
+# =============================================================================
+# Question Groups for Requirements Capture
+# =============================================================================
+
+QUESTION_GROUPS = {
+    "A": {
+        "name": "Scale, Units, and Print Constraints",
+        "questions": [
+            ("scale", "What is the physical size scale? (cm/mm)", "mm"),
+            ("min_channel_radius", "Minimum printable channel radius/diameter?", None),
+            ("min_clearance", "Minimum spacing (clearance) between channels?", None),
+            ("nozzle_size", "Any nozzle size or voxel pitch constraint?", None),
+            ("priority", "Priority: (a) dense coverage (b) low pressure drop (c) easy printability?", "c"),
+        ],
+    },
+    "B": {
+        "name": "Domain and Embedding Intent",
+        "questions": [
+            ("generate_in_embed", "Generate within embed domain or freely? (same/free)", "same"),
+            ("use_default_domain", "Use default embed domain box 0.02x0.06x0.03 m? (default/custom)", "default"),
+            ("boundary_margin", "Boundary margin (keep vessels X from boundary)?", "0.001"),
+        ],
+    },
+    "C": {
+        "name": "Inlets/Outlets (Hard Requirements)",
+        "questions": [
+            ("num_inlets", "How many inlets?", "1"),
+            ("num_outlets", "How many outlets?", "0"),
+            ("inlet_outlet_location", "Location (face/region)? same face or opposite?", "same face"),
+            ("inlet_radius", "Inlet radii (comma-separated if multiple)?", "0.002"),
+            ("outlet_radius", "Outlet radii (comma-separated if multiple)?", "0.001"),
+            ("direction_vectors", "Direction vectors explicit or infer from face? (explicit/infer)", "infer"),
+            ("same_x_face", "Inlets/outlets on same X face?", "yes"),
+        ],
+    },
+    "D": {
+        "name": "Topology (Tree Structure)",
+        "questions": [
+            ("strict_tree", "Strict tree (no loops)?", "yes"),
+            ("target_terminals", "Target terminal tip count?", None),
+            ("max_depth", "Maximum depth (levels)?", None),
+            ("branching_style", "Balanced or aggressive early branching?", "balanced"),
+            ("perfusion_zones", "Perfusion zones needing more density? (describe or 'none')", "none"),
+        ],
+    },
+    "E": {
+        "name": "Geometry Character (Path Style)",
+        "questions": [
+            ("tortuosity", "Straight vs tortuous? (low/med/high)", "low"),
+            ("branch_angle_range", "Branch angle range? (e.g., 30-90)", "30-90"),
+            ("segment_length_range", "Segment length range? (e.g., 0.5-5mm)", "0.5-5"),
+            ("tapering", "Tapering? (murray/linear/fixed)", "murray"),
+        ],
+    },
+    "F": {
+        "name": "Negative Constraints",
+        "questions": [
+            ("ban_self_intersection", "Hard ban on self-intersections?", "yes"),
+            ("enforce_clearance", "Hard min clearance enforcement?", "yes"),
+            ("keepout_regions", "Keep-out regions? (describe or 'none')", "none"),
+        ],
+    },
+    "G": {
+        "name": "Acceptance Criteria",
+        "questions": [
+            ("terminal_range", "Acceptable terminal count range? (e.g., 50-100)", None),
+            ("min_radius_threshold", "Min radius/clearance thresholds?", None),
+            ("watertight_required", "Require watertight mesh?", "yes"),
+            ("aesthetic_criteria", "Aesthetic criteria? (symmetry, directionality, etc.)", "none"),
+        ],
+    },
+}
+
+
+# =============================================================================
+# Main Workflow Class
+# =============================================================================
 
 class SingleAgentOrganGeneratorV1:
     """
     Single Agent Organ Generator V1 - Stateful workflow for organ structure generation.
     
     This workflow implements an interactive, LLM-driven process for generating
-    organ vascular structures. It guides the user through project setup,
-    requirements gathering, generation, review, and finalization.
-    
-    Parameters
-    ----------
-    agent : AgentRunner
-        The agent runner to use for LLM interactions
-    base_output_dir : str
-        Base directory for project outputs
-    verbose : bool
-        Whether to print detailed progress
-        
-    Examples
-    --------
-    >>> from automation.workflow import SingleAgentOrganGeneratorV1
-    >>> from automation.agent_runner import create_agent
-    >>> 
-    >>> agent = create_agent(provider="openai", model="gpt-4")
-    >>> workflow = SingleAgentOrganGeneratorV1(agent)
-    >>> workflow.run()
+    organ vascular structures with per-object folder structure, schema-gated
+    requirements capture, and ability to pull context from previous attempts.
     """
     
     WORKFLOW_NAME = "Single Agent Organ Generator V1"
-    WORKFLOW_VERSION = "1.0.0"
+    WORKFLOW_VERSION = "2.0.0"
     
     def __init__(
         self,
         agent: AgentRunner,
-        base_output_dir: str = "./projects",
+        base_output_dir: str = "./outputs",
         verbose: bool = True,
     ):
         self.agent = agent
         self.base_output_dir = base_output_dir
         self.verbose = verbose
-        self.state = WorkflowState.INIT
+        self.state = WorkflowState.PROJECT_INIT
         self.context = ProjectContext()
+        
+        self.current_question_group: Optional[str] = None
+        self.current_question_index: int = 0
+        self.collected_answers: Dict[str, Any] = {}
         
         os.makedirs(base_output_dir, exist_ok=True)
     
     def run(self) -> ProjectContext:
-        """
-        Run the complete workflow interactively.
-        
-        Returns
-        -------
-        ProjectContext
-            Final project context with all generated artifacts
-        """
+        """Run the complete workflow interactively."""
         self._print_header()
         
         while self.state != WorkflowState.COMPLETE:
@@ -184,21 +731,7 @@ class SingleAgentOrganGeneratorV1:
         return self.context
     
     def step(self, user_input: str) -> Tuple[WorkflowState, str]:
-        """
-        Process user input and advance workflow by one step.
-        
-        This method is useful for programmatic control of the workflow.
-        
-        Parameters
-        ----------
-        user_input : str
-            User's input for the current state
-            
-        Returns
-        -------
-        Tuple[WorkflowState, str]
-            New state and response message
-        """
+        """Process user input and advance workflow by one step."""
         return self._process_input(user_input)
     
     def get_state(self) -> WorkflowState:
@@ -210,19 +743,15 @@ class SingleAgentOrganGeneratorV1:
         return self.context
     
     def save_state(self, filepath: str) -> None:
-        """
-        Save workflow state to file for later resumption.
-        
-        Parameters
-        ----------
-        filepath : str
-            Path to save state JSON
-        """
+        """Save workflow state to file for later resumption."""
         state_data = {
             "workflow_name": self.WORKFLOW_NAME,
             "workflow_version": self.WORKFLOW_VERSION,
             "state": self.state.value,
             "context": self.context.to_dict(),
+            "current_question_group": self.current_question_group,
+            "current_question_index": self.current_question_index,
+            "collected_answers": self.collected_answers,
             "timestamp": time.time(),
         }
         with open(filepath, 'w') as f:
@@ -231,19 +760,15 @@ class SingleAgentOrganGeneratorV1:
             print(f"State saved to: {filepath}")
     
     def load_state(self, filepath: str) -> None:
-        """
-        Load workflow state from file.
-        
-        Parameters
-        ----------
-        filepath : str
-            Path to state JSON file
-        """
+        """Load workflow state from file."""
         with open(filepath, 'r') as f:
             state_data = json.load(f)
         
         self.state = WorkflowState(state_data["state"])
         self.context = ProjectContext.from_dict(state_data["context"])
+        self.current_question_group = state_data.get("current_question_group")
+        self.current_question_index = state_data.get("current_question_index", 0)
+        self.collected_answers = state_data.get("collected_answers", {})
         if self.verbose:
             print(f"State loaded from: {filepath}")
             print(f"Resuming at state: {self.state.value}")
@@ -255,8 +780,15 @@ class SingleAgentOrganGeneratorV1:
         print(f"  Version: {self.WORKFLOW_VERSION}")
         print("=" * 60)
         print()
-        print("This workflow will guide you through generating an organ")
-        print("vascular structure. You can type 'quit' at any time to exit.")
+        print("This workflow will guide you through generating one or more")
+        print("vascular/tubular 3D structures. Type 'quit' at any time to exit.")
+        print()
+        print("Core Principles:")
+        print("  1. Spec-first, deterministic execution")
+        print("  2. Schema-gated clarity")
+        print("  3. Fixed frame of reference")
+        print("  4. Hierarchical decomposition")
+        print("  5. Iteration loop is per object")
         print()
     
     def _print_completion(self) -> None:
@@ -269,44 +801,42 @@ class SingleAgentOrganGeneratorV1:
         print(f"Project: {self.context.project_name}")
         print(f"Output directory: {self.context.output_dir}")
         print()
-        print("Generated artifacts:")
-        if self.context.spec_json:
-            print(f"  - Design spec: {self.context.spec_json}")
-        if self.context.network_json:
-            print(f"  - Network: {self.context.network_json}")
-        if self.context.stl_path:
-            print(f"  - STL mesh: {self.context.stl_path}")
-        if self.context.embedded_stl_path:
-            print(f"  - Embedded structure: {self.context.embedded_stl_path}")
-        if self.context.code_path:
-            print(f"  - Generation code: {self.context.code_path}")
+        print("Objects generated:")
+        for obj in self.context.objects:
+            print(f"  - {obj.name} ({obj.slug}): {obj.status}")
+            if obj.final_void_stl:
+                print(f"    Final void STL: {obj.final_void_stl}")
+            if obj.final_manifest:
+                print(f"    Manifest: {obj.final_manifest}")
         print()
         print("Thank you for using the Single Agent Organ Generator V1!")
     
     def _run_state(self) -> None:
         """Run the current state's logic."""
-        if self.state == WorkflowState.INIT:
-            self._run_init()
-        elif self.state == WorkflowState.REQUIREMENTS:
-            self._run_requirements()
-        elif self.state == WorkflowState.GENERATING:
-            self._run_generating()
-        elif self.state == WorkflowState.VISUALIZING:
-            self._run_visualizing()
-        elif self.state == WorkflowState.REVIEW:
-            self._run_review()
-        elif self.state == WorkflowState.CLARIFYING:
-            self._run_clarifying()
-        elif self.state == WorkflowState.FINALIZING:
-            self._run_finalizing()
-    
-    def _run_init(self) -> None:
-        """Run INIT state: Ask for project name and filename."""
-        print("-" * 40)
-        print("Step 1: Project Setup")
-        print("-" * 40)
+        state_handlers = {
+            WorkflowState.PROJECT_INIT: self._run_project_init,
+            WorkflowState.OBJECT_PLANNING: self._run_object_planning,
+            WorkflowState.FRAME_OF_REFERENCE: self._run_frame_of_reference,
+            WorkflowState.REQUIREMENTS_CAPTURE: self._run_requirements_capture,
+            WorkflowState.SPEC_COMPILATION: self._run_spec_compilation,
+            WorkflowState.GENERATION: self._run_generation,
+            WorkflowState.ANALYSIS_VALIDATION: self._run_analysis_validation,
+            WorkflowState.ITERATION: self._run_iteration,
+            WorkflowState.FINALIZATION: self._run_finalization,
+        }
         
-        project_name = input("Enter project name: ").strip()
+        handler = state_handlers.get(self.state)
+        if handler:
+            handler()
+    
+    def _run_project_init(self) -> None:
+        """Run PROJECT_INIT state: Ask for project name and global defaults."""
+        print("-" * 40)
+        print("Step 0: Project Setup")
+        print("-" * 40)
+        print()
+        
+        project_name = input("Project name: ").strip()
         if project_name.lower() in ("quit", "exit"):
             self.state = WorkflowState.COMPLETE
             return
@@ -315,244 +845,747 @@ class SingleAgentOrganGeneratorV1:
             project_name = f"project_{int(time.time())}"
             print(f"Using default project name: {project_name}")
         
+        project_slug = project_name.lower().replace(" ", "_").replace("-", "_")
+        
         self.context.project_name = project_name
-        self.context.output_dir = os.path.join(self.base_output_dir, project_name)
+        self.context.project_slug = project_slug
+        self.context.output_dir = os.path.join(self.base_output_dir, project_slug)
+        
         os.makedirs(self.context.output_dir, exist_ok=True)
+        os.makedirs(os.path.join(self.context.output_dir, "objects"), exist_ok=True)
         
-        output_units = input("Enter output units (mm/cm/m/um) [default: mm]: ").strip().lower()
-        if output_units in ("quit", "exit"):
+        output_dir_input = input(f"Output directory [{self.context.output_dir}]: ").strip()
+        if output_dir_input.lower() in ("quit", "exit"):
             self.state = WorkflowState.COMPLETE
             return
-        if output_units not in ("mm", "cm", "m", "um"):
-            output_units = "mm"
-            print(f"Using default units: {output_units}")
-        self.context.output_units = output_units
+        if output_dir_input:
+            self.context.output_dir = output_dir_input
+            os.makedirs(self.context.output_dir, exist_ok=True)
+            os.makedirs(os.path.join(self.context.output_dir, "objects"), exist_ok=True)
         
-        print(f"\nProject '{project_name}' created at: {self.context.output_dir}")
-        print(f"Output units: {self.context.output_units}")
+        print()
+        print("Global defaults:")
+        print(f"  - Internal units: {self.context.units_internal}")
+        print(f"  - Export units: {self.context.units_export}")
+        domain = self.context.default_embed_domain
+        print(f"  - Default embed domain: {domain[0]*1000:.0f}mm x {domain[1]*1000:.0f}mm x {domain[2]*1000:.0f}mm")
+        print(f"  - Flow solver: {'ON' if self.context.flow_solver_enabled else 'OFF'}")
         
-        self.state = WorkflowState.REQUIREMENTS
+        change_defaults = input("Change any defaults? (yes/no) [no]: ").strip().lower()
+        if change_defaults in ("quit", "exit"):
+            self.state = WorkflowState.COMPLETE
+            return
+        
+        if change_defaults in ("yes", "y"):
+            units = input(f"Export units (mm/cm/m/um) [{self.context.units_export}]: ").strip().lower()
+            if units in ("mm", "cm", "m", "um"):
+                self.context.units_export = units
+            
+            domain_input = input("Default embed domain (L,W,H in meters): ").strip()
+            if domain_input:
+                try:
+                    parts = [float(x.strip()) for x in domain_input.split(",")]
+                    if len(parts) == 3:
+                        self.context.default_embed_domain = tuple(parts)
+                except ValueError:
+                    print("Invalid format, keeping default.")
+            
+            flow = input("Enable flow solver? (yes/no) [no]: ").strip().lower()
+            if flow in ("yes", "y"):
+                self.context.flow_solver_enabled = True
+        
+        self.context.save_project_json()
+        
+        print()
+        print(f"Project '{project_name}' created at: {self.context.output_dir}")
+        
+        self.state = WorkflowState.OBJECT_PLANNING
     
-    def _run_requirements(self) -> None:
-        """Run REQUIREMENTS state: Ask for system description."""
+    def _run_object_planning(self) -> None:
+        """Run OBJECT_PLANNING state: Ask how many objects and create folders."""
         print()
         print("-" * 40)
-        print("Step 2: System Description")
+        print("Step 1: Object Planning")
         print("-" * 40)
-        print()
-        print("Please describe the organ vascular structure you want to generate.")
-        print("Include details like:")
-        print("  - Organ type (liver, kidney, etc.)")
-        print("  - Size and dimensions")
-        print("  - Number of vessels/segments")
-        print("  - Any specific constraints")
         print()
         
-        description = input("Description: ").strip()
-        if description.lower() in ("quit", "exit"):
+        num_objects_input = input("How many objects in this project? [1]: ").strip()
+        if num_objects_input.lower() in ("quit", "exit"):
             self.state = WorkflowState.COMPLETE
             return
         
-        if not description:
+        try:
+            num_objects = int(num_objects_input) if num_objects_input else 1
+        except ValueError:
+            num_objects = 1
+            print("Invalid number, using 1 object.")
+        
+        if num_objects < 1:
+            num_objects = 1
+        
+        if num_objects > 1:
+            variant_input = input("Variants of same concept or different objects? (variants/different): ").strip().lower()
+            if variant_input.lower() in ("quit", "exit"):
+                self.state = WorkflowState.COMPLETE
+                return
+            self.context.variant_mode = variant_input.startswith("v")
+        
+        print()
+        print("Give each object a short name (or press Enter for auto-generated slugs):")
+        
+        for i in range(num_objects):
+            default_name = f"object_{i+1:03d}"
+            name_input = input(f"  Object {i+1} name [{default_name}]: ").strip()
+            if name_input.lower() in ("quit", "exit"):
+                self.state = WorkflowState.COMPLETE
+                return
+            
+            name = name_input if name_input else default_name
+            slug = name.lower().replace(" ", "_").replace("-", "_")
+            
+            obj = self.context.add_object(name, slug)
+            print(f"    Created: {obj.object_dir}")
+        
+        self.context.save_project_json()
+        
+        print()
+        print(f"Created {len(self.context.objects)} object(s).")
+        
+        self.context.current_object_index = 0
+        self.state = WorkflowState.FRAME_OF_REFERENCE
+    
+    def _collect_initial_intent(self, obj: ObjectContext) -> bool:
+        """Collect initial intent for an object. Returns False if user quits."""
+        print()
+        print(f"--- Object: {obj.name} ---")
+        print()
+        print("Describe the object you want to generate (purpose, shape, where")
+        print("inlets/outlets should be, any constraints):")
+        print()
+        
+        intent = input("Description: ").strip()
+        if intent.lower() in ("quit", "exit"):
+            return False
+        
+        if not intent:
             print("Error: Description is required.")
+            return self._collect_initial_intent(obj)
+        
+        obj.raw_intent = intent
+        
+        intent_path = os.path.join(obj.intent_dir, "intent.txt")
+        with open(intent_path, 'w') as f:
+            f.write(intent)
+        
+        return True
+    
+    def _run_frame_of_reference(self) -> None:
+        """Run FRAME_OF_REFERENCE state: Establish coordinate conventions."""
+        obj = self.context.get_current_object()
+        if not obj:
+            self.state = WorkflowState.COMPLETE
             return
         
-        self.context.description = description
-        self.state = WorkflowState.GENERATING
+        if not obj.raw_intent:
+            if not self._collect_initial_intent(obj):
+                self.state = WorkflowState.COMPLETE
+                return
+        
+        print()
+        print("-" * 40)
+        print(f"Step 2.2: Frame of Reference ({obj.name})")
+        print("-" * 40)
+        print()
+        print("Before discussing spatial placement, we need to establish coordinate conventions.")
+        print()
+        
+        if obj.requirements is None:
+            obj.requirements = ObjectRequirements()
+            obj.requirements.identity.object_name = obj.name
+            obj.requirements.identity.object_slug = obj.slug
+        
+        frame = obj.requirements.frame_of_reference
+        
+        origin_input = input("Use domain center as (0,0,0)? (yes/no) [yes]: ").strip().lower()
+        if origin_input in ("quit", "exit"):
+            self.state = WorkflowState.COMPLETE
+            return
+        if origin_input in ("no", "n"):
+            frame.origin = "custom"
+            custom_origin = input("Specify origin (x,y,z in meters): ").strip()
+            if custom_origin:
+                frame.origin = custom_origin
+        
+        print()
+        print("Which axis is which for you?")
+        print("  Default: X=width (left-right), Y=depth (front-back), Z=height (up-down)")
+        change_axes = input("Change axis mapping? (yes/no) [no]: ").strip().lower()
+        if change_axes in ("quit", "exit"):
+            self.state = WorkflowState.COMPLETE
+            return
+        if change_axes in ("yes", "y"):
+            x_axis = input("X axis represents (width/depth/height) [width]: ").strip().lower() or "width"
+            y_axis = input("Y axis represents (width/depth/height) [depth]: ").strip().lower() or "depth"
+            z_axis = input("Z axis represents (width/depth/height) [height]: ").strip().lower() or "height"
+            frame.axes = {"x": x_axis, "y": y_axis, "z": z_axis}
+        
+        print()
+        viewpoint = input("Viewpoint for left/right? (front/top/side) [front]: ").strip().lower()
+        if viewpoint in ("quit", "exit"):
+            self.state = WorkflowState.COMPLETE
+            return
+        if viewpoint in ("front", "top", "side"):
+            frame.viewpoint = viewpoint
+        
+        obj.frame_locked = True
+        
+        print()
+        print("Frame of reference locked:")
+        print(f"  Origin: {frame.origin}")
+        print(f"  Axes: X={frame.axes['x']}, Y={frame.axes['y']}, Z={frame.axes['z']}")
+        print(f"  Viewpoint: {frame.viewpoint}")
+        print()
+        print("Spatial references will now be interpreted according to this frame.")
+        
+        self.current_question_group = "A"
+        self.current_question_index = 0
+        self.collected_answers = {}
+        
+        self.state = WorkflowState.REQUIREMENTS_CAPTURE
     
-    def _run_generating(self) -> None:
-        """Run GENERATING state: Generate structure using LLM."""
+    def _run_requirements_capture(self) -> None:
+        """Run REQUIREMENTS_CAPTURE state: Schema-gated requirements gathering."""
+        obj = self.context.get_current_object()
+        if not obj:
+            self.state = WorkflowState.COMPLETE
+            return
+        
         print()
         print("-" * 40)
-        print(f"Step 3: Generating Structure (Iteration {self.context.iteration + 1})")
+        print(f"Step 3: Requirements Capture ({obj.name})")
+        print("-" * 40)
+        
+        groups = list(QUESTION_GROUPS.keys())
+        
+        while self.current_question_group:
+            group_idx = groups.index(self.current_question_group) if self.current_question_group in groups else 0
+            
+            if group_idx >= len(groups):
+                break
+            
+            group_key = groups[group_idx]
+            group = QUESTION_GROUPS[group_key]
+            
+            print()
+            print(f"Group {group_key}: {group['name']}")
+            print("-" * 30)
+            
+            questions = group["questions"]
+            
+            while self.current_question_index < len(questions):
+                q_key, q_text, q_default = questions[self.current_question_index]
+                
+                default_str = f" [{q_default}]" if q_default else ""
+                answer = input(f"  {q_text}{default_str}: ").strip()
+                
+                if answer.lower() in ("quit", "exit"):
+                    self.state = WorkflowState.COMPLETE
+                    return
+                
+                if not answer and q_default:
+                    answer = q_default
+                
+                self.collected_answers[q_key] = answer
+                self.current_question_index += 1
+            
+            self.current_question_index = 0
+            next_group_idx = group_idx + 1
+            if next_group_idx < len(groups):
+                self.current_question_group = groups[next_group_idx]
+            else:
+                self.current_question_group = None
+        
+        self._apply_answers_to_requirements(obj)
+        
+        req_path = obj.get_versioned_path(obj.intent_dir, "requirements", "json")
+        obj.requirements.to_json(req_path)
+        
+        print()
+        print("Requirements captured and saved.")
+        print(f"  File: {req_path}")
+        
+        print()
+        print("Please confirm these requirements are accurate before we generate.")
+        confirm = input("Proceed with generation? (yes/no) [yes]: ").strip().lower()
+        if confirm in ("quit", "exit"):
+            self.state = WorkflowState.COMPLETE
+            return
+        if confirm in ("no", "n"):
+            self.current_question_group = "A"
+            self.current_question_index = 0
+            return
+        
+        self.state = WorkflowState.SPEC_COMPILATION
+    
+    def _apply_answers_to_requirements(self, obj: ObjectContext) -> None:
+        """Apply collected answers to the requirements schema."""
+        req = obj.requirements
+        answers = self.collected_answers
+        
+        if answers.get("scale"):
+            req.frame_of_reference.units_export = answers["scale"]
+        if answers.get("min_channel_radius"):
+            try:
+                req.constraints.min_radius_m = float(answers["min_channel_radius"]) / 1000
+            except ValueError:
+                pass
+        if answers.get("min_clearance"):
+            try:
+                req.constraints.min_clearance_m = float(answers["min_clearance"]) / 1000
+            except ValueError:
+                pass
+        
+        if answers.get("boundary_margin"):
+            try:
+                req.constraints.boundary_buffer_m = float(answers["boundary_margin"])
+            except ValueError:
+                pass
+        
+        try:
+            num_inlets = int(answers.get("num_inlets", "1"))
+            num_outlets = int(answers.get("num_outlets", "0"))
+        except ValueError:
+            num_inlets = 1
+            num_outlets = 0
+        
+        inlet_radii = answers.get("inlet_radius", "0.002").split(",")
+        outlet_radii = answers.get("outlet_radius", "0.001").split(",")
+        
+        req.inlets_outlets.inlets = []
+        for i in range(num_inlets):
+            radius = float(inlet_radii[i % len(inlet_radii)].strip()) / 1000 if inlet_radii else 0.002
+            req.inlets_outlets.inlets.append(PortSpec(
+                name=f"inlet_{i+1}",
+                radius_m=radius,
+            ))
+        
+        req.inlets_outlets.outlets = []
+        for i in range(num_outlets):
+            radius = float(outlet_radii[i % len(outlet_radii)].strip()) / 1000 if outlet_radii else 0.001
+            req.inlets_outlets.outlets.append(PortSpec(
+                name=f"outlet_{i+1}",
+                radius_m=radius,
+            ))
+        
+        req.inlets_outlets.placement_rule = answers.get("inlet_outlet_location", "")
+        
+        if answers.get("target_terminals"):
+            try:
+                req.topology.target_terminals = int(answers["target_terminals"])
+            except ValueError:
+                pass
+        if answers.get("max_depth"):
+            try:
+                req.topology.max_depth = int(answers["max_depth"])
+            except ValueError:
+                pass
+        
+        tortuosity_map = {"low": 0.1, "med": 0.5, "high": 0.9}
+        req.geometry.tortuosity = tortuosity_map.get(answers.get("tortuosity", "low"), 0.1)
+        
+        if answers.get("branch_angle_range"):
+            try:
+                parts = answers["branch_angle_range"].split("-")
+                if len(parts) == 2:
+                    req.geometry.branch_angle_deg = {
+                        "min": float(parts[0]),
+                        "max": float(parts[1]),
+                    }
+            except ValueError:
+                pass
+        
+        if answers.get("segment_length_range"):
+            try:
+                parts = answers["segment_length_range"].split("-")
+                if len(parts) == 2:
+                    req.geometry.segment_length_m = {
+                        "min": float(parts[0]) / 1000,
+                        "max": float(parts[1]) / 1000,
+                    }
+            except ValueError:
+                pass
+        
+        req.geometry.radius_profile = answers.get("tapering", "murray")
+        
+        req.constraints.avoid_self_intersection = answers.get("ban_self_intersection", "yes").lower() in ("yes", "y")
+        
+        if answers.get("terminal_range"):
+            try:
+                parts = answers["terminal_range"].split("-")
+                if len(parts) == 2:
+                    req.acceptance_criteria.terminals_range = (int(parts[0]), int(parts[1]))
+            except ValueError:
+                pass
+        
+        req.acceptance_criteria.mesh_watertight_required = answers.get("watertight_required", "yes").lower() in ("yes", "y")
+    
+    def _run_spec_compilation(self) -> None:
+        """Run SPEC_COMPILATION state: Compile requirements to DesignSpec."""
+        obj = self.context.get_current_object()
+        if not obj:
+            self.state = WorkflowState.COMPLETE
+            return
+        
+        print()
+        print("-" * 40)
+        print(f"Step 4: Spec Compilation ({obj.name})")
         print("-" * 40)
         print()
-        print("Generating structure based on your description...")
-        print("This may take a moment...")
-        print()
+        print("Compiling requirements to DesignSpec...")
         
-        feedback_context = ""
-        if self.context.feedback_history:
-            feedback_context = "\n\nPrevious feedback from user:\n"
-            for i, fb in enumerate(self.context.feedback_history, 1):
-                feedback_context += f"{i}. {fb}\n"
+        req_dict = obj.requirements.to_dict()
         
-        task = f"""Generate a vascular network structure based on this description:
-
-{self.context.description}
-{feedback_context}
+        task = f"""Compile the following requirements into a DesignSpec for vascular network generation.
 
 Requirements:
-1. Use the generation library to create the structure
-2. Save the design spec to: {self.context.output_dir}/design_spec.json
-3. Save the network to: {self.context.output_dir}/network.json
-4. Export STL mesh to: {self.context.output_dir}/structure.stl
-5. Use output_units="{self.context.output_units}" for all exports
-6. Save the Python code used to: {self.context.output_dir}/generation_code.py
+{json.dumps(req_dict, indent=2)}
 
-Provide complete, runnable Python code that uses the generation library.
-After generating, report the paths to all created files."""
+Raw user intent:
+{obj.raw_intent}
 
+Instructions:
+1. Create a DesignSpec that matches the requirements
+2. Use the generation.specs module classes (DesignSpec, EllipsoidSpec/BoxSpec, TreeSpec, ColonizationSpec)
+3. All values should be in METERS (internal units)
+4. Save the spec to: {obj.get_versioned_path(obj.spec_dir, "spec", "json")}
+5. Save the Python code used to: {obj.get_versioned_path(obj.code_dir, "generate", "py")}
+
+Provide complete, runnable Python code that:
+1. Creates the DesignSpec
+2. Saves it to JSON
+3. Is ready to be used for generation
+
+The code should be self-contained with all necessary imports."""
+
+        previous_context = self._get_previous_attempts_context(obj)
+        if previous_context:
+            task += f"\n\nContext from previous attempts:\n{previous_context}"
+        
         result = self.agent.run_task(
             task=task,
             context={
-                "project_name": self.context.project_name,
-                "output_dir": self.context.output_dir,
-                "output_units": self.context.output_units,
-                "iteration": self.context.iteration,
+                "object_name": obj.name,
+                "object_dir": obj.object_dir,
+                "version": obj.version,
             }
         )
         
         if result.status == TaskStatus.COMPLETED:
-            self.context.spec_json = os.path.join(self.context.output_dir, "design_spec.json")
-            self.context.network_json = os.path.join(self.context.output_dir, "network.json")
-            self.context.stl_path = os.path.join(self.context.output_dir, "structure.stl")
-            self.context.code_path = os.path.join(self.context.output_dir, "generation_code.py")
-            self.context.iteration += 1
+            obj.spec_path = obj.get_versioned_path(obj.spec_dir, "spec", "json")
+            obj.code_path = obj.get_versioned_path(obj.code_dir, "generate", "py")
+            
+            print("\nSpec compilation complete!")
+            print(f"  Spec: {obj.spec_path}")
+            print(f"  Code: {obj.code_path}")
+            
+            self.state = WorkflowState.GENERATION
+        else:
+            print(f"\nSpec compilation failed: {result.error}")
+            print("Please review the requirements and try again.")
+            self.state = WorkflowState.REQUIREMENTS_CAPTURE
+    
+    def _run_generation(self) -> None:
+        """Run GENERATION state: Execute generation within object folder."""
+        obj = self.context.get_current_object()
+        if not obj:
+            self.state = WorkflowState.COMPLETE
+            return
+        
+        print()
+        print("-" * 40)
+        print(f"Step 5: Generation ({obj.name}, v{obj.version})")
+        print("-" * 40)
+        print()
+        print("Executing generation...")
+        
+        obj.status = "generating"
+        
+        previous_context = self._get_previous_attempts_context(obj)
+        feedback_context = ""
+        if obj.feedback_history:
+            feedback_context = "\n\nPrevious feedback from user:\n"
+            for i, fb in enumerate(obj.feedback_history, 1):
+                feedback_context += f"{i}. {fb}\n"
+        
+        task = f"""Execute vascular network generation based on the spec.
+
+Spec file: {obj.spec_path}
+Code file: {obj.code_path}
+
+Requirements:
+1. Load the spec from the JSON file
+2. Use generation.api.design_from_spec() or appropriate generation functions
+3. Save the network to: {obj.get_versioned_path(obj.outputs_dir, "network", "json")}
+4. Export STL mesh to: {obj.get_versioned_path(obj.mesh_dir, "mesh_network", "stl")}
+5. Use output_units="{self.context.units_export}" for exports
+
+{feedback_context}
+
+If generation fails, report the error and suggest parameter adjustments.
+
+Provide complete, runnable Python code."""
+
+        if previous_context:
+            task += f"\n\nContext from previous attempts (use workable parts):\n{previous_context}"
+        
+        result = self.agent.run_task(
+            task=task,
+            context={
+                "object_name": obj.name,
+                "object_dir": obj.object_dir,
+                "version": obj.version,
+                "output_units": self.context.units_export,
+            }
+        )
+        
+        if result.status == TaskStatus.COMPLETED:
+            obj.network_path = obj.get_versioned_path(obj.outputs_dir, "network", "json")
+            obj.mesh_path = obj.get_versioned_path(obj.mesh_dir, "mesh_network", "stl")
             
             print("\nGeneration complete!")
-            print(f"\nAgent response:\n{result.output[:1000]}...")
+            print(f"  Network: {obj.network_path}")
+            print(f"  Mesh: {obj.mesh_path}")
             
-            self.state = WorkflowState.VISUALIZING
+            self.state = WorkflowState.ANALYSIS_VALIDATION
         else:
             print(f"\nGeneration failed: {result.error}")
-            print("Please try again with a different description.")
-            self.state = WorkflowState.REQUIREMENTS
+            obj.status = "failed"
+            
+            retry = input("Retry with adjusted parameters? (yes/no) [yes]: ").strip().lower()
+            if retry in ("no", "n"):
+                self._move_to_next_object_or_complete()
+            else:
+                self.state = WorkflowState.REQUIREMENTS_CAPTURE
     
-    def _run_visualizing(self) -> None:
-        """Run VISUALIZING state: Show visualization and files."""
+    def _run_analysis_validation(self) -> None:
+        """Run ANALYSIS_VALIDATION state: Analyze and validate generated structure."""
+        obj = self.context.get_current_object()
+        if not obj:
+            self.state = WorkflowState.COMPLETE
+            return
+        
         print()
         print("-" * 40)
-        print("Step 4: Visualization")
+        print(f"Step 6: Analysis & Validation ({obj.name}, v{obj.version})")
         print("-" * 40)
         print()
+        print("Analyzing and validating generated structure...")
+        
+        task = f"""Analyze and validate the generated vascular network.
+
+Network file: {obj.network_path}
+Mesh file: {obj.mesh_path}
+
+Requirements:
+1. Load the network and mesh
+2. Compute analysis metrics:
+   - Node count, segment count, terminal count
+   - Radius statistics (min, max, mean)
+   - Clearance statistics
+   - Coverage metrics if applicable
+3. Run validation checks:
+   - Mesh integrity (watertight, manifold)
+   - Murray's law compliance
+   - Collision detection
+   - Constraint satisfaction
+4. Save analysis to: {obj.get_versioned_path(obj.analysis_dir, "analysis", "json")}
+5. Save human-readable analysis to: {obj.get_versioned_path(obj.analysis_dir, "analysis", "txt")}
+6. Save validation to: {obj.get_versioned_path(obj.validation_dir, "validation", "json")}
+
+Report:
+- Counts (nodes/segments/terminals)
+- Radius/clearance minima
+- Any failing checks with suggested knob adjustments
+
+Flow solver is {'ON' if self.context.flow_solver_enabled else 'OFF'}.
+
+Provide complete analysis results."""
+
+        result = self.agent.run_task(
+            task=task,
+            context={
+                "object_name": obj.name,
+                "object_dir": obj.object_dir,
+                "version": obj.version,
+            }
+        )
+        
+        if result.status == TaskStatus.COMPLETED:
+            obj.analysis_path = obj.get_versioned_path(obj.analysis_dir, "analysis", "json")
+            obj.validation_path = obj.get_versioned_path(obj.validation_dir, "validation", "json")
+            
+            print("\nAnalysis complete!")
+            print(f"\nAgent response:\n{result.output[:2000]}...")
+            
+            self.state = WorkflowState.ITERATION
+        else:
+            print(f"\nAnalysis failed: {result.error}")
+            self.state = WorkflowState.ITERATION
+    
+    def _run_iteration(self) -> None:
+        """Run ITERATION state: Accept user critique and iterate."""
+        obj = self.context.get_current_object()
+        if not obj:
+            self.state = WorkflowState.COMPLETE
+            return
+        
+        print()
+        print("-" * 40)
+        print(f"Step 7: Review & Iterate ({obj.name}, v{obj.version})")
+        print("-" * 40)
+        print()
+        
         print("Generated files:")
-        
-        if self.context.spec_json and os.path.exists(self.context.spec_json):
-            print(f"  [OK] Design spec: {self.context.spec_json}")
+        if obj.mesh_path and os.path.exists(obj.mesh_path):
+            print(f"  [OK] Mesh: {obj.mesh_path}")
         else:
-            print(f"  [--] Design spec: Not generated")
-        
-        if self.context.network_json and os.path.exists(self.context.network_json):
-            print(f"  [OK] Network: {self.context.network_json}")
+            print(f"  [--] Mesh: Not generated")
+        if obj.analysis_path and os.path.exists(obj.analysis_path):
+            print(f"  [OK] Analysis: {obj.analysis_path}")
         else:
-            print(f"  [--] Network: Not generated")
-        
-        if self.context.stl_path and os.path.exists(self.context.stl_path):
-            print(f"  [OK] STL mesh: {self.context.stl_path}")
-        else:
-            print(f"  [--] STL mesh: Not generated")
-        
-        if self.context.code_path and os.path.exists(self.context.code_path):
-            print(f"  [OK] Generation code: {self.context.code_path}")
-        else:
-            print(f"  [--] Generation code: Not generated")
+            print(f"  [--] Analysis: Not generated")
         
         print()
-        print("To visualize the 3D structure, you can:")
-        print(f"  1. Open {self.context.stl_path} in a 3D viewer (MeshLab, Blender, etc.)")
-        print("  2. Use the generation library's visualization tools")
+        print("To visualize, open the STL file in a 3D viewer (MeshLab, Blender, etc.)")
         print()
         
-        self.state = WorkflowState.REVIEW
-    
-    def _run_review(self) -> None:
-        """Run REVIEW state: Ask if user is satisfied."""
-        print()
-        print("-" * 40)
-        print("Step 5: Review")
-        print("-" * 40)
-        print()
-        
-        response = input("Is this structure what you wanted? (yes/no): ").strip().lower()
+        response = input("Is this structure acceptable? (yes/no): ").strip().lower()
         
         if response in ("quit", "exit"):
             self.state = WorkflowState.COMPLETE
             return
         
         if response in ("yes", "y"):
-            self.state = WorkflowState.FINALIZING
+            obj.status = "accepted"
+            self.state = WorkflowState.FINALIZATION
         elif response in ("no", "n"):
-            self.state = WorkflowState.CLARIFYING
+            print()
+            print("Please describe what's wrong and what changes you'd like:")
+            print("Examples: 'denser near top', 'avoid crossing', 'bigger outlet', 'more symmetry'")
+            
+            feedback = input("Feedback: ").strip()
+            
+            if feedback.lower() in ("quit", "exit"):
+                self.state = WorkflowState.COMPLETE
+                return
+            
+            if not feedback:
+                print("Error: Feedback is required to improve the structure.")
+                return
+            
+            obj.feedback_history.append(feedback)
+            obj.increment_version()
+            
+            print(f"\nThank you for your feedback. Regenerating (v{obj.version})...")
+            
+            self.state = WorkflowState.SPEC_COMPILATION
         else:
             print("Please answer 'yes' or 'no'.")
     
-    def _run_clarifying(self) -> None:
-        """Run CLARIFYING state: Ask what's wrong."""
-        print()
-        print("-" * 40)
-        print("Step 6: Clarification")
-        print("-" * 40)
-        print()
-        print("Please describe what's wrong with the structure and what changes you'd like:")
-        
-        feedback = input("Feedback: ").strip()
-        
-        if feedback.lower() in ("quit", "exit"):
+    def _run_finalization(self) -> None:
+        """Run FINALIZATION state: Embed and produce final outputs."""
+        obj = self.context.get_current_object()
+        if not obj:
             self.state = WorkflowState.COMPLETE
             return
         
-        if not feedback:
-            print("Error: Feedback is required to improve the structure.")
-            return
-        
-        self.context.feedback_history.append(feedback)
-        print("\nThank you for your feedback. Regenerating structure...")
-        
-        self.state = WorkflowState.GENERATING
-    
-    def _run_finalizing(self) -> None:
-        """Run FINALIZING state: Generate final outputs."""
         print()
         print("-" * 40)
-        print("Step 7: Finalizing")
+        print(f"Step 8: Finalization ({obj.name})")
         print("-" * 40)
         print()
-        print("Generating final outputs (embedded structure, final STL, code)...")
+        print("Generating final outputs (embedded structure, final STL, manifest)...")
         
-        task = f"""Finalize the organ structure project:
+        embed_domain = self.context.default_embed_domain
+        
+        task = f"""Finalize the organ structure for object '{obj.name}'.
 
-1. Create an embedded structure (domain with void carved out) using:
-   - embed_tree_as_negative_space() from generation.ops.embedding
-   - Save to: {self.context.output_dir}/embedded_structure.stl
-   - Use output_units="{self.context.output_units}"
+Network file: {obj.network_path}
+Mesh file: {obj.mesh_path}
 
-2. Ensure all final files are properly saved:
-   - Embedded structure STL
-   - Surface mesh STL  
-   - Design specification JSON
-   - Network JSON
-   - Generation code Python file
+Requirements:
+1. Embed the vascular network into the domain as negative space:
+   - Domain: box {embed_domain[0]*1000:.0f}mm x {embed_domain[1]*1000:.0f}mm x {embed_domain[2]*1000:.0f}mm
+   - Use embed_tree_as_negative_space() or equivalent
+   - Save void STL to: {os.path.join(obj.final_dir, "embed", "void.stl")}
+   - Optionally save domain STL to: {os.path.join(obj.final_dir, "embed", "domain.stl")}
 
-3. Create a summary JSON file at: {self.context.output_dir}/project_summary.json
-   Include: project name, description, all file paths, units, iterations
+2. Create embed_report.json with embedding parameters
 
-Use the existing structure from: {self.context.stl_path}
-Report all final file paths when complete."""
+3. Create final_description.txt with:
+   - Human narrative of the structure
+   - Constraints applied
+   - What was accepted
+
+4. Create final_analysis.json with accepted metrics
+
+5. Create manifest.json with:
+   - Complete file list
+   - All paths to artifacts
+   - Version information
+
+6. Create run_metadata.json with:
+   - Seed used
+   - Units
+   - Library versions
+   - Git hash if available
+   - Environment snapshot
+
+Use output_units="{self.context.units_export}" for all exports."""
 
         result = self.agent.run_task(
             task=task,
             context={
-                "project_name": self.context.project_name,
-                "output_dir": self.context.output_dir,
-                "output_units": self.context.output_units,
-                "stl_path": self.context.stl_path,
+                "object_name": obj.name,
+                "object_dir": obj.object_dir,
+                "version": obj.version,
+                "embed_domain": embed_domain,
+                "output_units": self.context.units_export,
             }
         )
         
         if result.status == TaskStatus.COMPLETED:
-            self.context.embedded_stl_path = os.path.join(
-                self.context.output_dir, "embedded_structure.stl"
-            )
+            obj.final_void_stl = os.path.join(obj.final_dir, "embed", "void.stl")
+            obj.final_domain_stl = os.path.join(obj.final_dir, "embed", "domain.stl")
+            obj.final_manifest = os.path.join(obj.final_dir, "manifest.json")
+            obj.status = "finalized"
+            
             print("\nFinalization complete!")
-            print(f"\nAgent response:\n{result.output[:1000]}...")
+            print(f"  Void STL: {obj.final_void_stl}")
+            print(f"  Manifest: {obj.final_manifest}")
         else:
             print(f"\nFinalization had issues: {result.error}")
             print("Some final outputs may not have been generated.")
+            obj.status = "finalized_with_errors"
         
-        self._save_project_summary()
+        obj_json_path = os.path.join(obj.object_dir, "object.json")
+        with open(obj_json_path, 'w') as f:
+            json.dump(obj.to_dict(), f, indent=2)
         
-        self.state = WorkflowState.COMPLETE
+        self._move_to_next_object_or_complete()
+    
+    def _move_to_next_object_or_complete(self) -> None:
+        """Move to the next object or complete the workflow."""
+        self.context.current_object_index += 1
+        
+        if self.context.current_object_index < len(self.context.objects):
+            self.current_question_group = None
+            self.current_question_index = 0
+            self.collected_answers = {}
+            self.state = WorkflowState.FRAME_OF_REFERENCE
+        else:
+            self._save_project_summary()
+            self.state = WorkflowState.COMPLETE
     
     def _save_project_summary(self) -> None:
         """Save project summary JSON."""
@@ -560,17 +1593,22 @@ Report all final file paths when complete."""
             "workflow_name": self.WORKFLOW_NAME,
             "workflow_version": self.WORKFLOW_VERSION,
             "project_name": self.context.project_name,
-            "description": self.context.description,
-            "output_units": self.context.output_units,
-            "iterations": self.context.iteration,
-            "feedback_history": self.context.feedback_history,
-            "artifacts": {
-                "design_spec": self.context.spec_json,
-                "network": self.context.network_json,
-                "stl_mesh": self.context.stl_path,
-                "embedded_structure": self.context.embedded_stl_path,
-                "generation_code": self.context.code_path,
-            },
+            "project_slug": self.context.project_slug,
+            "units_internal": self.context.units_internal,
+            "units_export": self.context.units_export,
+            "flow_solver_enabled": self.context.flow_solver_enabled,
+            "variant_mode": self.context.variant_mode,
+            "objects": [
+                {
+                    "name": obj.name,
+                    "slug": obj.slug,
+                    "status": obj.status,
+                    "version": obj.version,
+                    "final_void_stl": obj.final_void_stl,
+                    "final_manifest": obj.final_manifest,
+                }
+                for obj in self.context.objects
+            ],
             "timestamp": time.time(),
         }
         
@@ -581,59 +1619,104 @@ Report all final file paths when complete."""
         if self.verbose:
             print(f"\nProject summary saved to: {summary_path}")
     
-    def _process_input(self, user_input: str) -> Tuple[WorkflowState, str]:
+    def _get_previous_attempts_context(self, obj: ObjectContext) -> str:
         """
-        Process user input for programmatic workflow control.
+        Get context from previous attempts for the current object.
         
-        Parameters
-        ----------
-        user_input : str
-            User's input
-            
-        Returns
-        -------
-        Tuple[WorkflowState, str]
-            New state and response message
+        This allows the agent to pull code and context from previous iterations
+        to keep workable parts and learn from past attempts.
         """
+        context_parts = []
+        
+        for v in range(1, obj.version):
+            prev_spec = os.path.join(obj.spec_dir, f"spec_v{v:03d}.json")
+            if os.path.exists(prev_spec):
+                try:
+                    with open(prev_spec, 'r') as f:
+                        spec_content = f.read()
+                    context_parts.append(f"=== Previous Spec v{v} ===\n{spec_content[:1000]}")
+                except Exception:
+                    pass
+            
+            prev_code = os.path.join(obj.code_dir, f"generate_v{v:03d}.py")
+            if os.path.exists(prev_code):
+                try:
+                    with open(prev_code, 'r') as f:
+                        code_content = f.read()
+                    context_parts.append(f"=== Previous Code v{v} ===\n{code_content[:2000]}")
+                except Exception:
+                    pass
+            
+            prev_analysis = os.path.join(obj.analysis_dir, f"analysis_v{v:03d}.txt")
+            if os.path.exists(prev_analysis):
+                try:
+                    with open(prev_analysis, 'r') as f:
+                        analysis_content = f.read()
+                    context_parts.append(f"=== Previous Analysis v{v} ===\n{analysis_content[:1000]}")
+                except Exception:
+                    pass
+        
+        if obj.feedback_history:
+            feedback_str = "\n".join(f"  {i+1}. {fb}" for i, fb in enumerate(obj.feedback_history))
+            context_parts.append(f"=== Feedback History ===\n{feedback_str}")
+        
+        return "\n\n".join(context_parts) if context_parts else ""
+    
+    def _process_input(self, user_input: str) -> Tuple[WorkflowState, str]:
+        """Process user input for programmatic workflow control."""
         if user_input.lower() in ("quit", "exit"):
             self.state = WorkflowState.COMPLETE
             return self.state, "Workflow terminated by user."
         
-        if self.state == WorkflowState.INIT:
+        if self.state == WorkflowState.PROJECT_INIT:
             self.context.project_name = user_input
-            self.context.output_dir = os.path.join(self.base_output_dir, user_input)
+            self.context.project_slug = user_input.lower().replace(" ", "_")
+            self.context.output_dir = os.path.join(self.base_output_dir, self.context.project_slug)
             os.makedirs(self.context.output_dir, exist_ok=True)
-            self.state = WorkflowState.REQUIREMENTS
-            return self.state, f"Project '{user_input}' created. Please provide a description."
+            os.makedirs(os.path.join(self.context.output_dir, "objects"), exist_ok=True)
+            self.context.save_project_json()
+            self.state = WorkflowState.OBJECT_PLANNING
+            return self.state, f"Project '{user_input}' created. How many objects?"
         
-        elif self.state == WorkflowState.REQUIREMENTS:
-            self.context.description = user_input
-            self.state = WorkflowState.GENERATING
-            return self.state, "Description received. Starting generation..."
+        elif self.state == WorkflowState.OBJECT_PLANNING:
+            try:
+                num_objects = int(user_input)
+            except ValueError:
+                num_objects = 1
+            
+            for i in range(num_objects):
+                name = f"object_{i+1:03d}"
+                self.context.add_object(name, name)
+            
+            self.context.save_project_json()
+            self.state = WorkflowState.FRAME_OF_REFERENCE
+            return self.state, f"Created {num_objects} object(s). Starting requirements capture."
         
-        elif self.state == WorkflowState.REVIEW:
+        elif self.state == WorkflowState.ITERATION:
             if user_input.lower() in ("yes", "y"):
-                self.state = WorkflowState.FINALIZING
-                return self.state, "Great! Finalizing project..."
+                obj = self.context.get_current_object()
+                if obj:
+                    obj.status = "accepted"
+                self.state = WorkflowState.FINALIZATION
+                return self.state, "Great! Finalizing..."
             elif user_input.lower() in ("no", "n"):
-                self.state = WorkflowState.CLARIFYING
-                return self.state, "Please describe what's wrong."
+                return self.state, "Please provide feedback on what to change."
             else:
-                return self.state, "Please answer 'yes' or 'no'."
+                obj = self.context.get_current_object()
+                if obj:
+                    obj.feedback_history.append(user_input)
+                    obj.increment_version()
+                self.state = WorkflowState.SPEC_COMPILATION
+                return self.state, "Feedback received. Regenerating..."
         
-        elif self.state == WorkflowState.CLARIFYING:
-            self.context.feedback_history.append(user_input)
-            self.state = WorkflowState.GENERATING
-            return self.state, "Feedback received. Regenerating..."
-        
-        return self.state, "Unexpected state. Please restart the workflow."
+        return self.state, "Unexpected state. Please continue with the workflow."
 
 
 def run_single_agent_workflow(
     provider: str = "openai",
     api_key: Optional[str] = None,
     model: Optional[str] = None,
-    base_output_dir: str = "./projects",
+    base_output_dir: str = "./outputs",
     **kwargs,
 ) -> ProjectContext:
     """
@@ -656,18 +1739,6 @@ def run_single_agent_workflow(
     -------
     ProjectContext
         Final project context with all generated artifacts
-        
-    Examples
-    --------
-    >>> from automation.workflow import run_single_agent_workflow
-    >>> 
-    >>> context = run_single_agent_workflow(
-    ...     provider="openai",
-    ...     model="gpt-4",
-    ...     base_output_dir="./my_projects"
-    ... )
-    >>> print(f"Project: {context.project_name}")
-    >>> print(f"STL: {context.stl_path}")
     """
     from .agent_runner import create_agent
     
