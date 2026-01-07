@@ -19,6 +19,7 @@ from io import StringIO
 from contextlib import redirect_stdout, redirect_stderr
 
 from .llm_client import LLMClient, LLMConfig, LLMResponse
+from .execution_modes import ExecutionMode, DEFAULT_EXECUTION_MODE, parse_execution_mode
 
 
 class TaskStatus(Enum):
@@ -524,11 +525,18 @@ class AgentConfig:
     max_iterations : int
         Maximum number of LLM interaction iterations
     auto_execute_code : bool
-        Whether to automatically execute generated code
+        Whether to automatically execute generated code (legacy inline mode)
     verbose : bool
         Whether to print detailed progress
     save_conversation : bool
         Whether to save conversation history to file
+    execution_mode : ExecutionMode
+        Execution mode for script-based workflows:
+        - WRITE_ONLY: Generate script, don't run
+        - REVIEW_THEN_RUN: Generate script, pause for review, then run
+        - AUTO_RUN: Generate script and run automatically
+    timeout_seconds : float
+        Timeout for script execution in seconds
     """
     repo_path: str = "."
     output_dir: str = "./output"
@@ -536,6 +544,8 @@ class AgentConfig:
     auto_execute_code: bool = False
     verbose: bool = True
     save_conversation: bool = True
+    execution_mode: ExecutionMode = DEFAULT_EXECUTION_MODE
+    timeout_seconds: float = 300.0
 
 
 @dataclass
@@ -941,6 +951,8 @@ def create_agent(
     model: Optional[str] = None,
     repo_path: str = ".",
     output_dir: str = "./output",
+    execution_mode: Optional[str] = None,
+    timeout_seconds: float = 300.0,
     **kwargs,
 ) -> AgentRunner:
     """
@@ -958,6 +970,13 @@ def create_agent(
         Path to repository
     output_dir : str
         Output directory
+    execution_mode : str, optional
+        Execution mode for script-based workflows:
+        - "write_only": Generate script, don't run
+        - "review_then_run": Generate script, pause for review, then run (default)
+        - "auto_run": Generate script and run automatically
+    timeout_seconds : float
+        Timeout for script execution in seconds (default: 300)
     **kwargs
         Additional arguments for AgentConfig
         
@@ -976,6 +995,13 @@ def create_agent(
     ...     output_dir="./my_output"
     ... )
     >>> result = agent.run_task("Generate a liver network")
+    
+    >>> # With script-based execution mode
+    >>> agent = create_agent(
+    ...     provider="openai",
+    ...     execution_mode="review_then_run",
+    ...     timeout_seconds=600
+    ... )
     """
     # Set default model based on provider
     if model is None:
@@ -994,9 +1020,14 @@ def create_agent(
         model=model,
     )
     
+    # Parse execution mode if provided as string
+    exec_mode = parse_execution_mode(execution_mode) if execution_mode else DEFAULT_EXECUTION_MODE
+    
     config = AgentConfig(
         repo_path=repo_path,
         output_dir=output_dir,
+        execution_mode=exec_mode,
+        timeout_seconds=timeout_seconds,
         **kwargs,
     )
     

@@ -20,6 +20,7 @@ from .task_templates import (
     iterate_design_prompt,
 )
 from .workflow import SingleAgentOrganGeneratorV1
+from .execution_modes import ExecutionMode, parse_execution_mode, DEFAULT_EXECUTION_MODE
 
 
 def main():
@@ -144,6 +145,19 @@ def main():
         type=str,
         default="./projects",
         help="Base directory for project outputs (default: ./projects)",
+    )
+    wf_parser.add_argument(
+        "--execution-mode", "-e",
+        type=str,
+        choices=["write_only", "review_then_run", "auto_run"],
+        default="review_then_run",
+        help="Execution mode for script-based workflows (default: review_then_run)",
+    )
+    wf_parser.add_argument(
+        "--timeout-seconds", "-t",
+        type=float,
+        default=300.0,
+        help="Timeout for script execution in seconds (default: 300)",
     )
     
     # Common arguments for all commands
@@ -286,10 +300,14 @@ def run_interactive(agent: AgentRunner, args):
 
 def run_workflow(agent: AgentRunner, args):
     """Run the Single Agent Organ Generator V1 workflow."""
+    execution_mode = parse_execution_mode(args.execution_mode)
+    
     workflow = SingleAgentOrganGeneratorV1(
         agent=agent,
         base_output_dir=args.output_dir,
         verbose=args.verbose,
+        execution_mode=execution_mode,
+        timeout_seconds=args.timeout_seconds,
     )
     
     context = workflow.run()

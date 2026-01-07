@@ -21,6 +21,14 @@ from .iterate_design import (
     fix_validation_issues_prompt,
     optimize_structure_prompt,
 )
+from .script_contract import (
+    script_contract_prompt,
+    script_contract_header,
+    script_contract_footer,
+    get_banned_patterns,
+    validate_script_contract,
+    SCRIPT_CONTRACT_REQUIREMENTS,
+)
 
 __all__ = [
     # Generation prompts
@@ -35,4 +43,11 @@ __all__ = [
     "iterate_design_prompt",
     "fix_validation_issues_prompt",
     "optimize_structure_prompt",
+    # Script contract prompts
+    "script_contract_prompt",
+    "script_contract_header",
+    "script_contract_footer",
+    "get_banned_patterns",
+    "validate_script_contract",
+    "SCRIPT_CONTRACT_REQUIREMENTS",
 ]

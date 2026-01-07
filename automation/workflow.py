@@ -41,6 +41,18 @@ import time
 import os
 
 from .agent_runner import AgentRunner, TaskResult, TaskStatus
+from .execution_modes import (
+    ExecutionMode,
+    DEFAULT_EXECUTION_MODE,
+    parse_execution_mode,
+    should_write_script,
+    should_pause_for_review,
+    should_execute,
+)
+from .script_writer import write_script, get_run_command
+from .review_gate import run_review_gate, ReviewAction
+from .subprocess_runner import run_script, print_run_summary
+from .artifact_verifier import verify_generation_stage, save_manifest, print_verification_summary
 
 
 class WorkflowState(Enum):
@@ -1713,10 +1725,14 @@ class SingleAgentOrganGeneratorV1:
         agent: AgentRunner,
         base_output_dir: str = "./outputs",
         verbose: bool = True,
+        execution_mode: ExecutionMode = DEFAULT_EXECUTION_MODE,
+        timeout_seconds: float = 300.0,
     ):
         self.agent = agent
         self.base_output_dir = base_output_dir
         self.verbose = verbose
+        self.execution_mode = execution_mode
+        self.timeout_seconds = timeout_seconds
         self.state = WorkflowState.PROJECT_INIT
         self.context = ProjectContext()
         
@@ -2296,7 +2312,13 @@ The code should be self-contained with all necessary imports."""
             self.state = WorkflowState.REQUIREMENTS_CAPTURE
     
     def _run_generation(self) -> None:
-        """Run GENERATION state: Execute generation within object folder."""
+        """Run GENERATION state: Execute generation within object folder.
+        
+        Supports three execution modes:
+        - WRITE_ONLY: Generate script, don't run
+        - REVIEW_THEN_RUN: Generate script, pause for review, then run
+        - AUTO_RUN: Generate script and run automatically
+        """
         obj = self.context.get_current_object()
         if not obj:
             self.state = WorkflowState.COMPLETE
@@ -2305,9 +2327,9 @@ The code should be self-contained with all necessary imports."""
         print()
         print("-" * 40)
         print(f"Step 5: Generation ({obj.name}, v{obj.version})")
+        print(f"Execution mode: {self.execution_mode.value}")
         print("-" * 40)
         print()
-        print("Executing generation...")
         
         obj.status = "generating"
         
@@ -2318,26 +2340,35 @@ The code should be self-contained with all necessary imports."""
             for i, fb in enumerate(obj.feedback_history, 1):
                 feedback_context += f"{i}. {fb}\n"
         
-        task = f"""Execute vascular network generation based on the spec.
+        network_path = obj.get_versioned_path(obj.outputs_dir, "network", "json")
+        mesh_path = obj.get_versioned_path(obj.mesh_dir, "mesh_network", "stl")
+        
+        task = f"""Generate a Python script for vascular network generation based on the spec.
 
 Spec file: {obj.spec_path}
-Code file: {obj.code_path}
 
-Requirements:
-1. Load the spec from the JSON file
-2. Use generation.api.design_from_spec() or appropriate generation functions
-3. Save the network to: {obj.get_versioned_path(obj.outputs_dir, "network", "json")}
-4. Export STL mesh to: {obj.get_versioned_path(obj.mesh_dir, "mesh_network", "stl")}
+IMPORTANT: The script MUST follow these requirements:
+1. Read the output directory from environment variable ORGAN_AGENT_OUTPUT_DIR
+2. Define a main() function as the entry point
+3. Save the network to: network.json (relative to OUTPUT_DIR)
+4. Export STL mesh to: mesh_network.stl (relative to OUTPUT_DIR)
 5. Use output_units="{self.context.units_export}" for exports
+6. Print ARTIFACTS_JSON: {{"files": [...], "metrics": {{...}}, "status": "success"}} at the end
+7. Do NOT use subprocess, os.system, eval, exec, or pip install
+8. Do NOT delete files or write outside OUTPUT_DIR
+
+Use generation.api.design_from_spec() or appropriate generation functions.
 
 {feedback_context}
 
 If generation fails, report the error and suggest parameter adjustments.
 
-Provide complete, runnable Python code."""
+Provide complete, runnable Python code in a ```python code block."""
 
         if previous_context:
             task += f"\n\nContext from previous attempts (use workable parts):\n{previous_context}"
+        
+        print("Requesting generation script from LLM...")
         
         result = self.agent.run_task(
             task=task,
@@ -2349,17 +2380,8 @@ Provide complete, runnable Python code."""
             }
         )
         
-        if result.status == TaskStatus.COMPLETED:
-            obj.network_path = obj.get_versioned_path(obj.outputs_dir, "network", "json")
-            obj.mesh_path = obj.get_versioned_path(obj.mesh_dir, "mesh_network", "stl")
-            
-            print("\nGeneration complete!")
-            print(f"  Network: {obj.network_path}")
-            print(f"  Mesh: {obj.mesh_path}")
-            
-            self.state = WorkflowState.ANALYSIS_VALIDATION
-        else:
-            print(f"\nGeneration failed: {result.error}")
+        if result.status != TaskStatus.COMPLETED:
+            print(f"\nLLM failed to generate script: {result.error}")
             obj.status = "failed"
             
             retry = input("Retry with adjusted parameters? (yes/no) [yes]: ").strip().lower()
@@ -2367,6 +2389,138 @@ Provide complete, runnable Python code."""
                 self._move_to_next_object_or_complete()
             else:
                 self.state = WorkflowState.REQUIREMENTS_CAPTURE
+            return
+        
+        if should_write_script(self.execution_mode):
+            print("Writing script to disk...")
+            write_result = write_script(
+                llm_response=result.output,
+                output_dir=obj.code_dir,
+                version=obj.version,
+                object_name=obj.name,
+                add_header=True,
+                add_footer=True,
+                ensure_main=True,
+            )
+            
+            if not write_result.success:
+                print(f"\nFailed to write script: {write_result.error}")
+                obj.status = "failed"
+                self.state = WorkflowState.REQUIREMENTS_CAPTURE
+                return
+            
+            obj.code_path = write_result.script_path
+            print(f"  Script: {write_result.script_path}")
+            print(f"  Response: {write_result.response_path}")
+            
+            if write_result.warnings:
+                print("\nWarnings:")
+                for w in write_result.warnings:
+                    print(f"  - {w}")
+            
+            run_command = get_run_command(write_result.script_path)
+            
+            if self.execution_mode == ExecutionMode.WRITE_ONLY:
+                print("\nScript written (write_only mode - not executing)")
+                print(f"To run manually: {run_command}")
+                obj.network_path = network_path
+                obj.mesh_path = mesh_path
+                self.state = WorkflowState.ANALYSIS_VALIDATION
+                return
+            
+            if should_pause_for_review(self.execution_mode):
+                review_result = run_review_gate(
+                    script_path=write_result.script_path,
+                    run_command=run_command,
+                    warnings=write_result.warnings,
+                    object_name=obj.name,
+                    version=obj.version,
+                    interactive=True,
+                )
+                
+                if review_result.action == ReviewAction.CANCEL:
+                    print("\nGeneration cancelled by user.")
+                    obj.status = "cancelled"
+                    self._move_to_next_object_or_complete()
+                    return
+                
+                if review_result.action == ReviewAction.DONE:
+                    print("\nSkipping execution (user indicated script was run manually)")
+                    obj.network_path = network_path
+                    obj.mesh_path = mesh_path
+                    self.state = WorkflowState.ANALYSIS_VALIDATION
+                    return
+            
+            if should_execute(self.execution_mode):
+                print("\nExecuting script...")
+                run_result = run_script(
+                    script_path=write_result.script_path,
+                    object_dir=obj.outputs_dir,
+                    version=obj.version,
+                    timeout_seconds=self.timeout_seconds,
+                )
+                
+                print_run_summary(run_result)
+                
+                if not run_result.success:
+                    print(f"\nScript execution failed")
+                    obj.status = "failed"
+                    
+                    retry = input("Retry with adjusted parameters? (yes/no) [yes]: ").strip().lower()
+                    if retry in ("no", "n"):
+                        self._move_to_next_object_or_complete()
+                    else:
+                        self.state = WorkflowState.REQUIREMENTS_CAPTURE
+                    return
+                
+                print("\nVerifying artifacts...")
+                verification = verify_generation_stage(
+                    object_dir=obj.outputs_dir,
+                    version=obj.version,
+                    script_output=run_result.stdout,
+                    spec_path=obj.spec_path,
+                )
+                
+                print_verification_summary(verification)
+                
+                if verification.manifest:
+                    manifest_path = save_manifest(
+                        verification.manifest,
+                        obj.outputs_dir,
+                        obj.version,
+                    )
+                    print(f"  Manifest: {manifest_path}")
+                
+                if not verification.success:
+                    print("\nArtifact verification failed")
+                    obj.status = "failed"
+                    
+                    retry = input("Retry with adjusted parameters? (yes/no) [yes]: ").strip().lower()
+                    if retry in ("no", "n"):
+                        self._move_to_next_object_or_complete()
+                    else:
+                        self.state = WorkflowState.REQUIREMENTS_CAPTURE
+                    return
+        
+        else:
+            result = self.agent.run_task(
+                task=task,
+                context={
+                    "object_name": obj.name,
+                    "object_dir": obj.object_dir,
+                    "version": obj.version,
+                    "output_units": self.context.units_export,
+                }
+            )
+        
+        obj.network_path = network_path
+        obj.mesh_path = mesh_path
+        
+        print("\nGeneration complete!")
+        print(f"  Network: {obj.network_path}")
+        print(f"  Mesh: {obj.mesh_path}")
+        
+        self.state = WorkflowState.ANALYSIS_VALIDATION
     
     def _run_analysis_validation(self) -> None:
         """Run ANALYSIS_VALIDATION state: Analyze and validate generated structure."""
