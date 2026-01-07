@@ -71,6 +71,11 @@ class VesselSegment:
         """Get segment direction from geometry."""
         return self.geometry.direction()
     
+    @property
+    def mean_radius(self) -> float:
+        """Get mean radius from geometry."""
+        return self.geometry.mean_radius()
+    
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
         return {

@@ -1,17 +1,17 @@
 """
 Full network flow solver using scipy.sparse.
 
-Wraps the existing vascular_network package solver for integration.
+Uses the in-repo Poiseuille solver from validity.analysis.cfd.
 
-Note: The solver internally uses SI units (meters) for physics calculations.
-Input geometry is assumed to be in millimeters and is converted to meters internally.
+Note: The library uses METERS internally for all geometry.
+The solver expects geometry in meters (the internal unit system).
 """
 
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 from ..core.network import VascularNetwork
 from ..core.result import OperationResult, OperationStatus, ErrorCode
-from ..utils.units import to_si_length, CANONICAL_UNIT
+from ..utils.units import to_si_length, INTERNAL_UNIT
 
 
 def _convert_network_to_si(network: VascularNetwork, from_units: str) -> VascularNetwork:
@@ -74,16 +74,16 @@ def solve_flow(
     pout: float = 2000.0,
     mu: float = 1.0e-3,
     write_to_network: bool = True,
-    geometry_units: str = CANONICAL_UNIT,
+    geometry_units: str = INTERNAL_UNIT,
 ) -> OperationResult:
     """
     Solve flow through the vascular network using full Poiseuille solver.
     
-    This wraps the existing vascular_network.analysis.cfd.compute_poiseuille_network
-    function, converting to/from NetworkX format.
+    Uses the in-repo validity.analysis.cfd.compute_poiseuille_network function,
+    converting to/from NetworkX format.
     
-    **Units**: Network geometry is assumed to be in millimeters (default).
-    The solver internally converts to SI units (meters) for physics calculations.
+    **Units**: Network geometry is assumed to be in meters (default, the internal unit).
+    The solver uses SI units (meters) for physics calculations.
     
     Parameters
     ----------
@@ -115,7 +115,7 @@ def solve_flow(
     All lengths and radii are converted to meters (SI) internally for correct physics.
     """
     from ..adapters.networkx_adapter import to_networkx_graph
-    from vascular_network.analysis.cfd import compute_poiseuille_network
+    from validity.analysis.cfd import compute_poiseuille_network
     
     try:
         if inlet_node_ids is None:
@@ -345,7 +345,7 @@ def compute_component_flows(network: VascularNetwork) -> Dict:
 
 def check_flow_plausibility(
     network: VascularNetwork,
-    geometry_units: str = CANONICAL_UNIT,
+    geometry_units: str = INTERNAL_UNIT,
 ) -> OperationResult:
     """
     Check if flow solution is hemodynamically plausible.

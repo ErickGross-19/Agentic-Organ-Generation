@@ -56,10 +56,11 @@ def check_murrays_law(
     
     for node_id, node in network.nodes.items():
         if node.node_type == "junction":
-            # Get connected segments
+            # Get connected segments using network topology helper
+            connected_seg_ids = network.get_connected_segment_ids(node_id)
             connected_segs = [
                 network.segments.get(sid) 
-                for sid in node.connected_segment_ids
+                for sid in connected_seg_ids
             ]
             connected_segs = [s for s in connected_segs if s is not None]
             
@@ -242,9 +243,15 @@ def check_collisions(
             dist = np.linalg.norm(mid1 - mid2)
             min_dist = min(min_dist, dist)
             
-            # Get radii
-            r1 = seg1.attributes.get("radius", 0.001)
-            r2 = seg2.attributes.get("radius", 0.001)
+            # Get radii - prefer geometry over attributes
+            if hasattr(seg1, 'geometry') and seg1.geometry is not None:
+                r1 = seg1.mean_radius if hasattr(seg1, 'mean_radius') else (seg1.geometry.radius_start + seg1.geometry.radius_end) / 2
+            else:
+                r1 = seg1.attributes.get("radius", 0.001)
+            if hasattr(seg2, 'geometry') and seg2.geometry is not None:
+                r2 = seg2.mean_radius if hasattr(seg2, 'mean_radius') else (seg2.geometry.radius_start + seg2.geometry.radius_end) / 2
+            else:
+                r2 = seg2.attributes.get("radius", 0.001)
             
             if dist < (r1 + r2 + min_clearance):
                 collision_count += 1

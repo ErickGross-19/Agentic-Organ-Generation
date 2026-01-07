@@ -21,13 +21,15 @@ def compute_branch_stats(network: VascularNetwork) -> Dict:
     """
     degree_histogram = {}
     for node in network.nodes.values():
-        degree = len(node.connected_segment_ids)
+        connected_seg_ids = network.get_connected_segment_ids(node.id)
+        degree = len(connected_seg_ids)
         degree_histogram[degree] = degree_histogram.get(degree, 0) + 1
     
     branching_angles = []
     for node in network.nodes.values():
-        if len(node.connected_segment_ids) >= 2:
-            seg_ids = list(node.connected_segment_ids)
+        connected_seg_ids = network.get_connected_segment_ids(node.id)
+        if len(connected_seg_ids) >= 2:
+            seg_ids = list(connected_seg_ids)
             for i in range(len(seg_ids)):
                 for j in range(i + 1, len(seg_ids)):
                     seg1 = network.segments.get(seg_ids[i])
