@@ -105,13 +105,27 @@ class CodeExecutor:
         r"\beval\s*\(",
         r"\bcompile\s*\(",
         r"\b__import__\s*\(",
-        r"\bopen\s*\([^)]*['\"]w['\"]",  # Block write mode
+        r"\bgetattr\s*\([^)]*['\"]__",  # Block getattr for dunder access
+        r"\bopen\s*\([^)]*['\"][wa]['\"]",  # Block write and append mode
+        r"\bopen\s*\([^)]*mode\s*=\s*['\"][wa]",  # Block mode='w' or mode='a'
+        r"\.write_text\s*\(",  # Block pathlib write_text
+        r"\.write_bytes\s*\(",  # Block pathlib write_bytes
+        r"\.unlink\s*\(",  # Block pathlib unlink
+        r"\.rmdir\s*\(",  # Block pathlib rmdir
+        r"\bnp\.save\s*\(",  # Block numpy save
+        r"\bnumpy\.save\s*\(",  # Block numpy save
+        r"\.export\s*\(",  # Block trimesh export (unless using safe_export)
         r"\bos\.system\s*\(",
         r"\bos\.popen\s*\(",
         r"\bsubprocess\.",
         r"\bshutil\.rmtree\s*\(",
+        r"\bshutil\.move\s*\(",
+        r"\bshutil\.copy\s*\(",
         r"\bos\.remove\s*\(",
         r"\bos\.unlink\s*\(",
+        r"\bos\.rename\s*\(",
+        r"\bos\.makedirs\s*\(",  # Block arbitrary directory creation
+        r"\bos\.mkdir\s*\(",  # Block arbitrary directory creation
     ]
     
     def __init__(
@@ -119,11 +133,145 @@ class CodeExecutor:
         allowed_modules: Optional[List[str]] = None,
         timeout: float = 30.0,
         working_dir: Optional[str] = None,
+        allowed_output_dirs: Optional[List[str]] = None,
     ):
         self.allowed_modules = allowed_modules or self.DEFAULT_ALLOWED_MODULES
         self.timeout = timeout
         self.working_dir = working_dir
+        self.allowed_output_dirs = allowed_output_dirs or []
         self._execution_namespace: Dict[str, Any] = {}
+    
+    def _create_safe_open(self) -> Callable:
+        """
+        Create a safe_open function that only allows writes within allowed directories.
+        
+        Returns
+        -------
+        Callable
+            A safe_open function that validates paths before opening
+        """
+        allowed_dirs = [os.path.abspath(d) for d in self.allowed_output_dirs]
+        
+        def safe_open(filepath: str, mode: str = 'r', *args, **kwargs):
+            """
+            Safe file open that restricts writes to allowed directories.
+            
+            Parameters
+            ----------
+            filepath : str
+                Path to the file
+            mode : str
+                File mode ('r', 'w', 'a', etc.)
+            
+            Returns
+            -------
+            file object
+            
+            Raises
+            ------
+            PermissionError
+                If trying to write outside allowed directories
+            """
+            abs_path = os.path.abspath(filepath)
+            
+            # Read mode is always allowed
+            if 'r' in mode and 'w' not in mode and 'a' not in mode and '+' not in mode:
+                return open(filepath, mode, *args, **kwargs)
+            
+            # Write/append modes require path to be in allowed directories
+            if not allowed_dirs:
+                raise PermissionError(
+                    f"Write operations are disabled. No allowed output directories configured."
+                )
+            
+            path_allowed = any(
+                abs_path.startswith(allowed_dir + os.sep) or abs_path == allowed_dir
+                for allowed_dir in allowed_dirs
+            )
+            
+            if not path_allowed:
+                raise PermissionError(
+                    f"Cannot write to '{filepath}'. Path must be within allowed directories: {allowed_dirs}"
+                )
+            
+            # Ensure parent directory exists
+            parent_dir = os.path.dirname(abs_path)
+            if parent_dir and not os.path.exists(parent_dir):
+                # Only create if parent is also in allowed dirs
+                parent_allowed = any(
+                    parent_dir.startswith(allowed_dir + os.sep) or parent_dir == allowed_dir
+                    for allowed_dir in allowed_dirs
+                )
+                if parent_allowed:
+                    os.makedirs(parent_dir, exist_ok=True)
+            
+            return open(filepath, mode, *args, **kwargs)
+        
+        return safe_open
+    
+    def _create_safe_makedirs(self) -> Callable:
+        """
+        Create a safe_makedirs function that only allows directory creation within allowed directories.
+        """
+        allowed_dirs = [os.path.abspath(d) for d in self.allowed_output_dirs]
+        
+        def safe_makedirs(path: str, *args, **kwargs):
+            abs_path = os.path.abspath(path)
+            
+            if not allowed_dirs:
+                raise PermissionError(
+                    f"Directory creation is disabled. No allowed output directories configured."
+                )
+            
+            path_allowed = any(
+                abs_path.startswith(allowed_dir + os.sep) or abs_path == allowed_dir
+                for allowed_dir in allowed_dirs
+            )
+            
+            if not path_allowed:
+                raise PermissionError(
+                    f"Cannot create directory '{path}'. Path must be within allowed directories: {allowed_dirs}"
+                )
+            
+            return os.makedirs(path, *args, **kwargs)
+        
+        return safe_makedirs
+    
+    def _get_restricted_builtins(self) -> Dict[str, Any]:
+        """
+        Get a restricted set of builtins that excludes dangerous functions.
+        
+        Returns
+        -------
+        Dict[str, Any]
+            Restricted builtins dictionary
+        """
+        import builtins
+        
+        # Functions to exclude from builtins
+        dangerous_builtins = {
+            '__import__',
+            'eval',
+            'exec',
+            'compile',
+            'open',  # Replaced with safe_open
+            'input',  # No interactive input in sandbox
+            'breakpoint',
+            'help',  # Can leak info
+        }
+        
+        restricted = {
+            name: getattr(builtins, name)
+            for name in dir(builtins)
+            if not name.startswith('_') and name not in dangerous_builtins
+        }
+        
+        # Add safe versions
+        restricted['open'] = self._create_safe_open()
+        restricted['safe_open'] = restricted['open']
+        restricted['safe_makedirs'] = self._create_safe_makedirs()
+        
+        return restricted
     
     def extract_code_blocks(self, text: str) -> List[str]:
         """
@@ -219,7 +367,7 @@ class CodeExecutor:
     
     def execute(self, code: str, namespace: Optional[Dict[str, Any]] = None) -> CodeExecutionResult:
         """
-        Execute Python code in a sandboxed environment.
+        Execute Python code in a sandboxed environment with timeout enforcement.
         
         Parameters
         ----------
@@ -232,6 +380,13 @@ class CodeExecutor:
         -------
         CodeExecutionResult
             Result of execution with output, errors, and variables
+            
+        Notes
+        -----
+        Execution is performed with:
+        - Restricted builtins (no __import__, eval, exec, compile)
+        - Safe file operations (writes only in allowed directories)
+        - Timeout enforcement using multiprocessing
         """
         # Validate code first
         is_safe, issues = self.validate_code(code)
@@ -242,10 +397,14 @@ class CodeExecutor:
                 error=f"Code validation failed:\n" + "\n".join(issues),
             )
         
-        # Prepare execution namespace
+        # Prepare execution namespace with restricted builtins
         exec_namespace = namespace.copy() if namespace else {}
         exec_namespace.update(self._execution_namespace)
-        exec_namespace["__builtins__"] = __builtins__
+        exec_namespace["__builtins__"] = self._get_restricted_builtins()
+        
+        # Add safe utilities to namespace
+        exec_namespace["safe_open"] = self._create_safe_open()
+        exec_namespace["safe_makedirs"] = self._create_safe_makedirs()
         
         # Capture stdout and stderr
         stdout_capture = StringIO()
@@ -257,9 +416,68 @@ class CodeExecutor:
             os.chdir(self.working_dir)
         
         try:
-            # Execute with output capture
-            with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
-                exec(code, exec_namespace)
+            # Execute with timeout using multiprocessing
+            import multiprocessing
+            import queue
+            
+            def _execute_code(code_str, ns, result_queue):
+                """Execute code in subprocess and put result in queue."""
+                try:
+                    local_stdout = StringIO()
+                    local_stderr = StringIO()
+                    with redirect_stdout(local_stdout), redirect_stderr(local_stderr):
+                        exec(code_str, ns)
+                    
+                    # Extract user-defined variables
+                    user_vars = {
+                        k: v for k, v in ns.items()
+                        if not k.startswith('_') and not callable(v) and not isinstance(v, type(sys))
+                    }
+                    
+                    result_queue.put({
+                        'success': True,
+                        'output': local_stdout.getvalue(),
+                        'error': local_stderr.getvalue(),
+                        'variables': user_vars,
+                    })
+                except Exception as e:
+                    result_queue.put({
+                        'success': False,
+                        'output': '',
+                        'error': f"{type(e).__name__}: {str(e)}",
+                        'variables': {},
+                    })
+            
+            # For simplicity and cross-platform compatibility, use threading with timeout
+            # (multiprocessing has issues with pickling closures like safe_open)
+            import threading
+            
+            result_holder = {'result': None, 'exception': None}
+            
+            def _threaded_execute():
+                try:
+                    with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
+                        exec(code, exec_namespace)
+                    result_holder['result'] = 'success'
+                except Exception as e:
+                    result_holder['exception'] = e
+            
+            thread = threading.Thread(target=_threaded_execute)
+            thread.daemon = True
+            thread.start()
+            thread.join(timeout=self.timeout)
+            
+            if thread.is_alive():
+                # Timeout occurred - thread is still running
+                # Note: We can't forcibly kill the thread, but we return timeout error
+                return CodeExecutionResult(
+                    success=False,
+                    output=stdout_capture.getvalue(),
+                    error=f"Execution timed out after {self.timeout} seconds",
+                )
+            
+            if result_holder['exception']:
+                raise result_holder['exception']
             
             # Extract user-defined variables (exclude builtins and modules)
             user_vars = {

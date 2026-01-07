@@ -79,7 +79,12 @@ class IdentitySection:
 
 @dataclass
 class FrameOfReferenceSection:
-    """Section 2: Frame of reference and units."""
+    """Section 2: Frame of reference and units.
+    
+    The `confirmed` field tracks whether the user has explicitly confirmed
+    the coordinate convention. This is important because spatial terms like
+    "left/right/top/bottom" are ambiguous until the frame is confirmed.
+    """
     origin: str = "domain.center"
     axes: Dict[str, str] = field(default_factory=lambda: {
         "x": "width",
@@ -89,6 +94,7 @@ class FrameOfReferenceSection:
     viewpoint: str = "front"
     units_internal: str = "m"
     units_export: str = "mm"
+    confirmed: bool = False
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -97,6 +103,7 @@ class FrameOfReferenceSection:
             "viewpoint": self.viewpoint,
             "units_internal": self.units_internal,
             "units_export": self.units_export,
+            "confirmed": self.confirmed,
         }
     
     @classmethod
@@ -107,6 +114,7 @@ class FrameOfReferenceSection:
             viewpoint=d.get("viewpoint", "front"),
             units_internal=d.get("units_internal", "m"),
             units_export=d.get("units_export", "mm"),
+            confirmed=d.get("confirmed", False),
         )
 
 
@@ -1118,7 +1126,6 @@ class RuleEngine:
         result.is_generation_ready = not any(
             f.severity == "required" 
             for f in result.missing_fields + result.ambiguity_flags + result.conflict_flags
-            if f.family in ("A", "B", "C") and f.rework_cost == "high"
         )
         
         if check_finalization:
@@ -1196,7 +1203,7 @@ class RuleEngine:
     ) -> None:
         """Family B: Check for ambiguous user language."""
         
-        if parser.has_spatial_ambiguity() and not req.frame_of_reference.axes:
+        if parser.has_spatial_ambiguity() and not req.frame_of_reference.confirmed:
             result.ambiguity_flags.append(RuleFlag(
                 rule_id="B1_spatial",
                 family="B",
@@ -1543,6 +1550,51 @@ def run_rule_based_capture(
     return requirements, collected_answers
 
 
+def _parse_domain_size_string(value: str) -> Optional[Tuple[float, float, float]]:
+    """
+    Parse a domain size string into a tuple of floats in meters.
+    
+    Supports formats:
+    - "0.02,0.06,0.03 m" or "0.02, 0.06, 0.03m"
+    - "20,60,30 mm" or "20, 60, 30mm"
+    - "2x6x3 cm" or "2 x 6 x 3 cm"
+    - "2 by 6 by 3 cm"
+    
+    Returns None if parsing fails.
+    """
+    import re
+    
+    value = value.strip().lower()
+    
+    unit_multipliers = {
+        "m": 1.0,
+        "cm": 0.01,
+        "mm": 0.001,
+    }
+    
+    unit = "m"
+    for u in ["mm", "cm", "m"]:
+        if value.endswith(u):
+            unit = u
+            value = value[:-len(u)].strip()
+            break
+    
+    multiplier = unit_multipliers.get(unit, 1.0)
+    
+    separators = [r"\s*x\s*", r"\s*by\s*", r"\s*,\s*"]
+    
+    for sep in separators:
+        parts = re.split(sep, value)
+        if len(parts) == 3:
+            try:
+                dims = [float(p.strip()) * multiplier for p in parts]
+                return (dims[0], dims[1], dims[2])
+            except ValueError:
+                continue
+    
+    return None
+
+
 def _apply_default_to_requirements(req: ObjectRequirements, prop: ProposedDefault) -> None:
     """Apply a proposed default to requirements."""
     _apply_answer_to_requirements(req, prop.field, prop.value)
@@ -1580,8 +1632,14 @@ def _apply_answer_to_requirements(req: ObjectRequirements, field: str, value: An
     elif field == "domain.size_m":
         if isinstance(value, tuple):
             req.domain.size_m = value
-        elif isinstance(value, str) and value.lower() != "yes":
-            pass
+        elif isinstance(value, str):
+            val_lower = value.lower().strip()
+            if val_lower in ("yes", "y", "default"):
+                pass
+            else:
+                parsed = _parse_domain_size_string(val_lower)
+                if parsed:
+                    req.domain.size_m = parsed
     
     elif field == "embedding_export.voxel_pitch_m":
         try:
@@ -1986,6 +2044,7 @@ class SingleAgentOrganGeneratorV1:
             frame.viewpoint = viewpoint
         
         obj.frame_locked = True
+        frame.confirmed = True
         
         print()
         print("Frame of reference locked:")
