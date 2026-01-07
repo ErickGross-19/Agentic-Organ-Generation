@@ -38,7 +38,7 @@ USAGE
 >>> # domain is now an EllipsoidDomain ready for use in generation
 """
 
-from typing import Union, Optional
+from typing import Optional
 import numpy as np
 
 from .design_spec import DomainSpec as SpecDomainSpec, EllipsoidSpec, BoxSpec
