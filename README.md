@@ -255,7 +255,48 @@ See [automation/README.md](automation/README.md) for detailed documentation.
 
 ## Unit System
 
-The library uses **meter-scale values internally** (e.g., `semi_axes=(0.05, 0.045, 0.035)` = 50mm, 45mm, 35mm). At export time, values are converted to user-specified output units.
+The library uses a clear separation between **spec units**, **runtime units**, and **output units**:
+
+### Unit Conventions
+
+| Stage | Units | Description |
+|-------|-------|-------------|
+| **Spec units** | Meters | All values in spec classes (EllipsoidSpec, BoxSpec, InletSpec, etc.) |
+| **Runtime units** | Meters | Internal domain objects and geometric operations |
+| **Output units** | Configurable | STL/JSON exports (default: mm) |
+
+For example, `EllipsoidSpec(semi_axes=(0.05, 0.045, 0.035))` represents 50mm x 45mm x 35mm in meters.
+
+### Coordinate Frame
+
+The default coordinate frame is:
+- **Origin**: Domain center (0, 0, 0)
+- **X-axis**: Left-right (width)
+- **Y-axis**: Front-back (depth)
+- **Z-axis**: Bottom-top (height)
+
+For organ-specific coordinate frames (e.g., anatomical orientation), use the `transform` parameter in `compile_domain()`.
+
+### Domain Compilation
+
+Use `compile_domain()` to convert spec classes to runtime domain objects:
+
+```python
+from generation.specs import EllipsoidSpec, compile_domain
+
+# Create a spec (values in meters)
+spec = EllipsoidSpec(center=(0, 0, 0), semi_axes=(0.05, 0.045, 0.035))
+
+# Compile to runtime domain
+domain = compile_domain(spec)
+
+# Optionally apply a coordinate transform
+from generation.specs import make_translation_transform
+transform = make_translation_transform(0.01, 0.02, 0.03)
+domain_transformed = compile_domain(spec, transform=transform)
+```
+
+### Output Units
 
 ```python
 from generation.specs import DesignSpec
