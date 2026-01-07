@@ -26,7 +26,11 @@ import numpy as np
 # The INTERNAL_UNIT specifies what internal coordinates represent
 INTERNAL_UNIT = "m"
 
+# Default output unit for STL exports and user-facing values
+DEFAULT_OUTPUT_UNIT = "mm"
+
 # CANONICAL_UNIT is kept for backward compatibility but INTERNAL_UNIT is the truth
+# DEPRECATED: Use INTERNAL_UNIT for internal coordinates, DEFAULT_OUTPUT_UNIT for exports
 CANONICAL_UNIT = "mm"
 
 # Supported unit types
