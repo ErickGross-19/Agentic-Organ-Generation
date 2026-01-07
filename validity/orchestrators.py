@@ -31,10 +31,13 @@ class ValidationConfig:
     """
     Configuration for validation checks.
     
+    All length units are in METERS (internal system units) unless otherwise noted.
+    
     Attributes
     ----------
-    voxel_pitch : float
-        Voxel pitch for mesh analysis (mm)
+    voxel_pitch_m : float
+        Voxel pitch for mesh analysis in meters.
+        Default 0.0001 = 0.1mm, suitable for fine vascular structures.
     murray_gamma : float
         Murray's law exponent
     murray_tolerance : float
@@ -42,7 +45,7 @@ class ValidationConfig:
     max_branch_order : int
         Maximum expected branch order
     min_clearance : float
-        Minimum required clearance between segments
+        Minimum required clearance between segments (meters)
     max_collisions : int
         Maximum acceptable number of collisions
     max_flow_balance_error : float
@@ -58,7 +61,7 @@ class ValidationConfig:
     manufacturing : ManufacturingConfig
         Manufacturing constraints for printability checks
     """
-    voxel_pitch: float = 0.1
+    voxel_pitch_m: float = 0.0001  # 0.1mm in meters
     murray_gamma: float = 3.0
     murray_tolerance: float = 0.15
     max_branch_order: int = 20
@@ -319,7 +322,7 @@ def run_post_embedding_validation(
     # Run connectivity checks
     reports["connectivity"] = run_all_connectivity_checks(
         mesh,
-        pitch=config.voxel_pitch,
+        pitch=config.voxel_pitch_m,
         min_port_components=config.min_port_components,
         max_trapped_fraction=config.max_trapped_fraction,
     )
@@ -334,7 +337,7 @@ def run_post_embedding_validation(
     reports["domain"] = run_all_domain_checks(
         mesh,
         expected_outlets=config.expected_outlets,
-        pitch=config.voxel_pitch,
+        pitch=config.voxel_pitch_m,
     )
     
     # Aggregate results

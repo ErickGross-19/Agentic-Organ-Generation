@@ -9,6 +9,86 @@ from ..core.types import Point3D
 from ..core.network import VascularNetwork, VesselSegment
 
 
+def segment_segment_distance_exact(
+    p1: np.ndarray, p2: np.ndarray,
+    p3: np.ndarray, p4: np.ndarray,
+) -> float:
+    """
+    Compute exact minimum distance between two 3D line segments.
+    
+    Segment 1: p1 to p2
+    Segment 2: p3 to p4
+    
+    Uses the analytic formula for closest points on two line segments.
+    This handles all cases including parallel segments and endpoint proximity.
+    
+    Parameters
+    ----------
+    p1, p2 : np.ndarray
+        Endpoints of segment 1 (shape (3,))
+    p3, p4 : np.ndarray
+        Endpoints of segment 2 (shape (3,))
+        
+    Returns
+    -------
+    float
+        Minimum distance between the two segments
+    """
+    d1 = p2 - p1  # Direction of segment 1
+    d2 = p4 - p3  # Direction of segment 2
+    r = p1 - p3
+    
+    a = np.dot(d1, d1)  # |d1|^2
+    e = np.dot(d2, d2)  # |d2|^2
+    f = np.dot(d2, r)
+    
+    EPSILON = 1e-10
+    
+    # Check if both segments are degenerate (points)
+    if a < EPSILON and e < EPSILON:
+        return float(np.linalg.norm(r))
+    
+    # Check if segment 1 is degenerate (point)
+    if a < EPSILON:
+        s = 0.0
+        t = np.clip(f / e, 0.0, 1.0)
+    else:
+        c = np.dot(d1, r)
+        
+        # Check if segment 2 is degenerate (point)
+        if e < EPSILON:
+            t = 0.0
+            s = np.clip(-c / a, 0.0, 1.0)
+        else:
+            # General non-degenerate case
+            b = np.dot(d1, d2)
+            denom = a * e - b * b  # Always >= 0
+            
+            # If segments are not parallel, compute closest point on line 1 to line 2
+            if denom > EPSILON:
+                s = np.clip((b * f - c * e) / denom, 0.0, 1.0)
+            else:
+                # Segments are parallel, pick arbitrary s
+                s = 0.0
+            
+            # Compute point on line 2 closest to S1(s)
+            t = (b * s + f) / e
+            
+            # If t is outside [0,1], clamp and recompute s
+            if t < 0.0:
+                t = 0.0
+                s = np.clip(-c / a, 0.0, 1.0)
+            elif t > 1.0:
+                t = 1.0
+                s = np.clip((b - c) / a, 0.0, 1.0)
+    
+    # Compute closest points
+    closest1 = p1 + s * d1
+    closest2 = p3 + t * d2
+    
+    return float(np.linalg.norm(closest1 - closest2))
+
+
 class SpatialIndex:
     """
     Uniform 3D grid spatial index for vascular networks.
@@ -205,7 +285,12 @@ class SpatialIndex:
         return collisions
     
     def _segment_to_segment_distance(self, seg1: VesselSegment, seg2: VesselSegment) -> float:
-        """Compute minimum distance between two segment centerlines."""
+        """
+        Compute exact minimum distance between two segment centerlines.
+        
+        Uses analytic formula for true minimum distance between 3D line segments,
+        handling all cases including parallel and skew segments.
+        """
         start1 = self.network.get_node(seg1.start_node_id)
         end1 = self.network.get_node(seg1.end_node_id)
         start2 = self.network.get_node(seg2.start_node_id)
@@ -219,13 +304,4 @@ class SpatialIndex:
         p2_start = start2.position.to_array()
         p2_end = end2.position.to_array()
         
-        points1 = [p1_start, (p1_start + p1_end) / 2, p1_end]
-        points2 = [p2_start, (p2_start + p2_end) / 2, p2_end]
-        
-        min_dist = float('inf')
-        for p1 in points1:
-            for p2 in points2:
-                dist = np.linalg.norm(p1 - p2)
-                min_dist = min(min_dist, dist)
-        
-        return float(min_dist)
+        return segment_segment_distance_exact(p1_start, p1_end, p2_start, p2_end)
