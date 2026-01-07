@@ -3,8 +3,9 @@ Space colonization algorithm for organic vascular growth.
 """
 
 from dataclasses import dataclass
-from typing import List, Optional, Set
+from typing import List, Optional, Set, Dict
 import numpy as np
+from scipy.spatial import cKDTree
 from tqdm import tqdm
 from ..core.types import Point3D, Direction3D
 from ..core.network import VascularNetwork
@@ -213,22 +214,33 @@ def space_colonization_step(
                 node.vessel_type == params.vessel_type
             ]
         
-        attractions = {node.id: [] for node in terminal_nodes}
+        attractions: Dict[int, List[int]] = {node.id: [] for node in terminal_nodes}
         
-        for tp_idx in list(active_tissue_points):
-            tp = tissue_points_list[tp_idx]
+        # Build KDTree from terminal node positions for O(n log n) nearest neighbor queries
+        if terminal_nodes:
+            terminal_positions = np.array([
+                [node.position.x, node.position.y, node.position.z]
+                for node in terminal_nodes
+            ])
+            terminal_kdtree = cKDTree(terminal_positions)
+            terminal_id_list = [node.id for node in terminal_nodes]
             
-            min_dist = float('inf')
-            nearest_terminal = None
-            
-            for node in terminal_nodes:
-                dist = node.position.distance_to(tp)
-                if dist < params.influence_radius and dist < min_dist:
-                    min_dist = dist
-                    nearest_terminal = node
-            
-            if nearest_terminal is not None:
-                attractions[nearest_terminal.id].append(tp_idx)
+            # Get active tissue point positions
+            active_tp_indices = list(active_tissue_points)
+            if active_tp_indices:
+                active_tp_positions = np.array([
+                    [tissue_points_list[idx].x, tissue_points_list[idx].y, tissue_points_list[idx].z]
+                    for idx in active_tp_indices
+                ])
+                
+                # Query nearest terminal for each active tissue point
+                distances, nearest_indices = terminal_kdtree.query(active_tp_positions, k=1)
+                
+                # Assign tissue points to their nearest terminal within influence_radius
+                for i, tp_idx in enumerate(active_tp_indices):
+                    if distances[i] < params.influence_radius:
+                        nearest_terminal_id = terminal_id_list[nearest_indices[i]]
+                        attractions[nearest_terminal_id].append(tp_idx)
         
         grown_any = False
         for node in terminal_nodes:
@@ -393,13 +405,29 @@ def space_colonization_step(
             'coverage': f'{(initial_count - len(active_tissue_points)) / initial_count:.1%}' if initial_count > 0 else '0%'
         })
         
-        for tp_idx in list(active_tissue_points):
-            tp = tissue_points_list[tp_idx]
+        # Use KDTree for efficient kill radius pruning - O(n log n) instead of O(n²)
+        if network.nodes and active_tissue_points:
+            all_node_positions = np.array([
+                [node.position.x, node.position.y, node.position.z]
+                for node in network.nodes.values()
+            ])
+            node_kdtree = cKDTree(all_node_positions)
             
-            for node in network.nodes.values():
-                if node.position.distance_to(tp) < params.kill_radius:
-                    active_tissue_points.remove(tp_idx)
-                    break
+            # Get positions of active tissue points
+            active_tp_indices = list(active_tissue_points)
+            active_tp_positions = np.array([
+                [tissue_points_list[idx].x, tissue_points_list[idx].y, tissue_points_list[idx].z]
+                for idx in active_tp_indices
+            ])
+            
+            # Query all tissue points within kill_radius of any node
+            # query_ball_point returns indices of nodes within radius for each query point
+            nearby_results = node_kdtree.query_ball_point(active_tp_positions, params.kill_radius)
+            
+            # Remove tissue points that have at least one node within kill_radius
+            for i, tp_idx in enumerate(active_tp_indices):
+                if nearby_results[i]:  # Non-empty list means at least one node is within kill_radius
+                    active_tissue_points.discard(tp_idx)
     
     pbar.close()
     
@@ -677,15 +705,23 @@ def _check_clearance(
     """
     Check if new position maintains minimum clearance from other segments.
     
+    Uses SpatialIndex for efficient local neighborhood queries instead of
+    scanning all segments (O(local) instead of O(segments)).
+    
     Returns True if clearance is acceptable, False otherwise.
     """
     if params.min_clearance is None:
         return True  # No clearance check
     
-    from_node = network.nodes[from_node_id]
+    # Use spatial index for efficient local neighborhood query
+    # Search radius includes clearance plus typical segment radius
+    search_radius = params.min_clearance * 3.0  # Conservative search radius
     
-    # Check distance to all segments not connected to from_node
-    for seg in network.segments.values():
+    spatial_index = network.get_spatial_index()
+    nearby_segments = spatial_index.query_nearby_segments(new_position, search_radius)
+    
+    # Check distance only to nearby segments not connected to from_node
+    for seg in nearby_segments:
         # Skip segments connected to from_node
         if seg.start_node_id == from_node_id or seg.end_node_id == from_node_id:
             continue

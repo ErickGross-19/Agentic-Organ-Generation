@@ -132,6 +132,7 @@ class VascularNetwork:
         self.id_gen = IDGenerator(seed=seed)
         
         self._spatial_index = None
+        self._adjacency_map: Dict[int, List[int]] = {}  # node_id -> list of segment_ids
         
         self._undo_stack: List[Delta] = []
         self._redo_stack: List[Delta] = []
@@ -148,6 +149,16 @@ class VascularNetwork:
         if segment.end_node_id not in self.nodes:
             raise ValueError(f"End node {segment.end_node_id} not in network")
         self.segments[segment.id] = segment
+        
+        # Update adjacency map
+        if segment.start_node_id not in self._adjacency_map:
+            self._adjacency_map[segment.start_node_id] = []
+        self._adjacency_map[segment.start_node_id].append(segment.id)
+        
+        if segment.end_node_id not in self._adjacency_map:
+            self._adjacency_map[segment.end_node_id] = []
+        self._adjacency_map[segment.end_node_id].append(segment.id)
+        
         self._invalidate_spatial_index()
     
     def remove_node(self, node_id: int) -> None:
@@ -159,6 +170,21 @@ class VascularNetwork:
     def remove_segment(self, segment_id: int) -> None:
         """Remove a segment from the network."""
         if segment_id in self.segments:
+            segment = self.segments[segment_id]
+            
+            # Update adjacency map
+            if segment.start_node_id in self._adjacency_map:
+                try:
+                    self._adjacency_map[segment.start_node_id].remove(segment_id)
+                except ValueError:
+                    pass  # Segment not in list (shouldn't happen)
+            
+            if segment.end_node_id in self._adjacency_map:
+                try:
+                    self._adjacency_map[segment.end_node_id].remove(segment_id)
+                except ValueError:
+                    pass  # Segment not in list (shouldn't happen)
+            
             del self.segments[segment_id]
             self._invalidate_spatial_index()
     
@@ -174,6 +200,8 @@ class VascularNetwork:
         """
         Get IDs of all segments connected to a node.
         
+        Uses cached adjacency map for O(1) lookup instead of O(E) scan.
+        
         Parameters
         ----------
         node_id : int
@@ -184,11 +212,7 @@ class VascularNetwork:
         List[int]
             List of segment IDs connected to this node
         """
-        connected = []
-        for seg_id, seg in self.segments.items():
-            if seg.start_node_id == node_id or seg.end_node_id == node_id:
-                connected.append(seg_id)
-        return connected
+        return list(self._adjacency_map.get(node_id, []))
     
     def get_spatial_index(self) -> "SpatialIndex":
         """Get or create spatial index."""
@@ -200,6 +224,18 @@ class VascularNetwork:
     def _invalidate_spatial_index(self) -> None:
         """Invalidate spatial index after modifications."""
         self._spatial_index = None
+    
+    def _rebuild_adjacency_map(self) -> None:
+        """Rebuild adjacency map from current segments."""
+        self._adjacency_map.clear()
+        for seg_id, seg in self.segments.items():
+            if seg.start_node_id not in self._adjacency_map:
+                self._adjacency_map[seg.start_node_id] = []
+            self._adjacency_map[seg.start_node_id].append(seg_id)
+            
+            if seg.end_node_id not in self._adjacency_map:
+                self._adjacency_map[seg.end_node_id] = []
+            self._adjacency_map[seg.end_node_id].append(seg_id)
     
     def snapshot(self) -> dict:
         """Create a snapshot of current network state."""
@@ -217,6 +253,7 @@ class VascularNetwork:
         self.segments = {int(sid): VesselSegment.from_dict(s) for sid, s in snapshot["segments"].items()}
         self.metadata = snapshot["metadata"].copy()
         self.id_gen.set_state(snapshot["id_gen_state"])
+        self._rebuild_adjacency_map()
         self._invalidate_spatial_index()
     
     def to_dict(self) -> dict:
@@ -246,6 +283,9 @@ class VascularNetwork:
         
         if "id_gen_state" in d:
             network.id_gen.set_state(d["id_gen_state"])
+        
+        # Rebuild adjacency map after loading segments
+        network._rebuild_adjacency_map()
         
         return network
     

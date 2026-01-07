@@ -195,12 +195,17 @@ def check_collisions(
     network: "VascularNetwork",
     min_clearance: float = 0.0,
     max_collisions: int = 0,
+    time_budget_s: Optional[float] = None,
+    max_pairs: Optional[int] = None,
 ) -> GraphCheckResult:
     """
     Check for collisions between non-adjacent segments.
     
     Collisions occur when segments are closer than the sum of their radii
     plus the minimum clearance.
+    
+    Uses SpatialIndex for efficient collision detection with exact segment-segment
+    distance calculation. No longer limited to first 100 segments.
     
     Parameters
     ----------
@@ -210,61 +215,75 @@ def check_collisions(
         Minimum required clearance between segments (in network units)
     max_collisions : int
         Maximum acceptable number of collisions
+    time_budget_s : float, optional
+        Maximum time budget in seconds (None = no limit)
+    max_pairs : int, optional
+        Maximum number of segment pairs to check (None = no limit)
         
     Returns
     -------
     GraphCheckResult
         Result with pass/fail status and details
     """
+    import time
+    start_time = time.time()
+    
     collision_count = 0
     min_dist = float('inf')
     collisions = []
+    pairs_checked = 0
     
-    seg_list = list(network.segments.values())
+    # Use spatial index for efficient collision detection
+    spatial_index = network.get_spatial_index()
     
-    # Limit to first 100 segments for performance
-    check_limit = min(100, len(seg_list))
+    # Get all collisions using the spatial index with exact segment-segment distance
+    all_collisions = spatial_index.get_collisions(
+        min_clearance=min_clearance,
+        exclude_connected=True,
+    )
     
-    for i, seg1 in enumerate(seg_list[:check_limit]):
-        for seg2 in seg_list[i+1:min(i+101, len(seg_list))]:
-            # Skip adjacent segments
-            if (seg1.start_node_id in (seg2.start_node_id, seg2.end_node_id) or
-                seg1.end_node_id in (seg2.start_node_id, seg2.end_node_id)):
-                continue
-            
-            # Get segment midpoints
-            p1 = network.nodes[seg1.start_node_id].position.to_array()
-            p2 = network.nodes[seg1.end_node_id].position.to_array()
-            p3 = network.nodes[seg2.start_node_id].position.to_array()
-            p4 = network.nodes[seg2.end_node_id].position.to_array()
-            
-            mid1 = (p1 + p2) / 2
-            mid2 = (p3 + p4) / 2
-            dist = np.linalg.norm(mid1 - mid2)
-            min_dist = min(min_dist, dist)
-            
-            # Get radii - prefer geometry over attributes
-            if hasattr(seg1, 'geometry') and seg1.geometry is not None:
-                r1 = seg1.mean_radius if hasattr(seg1, 'mean_radius') else (seg1.geometry.radius_start + seg1.geometry.radius_end) / 2
-            else:
-                r1 = seg1.attributes.get("radius", 0.001)
-            if hasattr(seg2, 'geometry') and seg2.geometry is not None:
-                r2 = seg2.mean_radius if hasattr(seg2, 'mean_radius') else (seg2.geometry.radius_start + seg2.geometry.radius_end) / 2
-            else:
-                r2 = seg2.attributes.get("radius", 0.001)
-            
-            if dist < (r1 + r2 + min_clearance):
-                collision_count += 1
-                collisions.append({
-                    "seg1_id": seg1.id,
-                    "seg2_id": seg2.id,
-                    "distance": dist,
-                    "required_clearance": r1 + r2 + min_clearance,
-                })
+    segments_checked = len(network.segments)
+    
+    for seg_id1, seg_id2, dist in all_collisions:
+        # Check time budget
+        if time_budget_s is not None and (time.time() - start_time) > time_budget_s:
+            break
+        
+        # Check max pairs
+        if max_pairs is not None and pairs_checked >= max_pairs:
+            break
+        
+        pairs_checked += 1
+        min_dist = min(min_dist, dist)
+        
+        seg1 = network.segments.get(seg_id1)
+        seg2 = network.segments.get(seg_id2)
+        
+        if seg1 is None or seg2 is None:
+            continue
+        
+        # Get radii - prefer geometry over attributes
+        if hasattr(seg1, 'geometry') and seg1.geometry is not None:
+            r1 = seg1.mean_radius if hasattr(seg1, 'mean_radius') else (seg1.geometry.radius_start + seg1.geometry.radius_end) / 2
+        else:
+            r1 = seg1.attributes.get("radius", 0.001)
+        if hasattr(seg2, 'geometry') and seg2.geometry is not None:
+            r2 = seg2.mean_radius if hasattr(seg2, 'mean_radius') else (seg2.geometry.radius_start + seg2.geometry.radius_end) / 2
+        else:
+            r2 = seg2.attributes.get("radius", 0.001)
+        
+        collision_count += 1
+        collisions.append({
+            "seg1_id": seg_id1,
+            "seg2_id": seg_id2,
+            "distance": dist,
+            "required_clearance": r1 + r2 + min_clearance,
+        })
     
     if min_dist == float('inf'):
         min_dist = 0.0
     
+    elapsed_time = time.time() - start_time
     passed = collision_count <= max_collisions
     
     details = {
@@ -272,7 +291,9 @@ def check_collisions(
         "min_distance": min_dist,
         "min_clearance": min_clearance,
         "max_collisions": max_collisions,
-        "segments_checked": check_limit,
+        "segments_checked": segments_checked,
+        "pairs_checked": pairs_checked,
+        "elapsed_time_s": elapsed_time,
     }
     
     warnings = []
