@@ -46,7 +46,21 @@ from .orchestrators import (
     ValidationReport,
     ValidationConfig,
 )
-from .pipeline import validate_and_repair_geometry
+
+# validate_and_repair_geometry requires pymeshfix which is an optional dependency.
+# We use lazy import to avoid breaking imports when pymeshfix is not installed.
+# Users who need mesh repair should import it explicitly:
+#   from validity.pipeline import validate_and_repair_geometry
+# or install pymeshfix: pip install pymeshfix
+
+
+def __getattr__(name):
+    """Lazy import for optional dependencies."""
+    if name == "validate_and_repair_geometry":
+        from .pipeline import validate_and_repair_geometry
+        return validate_and_repair_geometry
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     # Orchestrators
@@ -54,6 +68,6 @@ __all__ = [
     "run_post_embedding_validation",
     "ValidationReport",
     "ValidationConfig",
-    # Legacy pipeline
+    # Legacy pipeline (requires pymeshfix - lazy imported)
     "validate_and_repair_geometry",
 ]

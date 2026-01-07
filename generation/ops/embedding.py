@@ -4,7 +4,16 @@ Negative space embedding operations for vascular networks.
 This module provides functionality to embed vascular tree STL meshes into
 domain volumes (box or ellipsoid) as negative space (voids).
 
-Units: All spatial parameters are in millimeters by default.
+Units:
+    Internal units: METERS (SI). All spatial parameters (voxel_pitch, shell_thickness,
+    domain dimensions) are in meters internally.
+    
+    Input STL units: Configurable via stl_units parameter ('auto', 'm', 'mm').
+    Output units: Configurable via output_units parameter (default: 'mm').
+    
+    Example bioprinting-scale defaults:
+    - voxel_pitch=3e-4 (0.3mm resolution)
+    - shell_thickness=2e-3 (2mm wall thickness)
 """
 
 import numpy as np
@@ -15,7 +24,7 @@ from scipy import ndimage
 from skimage.measure import marching_cubes
 
 from ..core.domain import DomainSpec, BoxDomain, EllipsoidDomain
-from ..utils.units import detect_unit, warn_if_legacy_units, CANONICAL_UNIT
+from ..utils.units import detect_unit, warn_if_legacy_units, INTERNAL_UNIT, DEFAULT_OUTPUT_UNIT
 
 
 def _voxelized_with_retry(
@@ -120,17 +129,17 @@ def _compute_ellipsoid_mask_slicewise(
 def embed_tree_as_negative_space(
     tree_stl_path: Union[str, Path],
     domain: DomainSpec,
-    voxel_pitch: float = 1.0,
+    voxel_pitch: float = 3e-4,
     margin: float = 0.0,
     dilation_voxels: int = 0,
     smoothing_iters: int = 5,
     output_void: bool = True,
     output_shell: bool = False,
-    shell_thickness: float = 2.0,
+    shell_thickness: float = 2e-3,
     stl_units: str = "auto",
-    geometry_units: str = CANONICAL_UNIT,
+    geometry_units: str = INTERNAL_UNIT,
     use_morphological_shell: bool = True,
-    output_units: str = "mm",
+    output_units: str = DEFAULT_OUTPUT_UNIT,
 ) -> Dict[str, Optional[trimesh.Trimesh]]:
     """
     Embed a vascular tree STL mesh into a domain as negative space (void).
@@ -138,20 +147,22 @@ def embed_tree_as_negative_space(
     This creates a solid domain mesh with the tree carved out as a void.
     Useful for creating molds, scaffolds, or perfusion chambers.
     
-    **Units**: The library uses DIMENSIONLESS internal units where 1 internal unit = 1 output unit.
-    When output_units="mm", 1 internal unit = 1 mm in the output meshes.
+    **Units**: Internal units are METERS (SI). All spatial parameters (voxel_pitch,
+    shell_thickness, margin, domain dimensions) should be specified in meters.
+    Output meshes are scaled to output_units (default: mm) for export.
     
     Parameters
     ----------
     tree_stl_path : str or Path
         Path to the vascular tree STL file
     domain : DomainSpec
-        Domain specification (BoxDomain or EllipsoidDomain) in millimeters
+        Domain specification (BoxDomain or EllipsoidDomain) in meters
     voxel_pitch : float
-        Voxel size in millimeters (default: 1.0mm)
-        Smaller values give higher resolution but slower computation
+        Voxel size in meters (default: 3e-4 = 0.3mm)
+        Smaller values give higher resolution but slower computation.
+        Typical bioprinting range: 1e-4 to 5e-4 (0.1mm to 0.5mm)
     margin : float
-        Additional margin around tree bounds in millimeters (default: 0)
+        Additional margin around tree bounds in meters (default: 0)
     dilation_voxels : int
         Number of voxels to dilate the tree by (useful if tree is thin centerlines)
         Default: 0 (no dilation)
@@ -162,12 +173,13 @@ def embed_tree_as_negative_space(
     output_shell : bool
         Whether to output a shell mesh around the void (default: False)
     shell_thickness : float
-        Thickness of shell around void in millimeters (default: 2.0mm)
+        Thickness of shell around void in meters (default: 2e-3 = 2mm)
     stl_units : str
         Units of the input STL file ('mm', 'm', 'auto'). Default: 'auto'
         'auto' will attempt to detect based on bounding box size
     geometry_units : str
-        Units for domain and output geometry ('mm', 'm', 'cm'). Default: 'mm'
+        Units for internal geometry processing. Default: 'm' (meters)
+        Should match the units used in domain specification.
     use_morphological_shell : bool
         If True (default), use morphological dilation for shell generation which
         is much more memory-efficient. If False, use distance_transform_edt which
@@ -175,8 +187,7 @@ def embed_tree_as_negative_space(
     output_units : str
         Units for the output meshes. Default: "mm"
         Supported: "m", "mm", "cm", "um"
-        Since internal units are dimensionless (1 = 1mm equivalent),
-        this controls the scale of coordinates in the output meshes.
+        Internal meter values are scaled to this unit for output.
     
     Returns
     -------
@@ -193,23 +204,23 @@ def embed_tree_as_negative_space(
     >>> from generation.core.types import Point3D
     >>> from generation.ops.embedding import embed_tree_as_negative_space
     >>> 
-    >>> # Create a box domain (in millimeters)
+    >>> # Create a box domain (in meters - 100mm = 0.1m)
     >>> domain = BoxDomain.from_center_and_size(
     ...     center=Point3D(0, 0, 0),
-    ...     width=100, height=100, depth=100  # 100mm cube
+    ...     width=0.1, height=0.1, depth=0.1  # 100mm cube in meters
     ... )
     >>> 
     >>> # Embed tree as negative space
     >>> result = embed_tree_as_negative_space(
     ...     tree_stl_path='tree.stl',
     ...     domain=domain,
-    ...     voxel_pitch=0.5,  # 0.5mm voxels
+    ...     voxel_pitch=5e-4,  # 0.5mm voxels in meters
     ...     output_void=True,
     ...     output_shell=True,
     ...     stl_units='auto',  # Auto-detect STL units
     ... )
     >>> 
-    >>> # Export results
+    >>> # Export results (output is in mm by default)
     >>> result['domain_with_void'].export('domain_with_void.stl')
     >>> result['void'].export('void.stl')
     >>> result['shell'].export('shell.stl')

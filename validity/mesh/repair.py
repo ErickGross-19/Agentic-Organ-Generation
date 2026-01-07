@@ -1,12 +1,31 @@
 import numpy as np
 import trimesh
-from pymeshfix import MeshFix
 from scipy import ndimage
 from skimage.measure import marching_cubes
 import trimesh.smoothing as tmsmooth
 from tqdm import tqdm
 
 from .voxel_utils import voxelized_with_retry
+
+# pymeshfix is an optional dependency - only required for meshfix_repair()
+_PYMESHFIX_AVAILABLE = False
+_PYMESHFIX_IMPORT_ERROR = None
+try:
+    from pymeshfix import MeshFix
+    _PYMESHFIX_AVAILABLE = True
+except ImportError as e:
+    _PYMESHFIX_IMPORT_ERROR = e
+
+
+def _require_pymeshfix():
+    """Raise ImportError with helpful message if pymeshfix is not available."""
+    if not _PYMESHFIX_AVAILABLE:
+        raise ImportError(
+            "pymeshfix is required for mesh repair operations but is not installed. "
+            "Install it with: pip install pymeshfix\n"
+            "Note: pymeshfix requires a C++ compiler. On Ubuntu: apt-get install build-essential\n"
+            f"Original error: {_PYMESHFIX_IMPORT_ERROR}"
+        )
 
 
 def auto_adjust_voxel_pitch(
@@ -244,7 +263,11 @@ def meshfix_repair(
 
     This version favors a single, clean lumen over preserving
     extra tiny islands or exact original volume.
+    
+    Requires pymeshfix to be installed. Install with: pip install pymeshfix
     """
+    _require_pymeshfix()
+    
     mesh = mesh.copy()
 
     v = np.asarray(mesh.vertices, dtype=float)
