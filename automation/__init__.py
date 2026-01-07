@@ -61,6 +61,14 @@ from .workflow import (
     detect_organ_type,
     get_tailored_questions,
     run_single_agent_workflow,
+    RuleFlag,
+    ProposedDefault,
+    RuleEvaluationResult,
+    PlannedQuestion,
+    IntentParser,
+    RuleEngine,
+    QuestionPlanner,
+    run_rule_based_capture,
 )
 
 __all__ = [
@@ -90,4 +98,12 @@ __all__ = [
     "detect_organ_type",
     "get_tailored_questions",
     "run_single_agent_workflow",
+    "RuleFlag",
+    "ProposedDefault",
+    "RuleEvaluationResult",
+    "PlannedQuestion",
+    "IntentParser",
+    "RuleEngine",
+    "QuestionPlanner",
+    "run_rule_based_capture",
 ]

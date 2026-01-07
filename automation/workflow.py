@@ -926,6 +926,715 @@ QUESTION_GROUPS = {
 
 
 # =============================================================================
+# Rule Engine for Adaptive Requirements Capture
+# =============================================================================
+
+@dataclass
+class RuleFlag:
+    """A flag raised by a rule indicating an issue to address."""
+    rule_id: str
+    family: str  # "A" (completeness), "B" (ambiguity), "C" (conflict)
+    field: str
+    message: str
+    severity: str = "required"  # "required", "warning", "info"
+    rework_cost: str = "high"  # "high", "medium", "low"
+
+
+@dataclass
+class ProposedDefault:
+    """A proposed default value for a field."""
+    field: str
+    value: Any
+    reason: str
+    accepted: bool = False
+
+
+@dataclass
+class RuleEvaluationResult:
+    """Result of evaluating all rules against requirements."""
+    missing_fields: List[RuleFlag] = field(default_factory=list)
+    ambiguity_flags: List[RuleFlag] = field(default_factory=list)
+    conflict_flags: List[RuleFlag] = field(default_factory=list)
+    proposed_defaults: List[ProposedDefault] = field(default_factory=list)
+    is_generation_ready: bool = False
+    is_finalization_ready: bool = False
+    
+    def all_flags(self) -> List[RuleFlag]:
+        """Return all flags sorted by rework cost."""
+        all_f = self.missing_fields + self.ambiguity_flags + self.conflict_flags
+        cost_order = {"high": 0, "medium": 1, "low": 2}
+        return sorted(all_f, key=lambda f: cost_order.get(f.rework_cost, 3))
+    
+    def has_blockers(self) -> bool:
+        """Return True if there are any required flags."""
+        return any(f.severity == "required" for f in self.all_flags())
+
+
+@dataclass
+class PlannedQuestion:
+    """A question planned to be asked."""
+    field: str
+    question_text: str
+    default_value: Optional[str]
+    rework_cost: str
+    reason: str
+
+
+class IntentParser:
+    """Parses user intent to extract explicit values and detect ambiguities."""
+    
+    SPATIAL_TERMS = ["left", "right", "top", "bottom", "front", "back", "same side", "opposite"]
+    VAGUE_QUANTIFIERS = ["dense", "thin", "big", "small", "large", "highly", "smooth", "tortuous", "branched"]
+    IO_TERMS = ["inlet", "outlet", "flow", "perfusion", "supply", "drain"]
+    SYMMETRY_TERMS = ["symmetric", "symmetry", "mirror"]
+    
+    NUMERIC_PATTERNS = {
+        "box_size": r"box\s+(\d+(?:\.\d+)?)\s*(?:x|by)\s*(\d+(?:\.\d+)?)\s*(?:x|by)\s*(\d+(?:\.\d+)?)\s*(cm|mm|m)?",
+        "diameter": r"(?:diameter|channel)\s*(?:of\s+)?(\d+(?:\.\d+)?)\s*(mm|cm|um)?",
+        "radius": r"radius\s*(?:of\s+)?(\d+(?:\.\d+)?)\s*(mm|cm|um)?",
+        "count": r"(\d+)\s*(?:inlets?|outlets?|terminals?|branches?)",
+    }
+    
+    def __init__(self, intent: str):
+        self.intent = intent
+        self.intent_lower = intent.lower()
+        self.extracted_values: Dict[str, Any] = {}
+        self.detected_ambiguities: List[str] = []
+        self._parse()
+    
+    def _parse(self) -> None:
+        """Parse the intent string to extract values and detect ambiguities."""
+        import re
+        
+        for term in self.SPATIAL_TERMS:
+            if term in self.intent_lower:
+                self.detected_ambiguities.append(f"spatial:{term}")
+        
+        for term in self.VAGUE_QUANTIFIERS:
+            if term in self.intent_lower:
+                self.detected_ambiguities.append(f"vague:{term}")
+        
+        has_io_mention = any(term in self.intent_lower for term in self.IO_TERMS)
+        if has_io_mention:
+            has_io_count = bool(re.search(r"\d+\s*(?:inlets?|outlets?)", self.intent_lower))
+            if not has_io_count:
+                self.detected_ambiguities.append("implicit_io")
+        
+        for term in self.SYMMETRY_TERMS:
+            if term in self.intent_lower:
+                has_axis = any(ax in self.intent_lower for ax in ["x", "y", "z", "axis", "plane"])
+                if not has_axis:
+                    self.detected_ambiguities.append(f"symmetry:{term}")
+        
+        for pattern_name, pattern in self.NUMERIC_PATTERNS.items():
+            match = re.search(pattern, self.intent_lower)
+            if match:
+                self.extracted_values[pattern_name] = match.groups()
+    
+    def has_spatial_ambiguity(self) -> bool:
+        return any(a.startswith("spatial:") for a in self.detected_ambiguities)
+    
+    def has_vague_quantifiers(self) -> bool:
+        return any(a.startswith("vague:") for a in self.detected_ambiguities)
+    
+    def has_implicit_io(self) -> bool:
+        return "implicit_io" in self.detected_ambiguities
+    
+    def has_symmetry_ambiguity(self) -> bool:
+        return any(a.startswith("symmetry:") for a in self.detected_ambiguities)
+    
+    def get_vague_terms(self) -> List[str]:
+        return [a.split(":")[1] for a in self.detected_ambiguities if a.startswith("vague:")]
+
+
+class RuleEngine:
+    """
+    Evaluates requirements against three rule families to determine what's needed.
+    
+    Family A: Completeness rules (required fields)
+    Family B: Ambiguity rules (unclear user language)
+    Family C: Conflict/feasibility rules (specs that won't work)
+    """
+    
+    GENERATION_REQUIRED_FIELDS = [
+        ("domain", "Domain specification"),
+        ("inlets_outlets.inlets", "At least one inlet"),
+        ("constraints.min_radius_m", "Minimum radius"),
+        ("constraints.min_clearance_m", "Minimum clearance"),
+    ]
+    
+    FINALIZATION_REQUIRED_FIELDS = [
+        ("embedding_export.voxel_pitch_m", "Voxel pitch for embedding"),
+        ("embedding_export.stl_units", "Export units"),
+    ]
+    
+    DEFAULT_VALUES = {
+        "domain.type": ("box", "Standard box domain"),
+        "domain.size_m": ((0.02, 0.06, 0.03), "Default 2x6x3 cm box"),
+        "constraints.min_radius_m": (0.0001, "100 micron minimum radius"),
+        "constraints.min_clearance_m": (0.0002, "200 micron minimum clearance"),
+        "topology.target_terminals": (200, "Moderate complexity"),
+        "embedding_export.voxel_pitch_m": (0.0003, "300 micron voxel pitch"),
+        "embedding_export.stl_units": ("mm", "Millimeters for export"),
+        "geometry.tortuosity": (0.1, "Low tortuosity"),
+        "geometry.radius_profile": ("murray", "Murray's law tapering"),
+    }
+    
+    VAGUE_TO_NUMERIC = {
+        "dense": {"topology.target_terminals": (500, 1000)},
+        "sparse": {"topology.target_terminals": (50, 100)},
+        "thin": {"constraints.min_radius_m": (0.00005, 0.0001)},
+        "thick": {"constraints.min_radius_m": (0.0002, 0.0005)},
+        "big": {"domain.size_m": ((0.04, 0.12, 0.06), None)},
+        "small": {"domain.size_m": ((0.01, 0.03, 0.015), None)},
+        "tortuous": {"geometry.tortuosity": (0.7, 0.9)},
+        "smooth": {"geometry.tortuosity": (0.0, 0.2)},
+        "highly": {"topology.target_terminals": (500, 1000)},
+        "branched": {"topology.target_terminals": (300, 500)},
+    }
+    
+    def __init__(self, organ_type: str = "generic"):
+        self.organ_type = organ_type
+    
+    def evaluate(
+        self,
+        requirements: ObjectRequirements,
+        intent: str,
+        check_finalization: bool = False
+    ) -> RuleEvaluationResult:
+        """
+        Evaluate requirements against all rule families.
+        
+        Returns a RuleEvaluationResult with flags and proposed defaults.
+        """
+        result = RuleEvaluationResult()
+        parser = IntentParser(intent)
+        
+        self._evaluate_completeness_rules(requirements, result, check_finalization)
+        self._evaluate_ambiguity_rules(requirements, intent, parser, result)
+        self._evaluate_conflict_rules(requirements, result)
+        self._propose_defaults(requirements, result)
+        
+        result.is_generation_ready = not any(
+            f.severity == "required" 
+            for f in result.missing_fields + result.ambiguity_flags + result.conflict_flags
+            if f.family in ("A", "B", "C") and f.rework_cost == "high"
+        )
+        
+        if check_finalization:
+            result.is_finalization_ready = result.is_generation_ready and not any(
+                f.field.startswith("embedding_export") for f in result.missing_fields
+            )
+        
+        return result
+    
+    def _evaluate_completeness_rules(
+        self,
+        req: ObjectRequirements,
+        result: RuleEvaluationResult,
+        check_finalization: bool
+    ) -> None:
+        """Family A: Check for missing required fields."""
+        
+        if not req.inlets_outlets.inlets:
+            result.missing_fields.append(RuleFlag(
+                rule_id="A1_inlets",
+                family="A",
+                field="inlets_outlets.inlets",
+                message="At least one inlet is required for generation",
+                severity="required",
+                rework_cost="high"
+            ))
+        
+        if req.constraints.min_radius_m is None or req.constraints.min_radius_m <= 0:
+            result.missing_fields.append(RuleFlag(
+                rule_id="A1_min_radius",
+                family="A",
+                field="constraints.min_radius_m",
+                message="Minimum channel radius is required",
+                severity="required",
+                rework_cost="high"
+            ))
+        
+        if req.constraints.min_clearance_m is None or req.constraints.min_clearance_m <= 0:
+            result.missing_fields.append(RuleFlag(
+                rule_id="A1_min_clearance",
+                family="A",
+                field="constraints.min_clearance_m",
+                message="Minimum clearance between channels is required",
+                severity="required",
+                rework_cost="high"
+            ))
+        
+        if req.topology.target_terminals is None:
+            result.missing_fields.append(RuleFlag(
+                rule_id="A1_complexity",
+                family="A",
+                field="topology.target_terminals",
+                message="Target complexity (terminal count) is needed",
+                severity="required",
+                rework_cost="medium"
+            ))
+        
+        if check_finalization:
+            if req.embedding_export.voxel_pitch_m is None:
+                result.missing_fields.append(RuleFlag(
+                    rule_id="A3_voxel_pitch",
+                    family="A",
+                    field="embedding_export.voxel_pitch_m",
+                    message="Voxel pitch is required for embedding",
+                    severity="required",
+                    rework_cost="medium"
+                ))
+    
+    def _evaluate_ambiguity_rules(
+        self,
+        req: ObjectRequirements,
+        intent: str,
+        parser: IntentParser,
+        result: RuleEvaluationResult
+    ) -> None:
+        """Family B: Check for ambiguous user language."""
+        
+        if parser.has_spatial_ambiguity() and not req.frame_of_reference.axes:
+            result.ambiguity_flags.append(RuleFlag(
+                rule_id="B1_spatial",
+                family="B",
+                field="frame_of_reference",
+                message="Spatial terms used without coordinate convention",
+                severity="required",
+                rework_cost="high"
+            ))
+        
+        vague_terms = parser.get_vague_terms()
+        for term in vague_terms:
+            if term in self.VAGUE_TO_NUMERIC:
+                mappings = self.VAGUE_TO_NUMERIC[term]
+                for field_name in mappings:
+                    result.ambiguity_flags.append(RuleFlag(
+                        rule_id=f"B2_vague_{term}",
+                        family="B",
+                        field=field_name,
+                        message=f"'{term}' needs numeric mapping for {field_name}",
+                        severity="warning",
+                        rework_cost="medium"
+                    ))
+        
+        if parser.has_implicit_io() and not req.inlets_outlets.inlets:
+            result.ambiguity_flags.append(RuleFlag(
+                rule_id="B3_implicit_io",
+                family="B",
+                field="inlets_outlets",
+                message="Perfusion/flow mentioned but I/O geometry not specified",
+                severity="required",
+                rework_cost="high"
+            ))
+        
+        if parser.has_symmetry_ambiguity():
+            result.ambiguity_flags.append(RuleFlag(
+                rule_id="B4_symmetry",
+                family="B",
+                field="geometry.symmetry_axis",
+                message="Symmetry mentioned without specifying axis/plane",
+                severity="warning",
+                rework_cost="low"
+            ))
+    
+    def _evaluate_conflict_rules(
+        self,
+        req: ObjectRequirements,
+        result: RuleEvaluationResult
+    ) -> None:
+        """Family C: Check for conflicts and feasibility issues."""
+        
+        if (req.constraints.min_radius_m and req.embedding_export.voxel_pitch_m and
+            req.constraints.min_radius_m < req.embedding_export.voxel_pitch_m):
+            result.conflict_flags.append(RuleFlag(
+                rule_id="C1_printability",
+                family="C",
+                field="constraints.min_radius_m",
+                message=f"Min radius ({req.constraints.min_radius_m*1000:.2f}mm) smaller than voxel pitch ({req.embedding_export.voxel_pitch_m*1000:.2f}mm)",
+                severity="required",
+                rework_cost="high"
+            ))
+        
+        if req.topology.target_terminals and req.constraints.min_clearance_m:
+            domain_volume = req.domain.size_m[0] * req.domain.size_m[1] * req.domain.size_m[2]
+            clearance_volume = (req.constraints.min_clearance_m ** 3) * req.topology.target_terminals
+            if clearance_volume > domain_volume * 0.5:
+                result.conflict_flags.append(RuleFlag(
+                    rule_id="C2_clearance",
+                    family="C",
+                    field="topology.target_terminals",
+                    message=f"Target terminals ({req.topology.target_terminals}) may be too dense for clearance constraint",
+                    severity="warning",
+                    rework_cost="medium"
+                ))
+        
+        if req.topology.target_terminals and req.topology.target_terminals > 2000:
+            result.conflict_flags.append(RuleFlag(
+                rule_id="C3_complexity",
+                family="C",
+                field="topology.target_terminals",
+                message=f"High terminal count ({req.topology.target_terminals}) may cause long runtime",
+                severity="warning",
+                rework_cost="medium"
+            ))
+        
+        if req.inlets_outlets.inlets:
+            for inlet in req.inlets_outlets.inlets:
+                domain_min = min(req.domain.size_m) / 2
+                if inlet.radius_m > domain_min * 0.5:
+                    result.conflict_flags.append(RuleFlag(
+                        rule_id="C4_io_feasibility",
+                        family="C",
+                        field="inlets_outlets.inlets",
+                        message=f"Inlet radius ({inlet.radius_m*1000:.2f}mm) too large for domain",
+                        severity="required",
+                        rework_cost="high"
+                    ))
+    
+    def _propose_defaults(
+        self,
+        req: ObjectRequirements,
+        result: RuleEvaluationResult
+    ) -> None:
+        """Propose defaults for missing fields."""
+        
+        missing_field_names = {f.field for f in result.missing_fields}
+        
+        for field_path, (default_val, reason) in self.DEFAULT_VALUES.items():
+            if field_path in missing_field_names or self._field_is_empty(req, field_path):
+                result.proposed_defaults.append(ProposedDefault(
+                    field=field_path,
+                    value=default_val,
+                    reason=reason
+                ))
+    
+    def _field_is_empty(self, req: ObjectRequirements, field_path: str) -> bool:
+        """Check if a field is empty/None."""
+        parts = field_path.split(".")
+        obj = req
+        for part in parts:
+            if hasattr(obj, part):
+                obj = getattr(obj, part)
+            else:
+                return True
+        return obj is None or obj == "" or obj == []
+
+
+class QuestionPlanner:
+    """
+    Plans minimal questions based on rule evaluation results.
+    
+    Questions are ranked by rework cost (high → medium → low) and
+    only the necessary questions are asked.
+    """
+    
+    FIELD_TO_QUESTION = {
+        "frame_of_reference": ("coordinate_frame", "Which axis is length/height/width? (x=length, y=depth, z=height)", None),
+        "inlets_outlets.inlets": ("num_inlets", "How many inlets?", "1"),
+        "inlets_outlets.outlets": ("num_outlets", "How many outlets?", "0"),
+        "constraints.min_radius_m": ("min_channel_radius", "Minimum channel radius (mm)?", "0.1"),
+        "constraints.min_clearance_m": ("min_clearance", "Minimum spacing between channels (mm)?", "0.2"),
+        "topology.target_terminals": ("target_terminals", "Target complexity: ~200, ~500, or ~1000 terminals?", "200"),
+        "domain.size_m": ("domain_size", "Use default box 0.02x0.06x0.03 m? (yes/custom)", "yes"),
+        "embedding_export.voxel_pitch_m": ("voxel_pitch", "Voxel pitch for embedding (mm)?", "0.3"),
+        "embedding_export.stl_units": ("export_units", "Export units? (mm/cm)", "mm"),
+        "geometry.tortuosity": ("tortuosity", "Vessel tortuosity? (low/medium/high)", "low"),
+        "geometry.symmetry_axis": ("symmetry_axis", "Symmetric around which axis? (x/y/z/none)", "none"),
+    }
+    
+    def plan(
+        self,
+        eval_result: RuleEvaluationResult,
+        max_questions: int = 4
+    ) -> List[PlannedQuestion]:
+        """
+        Plan minimal questions based on evaluation result.
+        
+        Returns at most max_questions, prioritized by rework cost.
+        """
+        questions = []
+        seen_fields = set()
+        
+        all_flags = eval_result.all_flags()
+        
+        for flag in all_flags:
+            if flag.field in seen_fields:
+                continue
+            if len(questions) >= max_questions:
+                break
+            
+            if flag.field in self.FIELD_TO_QUESTION:
+                q_key, q_text, q_default = self.FIELD_TO_QUESTION[flag.field]
+                questions.append(PlannedQuestion(
+                    field=flag.field,
+                    question_text=q_text,
+                    default_value=q_default,
+                    rework_cost=flag.rework_cost,
+                    reason=flag.message
+                ))
+                seen_fields.add(flag.field)
+        
+        for proposed in eval_result.proposed_defaults:
+            if proposed.field in seen_fields:
+                continue
+            if len(questions) >= max_questions:
+                break
+            
+            if proposed.field in self.FIELD_TO_QUESTION:
+                q_key, q_text, q_default = self.FIELD_TO_QUESTION[proposed.field]
+                questions.append(PlannedQuestion(
+                    field=proposed.field,
+                    question_text=f"Use default {proposed.value}? ({proposed.reason})",
+                    default_value="yes",
+                    rework_cost="low",
+                    reason=proposed.reason
+                ))
+                seen_fields.add(proposed.field)
+        
+        return questions
+    
+    def format_turn_output(
+        self,
+        requirements: ObjectRequirements,
+        eval_result: RuleEvaluationResult,
+        questions: List[PlannedQuestion]
+    ) -> str:
+        """
+        Format the agent's turn output with:
+        1. Current requirements snapshot
+        2. Missing/ambiguous/conflict flags
+        3. Proposed defaults
+        4. Questions to ask
+        """
+        lines = []
+        
+        lines.append("=== Current Requirements Snapshot ===")
+        lines.append(f"Domain: {requirements.domain.type} {requirements.domain.size_m}")
+        lines.append(f"Inlets: {len(requirements.inlets_outlets.inlets)}")
+        lines.append(f"Outlets: {len(requirements.inlets_outlets.outlets)}")
+        lines.append(f"Min radius: {requirements.constraints.min_radius_m}")
+        lines.append(f"Min clearance: {requirements.constraints.min_clearance_m}")
+        lines.append(f"Target terminals: {requirements.topology.target_terminals}")
+        lines.append("")
+        
+        if eval_result.missing_fields or eval_result.ambiguity_flags or eval_result.conflict_flags:
+            lines.append("=== Issues to Address ===")
+            for flag in eval_result.all_flags():
+                prefix = {"required": "[!]", "warning": "[?]", "info": "[i]"}.get(flag.severity, "[-]")
+                lines.append(f"{prefix} {flag.message}")
+            lines.append("")
+        
+        if eval_result.proposed_defaults:
+            lines.append("=== Proposed Defaults ===")
+            for prop in eval_result.proposed_defaults:
+                lines.append(f"  {prop.field}: {prop.value} ({prop.reason})")
+            lines.append("")
+        
+        if questions:
+            lines.append("=== Questions ===")
+            for i, q in enumerate(questions, 1):
+                default_str = f" [{q.default_value}]" if q.default_value else ""
+                lines.append(f"{i}. {q.question_text}{default_str}")
+            lines.append("")
+            lines.append("(Say 'use defaults' to accept all proposed defaults)")
+        
+        return "\n".join(lines)
+
+
+def run_rule_based_capture(
+    requirements: ObjectRequirements,
+    intent: str,
+    organ_type: str = "generic",
+    verbose: bool = True
+) -> Tuple[ObjectRequirements, Dict[str, Any]]:
+    """
+    Run the rule-based requirements capture loop.
+    
+    This replaces the fixed question groups with an adaptive loop that:
+    1. Parses user intent to extract explicit values
+    2. Runs validators (missing, ambiguity, conflicts)
+    3. Generates minimal questions
+    4. Repeats until generation-ready
+    
+    Returns the updated requirements and collected answers.
+    """
+    engine = RuleEngine(organ_type)
+    planner = QuestionPlanner()
+    parser = IntentParser(intent)
+    collected_answers: Dict[str, Any] = {}
+    
+    for field_name, values in parser.extracted_values.items():
+        if field_name == "box_size" and values:
+            try:
+                size = (float(values[0]), float(values[1]), float(values[2]))
+                unit = values[3] if len(values) > 3 else "mm"
+                scale = {"mm": 0.001, "cm": 0.01, "m": 1.0}.get(unit, 0.001)
+                requirements.domain.size_m = tuple(s * scale for s in size)
+                collected_answers["domain_size"] = f"{size[0]}x{size[1]}x{size[2]} {unit}"
+            except (ValueError, IndexError):
+                pass
+        elif field_name == "diameter" and values:
+            try:
+                val = float(values[0])
+                unit = values[1] if len(values) > 1 else "mm"
+                scale = {"mm": 0.001, "cm": 0.01, "um": 0.000001}.get(unit, 0.001)
+                requirements.constraints.min_radius_m = (val / 2) * scale
+                collected_answers["min_channel_radius"] = f"{val/2} {unit}"
+            except (ValueError, IndexError):
+                pass
+        elif field_name == "count" and values:
+            try:
+                count = int(values[0])
+                if "inlet" in intent.lower():
+                    collected_answers["num_inlets"] = str(count)
+                elif "outlet" in intent.lower():
+                    collected_answers["num_outlets"] = str(count)
+            except (ValueError, IndexError):
+                pass
+    
+    max_iterations = 10
+    iteration = 0
+    
+    while iteration < max_iterations:
+        iteration += 1
+        
+        eval_result = engine.evaluate(requirements, intent)
+        
+        if eval_result.is_generation_ready:
+            if verbose:
+                print("\nRequirements are complete. Ready for generation.")
+            break
+        
+        questions = planner.plan(eval_result, max_questions=4)
+        
+        if not questions:
+            if verbose:
+                print("\nNo more questions needed. Proceeding with defaults.")
+            for prop in eval_result.proposed_defaults:
+                _apply_default_to_requirements(requirements, prop)
+            break
+        
+        if verbose:
+            output = planner.format_turn_output(requirements, eval_result, questions)
+            print(output)
+        
+        for q in questions:
+            default_str = f" [{q.default_value}]" if q.default_value else ""
+            answer = input(f"  {q.question_text}{default_str}: ").strip()
+            
+            if answer.lower() in ("quit", "exit"):
+                return requirements, collected_answers
+            
+            if answer.lower() == "use defaults":
+                for prop in eval_result.proposed_defaults:
+                    _apply_default_to_requirements(requirements, prop)
+                    collected_answers[prop.field] = prop.value
+                break
+            
+            if not answer and q.default_value:
+                answer = q.default_value
+            
+            collected_answers[q.field] = answer
+            _apply_answer_to_requirements(requirements, q.field, answer)
+    
+    return requirements, collected_answers
+
+
+def _apply_default_to_requirements(req: ObjectRequirements, prop: ProposedDefault) -> None:
+    """Apply a proposed default to requirements."""
+    _apply_answer_to_requirements(req, prop.field, prop.value)
+
+
+def _apply_answer_to_requirements(req: ObjectRequirements, field: str, value: Any) -> None:
+    """Apply an answer to the appropriate requirements field."""
+    if field == "constraints.min_radius_m":
+        try:
+            if isinstance(value, str):
+                req.constraints.min_radius_m = float(value) / 1000
+            else:
+                req.constraints.min_radius_m = float(value)
+        except (ValueError, TypeError):
+            pass
+    
+    elif field == "constraints.min_clearance_m":
+        try:
+            if isinstance(value, str):
+                req.constraints.min_clearance_m = float(value) / 1000
+            else:
+                req.constraints.min_clearance_m = float(value)
+        except (ValueError, TypeError):
+            pass
+    
+    elif field == "topology.target_terminals":
+        try:
+            if isinstance(value, str):
+                req.topology.target_terminals = int(value)
+            else:
+                req.topology.target_terminals = int(value)
+        except (ValueError, TypeError):
+            pass
+    
+    elif field == "domain.size_m":
+        if isinstance(value, tuple):
+            req.domain.size_m = value
+        elif isinstance(value, str) and value.lower() != "yes":
+            pass
+    
+    elif field == "embedding_export.voxel_pitch_m":
+        try:
+            if isinstance(value, str):
+                req.embedding_export.voxel_pitch_m = float(value) / 1000
+            else:
+                req.embedding_export.voxel_pitch_m = float(value)
+        except (ValueError, TypeError):
+            pass
+    
+    elif field == "embedding_export.stl_units":
+        if isinstance(value, str):
+            req.embedding_export.stl_units = value
+    
+    elif field == "geometry.tortuosity":
+        tortuosity_map = {"low": 0.1, "medium": 0.5, "high": 0.9}
+        if isinstance(value, str):
+            req.geometry.tortuosity = tortuosity_map.get(value.lower(), 0.1)
+        else:
+            req.geometry.tortuosity = float(value)
+    
+    elif field == "inlets_outlets.inlets":
+        try:
+            if isinstance(value, str):
+                num = int(value)
+            else:
+                num = int(value)
+            if num > 0 and not req.inlets_outlets.inlets:
+                for i in range(num):
+                    req.inlets_outlets.inlets.append(PortSpec(
+                        name=f"inlet_{i+1}",
+                        radius_m=0.002
+                    ))
+        except (ValueError, TypeError):
+            pass
+    
+    elif field == "inlets_outlets.outlets":
+        try:
+            if isinstance(value, str):
+                num = int(value)
+            else:
+                num = int(value)
+            if num > 0 and not req.inlets_outlets.outlets:
+                for i in range(num):
+                    req.inlets_outlets.outlets.append(PortSpec(
+                        name=f"outlet_{i+1}",
+                        radius_m=0.001
+                    ))
+        except (ValueError, TypeError):
+            pass
+
+
+# =============================================================================
 # Main Workflow Class
 # =============================================================================
 
@@ -1293,7 +2002,18 @@ class SingleAgentOrganGeneratorV1:
         self.state = WorkflowState.REQUIREMENTS_CAPTURE
     
     def _run_requirements_capture(self) -> None:
-        """Run REQUIREMENTS_CAPTURE state: Schema-gated requirements gathering."""
+        """Run REQUIREMENTS_CAPTURE state: Rule-based adaptive requirements gathering.
+        
+        This method uses the RuleEngine to determine what questions to ask based on:
+        - Missing required fields (Family A - Completeness)
+        - Ambiguous user language (Family B - Ambiguity)
+        - Conflicts/feasibility issues (Family C - Conflict)
+        
+        The attempt strategy is:
+        1. Infer from user text (high confidence only)
+        2. Propose concrete defaults (mark as assumed)
+        3. Ask targeted questions (only if needed)
+        """
         obj = self.context.get_current_object()
         if not obj:
             self.state = WorkflowState.COMPLETE
@@ -1304,52 +2024,26 @@ class SingleAgentOrganGeneratorV1:
         print(f"Step 3: Requirements Capture ({obj.name})")
         print("-" * 40)
         
-        tailored_questions = get_tailored_questions(obj.raw_intent)
         organ_type = detect_organ_type(obj.raw_intent)
         
         if organ_type != "generic":
             print(f"\nDetected organ type: {organ_type}")
-            print("Questions have been tailored to this organ type.")
+            print("Questions will be tailored to this organ type.")
         
-        groups = list(tailored_questions.keys())
+        print("\nUsing adaptive rule-based requirements capture.")
+        print("The system will ask only the questions needed based on your intent.")
+        print("Say 'use defaults' at any time to accept all proposed defaults.")
+        print()
         
-        while self.current_question_group:
-            group_idx = groups.index(self.current_question_group) if self.current_question_group in groups else 0
-            
-            if group_idx >= len(groups):
-                break
-            
-            group_key = groups[group_idx]
-            group = tailored_questions[group_key]
-            
-            print()
-            print(f"Group {group_key}: {group['name']}")
-            print("-" * 30)
-            
-            questions = group["questions"]
-            
-            while self.current_question_index < len(questions):
-                q_key, q_text, q_default = questions[self.current_question_index]
-                
-                default_str = f" [{q_default}]" if q_default else ""
-                answer = input(f"  {q_text}{default_str}: ").strip()
-                
-                if answer.lower() in ("quit", "exit"):
-                    self.state = WorkflowState.COMPLETE
-                    return
-                
-                if not answer and q_default:
-                    answer = q_default
-                
-                self.collected_answers[q_key] = answer
-                self.current_question_index += 1
-            
-            self.current_question_index = 0
-            next_group_idx = group_idx + 1
-            if next_group_idx < len(groups):
-                self.current_question_group = groups[next_group_idx]
-            else:
-                self.current_question_group = None
+        updated_req, collected = run_rule_based_capture(
+            requirements=obj.requirements,
+            intent=obj.raw_intent,
+            organ_type=organ_type,
+            verbose=True
+        )
+        
+        obj.requirements = updated_req
+        self.collected_answers = collected
         
         self._apply_answers_to_requirements(obj)
         
@@ -1367,8 +2061,10 @@ class SingleAgentOrganGeneratorV1:
             self.state = WorkflowState.COMPLETE
             return
         if confirm in ("no", "n"):
-            self.current_question_group = "A"
-            self.current_question_index = 0
+            print("\nRestarting requirements capture...")
+            obj.requirements = ObjectRequirements()
+            obj.requirements.identity.object_name = obj.name
+            obj.requirements.identity.object_slug = obj.slug
             return
         
         self.state = WorkflowState.SPEC_COMPILATION

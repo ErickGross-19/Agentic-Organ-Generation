@@ -405,14 +405,209 @@ The workflow progresses through the following states:
 
 | State | Description |
 |-------|-------------|
-| `INIT` | Ask for project name and output units |
-| `REQUIREMENTS` | Ask for structure description |
-| `GENERATING` | Generate structure using the library |
-| `VISUALIZING` | Show 3D visualization and generated files |
-| `REVIEW` | Ask if user is satisfied |
-| `CLARIFYING` | If not satisfied, ask what's wrong |
-| `FINALIZING` | Output embedded structure, STL mesh, and code |
+| `PROJECT_INIT` | Ask for project name and output directory |
+| `OBJECT_PLANNING` | Plan objects (count, names, variants) |
+| `FRAME_OF_REFERENCE` | Establish coordinate conventions |
+| `REQUIREMENTS_CAPTURE` | Adaptive rule-based requirements gathering |
+| `SPEC_COMPILATION` | Compile requirements to design spec |
+| `GENERATION` | Generate structure using the library |
+| `ANALYSIS_VALIDATION` | Analyze and validate the structure |
+| `ITERATION` | Review and iterate on design |
+| `FINALIZATION` | Embed and export final artifacts |
 | `COMPLETE` | Workflow finished |
+
+## Rule Engine (Adaptive Requirements Capture)
+
+The workflow uses a **rule engine** instead of fixed question groups to adaptively determine what questions to ask based on what's missing, what's ambiguous, and what would cause expensive rework if wrong.
+
+### Core Concept
+
+Instead of asking all questions in sequence (Groups A-G), the rule engine runs an adaptive loop:
+
+1. **Parse user intent** → extract explicit values and detect ambiguities
+2. **Run validators** → check for missing fields, ambiguities, and conflicts
+3. **Generate minimal questions** → only ask what's needed (max 4 per turn)
+4. **Apply answers** → update requirements
+5. **Repeat** until generation-ready
+
+### Three Rule Families
+
+#### Family A — Completeness Rules
+
+Ensure required fields exist before proceeding.
+
+| Rule | Description |
+|------|-------------|
+| A1: Required-field gate | Check for missing required fields (domain, inlets, min_radius, min_clearance) |
+| A2: Generation-ready gate | Verify all fields needed for generation are populated |
+| A3: Finalization-ready gate | Verify embedding/export fields are ready |
+
+#### Family B — Ambiguity Rules
+
+Trigger only when user language is ambiguous.
+
+| Rule | Description |
+|------|-------------|
+| B1: Spatial-language | Detect "left/right/top/bottom" → require coordinate convention |
+| B2: Vague quantifiers | Detect "dense/thin/big/small" → require numeric mapping |
+| B3: Implicit I/O | Detect "perfusion/flow" → require I/O geometry |
+| B4: Symmetry | Detect "symmetric" → require axis specification |
+
+#### Family C — Conflict/Feasibility Rules
+
+Prevent specs that cannot work or will cause issues.
+
+| Rule | Description |
+|------|-------------|
+| C1: Printability | Check min_radius vs voxel_pitch compatibility |
+| C2: Clearance | Check clearance vs density feasibility |
+| C3: Complexity budget | Check terminals vs configured limits |
+| C4: I/O feasibility | Check inlet radius vs domain size |
+
+### Attempt Strategy
+
+Every missing/ambiguous field is handled by a 3-tier approach:
+
+1. **Attempt 1: Infer from user text** (high confidence only)
+   - Extract explicit values like "box 2x6x3 cm", "diameter 1mm", "2 inlets"
+   
+2. **Attempt 2: Propose concrete default** (mark as assumed)
+   - Domain → default 0.02×0.06×0.03 m box
+   - Min radius → 100 microns
+   - Min clearance → 200 microns
+   
+3. **Attempt 3: Ask targeted question** (only if needed)
+   - Questions ranked by rework cost (high → medium → low)
+
+### Rework Cost Ranking
+
+Questions are prioritized by how expensive it would be to change later:
+
+| Priority | Fields |
+|----------|--------|
+| **High** | Coordinate frame, inlet/outlet placement, domain scale, min radius/clearance |
+| **Medium** | Target terminals/depth, segment length range |
+| **Low** | Aesthetic defaults (angles, tortuosity), export unit preference |
+
+### Using the Rule Engine
+
+```python
+from automation import (
+    RuleEngine, IntentParser, QuestionPlanner,
+    run_rule_based_capture, ObjectRequirements
+)
+
+# Create requirements object
+requirements = ObjectRequirements()
+
+# Run adaptive capture
+updated_req, collected_answers = run_rule_based_capture(
+    requirements=requirements,
+    intent="I want a dense liver-like branching network with inlet/outlet on the same side",
+    organ_type="liver",
+    verbose=True
+)
+
+# The function will:
+# 1. Detect ambiguities ("dense", "same side")
+# 2. Propose defaults for missing fields
+# 3. Ask only the questions needed
+# 4. Return updated requirements
+```
+
+### Rule Engine Components
+
+#### IntentParser
+
+Extracts explicit values and detects ambiguities from user text.
+
+```python
+from automation import IntentParser
+
+parser = IntentParser("box 2x6x3 cm with diameter 1mm and 2 inlets")
+
+# Check for ambiguities
+print(parser.has_spatial_ambiguity())    # False (no left/right/top)
+print(parser.has_vague_quantifiers())    # False (no dense/thin)
+print(parser.has_implicit_io())          # False (explicit "2 inlets")
+
+# Get extracted values
+print(parser.extracted_values)
+# {'box_size': ('2', '6', '3', 'cm'), 'diameter': ('1', 'mm'), 'count': ('2',)}
+```
+
+#### RuleEngine
+
+Evaluates requirements against all three rule families.
+
+```python
+from automation import RuleEngine, ObjectRequirements
+
+engine = RuleEngine(organ_type="liver")
+requirements = ObjectRequirements()
+
+result = engine.evaluate(requirements, intent="dense liver network")
+
+# Check results
+print(result.is_generation_ready)  # False (missing required fields)
+print(len(result.missing_fields))  # Number of missing required fields
+print(len(result.ambiguity_flags)) # Number of ambiguity issues
+print(len(result.conflict_flags))  # Number of conflict issues
+print(len(result.proposed_defaults)) # Number of proposed defaults
+```
+
+#### QuestionPlanner
+
+Plans minimal questions ranked by rework cost.
+
+```python
+from automation import QuestionPlanner
+
+planner = QuestionPlanner()
+questions = planner.plan(eval_result, max_questions=4)
+
+for q in questions:
+    print(f"{q.field}: {q.question_text} [{q.default_value}] (cost: {q.rework_cost})")
+
+# Format output for agent communication
+output = planner.format_turn_output(requirements, eval_result, questions)
+print(output)
+```
+
+### Agent Output Format
+
+Each turn, the rule engine outputs:
+
+1. **Current requirements snapshot** — domain, inlets, outlets, constraints
+2. **Issues to address** — missing fields, ambiguities, conflicts
+3. **Proposed defaults** — values that will be used if not overridden
+4. **Questions** — only the questions needed (max 4)
+
+Example output:
+```
+=== Current Requirements Snapshot ===
+Domain: box (0.02, 0.06, 0.03)
+Inlets: 0
+Outlets: 0
+Min radius: None
+Min clearance: None
+Target terminals: None
+
+=== Issues to Address ===
+[!] Missing required field: At least one inlet
+[!] Missing required field: Minimum radius
+[?] Vague quantifier detected: 'dense' - needs numeric mapping
+
+=== Proposed Defaults ===
+  constraints.min_radius_m: 0.0001 (100 micron minimum radius)
+  constraints.min_clearance_m: 0.0002 (200 micron minimum clearance)
+
+=== Questions ===
+1. How many inlets? [1]
+2. Target complexity (terminals)? [300]
+
+(Say 'use defaults' to accept all proposed defaults)
+```
 
 ### Usage
 
