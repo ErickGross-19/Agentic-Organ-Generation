@@ -613,7 +613,246 @@ class ProjectContext:
 
 
 # =============================================================================
-# Question Groups for Requirements Capture
+# Organ-Specific Question Templates for Dynamic Variance
+# =============================================================================
+
+ORGAN_QUESTION_VARIANTS = {
+    "liver": {
+        "description": "Liver vascular network with hepatic structures",
+        "C": {
+            "name": "Hepatic Inlets/Outlets",
+            "questions": [
+                ("num_inlets", "How many hepatic artery inlets?", "1"),
+                ("num_outlets", "How many portal vein outlets (or hepatic vein drainage)?", "1"),
+                ("inlet_outlet_location", "Hepatic artery entry point (hilum/distributed)?", "hilum"),
+                ("inlet_radius", "Hepatic artery inlet radius (mm)?", "2.0"),
+                ("outlet_radius", "Portal/hepatic vein outlet radius (mm)?", "3.0"),
+                ("direction_vectors", "Vessel direction: follow lobular structure? (yes/infer)", "infer"),
+                ("dual_supply", "Include both arterial and portal venous trees?", "yes"),
+            ],
+        },
+        "D": {
+            "name": "Hepatic Topology",
+            "questions": [
+                ("strict_tree", "Strict tree (no portal-arterial anastomoses)?", "yes"),
+                ("target_terminals", "Target sinusoidal terminal count?", "100"),
+                ("max_depth", "Maximum branching depth (lobular levels)?", "6"),
+                ("branching_style", "Branching: lobular-aligned or space-filling?", "lobular-aligned"),
+                ("perfusion_zones", "Perfusion zones (periportal/centrilobular emphasis)?", "uniform"),
+            ],
+        },
+        "E": {
+            "name": "Hepatic Geometry",
+            "questions": [
+                ("tortuosity", "Vessel tortuosity (hepatic vessels are typically low)?", "low"),
+                ("branch_angle_range", "Branch angle range (hepatic: 45-75 typical)?", "45-75"),
+                ("segment_length_range", "Segment length (lobule scale: 0.5-2mm)?", "0.5-2"),
+                ("tapering", "Radius tapering (Murray's law for hepatic)?", "murray"),
+            ],
+        },
+    },
+    "kidney": {
+        "description": "Renal vascular network with cortex/medulla structure",
+        "C": {
+            "name": "Renal Inlets/Outlets",
+            "questions": [
+                ("num_inlets", "How many renal artery inlets?", "1"),
+                ("num_outlets", "How many renal vein outlets?", "1"),
+                ("inlet_outlet_location", "Entry/exit at renal hilum? (hilum/distributed)", "hilum"),
+                ("inlet_radius", "Renal artery inlet radius (mm)?", "2.5"),
+                ("outlet_radius", "Renal vein outlet radius (mm)?", "3.0"),
+                ("direction_vectors", "Vessel direction: radial from hilum? (radial/infer)", "radial"),
+                ("arcuate_vessels", "Include arcuate vessel layer at corticomedullary junction?", "yes"),
+            ],
+        },
+        "D": {
+            "name": "Renal Topology",
+            "questions": [
+                ("strict_tree", "Strict arterial tree (no arteriovenous shunts)?", "yes"),
+                ("target_terminals", "Target glomerular/terminal count?", "200"),
+                ("max_depth", "Maximum depth (interlobar->arcuate->interlobular->afferent)?", "5"),
+                ("branching_style", "Branching: cortical-dense or uniform?", "cortical-dense"),
+                ("perfusion_zones", "Perfusion emphasis (cortex/medulla ratio)?", "cortex-heavy"),
+            ],
+        },
+        "E": {
+            "name": "Renal Geometry",
+            "questions": [
+                ("tortuosity", "Vessel tortuosity (renal: low-medium)?", "low"),
+                ("branch_angle_range", "Branch angle range (renal: 30-60 typical)?", "30-60"),
+                ("segment_length_range", "Segment length (nephron scale: 0.3-1.5mm)?", "0.3-1.5"),
+                ("tapering", "Radius tapering profile?", "murray"),
+            ],
+        },
+    },
+    "lung": {
+        "description": "Pulmonary vascular network with bronchial alignment",
+        "C": {
+            "name": "Pulmonary Inlets/Outlets",
+            "questions": [
+                ("num_inlets", "How many pulmonary artery inlets?", "1"),
+                ("num_outlets", "How many pulmonary vein outlets?", "2"),
+                ("inlet_outlet_location", "Entry at hilum, exit distributed? (hilum/lobar)", "hilum"),
+                ("inlet_radius", "Pulmonary artery inlet radius (mm)?", "3.0"),
+                ("outlet_radius", "Pulmonary vein outlet radius (mm)?", "2.5"),
+                ("direction_vectors", "Follow bronchial tree alignment? (bronchial/infer)", "bronchial"),
+                ("bronchial_circulation", "Include bronchial arterial supply?", "no"),
+            ],
+        },
+        "D": {
+            "name": "Pulmonary Topology",
+            "questions": [
+                ("strict_tree", "Strict tree (no pulmonary shunts)?", "yes"),
+                ("target_terminals", "Target alveolar capillary terminal count?", "500"),
+                ("max_depth", "Maximum depth (lobar->segmental->subsegmental->acinar)?", "8"),
+                ("branching_style", "Branching: dichotomous (lung-typical) or asymmetric?", "dichotomous"),
+                ("perfusion_zones", "Perfusion zones (apical/basal gradient)?", "basal-heavy"),
+            ],
+        },
+        "E": {
+            "name": "Pulmonary Geometry",
+            "questions": [
+                ("tortuosity", "Vessel tortuosity (pulmonary: very low)?", "low"),
+                ("branch_angle_range", "Branch angle range (pulmonary: 20-45 typical)?", "20-45"),
+                ("segment_length_range", "Segment length (airway-aligned: 1-5mm)?", "1-5"),
+                ("tapering", "Radius tapering (Horsfield model or Murray)?", "murray"),
+            ],
+        },
+    },
+    "heart": {
+        "description": "Coronary vascular network",
+        "C": {
+            "name": "Coronary Inlets/Outlets",
+            "questions": [
+                ("num_inlets", "How many coronary artery ostia (typically 2: LCA, RCA)?", "2"),
+                ("num_outlets", "How many coronary sinus drainage points?", "1"),
+                ("inlet_outlet_location", "Ostia at aortic root, drainage to right atrium?", "aortic root"),
+                ("inlet_radius", "Left main coronary artery radius (mm)?", "2.0"),
+                ("outlet_radius", "Right coronary artery radius (mm)?", "1.5"),
+                ("direction_vectors", "Follow epicardial surface? (epicardial/transmural)", "epicardial"),
+                ("lad_lcx_rca", "Include LAD, LCx, and RCA territories?", "yes"),
+            ],
+        },
+        "D": {
+            "name": "Coronary Topology",
+            "questions": [
+                ("strict_tree", "Strict tree (no coronary collaterals)?", "yes"),
+                ("target_terminals", "Target myocardial terminal count?", "300"),
+                ("max_depth", "Maximum depth (epicardial->intramural->capillary)?", "6"),
+                ("branching_style", "Branching: territory-based or uniform?", "territory-based"),
+                ("perfusion_zones", "Perfusion zones (LV/RV/septum distribution)?", "LV-dominant"),
+            ],
+        },
+        "E": {
+            "name": "Coronary Geometry",
+            "questions": [
+                ("tortuosity", "Vessel tortuosity (coronary: medium, follows surface)?", "medium"),
+                ("branch_angle_range", "Branch angle range (coronary: 40-80)?", "40-80"),
+                ("segment_length_range", "Segment length (myocardial scale: 0.5-3mm)?", "0.5-3"),
+                ("tapering", "Radius tapering profile?", "murray"),
+            ],
+        },
+    },
+    "generic": {
+        "description": "Generic tubular/vascular network",
+        "C": {
+            "name": "Inlets/Outlets (Hard Requirements)",
+            "questions": [
+                ("num_inlets", "How many inlets?", "1"),
+                ("num_outlets", "How many outlets?", "0"),
+                ("inlet_outlet_location", "Location (face/region)? same face or opposite?", "same face"),
+                ("inlet_radius", "Inlet radii (comma-separated if multiple)?", "0.002"),
+                ("outlet_radius", "Outlet radii (comma-separated if multiple)?", "0.001"),
+                ("direction_vectors", "Direction vectors explicit or infer from face? (explicit/infer)", "infer"),
+                ("same_x_face", "Inlets/outlets on same X face?", "yes"),
+            ],
+        },
+        "D": {
+            "name": "Topology (Tree Structure)",
+            "questions": [
+                ("strict_tree", "Strict tree (no loops)?", "yes"),
+                ("target_terminals", "Target terminal tip count?", None),
+                ("max_depth", "Maximum depth (levels)?", None),
+                ("branching_style", "Balanced or aggressive early branching?", "balanced"),
+                ("perfusion_zones", "Perfusion zones needing more density? (describe or 'none')", "none"),
+            ],
+        },
+        "E": {
+            "name": "Geometry Character (Path Style)",
+            "questions": [
+                ("tortuosity", "Straight vs tortuous? (low/med/high)", "low"),
+                ("branch_angle_range", "Branch angle range? (e.g., 30-90)", "30-90"),
+                ("segment_length_range", "Segment length range? (e.g., 0.5-5mm)", "0.5-5"),
+                ("tapering", "Tapering? (murray/linear/fixed)", "murray"),
+            ],
+        },
+    },
+}
+
+
+def detect_organ_type(intent: str) -> str:
+    """
+    Detect the organ type from the user's intent description.
+    
+    Returns the organ key (liver, kidney, lung, heart, generic) based on
+    keywords found in the intent string.
+    """
+    intent_lower = intent.lower()
+    
+    organ_keywords = {
+        "liver": ["liver", "hepatic", "hepato", "lobule", "sinusoid", "portal"],
+        "kidney": ["kidney", "renal", "nephron", "glomerul", "cortex", "medulla", "ureter"],
+        "lung": ["lung", "pulmonary", "bronch", "alveol", "respiratory", "airway"],
+        "heart": ["heart", "coronary", "cardiac", "myocard", "ventricle", "atrium", "aortic"],
+    }
+    
+    for organ, keywords in organ_keywords.items():
+        for keyword in keywords:
+            if keyword in intent_lower:
+                return organ
+    
+    return "generic"
+
+
+def get_tailored_questions(intent: str, base_questions: dict = None) -> dict:
+    """
+    Get question groups tailored to the user's described object.
+    
+    This function detects the organ type from the intent and returns
+    a modified QUESTION_GROUPS dictionary with organ-specific questions
+    for groups C, D, and E (the most organ-specific groups).
+    
+    Parameters
+    ----------
+    intent : str
+        The user's description of the object they want to generate
+    base_questions : dict, optional
+        Base question groups to modify. If None, uses QUESTION_GROUPS.
+        
+    Returns
+    -------
+    dict
+        Modified question groups with organ-specific variants
+    """
+    if base_questions is None:
+        base_questions = QUESTION_GROUPS.copy()
+    else:
+        base_questions = base_questions.copy()
+    
+    organ_type = detect_organ_type(intent)
+    
+    if organ_type in ORGAN_QUESTION_VARIANTS:
+        organ_variants = ORGAN_QUESTION_VARIANTS[organ_type]
+        
+        for group_key in ["C", "D", "E"]:
+            if group_key in organ_variants:
+                base_questions[group_key] = organ_variants[group_key]
+    
+    return base_questions
+
+
+# =============================================================================
+# Question Groups for Requirements Capture (Base/Generic)
 # =============================================================================
 
 QUESTION_GROUPS = {
@@ -1065,7 +1304,14 @@ class SingleAgentOrganGeneratorV1:
         print(f"Step 3: Requirements Capture ({obj.name})")
         print("-" * 40)
         
-        groups = list(QUESTION_GROUPS.keys())
+        tailored_questions = get_tailored_questions(obj.raw_intent)
+        organ_type = detect_organ_type(obj.raw_intent)
+        
+        if organ_type != "generic":
+            print(f"\nDetected organ type: {organ_type}")
+            print("Questions have been tailored to this organ type.")
+        
+        groups = list(tailored_questions.keys())
         
         while self.current_question_group:
             group_idx = groups.index(self.current_question_group) if self.current_question_group in groups else 0
@@ -1074,7 +1320,7 @@ class SingleAgentOrganGeneratorV1:
                 break
             
             group_key = groups[group_idx]
-            group = QUESTION_GROUPS[group_key]
+            group = tailored_questions[group_key]
             
             print()
             print(f"Group {group_key}: {group['name']}")

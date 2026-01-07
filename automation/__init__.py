@@ -57,6 +57,9 @@ from .workflow import (
     EmbeddingExportSection,
     AcceptanceCriteriaSection,
     QUESTION_GROUPS,
+    ORGAN_QUESTION_VARIANTS,
+    detect_organ_type,
+    get_tailored_questions,
     run_single_agent_workflow,
 )
 
@@ -83,5 +86,8 @@ __all__ = [
     "EmbeddingExportSection",
     "AcceptanceCriteriaSection",
     "QUESTION_GROUPS",
+    "ORGAN_QUESTION_VARIANTS",
+    "detect_organ_type",
+    "get_tailored_questions",
     "run_single_agent_workflow",
 ]
