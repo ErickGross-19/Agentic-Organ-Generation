@@ -468,7 +468,18 @@ class LLMClient:
         temperature: float,
         max_tokens: int,
     ) -> LLMResponse:
-        """Call Google Gemini API using the new Google GenAI SDK."""
+        """Call Google Gemini API using the new Google GenAI SDK.
+        
+        Supported Gemini models include:
+        - gemini-2.5-flash (recommended default)
+        - gemini-2.5-flash-lite (faster, lower cost)
+        - gemini-2.5-flash-tts (text-to-speech capable)
+        - gemini-3-flash (latest generation)
+        - gemini-2.0-flash (previous generation)
+        - gemini-1.5-pro (previous generation)
+        
+        Any valid Gemini model name can be passed via config.model.
+        """
         try:
             from google import genai
             from google.genai import types
@@ -482,7 +493,7 @@ class LLMClient:
         
         model_name = self.config.model
         if model_name in ("gpt-4", "default"):
-            model_name = "gemini-2.0-flash"
+            model_name = "gemini-2.5-flash"
         
         system_content = None
         contents = []
