@@ -2367,7 +2367,16 @@ class SingleAgentOrganGeneratorV2:
         missing_fields = self.schema_manager.missing_required_fields()
         ambiguities = []
         if self.current_understanding and self.current_understanding.ambiguities:
-            ambiguities = [a.description for a in self.current_understanding.ambiguities]
+            # Convert Ambiguity objects to dicts for plan_questions
+            ambiguities = [
+                {
+                    "field": a.field,
+                    "description": a.description,
+                    "options": a.options,
+                    "impact": a.impact,
+                }
+                for a in self.current_understanding.ambiguities
+            ]
         
         questions = self.schema_manager.plan_questions(
             missing=missing_fields,
