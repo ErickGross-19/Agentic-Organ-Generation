@@ -337,9 +337,30 @@ def ping_llm(
         
         latency_ms = (time.time() - start_time) * 1000
         
-        # Verify we got a response
+        # Verify we got a response with diagnostic info
         if not response.content:
-            raise FatalLLMError("LLM returned empty response during ping")
+            # Build diagnostic message for debugging
+            diag_parts = [
+                f"Model: {model or 'default'}",
+                f"Provider: {provider}",
+                f"Finish reason: {response.finish_reason}",
+            ]
+            
+            # Check for diagnostic info from Gemini extraction
+            if response.raw_response and isinstance(response.raw_response, dict):
+                diag_info = response.raw_response.get("diagnostic_info", {})
+                if diag_info:
+                    diag_parts.append(f"Candidates: {diag_info.get('candidates_count', 'N/A')}")
+                    diag_parts.append(f"Extraction method: {diag_info.get('extraction_method', 'none')}")
+                    if diag_info.get("safety_blocked"):
+                        diag_parts.append(f"Safety blocked: {diag_info.get('block_reason', 'unknown')}")
+            
+            diagnostic_msg = " | ".join(diag_parts)
+            raise FatalLLMError(
+                f"LLM returned empty response during ping.\n"
+                f"Diagnostics: {diagnostic_msg}\n"
+                f"This usually means the response text extraction failed or the response was blocked."
+            )
         
         return latency_ms
         
