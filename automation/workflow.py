@@ -2370,7 +2370,7 @@ class SingleAgentOrganGeneratorV2:
             ambiguities = [a.description for a in self.current_understanding.ambiguities]
         
         questions = self.schema_manager.plan_questions(
-            missing_fields=missing_fields,
+            missing=missing_fields,
             ambiguities=ambiguities,
             conflicts=[],
             max_questions=5
