@@ -952,10 +952,12 @@ def generate_requirements_summary(requirements: Any) -> str:
     lines.append("")
     
     if hasattr(requirements, 'identity') and requirements.identity:
-        if requirements.identity.name:
-            lines.append(f"Name: {requirements.identity.name}")
-        if requirements.identity.description:
-            lines.append(f"Description: {requirements.identity.description}")
+        object_name = getattr(requirements.identity, 'object_name', None)
+        notes = getattr(requirements.identity, 'notes', None)
+        if object_name:
+            lines.append(f"Name: {object_name}")
+        if notes:
+            lines.append(f"Notes: {notes}")
         lines.append("")
     
     lines.append("DOMAIN SPECIFICATION:")
