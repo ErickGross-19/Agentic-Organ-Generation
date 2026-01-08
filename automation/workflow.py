@@ -2056,13 +2056,13 @@ class SingleAgentOrganGeneratorV2:
         print()
         print("Here's what I understood:")
         print()
-        print(f"  {self.current_understanding.object_summary}")
+        print(f"  {self.current_understanding.summary}")
         print()
         
         if self.current_understanding.assumptions:
             print("Assumptions I'm making:")
             for assumption in self.current_understanding.assumptions:
-                print(f"  - {assumption.description} (confidence: {assumption.confidence})")
+                print(f"  - {assumption.reason} (confidence: {assumption.confidence})")
             print()
         
         if self.current_understanding.ambiguities:
@@ -2086,9 +2086,9 @@ class SingleAgentOrganGeneratorV2:
         
         for i, plan in enumerate(self.current_plans):
             letter = chr(ord('A') + i)
-            print(f"Option {letter}: {plan.strategy.name}")
-            print(f"  Approach: {plan.strategy.description}")
-            print(f"  Utilities: {', '.join(plan.repo_utilities)}")
+            print(f"Option {letter}: {plan.name}")
+            print(f"  Approach: {plan.description}")
+            print(f"  Utilities: {', '.join(plan.utilities)}")
             if plan.tunable_knobs:
                 print(f"  Tunable: {', '.join(plan.tunable_knobs)}")
             print()
@@ -2101,9 +2101,9 @@ class SingleAgentOrganGeneratorV2:
             if choice in [chr(ord('A') + i) for i in range(len(self.current_plans))]:
                 plan_index = ord(choice) - ord('A')
                 self.chosen_plan = self.current_plans[plan_index]
-                print(f"\nSelected: Option {choice} - {self.chosen_plan.strategy.name}")
+                print(f"\nSelected: Option {choice} - {self.chosen_plan.name}")
                 
-                for module_name in self.chosen_plan.required_schema_modules:
+                for module_name in self.chosen_plan.required_modules:
                     self.schema_manager.activate_module(module_name)
                 
                 break
@@ -2113,15 +2113,16 @@ class SingleAgentOrganGeneratorV2:
         understanding_path = os.path.join(obj.intent_dir, "understanding.json")
         with open(understanding_path, 'w') as f:
             json.dump({
-                "summary": self.current_understanding.object_summary,
-                "assumptions": [{"description": a.description, "confidence": a.confidence} for a in self.current_understanding.assumptions],
-                "ambiguities": [{"description": a.description, "field": a.field_affected} for a in self.current_understanding.ambiguities],
+                "summary": self.current_understanding.summary,
+                "assumptions": [{"field": a.field, "reason": a.reason, "confidence": a.confidence} for a in self.current_understanding.assumptions],
+                "ambiguities": [{"description": a.description, "field": a.field} for a in self.current_understanding.ambiguities],
                 "risks": [{"description": r.description, "severity": r.severity} for r in self.current_understanding.risks],
                 "chosen_plan": {
-                    "strategy": self.chosen_plan.strategy.name,
-                    "description": self.chosen_plan.strategy.description,
-                    "utilities": self.chosen_plan.repo_utilities,
-                    "modules": self.chosen_plan.required_schema_modules,
+                    "name": self.chosen_plan.name,
+                    "description": self.chosen_plan.description,
+                    "strategy": self.chosen_plan.strategy.value,
+                    "utilities": self.chosen_plan.utilities,
+                    "modules": self.chosen_plan.required_modules,
                 }
             }, f, indent=2)
         
