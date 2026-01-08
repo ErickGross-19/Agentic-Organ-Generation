@@ -4247,6 +4247,15 @@ class SingleAgentOrganGeneratorV3:
         print(f"  ({topology_descriptions.get(topology_kind, 'custom topology')})")
         print("  Say 'change topology' or 'wrong topology' at any question to correct this.")
         
+        # V3: Get topology-specific questions and completeness rules
+        topology_questions = get_tailored_questions(obj.raw_intent)
+        completeness_rules = get_topology_completeness_rules(topology_kind)
+        
+        # Log the topology-specific configuration
+        if self.verbose:
+            required_fields = completeness_rules.get("required_fields", [])
+            print(f"\nTopology '{topology_kind}' requires: {', '.join(required_fields)}")
+        
         print("\nUsing adaptive rule-based requirements capture.")
         print("The system will ask only the questions needed based on your description.")
         print("Say 'use defaults' at any time to accept all proposed defaults.")
