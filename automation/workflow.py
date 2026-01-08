@@ -2800,6 +2800,53 @@ def _apply_answer_to_requirements(req: ObjectRequirements, field: str, value: An
         if isinstance(value, str):
             val = value.lower().strip()
             req.topology.shared_inlet = val in ("yes", "y", "true", "1")
+    
+    # =========================================================================
+    # V3: Backbone-specific field handlers
+    # =========================================================================
+    
+    elif field == "backbone_axis":
+        # Set backbone axis (x, y, z, or 'longest')
+        if isinstance(value, str):
+            req.topology.backbone_axis = value.lower().strip()
+    
+    elif field == "leg_count":
+        # Set number of parallel legs
+        if isinstance(value, str):
+            try:
+                req.topology.leg_count = int(value.strip())
+            except ValueError:
+                pass
+    
+    elif field == "leg_spacing":
+        # Set leg spacing (equal or specific mm value)
+        if isinstance(value, str):
+            val = value.lower().strip()
+            if val == "equal":
+                req.topology.leg_spacing = "equal"
+            else:
+                try:
+                    req.topology.leg_spacing_m = float(val) / 1000
+                except ValueError:
+                    req.topology.leg_spacing = val
+    
+    elif field == "leg_connection":
+        # Set leg connection type (ladder, u_shape, separate)
+        if isinstance(value, str):
+            req.topology.leg_connection = value.lower().strip()
+    
+    elif field == "port_style":
+        # Set port connection style (manifold or individual)
+        if isinstance(value, str):
+            req.topology.port_style = value.lower().strip()
+    
+    elif field == "leg_radius":
+        # Set leg channel radius in mm
+        if isinstance(value, str):
+            try:
+                req.geometry.leg_radius_m = float(value.strip()) / 1000
+            except ValueError:
+                pass
 
 
 def _apply_placement_to_inlets(req: ObjectRequirements, placement: str) -> None:
