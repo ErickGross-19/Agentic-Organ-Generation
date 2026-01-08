@@ -2143,7 +2143,16 @@ class RuleEngine:
         result: RuleEvaluationResult,
         check_finalization: bool
     ) -> None:
-        """Family A: Check for missing required fields."""
+        """
+        Family A: Check for missing required fields.
+        
+        TOPOLOGY-DEPENDENT RULES:
+        - PATH/BACKBONE/LOOP: require outlets (inlet→outlet flow)
+        - TREE/MULTI_TREE: require target_terminals or terminal_mode (no outlets by default)
+        - PATH: does NOT require target_terminals (simple channel)
+        - BACKBONE: requires leg_count
+        """
+        topology_kind = req.topology.topology_kind or "tree"
         
         if not req.inlets_outlets.inlets:
             result.missing_fields.append(RuleFlag(
@@ -2154,6 +2163,17 @@ class RuleEngine:
                 severity="required",
                 rework_cost="high"
             ))
+        
+        if topology_kind in ("path", "backbone", "loop"):
+            if not req.inlets_outlets.outlets:
+                result.missing_fields.append(RuleFlag(
+                    rule_id="A1_outlets",
+                    family="A",
+                    field="inlets_outlets.outlets",
+                    message=f"At least one outlet is required for {topology_kind.upper()} topology",
+                    severity="required",
+                    rework_cost="high"
+                ))
         
         if req.constraints.min_radius_m is None or req.constraints.min_radius_m <= 0:
             result.missing_fields.append(RuleFlag(
@@ -2175,15 +2195,31 @@ class RuleEngine:
                 rework_cost="high"
             ))
         
-        if req.topology.target_terminals is None:
-            result.missing_fields.append(RuleFlag(
-                rule_id="A1_complexity",
-                family="A",
-                field="topology.target_terminals",
-                message="Target complexity (terminal count) is needed",
-                severity="required",
-                rework_cost="medium"
-            ))
+        if topology_kind in ("tree", "multi_tree"):
+            has_terminal_strategy = (
+                req.topology.target_terminals is not None or
+                (hasattr(req.topology, 'terminal_mode') and req.topology.terminal_mode)
+            )
+            if not has_terminal_strategy:
+                result.missing_fields.append(RuleFlag(
+                    rule_id="A1_complexity",
+                    family="A",
+                    field="topology.target_terminals",
+                    message="Target complexity (terminal count or terminal mode) is needed for TREE topology",
+                    severity="required",
+                    rework_cost="medium"
+                ))
+        
+        if topology_kind == "backbone":
+            if not hasattr(req.topology, 'leg_count') or not req.topology.leg_count:
+                result.missing_fields.append(RuleFlag(
+                    rule_id="A1_leg_count",
+                    family="A",
+                    field="topology.leg_count",
+                    message="Leg count is required for BACKBONE topology",
+                    severity="required",
+                    rework_cost="high"
+                ))
         
         if req.inlets_outlets.inlets and not req.inlets_outlets.placement_rule:
             result.missing_fields.append(RuleFlag(
@@ -2369,15 +2405,24 @@ class QuestionPlanner:
     def plan(
         self,
         eval_result: RuleEvaluationResult,
-        max_questions: int = 4
+        max_questions: int = 4,
+        requirements: Optional[ObjectRequirements] = None
     ) -> List[PlannedQuestion]:
         """
         Plan minimal questions based on evaluation result.
         
         Returns at most max_questions, prioritized by rework cost.
+        
+        If requirements is provided, uses topology-aware defaults:
+        - PATH/BACKBONE/LOOP: outlets default to "1" (required)
+        - TREE: outlets default to "0" (optional)
         """
         questions = []
         seen_fields = set()
+        
+        topology_kind = None
+        if requirements:
+            topology_kind = requirements.topology.topology_kind or "tree"
         
         all_flags = eval_result.all_flags()
         
@@ -2389,6 +2434,10 @@ class QuestionPlanner:
             
             if flag.field in self.FIELD_TO_QUESTION:
                 q_key, q_text, q_default = self.FIELD_TO_QUESTION[flag.field]
+                
+                if flag.field == "inlets_outlets.outlets" and topology_kind in ("path", "backbone", "loop"):
+                    q_default = "1"
+                
                 questions.append(PlannedQuestion(
                     field=flag.field,
                     question_text=q_text,
@@ -2408,8 +2457,8 @@ class QuestionPlanner:
                 q_key, q_text, q_default = self.FIELD_TO_QUESTION[proposed.field]
                 questions.append(PlannedQuestion(
                     field=proposed.field,
-                    question_text=f"Use default {proposed.value}? ({proposed.reason})",
-                    default_value="yes",
+                    question_text=q_text,
+                    default_value=str(proposed.value) if proposed.value is not None else q_default,
                     rework_cost="low",
                     reason=proposed.reason
                 ))
@@ -2660,10 +2709,15 @@ def _handle_topology_override(
     verbose: bool = True
 ) -> Tuple[bool, Optional[str]]:
     """
-    V3: Handle topology override request.
+    V4: Handle topology override request with field invalidation.
     
     Returns (success, message).
     If new_topology is None, prompts user to select one.
+    
+    When topology changes, this function:
+    1. Updates the topology_kind field
+    2. Clears fields that are no longer relevant for the new topology
+    3. The caller should then re-evaluate completeness rules (now topology-dependent)
     """
     if new_topology is None:
         print("\n  Available topologies:")
@@ -2691,8 +2745,33 @@ def _handle_topology_override(
     old_topology = requirements.topology.topology_kind
     requirements.topology.topology_kind = new_topology
     
+    invalidated_fields = []
+    
+    if old_topology in ("tree", "multi_tree") and new_topology in ("path", "backbone", "loop"):
+        if requirements.topology.target_terminals is not None:
+            requirements.topology.target_terminals = None
+            invalidated_fields.append("target_terminals")
+        if hasattr(requirements.topology, 'terminal_mode') and requirements.topology.terminal_mode:
+            requirements.topology.terminal_mode = None
+            invalidated_fields.append("terminal_mode")
+    
+    if old_topology in ("path", "backbone", "loop") and new_topology in ("tree", "multi_tree"):
+        if requirements.inlets_outlets.outlets:
+            requirements.inlets_outlets.outlets = []
+            invalidated_fields.append("outlets")
+    
+    if old_topology == "backbone" and new_topology != "backbone":
+        if hasattr(requirements.topology, 'leg_count') and requirements.topology.leg_count:
+            requirements.topology.leg_count = None
+            invalidated_fields.append("leg_count")
+        if hasattr(requirements.topology, 'backbone_axis') and requirements.topology.backbone_axis:
+            requirements.topology.backbone_axis = None
+            invalidated_fields.append("backbone_axis")
+    
     if verbose:
         print(f"\n  [Topology Override] Changed from '{old_topology}' to '{new_topology}'")
+        if invalidated_fields:
+            print(f"  Cleared irrelevant fields: {', '.join(invalidated_fields)}")
         print(f"  Questions will now be tailored for {new_topology} topology.")
     
     return True, f"Topology changed to '{new_topology}'"
@@ -2837,7 +2916,7 @@ def run_rule_based_capture(
                 print("\nRequirements are complete. Ready for generation.")
             break
         
-        questions = planner.plan(eval_result, max_questions=4)
+        questions = planner.plan(eval_result, max_questions=4, requirements=requirements)
         
         if not questions:
             if verbose:
@@ -4838,15 +4917,14 @@ class SingleAgentOrganGeneratorV4:
                 vessel_type="arterial",
             ))
         
-        # If no inlets defined, create a default based on topology
+        # V4 FIX: Fail loudly if no inlets defined instead of silently creating defaults
+        # The RuleEngine should catch this before compilation, but we add a safety check
         if not inlets:
-            # Default inlet at x_min face center
-            inlet_x = -domain_size[0] / 2 + 0.001  # Slightly inside domain
-            inlets.append(InletSpec(
-                position=(inlet_x, 0.0, 0.0),
-                radius=0.002,
-                vessel_type="arterial",
-            ))
+            raise ValueError(
+                "Compilation failed: No inlets defined. "
+                "At least one inlet is required for generation. "
+                "Please run the question workflow to collect inlet specifications."
+            )
         
         # Build outlet specs from requirements
         outlets = []
@@ -4859,15 +4937,14 @@ class SingleAgentOrganGeneratorV4:
                 vessel_type="venous",
             ))
         
-        # For path topology, ensure we have an outlet
-        if topology_kind == "path" and not outlets:
-            # Default outlet at x_max face center
-            outlet_x = domain_size[0] / 2 - 0.001  # Slightly inside domain
-            outlets.append(OutletSpec(
-                position=(outlet_x, 0.0, 0.0),
-                radius=inlets[0].radius if inlets else 0.002,
-                vessel_type="venous",
-            ))
+        # V4 FIX: For path/backbone/loop topology, fail loudly if no outlets defined
+        # instead of silently creating defaults
+        if topology_kind in ("path", "backbone", "loop") and not outlets:
+            raise ValueError(
+                f"Compilation failed: No outlets defined for {topology_kind.upper()} topology. "
+                f"{topology_kind.upper()} topology requires at least one outlet. "
+                "Please run the question workflow to collect outlet specifications."
+            )
         
         # Build colonization spec from requirements
         min_radius = req.constraints.min_radius_m or 0.0001  # Default 0.1mm
