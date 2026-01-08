@@ -297,12 +297,18 @@ class TopologySection:
     - "loop": Looping structure with recirculation
     - "multi_tree": Multiple independent trees
     """
-    style: str = "tree"
+    style: str = "tree"  # branching style: balanced, aggressive_early, space_filling
     topology_kind: str = "tree"  # "path", "tree", "loop", "multi_tree"
     target_terminals: Optional[int] = None
     max_depth: Optional[int] = None
     branching_factor_range: Tuple[int, int] = (2, 2)
     zone_density: List[ZoneDensity] = field(default_factory=list)
+    # New fields for topology-specific questions
+    terminal_mode: str = "a"  # "a" = inlet→terminals, "b" = inlet→outlet with branches
+    loop_count: Optional[int] = None  # for loop topology
+    loop_style: Optional[str] = None  # single_loop, mesh, ladder
+    tree_count: Optional[int] = None  # for multi_tree topology
+    shared_inlet: bool = False  # for multi_tree: do trees share an inlet?
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -312,6 +318,11 @@ class TopologySection:
             "max_depth": self.max_depth,
             "branching_factor_range": list(self.branching_factor_range),
             "zone_density": [z.to_dict() for z in self.zone_density],
+            "terminal_mode": self.terminal_mode,
+            "loop_count": self.loop_count,
+            "loop_style": self.loop_style,
+            "tree_count": self.tree_count,
+            "shared_inlet": self.shared_inlet,
         }
     
     @classmethod
@@ -323,6 +334,11 @@ class TopologySection:
             max_depth=d.get("max_depth"),
             branching_factor_range=tuple(d.get("branching_factor_range", [2, 2])),
             zone_density=[ZoneDensity.from_dict(z) for z in d.get("zone_density", [])],
+            terminal_mode=d.get("terminal_mode", "a"),
+            loop_count=d.get("loop_count"),
+            loop_style=d.get("loop_style"),
+            tree_count=d.get("tree_count"),
+            shared_inlet=d.get("shared_inlet", False),
         )
 
 
@@ -334,6 +350,11 @@ class GeometrySection:
     branch_angle_deg: Dict[str, float] = field(default_factory=lambda: {"min": 30.0, "max": 90.0})
     radius_profile: str = "murray"
     radius_bounds_m: Dict[str, Optional[float]] = field(default_factory=lambda: {"min": 0.0001, "max": None})
+    # New fields for topology-specific questions
+    tapering: str = "murray"  # murray, linear, fixed
+    route_type: Optional[str] = None  # for path: straight, single_bend, s_curve, via_points
+    bend_radius_m: Optional[float] = None  # minimum bend radius for curved paths
+    wall_thickness_m: Optional[float] = None  # wall thickness for hollow channels
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -342,6 +363,10 @@ class GeometrySection:
             "branch_angle_deg": self.branch_angle_deg,
             "radius_profile": self.radius_profile,
             "radius_bounds_m": self.radius_bounds_m,
+            "tapering": self.tapering,
+            "route_type": self.route_type,
+            "bend_radius_m": self.bend_radius_m,
+            "wall_thickness_m": self.wall_thickness_m,
         }
     
     @classmethod
@@ -352,6 +377,10 @@ class GeometrySection:
             branch_angle_deg=d.get("branch_angle_deg", {"min": 30.0, "max": 90.0}),
             radius_profile=d.get("radius_profile", "murray"),
             radius_bounds_m=d.get("radius_bounds_m", {"min": 0.0001, "max": None}),
+            tapering=d.get("tapering", "murray"),
+            route_type=d.get("route_type"),
+            bend_radius_m=d.get("bend_radius_m"),
+            wall_thickness_m=d.get("wall_thickness_m"),
         )
 
 
@@ -364,6 +393,10 @@ class ConstraintsSection:
     boundary_buffer_m: float = 0.001
     max_segments: Optional[int] = None
     max_runtime_s: Optional[float] = None
+    # New fields for topology-specific questions
+    boundary_margin_m: Optional[float] = None  # how far structures stay from walls
+    ban_self_intersection: bool = True  # hard ban on self-intersections
+    enforce_clearance: bool = True  # hard min clearance enforcement
     
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -381,6 +414,9 @@ class EmbeddingExportSection:
     shell_thickness_m: Optional[float] = None
     output_void: bool = True
     stl_units: str = "mm"
+    # New fields for topology-specific questions
+    embed_requested: bool = False  # whether embedding is requested
+    min_feature_size_m: Optional[float] = None  # minimum printable feature size / nozzle diameter
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -389,6 +425,8 @@ class EmbeddingExportSection:
             "shell_thickness_m": self.shell_thickness_m,
             "output_void": self.output_void,
             "stl_units": self.stl_units,
+            "embed_requested": self.embed_requested,
+            "min_feature_size_m": self.min_feature_size_m,
         }
     
     @classmethod
@@ -399,6 +437,8 @@ class EmbeddingExportSection:
             shell_thickness_m=d.get("shell_thickness_m"),
             output_void=d.get("output_void", True),
             stl_units=d.get("stl_units", "mm"),
+            embed_requested=d.get("embed_requested", False),
+            min_feature_size_m=d.get("min_feature_size_m"),
         )
 
 
@@ -411,6 +451,9 @@ class AcceptanceCriteriaSection:
     mesh_watertight_required: bool = True
     flow_metrics_enabled: bool = False
     custom_criteria: Dict[str, Any] = field(default_factory=dict)
+    # New fields for topology-specific questions
+    watertight_required: bool = True  # require watertight mesh
+    terminal_range: Optional[str] = None  # acceptable terminal count range as string (e.g., "50-100")
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -420,6 +463,8 @@ class AcceptanceCriteriaSection:
             "mesh_watertight_required": self.mesh_watertight_required,
             "flow_metrics_enabled": self.flow_metrics_enabled,
             "custom_criteria": self.custom_criteria,
+            "watertight_required": self.watertight_required,
+            "terminal_range": self.terminal_range,
         }
     
     @classmethod
@@ -431,6 +476,8 @@ class AcceptanceCriteriaSection:
             mesh_watertight_required=d.get("mesh_watertight_required", True),
             flow_metrics_enabled=d.get("flow_metrics_enabled", False),
             custom_criteria=d.get("custom_criteria", {}),
+            watertight_required=d.get("watertight_required", True),
+            terminal_range=d.get("terminal_range"),
         )
 
 
@@ -956,64 +1003,230 @@ def detect_topology_kind(intent: str) -> str:
     return "tree"
 
 
-# Topology-specific question variants
-# Questions are adapted based on topology_kind to avoid asking irrelevant questions
+# =============================================================================
+# Topology-Specific Question Sets (Minimum Viable Spec + Adaptive Modules)
+# =============================================================================
+# 
+# These question sets implement the "Minimum Viable Spec" approach:
+# - PATH: Simple inlet→outlet channel (5-7 questions total)
+# - TREE: Branching network with terminals (5-8 questions total)
+# - LOOP: Looping/recirculating structure
+# - MULTI_TREE: Multiple independent trees
+#
+# Key principles:
+# 1. Topology confirmation is FIRST (gates all subsequent questions)
+# 2. Domain dimensions are explicit (not hidden behind "use defaults?")
+# 3. Ports are first-class (inlet AND outlet for path topology)
+# 4. Embedding questions only when needed (with print-resolution proxy)
+# 5. "Sufficient-to-generate" threshold per topology
+
 TOPOLOGY_QUESTION_VARIANTS = {
     "path": {
-        # For simple path/channel: skip branching questions, focus on path geometry
-        "D": {
-            "name": "Topology (Simple Path)",
+        # PATH topology: Simple inlet→outlet channel
+        # Required: topology, domain, inlet, outlet, route
+        # Optional: clearance, embedding
+        "A": {
+            "name": "1. Topology Confirmation",
             "questions": [
-                ("topology_kind", "Topology type: simple path (inlet→outlet)", "path"),
-                ("path_style", "Path style: straight, curved, or serpentine?", "straight"),
-                ("path_segments", "Number of path segments?", "1"),
+                ("topology_kind", "Is this a simple channel connecting inlet to outlet (path), or a branching network (tree)?", "path"),
+            ],
+        },
+        "B": {
+            "name": "2. Domain Dimensions",
+            "questions": [
+                ("domain_dims", "What are the box dimensions (X Y Z) and units? Example: '20 60 30 mm'", "20 60 30 mm"),
+                ("boundary_margin", "Boundary margin - how far should channels stay from walls? (mm)", "1"),
+            ],
+        },
+        "C": {
+            "name": "3. Inlet Definition",
+            "questions": [
+                ("inlet_face", "Which face is the inlet on? (x_min/x_max/y_min/y_max/z_min/z_max)", "x_min"),
+                ("inlet_position", "Inlet position on face: center, or specify offsets (u,v in mm)?", "center"),
+                ("inlet_radius", "Inlet radius (mm)?", "2.0"),
+            ],
+        },
+        "C2": {
+            "name": "4. Outlet Definition",
+            "questions": [
+                ("outlet_face", "Which face is the outlet on? (x_min/x_max/y_min/y_max/z_min/z_max)", "x_max"),
+                ("outlet_position", "Outlet position on face: center, or specify offsets (u,v in mm)?", "center"),
+                ("outlet_radius", "Outlet radius (mm)? (default = inlet radius)", None),
+            ],
+        },
+        "D": {
+            "name": "5. Path Routing",
+            "questions": [
+                ("route_type", "How should the path route? (straight/single_bend/s_curve/via_points)", "straight"),
+                ("bend_radius", "If curved: minimum bend radius (mm)? (or 'auto')", "auto"),
+            ],
+        },
+        "F": {
+            "name": "6. Constraints (Optional)",
+            "questions": [
+                ("min_clearance", "Minimum clearance from other structures (mm)?", "1"),
+                ("wall_thickness", "Wall thickness for hollow channels (mm)? (or 'solid')", "solid"),
+            ],
+        },
+        "H": {
+            "name": "7. Embedding (Optional)",
+            "questions": [
+                ("embed_requested", "Do you want to embed this into a voxel domain for 3D printing? (yes/no)", "no"),
+                ("min_feature_size", "If embedding: minimum printable feature size / nozzle diameter (mm)?", "0.4"),
+                ("voxel_pitch_confirm", "Suggested voxel pitch based on feature size. Accept? (yes/custom)", "yes"),
             ],
         },
         "G": {
-            "name": "Acceptance Criteria (Path)",
+            "name": "8. Acceptance Criteria",
             "questions": [
-                ("min_radius_threshold", "Min radius threshold?", None),
                 ("watertight_required", "Require watertight mesh?", "yes"),
-                ("path_length_target", "Target path length? (or 'auto')", "auto"),
             ],
         },
     },
     "tree": {
-        # Full tree structure: all branching/terminal questions
-        "D": {
-            "name": "Topology (Tree Structure)",
+        # TREE topology: Branching network with terminals
+        # Required: topology, domain, inlet, terminal mode, branching
+        # Optional: outlet, embedding
+        "A": {
+            "name": "1. Topology Confirmation",
             "questions": [
-                ("topology_kind", "Topology type: branching tree", "tree"),
-                ("strict_tree", "Strict tree (no loops)?", "yes"),
-                ("target_terminals", "Target terminal tip count?", None),
-                ("max_depth", "Maximum depth (levels)?", None),
-                ("branching_style", "Balanced or aggressive early branching?", "balanced"),
-                ("perfusion_zones", "Perfusion zones needing more density? (describe or 'none')", "none"),
+                ("topology_kind", "Is this a branching tree network? (tree/path)", "tree"),
+            ],
+        },
+        "B": {
+            "name": "2. Domain Dimensions",
+            "questions": [
+                ("domain_dims", "What are the box dimensions (X Y Z) and units? Example: '20 60 30 mm'", "20 60 30 mm"),
+                ("boundary_margin", "Boundary margin - how far should vessels stay from walls? (mm)", "1"),
+            ],
+        },
+        "C": {
+            "name": "3. Inlet Definition",
+            "questions": [
+                ("inlet_face", "Which face is the inlet on? (x_min/x_max/y_min/y_max/z_min/z_max)", "x_min"),
+                ("inlet_position", "Inlet position on face: center, or specify offsets (u,v in mm)?", "center"),
+                ("inlet_radius", "Inlet radius (mm)?", "2.0"),
+            ],
+        },
+        "C2": {
+            "name": "4. Outlet/Terminal Mode",
+            "questions": [
+                ("terminal_mode", "Is this: (a) inlet→many terminals (no outlet port), or (b) inlet→outlet with branches?", "a"),
+                ("outlet_face", "If outlet port: which face? (x_min/x_max/y_min/y_max/z_min/z_max, or 'none')", "none"),
+                ("outlet_radius", "If outlet port: outlet radius (mm)?", None),
+            ],
+        },
+        "D": {
+            "name": "5. Terminal/Branching Configuration",
+            "questions": [
+                ("target_terminals", "Target terminal count? (or 'sparse'/'medium'/'dense')", "medium"),
+                ("max_depth", "Maximum branching depth (levels)?", "6"),
+                ("branching_style", "Branching style: balanced, aggressive_early, or space_filling?", "balanced"),
+            ],
+        },
+        "E": {
+            "name": "6. Geometry",
+            "questions": [
+                ("tapering", "Radius tapering profile? (murray/linear/fixed)", "murray"),
+                ("min_radius", "Minimum terminal radius (mm)?", "0.1"),
+            ],
+        },
+        "F": {
+            "name": "7. Constraints",
+            "questions": [
+                ("ban_self_intersection", "Hard ban on self-intersections?", "yes"),
+                ("min_clearance", "Minimum clearance between vessels (mm)?", "0.5"),
+            ],
+        },
+        "H": {
+            "name": "8. Embedding (Optional)",
+            "questions": [
+                ("embed_requested", "Do you want to embed this into a voxel domain for 3D printing? (yes/no)", "no"),
+                ("min_feature_size", "If embedding: minimum printable feature size / nozzle diameter (mm)?", "0.4"),
+                ("voxel_pitch_confirm", "Suggested voxel pitch based on feature size. Accept? (yes/custom)", "yes"),
+            ],
+        },
+        "G": {
+            "name": "9. Acceptance Criteria",
+            "questions": [
+                ("terminal_range", "Acceptable terminal count range? (e.g., 50-100, or 'any')", "any"),
+                ("watertight_required", "Require watertight mesh?", "yes"),
             ],
         },
     },
     "loop": {
-        # Looping structure: questions about recirculation
-        "D": {
-            "name": "Topology (Looping Network)",
+        # LOOP topology: Looping/recirculating structure
+        "A": {
+            "name": "1. Topology Confirmation",
             "questions": [
-                ("topology_kind", "Topology type: looping network", "loop"),
+                ("topology_kind", "Is this a looping/recirculating network?", "loop"),
+            ],
+        },
+        "B": {
+            "name": "2. Domain Dimensions",
+            "questions": [
+                ("domain_dims", "What are the box dimensions (X Y Z) and units? Example: '20 60 30 mm'", "20 60 30 mm"),
+                ("boundary_margin", "Boundary margin (mm)?", "1"),
+            ],
+        },
+        "C": {
+            "name": "3. Ports",
+            "questions": [
+                ("inlet_face", "Inlet face? (x_min/x_max/y_min/y_max/z_min/z_max)", "x_min"),
+                ("inlet_radius", "Inlet radius (mm)?", "2.0"),
+                ("outlet_face", "Outlet face?", "x_max"),
+                ("outlet_radius", "Outlet radius (mm)?", "2.0"),
+            ],
+        },
+        "D": {
+            "name": "4. Loop Configuration",
+            "questions": [
                 ("loop_count", "Number of loops/anastomoses?", "1"),
-                ("loop_style", "Loop style: single loop, mesh, or ladder?", "single loop"),
+                ("loop_style", "Loop style: single_loop, mesh, or ladder?", "single_loop"),
                 ("recirculation", "Allow recirculation paths?", "yes"),
+            ],
+        },
+        "G": {
+            "name": "5. Acceptance Criteria",
+            "questions": [
+                ("watertight_required", "Require watertight mesh?", "yes"),
             ],
         },
     },
     "multi_tree": {
-        # Multiple independent trees
-        "D": {
-            "name": "Topology (Multiple Trees)",
+        # MULTI_TREE topology: Multiple independent trees
+        "A": {
+            "name": "1. Topology Confirmation",
             "questions": [
-                ("topology_kind", "Topology type: multiple independent trees", "multi_tree"),
+                ("topology_kind", "Multiple independent branching trees?", "multi_tree"),
+            ],
+        },
+        "B": {
+            "name": "2. Domain Dimensions",
+            "questions": [
+                ("domain_dims", "What are the box dimensions (X Y Z) and units? Example: '20 60 30 mm'", "20 60 30 mm"),
+                ("boundary_margin", "Boundary margin (mm)?", "1"),
+            ],
+        },
+        "C": {
+            "name": "3. Tree Configuration",
+            "questions": [
                 ("tree_count", "Number of independent trees?", "2"),
                 ("shared_inlet", "Do trees share an inlet?", "no"),
-                ("target_terminals_per_tree", "Target terminals per tree?", None),
-                ("max_depth", "Maximum depth per tree?", None),
+            ],
+        },
+        "D": {
+            "name": "4. Per-Tree Settings",
+            "questions": [
+                ("target_terminals_per_tree", "Target terminals per tree?", "50"),
+                ("max_depth", "Maximum depth per tree?", "5"),
+                ("inlet_radius", "Inlet radius per tree (mm)?", "2.0"),
+            ],
+        },
+        "G": {
+            "name": "5. Acceptance Criteria",
+            "questions": [
+                ("watertight_required", "Require watertight mesh?", "yes"),
             ],
         },
     },
@@ -1024,34 +1237,50 @@ def get_tailored_questions(intent: str, base_questions: dict = None) -> dict:
     """
     Get question groups tailored to the user's described object.
     
-    This function detects both the organ type and topology kind from the intent
-    and returns a modified QUESTION_GROUPS dictionary with context-specific
-    questions. This makes the questioning more adaptive to the conversation:
+    This function implements topology-first gating:
+    1. Detect topology kind from intent (path/tree/loop/multi_tree)
+    2. Use the complete topology-specific question set
+    3. Only fall back to base questions if no topology detected
     
-    - Organ type affects groups C, D, E (organ-specific questions)
-    - Topology kind affects group D, G (topology-specific questions)
+    The topology-specific question sets are designed as "Minimum Viable Spec":
+    - PATH: 5-7 questions (topology, domain, inlet, outlet, route, embed?)
+    - TREE: 5-8 questions (topology, domain, inlet, terminals, branching, embed?)
     
-    For example, a simple "channel" won't be asked about branching/terminals,
-    while a "vascular tree" will get full tree-related questions.
+    This ensures:
+    - Simple "channel" requests don't get asked about branching/terminals
+    - "Vascular tree" requests get full tree-related questions
+    - Domain dimensions are always asked explicitly (not hidden behind defaults)
+    - Embedding questions only appear when embedding is requested
     
     Parameters
     ----------
     intent : str
         The user's description of the object they want to generate
     base_questions : dict, optional
-        Base question groups to modify. If None, uses QUESTION_GROUPS.
+        Base question groups to use as fallback. If None, uses QUESTION_GROUPS.
         
     Returns
     -------
     dict
-        Modified question groups with context-specific variants
+        Topology-specific question groups, or base questions if no topology detected
     """
+    # Detect topology kind first - this gates all subsequent questions
+    topology_kind = detect_topology_kind(intent)
+    
+    # If we have a topology-specific question set, use it entirely
+    # This implements "topology-first gating" - the topology determines the question flow
+    if topology_kind in TOPOLOGY_QUESTION_VARIANTS:
+        # Return the complete topology-specific question set
+        # These are designed as "Minimum Viable Spec" for each topology
+        return TOPOLOGY_QUESTION_VARIANTS[topology_kind].copy()
+    
+    # Fallback to base questions (only if no topology detected)
     if base_questions is None:
         base_questions = QUESTION_GROUPS.copy()
     else:
         base_questions = base_questions.copy()
     
-    # First, apply organ-specific variants
+    # Apply organ-specific variants only for fallback case
     organ_type = detect_organ_type(intent)
     if organ_type in ORGAN_QUESTION_VARIANTS:
         organ_variants = ORGAN_QUESTION_VARIANTS[organ_type]
@@ -1059,15 +1288,98 @@ def get_tailored_questions(intent: str, base_questions: dict = None) -> dict:
             if group_key in organ_variants:
                 base_questions[group_key] = organ_variants[group_key]
     
-    # Then, apply topology-specific variants (these take precedence for group D)
-    # This ensures we don't ask irrelevant branching questions for simple paths
-    topology_kind = detect_topology_kind(intent)
-    if topology_kind in TOPOLOGY_QUESTION_VARIANTS:
-        topology_variants = TOPOLOGY_QUESTION_VARIANTS[topology_kind]
-        for group_key in topology_variants:
-            base_questions[group_key] = topology_variants[group_key]
-    
     return base_questions
+
+
+def get_topology_completeness_rules(topology_kind: str) -> dict:
+    """
+    Get the "sufficient-to-generate" completeness rules for a topology.
+    
+    Each topology has different required fields:
+    - PATH: requires inlet + outlet definitions
+    - TREE: requires inlet + terminal mode
+    - LOOP: requires inlet + outlet + loop config
+    - MULTI_TREE: requires tree count + per-tree settings
+    
+    Returns a dict with:
+    - required_fields: list of field names that must be filled
+    - optional_fields: list of field names that have sensible defaults
+    """
+    rules = {
+        "path": {
+            "required_fields": [
+                "topology_kind",
+                "domain_dims",
+                "inlet_face",
+                "inlet_radius",
+                "outlet_face",
+            ],
+            "optional_fields": [
+                "inlet_position",
+                "outlet_position",
+                "outlet_radius",
+                "route_type",
+                "bend_radius",
+                "boundary_margin",
+                "min_clearance",
+                "wall_thickness",
+                "embed_requested",
+            ],
+        },
+        "tree": {
+            "required_fields": [
+                "topology_kind",
+                "domain_dims",
+                "inlet_face",
+                "inlet_radius",
+                "target_terminals",
+            ],
+            "optional_fields": [
+                "inlet_position",
+                "terminal_mode",
+                "outlet_face",
+                "outlet_radius",
+                "max_depth",
+                "branching_style",
+                "tapering",
+                "min_radius",
+                "boundary_margin",
+                "min_clearance",
+                "embed_requested",
+            ],
+        },
+        "loop": {
+            "required_fields": [
+                "topology_kind",
+                "domain_dims",
+                "inlet_face",
+                "inlet_radius",
+                "outlet_face",
+                "outlet_radius",
+                "loop_count",
+            ],
+            "optional_fields": [
+                "boundary_margin",
+                "loop_style",
+                "recirculation",
+            ],
+        },
+        "multi_tree": {
+            "required_fields": [
+                "topology_kind",
+                "domain_dims",
+                "tree_count",
+                "inlet_radius",
+            ],
+            "optional_fields": [
+                "shared_inlet",
+                "target_terminals_per_tree",
+                "max_depth",
+                "boundary_margin",
+            ],
+        },
+    }
+    return rules.get(topology_kind, rules["tree"])
 
 
 # =============================================================================
@@ -1075,57 +1387,53 @@ def get_tailored_questions(intent: str, base_questions: dict = None) -> dict:
 # =============================================================================
 
 QUESTION_GROUPS = {
+    # Base/fallback question groups - used when no topology-specific set matches
+    # Note: Topology-specific question sets (TOPOLOGY_QUESTION_VARIANTS) are preferred
+    # and will completely replace these when a topology is detected from intent.
     "A": {
-        "name": "Scale, Units, and Print Constraints",
+        "name": "1. Topology and Domain",
         "questions": [
-            ("scale", "What is the physical size scale? (cm/mm)", "mm"),
-            ("min_channel_radius", "Minimum printable channel radius/diameter?", None),
-            ("min_clearance", "Minimum spacing (clearance) between channels?", None),
-            ("nozzle_size", "Any nozzle size or voxel pitch constraint?", None),
-            ("priority", "Priority: (a) dense coverage (b) low pressure drop (c) easy printability?", "c"),
+            ("topology_kind", "Is this a simple path/channel (path) or branching network (tree)?", "tree"),
+            ("domain_dims", "What are the box dimensions (X Y Z) and units? Example: '20 60 30 mm'", "20 60 30 mm"),
+            ("boundary_margin", "Boundary margin - how far should structures stay from walls? (mm)", "1"),
         ],
     },
     "B": {
-        "name": "Domain and Embedding Intent",
+        "name": "2. Print Constraints",
         "questions": [
-            ("generate_in_embed", "Generate within embed domain or freely? (same/free)", "same"),
-            ("use_default_domain", "Use default embed domain box 0.02x0.06x0.03 m? (default/custom)", "default"),
-            ("boundary_margin", "Boundary margin (keep vessels X from boundary)?", "0.001"),
+            ("min_channel_radius", "Minimum printable channel radius (mm)?", "0.5"),
+            ("min_clearance", "Minimum spacing (clearance) between channels (mm)?", "0.5"),
+            ("nozzle_size", "Nozzle size or minimum feature size (mm)?", "0.4"),
         ],
     },
     "C": {
-        "name": "Inlets/Outlets (Hard Requirements)",
+        "name": "3. Inlets/Outlets",
         "questions": [
-            ("num_inlets", "How many inlets?", "1"),
-            ("num_outlets", "How many outlets?", "0"),
-            ("inlet_outlet_location", "Location (face/region)? same face or opposite?", "same face"),
-            ("inlet_radius", "Inlet radii (comma-separated if multiple)?", "0.002"),
-            ("outlet_radius", "Outlet radii (comma-separated if multiple)?", "0.001"),
-            ("direction_vectors", "Direction vectors explicit or infer from face? (explicit/infer)", "infer"),
-            ("same_x_face", "Inlets/outlets on same X face?", "yes"),
+            ("inlet_face", "Which face is the inlet on? (x_min/x_max/y_min/y_max/z_min/z_max)", "x_min"),
+            ("inlet_position", "Inlet position on face: center, or specify offsets (u,v in mm)?", "center"),
+            ("inlet_radius", "Inlet radius (mm)?", "2.0"),
+            ("outlet_face", "Which face is the outlet on? (x_min/x_max/y_min/y_max/z_min/z_max, or 'none' for tree)", "none"),
+            ("outlet_radius", "Outlet radius (mm)? (if applicable)", None),
         ],
     },
     "D": {
-        "name": "Topology (Tree Structure)",
+        "name": "4. Topology Configuration",
         "questions": [
-            ("strict_tree", "Strict tree (no loops)?", "yes"),
-            ("target_terminals", "Target terminal tip count?", None),
-            ("max_depth", "Maximum depth (levels)?", None),
-            ("branching_style", "Balanced or aggressive early branching?", "balanced"),
-            ("perfusion_zones", "Perfusion zones needing more density? (describe or 'none')", "none"),
+            ("target_terminals", "Target terminal count? (for tree topology, or 'n/a' for path)", None),
+            ("max_depth", "Maximum branching depth (levels)?", "6"),
+            ("branching_style", "Branching style: balanced, aggressive_early, or space_filling?", "balanced"),
         ],
     },
     "E": {
-        "name": "Geometry Character (Path Style)",
+        "name": "5. Geometry",
         "questions": [
-            ("tortuosity", "Straight vs tortuous? (low/med/high)", "low"),
-            ("branch_angle_range", "Branch angle range? (e.g., 30-90)", "30-90"),
-            ("segment_length_range", "Segment length range? (e.g., 0.5-5mm)", "0.5-5"),
-            ("tapering", "Tapering? (murray/linear/fixed)", "murray"),
+            ("tapering", "Radius tapering profile? (murray/linear/fixed)", "murray"),
+            ("min_radius", "Minimum terminal/tip radius (mm)?", "0.1"),
+            ("branch_angle_range", "Branch angle range? (e.g., 30-90 degrees)", "30-90"),
         ],
     },
     "F": {
-        "name": "Negative Constraints",
+        "name": "6. Constraints",
         "questions": [
             ("ban_self_intersection", "Hard ban on self-intersections?", "yes"),
             ("enforce_clearance", "Hard min clearance enforcement?", "yes"),
@@ -1133,12 +1441,18 @@ QUESTION_GROUPS = {
         ],
     },
     "G": {
-        "name": "Acceptance Criteria",
+        "name": "7. Acceptance Criteria",
         "questions": [
-            ("terminal_range", "Acceptable terminal count range? (e.g., 50-100)", None),
-            ("min_radius_threshold", "Min radius/clearance thresholds?", None),
+            ("terminal_range", "Acceptable terminal count range? (e.g., 50-100, or 'any')", "any"),
             ("watertight_required", "Require watertight mesh?", "yes"),
-            ("aesthetic_criteria", "Aesthetic criteria? (symmetry, directionality, etc.)", "none"),
+        ],
+    },
+    "H": {
+        "name": "8. Embedding (Optional)",
+        "questions": [
+            ("embed_requested", "Do you want to embed this into a voxel domain for 3D printing? (yes/no)", "no"),
+            ("min_feature_size", "If embedding: minimum printable feature size / nozzle diameter (mm)?", "0.4"),
+            ("voxel_pitch_confirm", "Suggested voxel pitch based on feature size. Accept? (yes/custom)", "yes"),
         ],
     },
 }
@@ -2054,6 +2368,265 @@ def _apply_answer_to_requirements(req: ObjectRequirements, field: str, value: An
         if isinstance(value, str):
             placement = value.lower().strip()
             _apply_placement_to_outlets(req, placement)
+    
+    # =========================================================================
+    # New topology-specific question field mappings
+    # =========================================================================
+    
+    elif field == "topology_kind":
+        # Set topology kind (path, tree, loop, multi_tree)
+        if isinstance(value, str):
+            req.topology.topology_kind = value.lower().strip()
+    
+    elif field == "domain_dims":
+        # Parse domain dimensions string like "20 60 30 mm"
+        if isinstance(value, str):
+            parsed = _parse_domain_size_string(value)
+            if parsed:
+                req.domain.size_m = parsed
+    
+    elif field == "inlet_face":
+        # Set inlet face (x_min, x_max, y_min, y_max, z_min, z_max)
+        if isinstance(value, str):
+            face = value.lower().strip()
+            # Create inlet if it doesn't exist
+            if not req.inlets_outlets.inlets:
+                req.inlets_outlets.inlets.append(PortSpec(name="inlet_1", radius_m=0.002))
+            # Store face in placement_rule for now
+            req.inlets_outlets.placement_rule = f"{face}_face"
+            _apply_placement_to_inlets(req, f"{face}_face")
+    
+    elif field == "inlet_position":
+        # Set inlet position (center or u,v offsets)
+        if isinstance(value, str):
+            pos = value.lower().strip()
+            if pos != "center" and "," in pos:
+                # Parse u,v offsets
+                try:
+                    parts = pos.split(",")
+                    u = float(parts[0].strip()) / 1000  # mm to m
+                    v = float(parts[1].strip()) / 1000
+                    if req.inlets_outlets.inlets:
+                        req.inlets_outlets.inlets[0].position_m = (u, v, 0)
+                except (ValueError, IndexError):
+                    pass
+    
+    elif field == "inlet_radius":
+        # Set inlet radius in mm
+        if isinstance(value, str):
+            try:
+                radius_mm = float(value.strip())
+                if not req.inlets_outlets.inlets:
+                    req.inlets_outlets.inlets.append(PortSpec(name="inlet_1", radius_m=radius_mm / 1000))
+                else:
+                    req.inlets_outlets.inlets[0].radius_m = radius_mm / 1000
+            except ValueError:
+                pass
+    
+    elif field == "outlet_face":
+        # Set outlet face (x_min, x_max, y_min, y_max, z_min, z_max, or 'none')
+        if isinstance(value, str):
+            face = value.lower().strip()
+            if face != "none":
+                # Create outlet if it doesn't exist
+                if not req.inlets_outlets.outlets:
+                    req.inlets_outlets.outlets.append(PortSpec(name="outlet_1", radius_m=0.002))
+                _apply_placement_to_outlets(req, f"{face}_face")
+    
+    elif field == "outlet_position":
+        # Set outlet position (center or u,v offsets)
+        if isinstance(value, str):
+            pos = value.lower().strip()
+            if pos != "center" and "," in pos:
+                try:
+                    parts = pos.split(",")
+                    u = float(parts[0].strip()) / 1000
+                    v = float(parts[1].strip()) / 1000
+                    if req.inlets_outlets.outlets:
+                        req.inlets_outlets.outlets[0].position_m = (u, v, 0)
+                except (ValueError, IndexError):
+                    pass
+    
+    elif field == "outlet_radius":
+        # Set outlet radius in mm
+        if isinstance(value, str):
+            try:
+                radius_mm = float(value.strip())
+                if req.inlets_outlets.outlets:
+                    req.inlets_outlets.outlets[0].radius_m = radius_mm / 1000
+            except ValueError:
+                pass
+    
+    elif field == "route_type":
+        # Set path route type (straight, single_bend, s_curve, via_points)
+        if isinstance(value, str):
+            req.geometry.route_type = value.lower().strip()
+    
+    elif field == "bend_radius":
+        # Set minimum bend radius in mm
+        if isinstance(value, str):
+            val = value.lower().strip()
+            if val != "auto":
+                try:
+                    req.geometry.bend_radius_m = float(val) / 1000
+                except ValueError:
+                    pass
+    
+    elif field == "terminal_mode":
+        # Set terminal mode (a = inlet→terminals, b = inlet→outlet with branches)
+        if isinstance(value, str):
+            mode = value.lower().strip()
+            req.topology.terminal_mode = mode
+    
+    elif field == "target_terminals":
+        # Set target terminal count (can be number or 'sparse'/'medium'/'dense')
+        if isinstance(value, str):
+            val = value.lower().strip()
+            density_map = {"sparse": 20, "medium": 50, "dense": 100}
+            if val in density_map:
+                req.topology.target_terminals = density_map[val]
+            elif val not in ("any", "n/a", ""):
+                try:
+                    req.topology.target_terminals = int(val)
+                except ValueError:
+                    pass
+    
+    elif field == "max_depth":
+        # Set maximum branching depth
+        if isinstance(value, str):
+            try:
+                req.topology.max_depth = int(value.strip())
+            except ValueError:
+                pass
+    
+    elif field == "branching_style":
+        # Set branching style (balanced, aggressive_early, space_filling)
+        if isinstance(value, str):
+            req.topology.style = value.lower().strip()
+    
+    elif field == "tapering":
+        # Set radius tapering profile (murray, linear, fixed)
+        if isinstance(value, str):
+            req.geometry.tapering = value.lower().strip()
+    
+    elif field == "min_radius":
+        # Set minimum terminal radius in mm
+        if isinstance(value, str):
+            try:
+                req.constraints.min_radius_m = float(value.strip()) / 1000
+            except ValueError:
+                pass
+    
+    elif field == "min_clearance":
+        # Set minimum clearance in mm
+        if isinstance(value, str):
+            try:
+                req.constraints.min_clearance_m = float(value.strip()) / 1000
+            except ValueError:
+                pass
+    
+    elif field == "boundary_margin":
+        # Set boundary margin in mm
+        if isinstance(value, str):
+            try:
+                req.constraints.boundary_margin_m = float(value.strip()) / 1000
+            except ValueError:
+                pass
+    
+    elif field == "embed_requested":
+        # Set whether embedding is requested
+        if isinstance(value, str):
+            val = value.lower().strip()
+            req.embedding_export.embed_requested = val in ("yes", "y", "true", "1")
+    
+    elif field == "min_feature_size":
+        # Set minimum feature size / nozzle diameter in mm
+        # This is used to compute suggested voxel pitch
+        if isinstance(value, str):
+            try:
+                feature_mm = float(value.strip())
+                # Suggested voxel pitch = feature_size / 3 (for good resolution)
+                req.embedding_export.min_feature_size_m = feature_mm / 1000
+                # Auto-compute suggested voxel pitch
+                suggested_pitch = feature_mm / 3 / 1000  # 3 voxels per feature
+                if req.embedding_export.voxel_pitch_m is None:
+                    req.embedding_export.voxel_pitch_m = suggested_pitch
+            except ValueError:
+                pass
+    
+    elif field == "voxel_pitch_confirm":
+        # Confirm or customize voxel pitch
+        if isinstance(value, str):
+            val = value.lower().strip()
+            if val not in ("yes", "y"):
+                # User wants custom pitch - parse it
+                try:
+                    custom_pitch_mm = float(val)
+                    req.embedding_export.voxel_pitch_m = custom_pitch_mm / 1000
+                except ValueError:
+                    pass
+    
+    elif field == "watertight_required":
+        # Set whether watertight mesh is required
+        if isinstance(value, str):
+            val = value.lower().strip()
+            req.acceptance_criteria.watertight_required = val in ("yes", "y", "true", "1")
+    
+    elif field == "terminal_range":
+        # Set acceptable terminal count range
+        if isinstance(value, str):
+            val = value.lower().strip()
+            if val not in ("any", ""):
+                req.acceptance_criteria.terminal_range = val
+    
+    elif field == "wall_thickness":
+        # Set wall thickness for hollow channels
+        if isinstance(value, str):
+            val = value.lower().strip()
+            if val != "solid":
+                try:
+                    req.geometry.wall_thickness_m = float(val) / 1000
+                except ValueError:
+                    pass
+    
+    elif field == "ban_self_intersection":
+        # Set whether self-intersections are banned
+        if isinstance(value, str):
+            val = value.lower().strip()
+            req.constraints.ban_self_intersection = val in ("yes", "y", "true", "1")
+    
+    elif field == "enforce_clearance":
+        # Set whether clearance is enforced
+        if isinstance(value, str):
+            val = value.lower().strip()
+            req.constraints.enforce_clearance = val in ("yes", "y", "true", "1")
+    
+    elif field == "loop_count":
+        # Set number of loops for loop topology
+        if isinstance(value, str):
+            try:
+                req.topology.loop_count = int(value.strip())
+            except ValueError:
+                pass
+    
+    elif field == "loop_style":
+        # Set loop style (single_loop, mesh, ladder)
+        if isinstance(value, str):
+            req.topology.loop_style = value.lower().strip()
+    
+    elif field == "tree_count":
+        # Set number of trees for multi_tree topology
+        if isinstance(value, str):
+            try:
+                req.topology.tree_count = int(value.strip())
+            except ValueError:
+                pass
+    
+    elif field == "shared_inlet":
+        # Set whether trees share an inlet
+        if isinstance(value, str):
+            val = value.lower().strip()
+            req.topology.shared_inlet = val in ("yes", "y", "true", "1")
 
 
 def _apply_placement_to_inlets(req: ObjectRequirements, placement: str) -> None:
