@@ -2195,6 +2195,229 @@ FIELD_VALIDATORS = {
 }
 
 
+class ResponseType:
+    """V3: Response classification types for adaptive response handling (Section F)."""
+    ANSWER = "answer"
+    META_QUESTION = "meta_question"
+    CORRECTION = "correction"
+    UNCERTAINTY = "uncertainty"
+    TOPOLOGY_OVERRIDE = "topology_override"
+    COMMAND = "command"
+
+
+VALID_TOPOLOGIES = ["path", "tree", "loop", "multi_tree", "backbone"]
+
+
+META_QUESTION_PATTERNS = [
+    "what is", "what are", "what's", "whats",
+    "how do", "how does", "how should", "how can",
+    "why do", "why does", "why should",
+    "can you explain", "explain", "tell me about",
+    "what do you mean", "what does that mean",
+    "default", "defaults", "what are the defaults",
+    "example", "examples", "give me an example",
+    "help", "?",
+]
+
+
+CORRECTION_PATTERNS = [
+    "actually", "no wait", "sorry", "i meant", "i mean",
+    "change that", "change it", "let me change", "correction",
+    "not that", "wrong", "mistake", "go back", "undo",
+    "instead", "rather", "should be", "make it",
+]
+
+
+UNCERTAINTY_PATTERNS = [
+    "i don't know", "i dont know", "not sure", "unsure",
+    "no idea", "idk", "dunno", "whatever", "you decide",
+    "up to you", "your choice", "recommend", "suggest",
+    "what would you", "what do you think", "best option",
+]
+
+
+TOPOLOGY_OVERRIDE_PATTERNS = [
+    "change topology", "wrong topology", "not a tree", "not tree",
+    "not a path", "not path", "not backbone", "not a backbone",
+    "should be path", "should be tree", "should be backbone",
+    "should be loop", "should be multi_tree",
+    "switch to path", "switch to tree", "switch to backbone",
+    "switch to loop", "switch to multi_tree",
+    "use path", "use tree", "use backbone", "use loop", "use multi_tree",
+    "it's a path", "it's a tree", "it's a backbone", "it's a loop",
+    "this is a path", "this is a tree", "this is a backbone",
+    "misclassified", "wrong type", "incorrect topology",
+]
+
+
+def _classify_response(response: str, field: str = "") -> Tuple[str, Optional[str]]:
+    """
+    V3: Classify user response for adaptive handling (Section F).
+    
+    Returns (response_type, extracted_value).
+    
+    Response types:
+    - ANSWER: Valid answer to the question
+    - META_QUESTION: User asking about the question itself ("what are defaults?")
+    - CORRECTION: User correcting a previous answer ("actually, make it 2")
+    - UNCERTAINTY: User expressing uncertainty ("I don't know")
+    - TOPOLOGY_OVERRIDE: User wants to change detected topology
+    - COMMAND: Special command (quit, exit, use defaults)
+    """
+    response_lower = response.lower().strip()
+    
+    if not response_lower:
+        return ResponseType.ANSWER, None
+    
+    if response_lower in ("quit", "exit"):
+        return ResponseType.COMMAND, "quit"
+    if response_lower == "use defaults":
+        return ResponseType.COMMAND, "use_defaults"
+    
+    for pattern in TOPOLOGY_OVERRIDE_PATTERNS:
+        if pattern in response_lower:
+            for topo in VALID_TOPOLOGIES:
+                if topo in response_lower:
+                    return ResponseType.TOPOLOGY_OVERRIDE, topo
+            return ResponseType.TOPOLOGY_OVERRIDE, None
+    
+    for pattern in META_QUESTION_PATTERNS:
+        if response_lower.startswith(pattern) or pattern in response_lower:
+            if response_lower.endswith("?") or any(p in response_lower for p in ["what", "how", "why", "explain", "help"]):
+                return ResponseType.META_QUESTION, response
+    
+    for pattern in UNCERTAINTY_PATTERNS:
+        if pattern in response_lower:
+            return ResponseType.UNCERTAINTY, response
+    
+    for pattern in CORRECTION_PATTERNS:
+        if response_lower.startswith(pattern) or pattern in response_lower:
+            return ResponseType.CORRECTION, response
+    
+    return ResponseType.ANSWER, response
+
+
+def _answer_meta_question(question_field: str, user_question: str, current_value: Any = None) -> str:
+    """
+    V3: Answer a meta-question about a field (Section F).
+    
+    Returns an explanation string to display to the user.
+    """
+    field_explanations = {
+        "num_inlets": {
+            "description": "Number of inlet ports where fluid enters the structure",
+            "defaults": "Default is 1 inlet. Most structures have a single inlet.",
+            "examples": "1 for simple channel, 2+ for parallel feeds",
+        },
+        "num_outlets": {
+            "description": "Number of outlet ports where fluid exits the structure",
+            "defaults": "Default is 1 outlet for path topology, 0 for tree (terminals are exits)",
+            "examples": "1 for channel, 0 for perfusion tree with terminal endpoints",
+        },
+        "domain_size": {
+            "description": "Physical dimensions of the bounding box (width x length x height)",
+            "defaults": "Default is 20x60x30 mm",
+            "examples": "30 60 20 mm, 2x6x3 cm, 0.02 0.06 0.03 m",
+        },
+        "topology.topology_kind": {
+            "description": "Structure type: path (simple channel), tree (branching), backbone (parallel legs), loop, or multi_tree",
+            "defaults": "Auto-detected from your description",
+            "examples": "path for inlet→outlet channel, tree for vascular branching, backbone for 3-leg parallel",
+        },
+        "target_terminals": {
+            "description": "Number of terminal endpoints for tree structures",
+            "defaults": "Default is 200 terminals",
+            "examples": "100 for sparse, 500 for dense, 1000+ for high-resolution",
+        },
+        "min_channel_radius": {
+            "description": "Minimum channel radius constraint in mm",
+            "defaults": "Default is 0.1 mm (100 microns)",
+            "examples": "0.05 for fine detail, 0.2 for robust printing",
+        },
+        "voxel_pitch": {
+            "description": "Resolution for embedded domain output (voxel size)",
+            "defaults": "Calculated as min_feature / 3 for adequate resolution",
+            "examples": "0.1 mm for fine detail, 0.3 mm for faster processing",
+        },
+        "backbone_axis": {
+            "description": "Axis along which the backbone runs (x, y, z, or 'longest')",
+            "defaults": "Default is 'longest' (auto-detect longest domain axis)",
+            "examples": "y for vertical backbone, x for horizontal",
+        },
+        "leg_count": {
+            "description": "Number of parallel legs in backbone topology",
+            "defaults": "Default is 3 legs",
+            "examples": "2 for simple parallel, 3 for three-leg, 5+ for ladder",
+        },
+        "leg_spacing": {
+            "description": "Distance between parallel legs",
+            "defaults": "Default is 'equal' (evenly distributed across domain)",
+            "examples": "'equal' or specific value like '10 mm'",
+        },
+    }
+    
+    user_q_lower = user_question.lower()
+    
+    info = field_explanations.get(question_field, {
+        "description": f"This field configures {question_field.replace('_', ' ')}",
+        "defaults": "A sensible default will be applied if you skip this question",
+        "examples": "Enter a value appropriate for your design",
+    })
+    
+    if "default" in user_q_lower:
+        return f"  [Info] {info['defaults']}"
+    elif "example" in user_q_lower:
+        return f"  [Info] Examples: {info['examples']}"
+    elif "what" in user_q_lower or "explain" in user_q_lower or "help" in user_q_lower:
+        return f"  [Info] {info['description']}\n  Defaults: {info['defaults']}\n  Examples: {info['examples']}"
+    else:
+        return f"  [Info] {info['description']}"
+
+
+def _handle_topology_override(
+    requirements: 'ObjectRequirements',
+    new_topology: Optional[str],
+    verbose: bool = True
+) -> Tuple[bool, Optional[str]]:
+    """
+    V3: Handle topology override request.
+    
+    Returns (success, message).
+    If new_topology is None, prompts user to select one.
+    """
+    if new_topology is None:
+        print("\n  Available topologies:")
+        print("    1. path     - Simple inlet→outlet channel")
+        print("    2. tree     - Branching vascular network")
+        print("    3. backbone - Parallel leg structure (3-leg, manifold)")
+        print("    4. loop     - Looping/recirculating structure")
+        print("    5. multi_tree - Multiple independent trees")
+        
+        choice = input("  Select topology (1-5 or name): ").strip().lower()
+        
+        topology_map = {
+            "1": "path", "2": "tree", "3": "backbone", "4": "loop", "5": "multi_tree",
+            "path": "path", "tree": "tree", "backbone": "backbone", 
+            "loop": "loop", "multi_tree": "multi_tree", "multitree": "multi_tree",
+        }
+        
+        new_topology = topology_map.get(choice)
+        if not new_topology:
+            return False, f"Invalid selection: '{choice}'. Please try again."
+    
+    if new_topology not in VALID_TOPOLOGIES:
+        return False, f"Invalid topology: '{new_topology}'. Valid options: {', '.join(VALID_TOPOLOGIES)}"
+    
+    old_topology = requirements.topology.topology_kind
+    requirements.topology.topology_kind = new_topology
+    
+    if verbose:
+        print(f"\n  [Topology Override] Changed from '{old_topology}' to '{new_topology}'")
+        print(f"  Questions will now be tailored for {new_topology} topology.")
+    
+    return True, f"Topology changed to '{new_topology}'"
+
+
 def _validate_answer(field: str, answer: str) -> Tuple[bool, Optional[str]]:
     """
     Validate an answer for a specific field.
@@ -2360,23 +2583,72 @@ def run_rule_based_capture(
             field_key = _get_field_key_from_question(q)
             
             max_validation_attempts = 3
+            question_answered = False
+            topology_changed = False
+            
             for attempt in range(max_validation_attempts):
-                answer = input(f"  {q.question_text}{default_str}: ").strip()
+                raw_answer = input(f"  {q.question_text}{default_str}: ").strip()
                 
-                if answer.lower() in ("quit", "exit"):
-                    return requirements, collected_answers
+                response_type, extracted_value = _classify_response(raw_answer, q.field)
                 
-                if answer.lower() == "use defaults":
-                    for prop in eval_result.proposed_defaults:
-                        _apply_default_to_requirements(requirements, prop)
-                        collected_answers[prop.field] = prop.value
-                    break
+                if response_type == ResponseType.COMMAND:
+                    if extracted_value == "quit":
+                        return requirements, collected_answers
+                    elif extracted_value == "use_defaults":
+                        for prop in eval_result.proposed_defaults:
+                            _apply_default_to_requirements(requirements, prop)
+                            collected_answers[prop.field] = prop.value
+                        question_answered = True
+                        break
                 
-                if not answer and q.default_value:
-                    answer = q.default_value
+                elif response_type == ResponseType.TOPOLOGY_OVERRIDE:
+                    success, msg = _handle_topology_override(requirements, extracted_value, verbose)
+                    if success:
+                        topology_changed = True
+                        previous_question_sets.clear()
+                        repeat_count = 0
+                        break
+                    else:
+                        print(f"  [Error] {msg}")
+                        continue
                 
-                is_valid, error_msg = _validate_answer(field_key, answer)
+                elif response_type == ResponseType.META_QUESTION:
+                    explanation = _answer_meta_question(q.field, raw_answer)
+                    print(explanation)
+                    print("  (Please answer the question above)")
+                    continue
+                
+                elif response_type == ResponseType.UNCERTAINTY:
+                    if q.default_value:
+                        print(f"  [Info] No problem! Using default: {q.default_value}")
+                        raw_answer = q.default_value
+                    else:
+                        print("  [Info] I'll use a sensible default for this field.")
+                        question_answered = True
+                        break
+                
+                elif response_type == ResponseType.CORRECTION:
+                    import re
+                    numbers = re.findall(r'[\d.]+', raw_answer)
+                    if numbers:
+                        raw_answer = numbers[0]
+                        print(f"  [Info] Got it, using: {raw_answer}")
+                    else:
+                        words = raw_answer.lower().split()
+                        for word in reversed(words):
+                            if word not in ["actually", "no", "wait", "sorry", "i", "meant", "mean", "make", "it", "change", "to", "be"]:
+                                raw_answer = word
+                                print(f"  [Info] Got it, using: {raw_answer}")
+                                break
+                
+                if not raw_answer and q.default_value:
+                    raw_answer = q.default_value
+                
+                is_valid, error_msg = _validate_answer(field_key, raw_answer)
                 if is_valid:
+                    collected_answers[q.field] = raw_answer
+                    _apply_answer_to_requirements(requirements, q.field, raw_answer)
+                    question_answered = True
                     break
                 else:
                     print(f"  [Error] {error_msg}")
@@ -2384,16 +2656,17 @@ def run_rule_based_capture(
                         print(f"  Please try again ({max_validation_attempts - attempt - 1} attempts remaining).")
                     else:
                         print(f"  Using default value: {q.default_value}")
-                        answer = q.default_value if q.default_value else answer
-            else:
-                if answer.lower() == "use defaults":
-                    break
+                        raw_answer = q.default_value if q.default_value else raw_answer
+                        collected_answers[q.field] = raw_answer
+                        _apply_answer_to_requirements(requirements, q.field, raw_answer)
+                        question_answered = True
             
-            if answer.lower() == "use defaults":
+            if topology_changed:
                 break
             
-            collected_answers[q.field] = answer
-            _apply_answer_to_requirements(requirements, q.field, answer)
+            if not question_answered and q.default_value:
+                collected_answers[q.field] = q.default_value
+                _apply_answer_to_requirements(requirements, q.field, q.default_value)
     
     if iteration >= max_iterations:
         if verbose:
