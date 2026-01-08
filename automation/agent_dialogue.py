@@ -316,9 +316,84 @@ def detect_vague_quantifiers(intent: str) -> List[str]:
     return found
 
 
+def _query_llm_for_understanding(
+    user_text: str,
+    llm_client: Any,
+    context: Optional[Dict[str, Any]] = None
+) -> Optional[Dict[str, Any]]:
+    """
+    Query the LLM to get a richer understanding of the user's description.
+    
+    Parameters
+    ----------
+    user_text : str
+        The user's description of what they want to generate
+    llm_client : LLMClient
+        The LLM client to use for querying
+    context : dict, optional
+        Additional context
+        
+    Returns
+    -------
+    dict or None
+        LLM's understanding of the description, or None if query fails
+    """
+    prompt = f"""You are an expert biomedical engineer analyzing a user's description of a vascular organ structure they want to generate.
+
+Analyze the following description and extract your understanding:
+
+USER DESCRIPTION:
+{user_text}
+
+Please provide your analysis in the following JSON format:
+{{
+    "summary": "A clear, interpretive summary of what the user wants (2-3 sentences)",
+    "organ_type": "The type of organ (liver, kidney, heart, lung, or generic)",
+    "assumptions": [
+        {{"field": "field_name", "value": "assumed_value", "confidence": 0.0-1.0, "reason": "why this assumption"}}
+    ],
+    "ambiguities": [
+        {{"field": "field_name", "description": "what is ambiguous", "options": ["option1", "option2"], "impact": "high/medium/low"}}
+    ],
+    "risks": [
+        {{"category": "printability/collision/units/complexity/feasibility", "description": "risk description", "severity": "critical/warning/info", "mitigation": "how to mitigate"}}
+    ],
+    "extracted_values": {{
+        "domain_size": [x, y, z] or null,
+        "num_inlets": number or null,
+        "num_outlets": number or null,
+        "radius": number or null,
+        "target_terminals": number or null
+    }}
+}}
+
+Respond ONLY with the JSON, no additional text."""
+
+    try:
+        response = llm_client.chat(
+            message=prompt,
+            temperature=0.3,
+            max_tokens=2000,
+        )
+        
+        content = response.content.strip()
+        if content.startswith("```json"):
+            content = content[7:]
+        if content.startswith("```"):
+            content = content[3:]
+        if content.endswith("```"):
+            content = content[:-3]
+        content = content.strip()
+        
+        return json.loads(content)
+    except Exception:
+        return None
+
+
 def understand_object(
     user_text: str,
-    context: Optional[Dict[str, Any]] = None
+    context: Optional[Dict[str, Any]] = None,
+    llm_client: Optional[Any] = None
 ) -> UnderstandingReport:
     """
     Understand the user's intent and produce an UnderstandingReport.
@@ -331,12 +406,18 @@ def understand_object(
     5. Identifies potential risks
     6. Creates an initial requirements draft
     
+    If an LLM client is provided, it will query the LLM to get a richer
+    understanding of the user's description, enhancing the rule-based analysis.
+    
     Parameters
     ----------
     user_text : str
         The user's description of what they want to generate
     context : dict, optional
         Additional context (e.g., project defaults, previous objects)
+    llm_client : LLMClient, optional
+        LLM client for enhanced understanding. If provided, the LLM will be
+        queried to glean deeper understanding from the description.
         
     Returns
     -------
@@ -345,21 +426,74 @@ def understand_object(
     """
     context = context or {}
     
-    # Detect organ type
-    organ_type = detect_organ_type(user_text)
+    llm_understanding = None
+    if llm_client is not None:
+        llm_understanding = _query_llm_for_understanding(user_text, llm_client, context)
     
-    # Extract numeric values
+    # Detect organ type - prefer LLM's detection if available
+    organ_type = detect_organ_type(user_text)
+    if llm_understanding and llm_understanding.get("organ_type"):
+        llm_organ_type = llm_understanding["organ_type"].lower()
+        if llm_organ_type in ["liver", "kidney", "heart", "lung", "generic"]:
+            organ_type = llm_organ_type
+    
+    # Extract numeric values - merge with LLM extracted values
     extracted = extract_numeric_values(user_text)
+    if llm_understanding and llm_understanding.get("extracted_values"):
+        llm_values = llm_understanding["extracted_values"]
+        if llm_values.get("domain_size") and "domain_size" not in extracted:
+            try:
+                size = llm_values["domain_size"]
+                if isinstance(size, list) and len(size) == 3:
+                    extracted["domain_size"] = tuple(float(v) for v in size)
+            except (ValueError, TypeError):
+                pass
+        if llm_values.get("num_inlets") and "num_inlets" not in extracted:
+            try:
+                extracted["num_inlets"] = int(llm_values["num_inlets"])
+            except (ValueError, TypeError):
+                pass
+        if llm_values.get("num_outlets") and "num_outlets" not in extracted:
+            try:
+                extracted["num_outlets"] = int(llm_values["num_outlets"])
+            except (ValueError, TypeError):
+                pass
+        if llm_values.get("radius") and "radius" not in extracted:
+            try:
+                extracted["radius"] = float(llm_values["radius"])
+            except (ValueError, TypeError):
+                pass
+        if llm_values.get("target_terminals") and "target_terminals" not in extracted:
+            try:
+                extracted["target_terminals"] = int(llm_values["target_terminals"])
+            except (ValueError, TypeError):
+                pass
     
     # Detect spatial terms and vague quantifiers
     spatial_terms = detect_spatial_terms(user_text)
     vague_terms = detect_vague_quantifiers(user_text)
     
-    # Build assumptions
+    # Build assumptions - start with LLM assumptions if available
     assumptions = []
+    seen_assumption_fields = set()
+    
+    if llm_understanding and llm_understanding.get("assumptions"):
+        for llm_assumption in llm_understanding["assumptions"]:
+            try:
+                field = llm_assumption.get("field", "")
+                if field and field not in seen_assumption_fields:
+                    assumptions.append(Assumption(
+                        field=field,
+                        value=llm_assumption.get("value"),
+                        confidence=float(llm_assumption.get("confidence", 0.5)),
+                        reason=llm_assumption.get("reason", "LLM inference")
+                    ))
+                    seen_assumption_fields.add(field)
+            except (ValueError, TypeError, KeyError):
+                pass
     
     # Domain assumptions
-    if "domain_size" not in extracted:
+    if "domain_size" not in extracted and "domain.size_m" not in seen_assumption_fields:
         default_size = context.get("default_embed_domain", (0.02, 0.06, 0.03))
         assumptions.append(Assumption(
             field="domain.size_m",
@@ -369,7 +503,7 @@ def understand_object(
         ))
     
     # Topology assumptions based on organ type
-    if organ_type != "generic":
+    if organ_type != "generic" and "topology.style" not in seen_assumption_fields:
         assumptions.append(Assumption(
             field="topology.style",
             value="tree",
@@ -378,7 +512,7 @@ def understand_object(
         ))
     
     # I/O assumptions
-    if "num_inlets" not in extracted:
+    if "num_inlets" not in extracted and "inlets_outlets.num_inlets" not in seen_assumption_fields:
         default_inlets = 1
         if organ_type == "liver":
             default_inlets = 2  # Hepatic artery + portal vein
@@ -391,11 +525,27 @@ def understand_object(
             reason=f"Default inlet count for {organ_type}"
         ))
     
-    # Build ambiguities
+    # Build ambiguities - start with LLM ambiguities if available
     ambiguities = []
+    seen_ambiguity_fields = set()
+    
+    if llm_understanding and llm_understanding.get("ambiguities"):
+        for llm_ambiguity in llm_understanding["ambiguities"]:
+            try:
+                field = llm_ambiguity.get("field", "")
+                if field and field not in seen_ambiguity_fields:
+                    ambiguities.append(Ambiguity(
+                        field=field,
+                        description=llm_ambiguity.get("description", ""),
+                        options=llm_ambiguity.get("options", []),
+                        impact=llm_ambiguity.get("impact", "medium")
+                    ))
+                    seen_ambiguity_fields.add(field)
+            except (ValueError, TypeError, KeyError):
+                pass
     
     # Spatial ambiguity
-    if spatial_terms:
+    if spatial_terms and "frame_of_reference" not in seen_ambiguity_fields:
         ambiguities.append(Ambiguity(
             field="frame_of_reference",
             description=f"Spatial terms used ({', '.join(spatial_terms)}) without coordinate convention",
@@ -405,26 +555,44 @@ def understand_object(
     
     # Vague quantifier ambiguity
     for term in vague_terms:
-        if term in ["dense", "sparse"]:
+        if term in ["dense", "sparse"] and "topology.target_terminals" not in seen_ambiguity_fields:
             ambiguities.append(Ambiguity(
                 field="topology.target_terminals",
                 description=f"'{term}' needs numeric mapping for terminal count",
                 options=["50-100 (sparse)", "200-300 (medium)", "500-1000 (dense)"],
                 impact="medium"
             ))
-        elif term in ["thick", "thin"]:
+            seen_ambiguity_fields.add("topology.target_terminals")
+        elif term in ["thick", "thin"] and "constraints.min_radius_m" not in seen_ambiguity_fields:
             ambiguities.append(Ambiguity(
                 field="constraints.min_radius_m",
                 description=f"'{term}' needs numeric mapping for radius",
                 options=["0.05-0.1mm (thin)", "0.1-0.2mm (medium)", "0.2-0.5mm (thick)"],
                 impact="high"
             ))
+            seen_ambiguity_fields.add("constraints.min_radius_m")
     
-    # Build risks
+    # Build risks - start with LLM risks if available
     risks = []
+    seen_risk_categories = set()
+    
+    if llm_understanding and llm_understanding.get("risks"):
+        for llm_risk in llm_understanding["risks"]:
+            try:
+                category = llm_risk.get("category", "")
+                if category and category not in seen_risk_categories:
+                    risks.append(Risk(
+                        category=category,
+                        description=llm_risk.get("description", ""),
+                        severity=llm_risk.get("severity", "warning"),
+                        mitigation=llm_risk.get("mitigation")
+                    ))
+                    seen_risk_categories.add(category)
+            except (ValueError, TypeError, KeyError):
+                pass
     
     # Printability risk
-    if "radius" in extracted and extracted["radius"] < 0.0001:  # < 0.1mm
+    if "radius" in extracted and extracted["radius"] < 0.0001 and "printability" not in seen_risk_categories:
         risks.append(Risk(
             category="printability",
             description=f"Specified radius ({extracted['radius']*1000:.2f}mm) may be below printable threshold",
@@ -433,7 +601,7 @@ def understand_object(
         ))
     
     # Complexity risk
-    if "target_terminals" in extracted and extracted["target_terminals"] > 1000:
+    if "target_terminals" in extracted and extracted["target_terminals"] > 1000 and "complexity" not in seen_risk_categories:
         risks.append(Risk(
             category="complexity",
             description=f"High terminal count ({extracted['target_terminals']}) may cause long generation time",
@@ -442,7 +610,7 @@ def understand_object(
         ))
     
     # Unit risk
-    if not any(unit in user_text.lower() for unit in ["mm", "cm", "m", "um"]):
+    if not any(unit in user_text.lower() for unit in ["mm", "cm", "m", "um"]) and "units" not in seen_risk_categories:
         risks.append(Risk(
             category="units",
             description="No units specified in description",
@@ -468,53 +636,58 @@ def understand_object(
         else:
             requirements_draft.confidence[field] = 0.3  # Low confidence for defaults
     
-    # Build a rich, interpretive summary
-    summary_lines = []
+    # Build a rich, interpretive summary - use LLM summary as base if available
+    summary = None
+    if llm_understanding and llm_understanding.get("summary"):
+        summary = llm_understanding["summary"]
     
-    # Opening interpretation
-    if organ_type != "generic":
-        summary_lines.append(f"I understand you want to create a {organ_type} vascular network.")
-    else:
-        summary_lines.append("I understand you want to create a vascular network.")
-    
-    # Domain interpretation
-    if "domain_size" in extracted:
-        size = extracted["domain_size"]
-        summary_lines.append(f"The network will be generated within a {size[0]*1000:.0f}mm x {size[1]*1000:.0f}mm x {size[2]*1000:.0f}mm domain.")
-    else:
-        summary_lines.append("I'll use the default domain size since none was specified.")
-    
-    # I/O interpretation
-    io_parts = []
-    if "num_inlets" in extracted:
-        io_parts.append(f"{extracted['num_inlets']} inlet(s)")
-    if "num_outlets" in extracted:
-        io_parts.append(f"{extracted['num_outlets']} outlet(s)")
-    if io_parts:
-        summary_lines.append(f"The network will have {' and '.join(io_parts)}.")
-    
-    # Terminal/density interpretation
-    if "target_terminals" in extracted:
-        summary_lines.append(f"You're targeting {extracted['target_terminals']} terminal branches, which will determine the network's density and complexity.")
-    elif any(term in vague_terms for term in ["dense", "sparse", "many", "few"]):
-        density_term = next((t for t in vague_terms if t in ["dense", "sparse", "many", "few"]), None)
-        if density_term:
-            summary_lines.append(f"You mentioned '{density_term}' - I'll need to clarify what terminal count this maps to.")
-    
-    # Geometry interpretation
-    geo_terms = [t for t in vague_terms if t in ["tortuous", "smooth", "branched", "complex", "simple"]]
-    if geo_terms:
-        summary_lines.append(f"The network should have {', '.join(geo_terms)} characteristics.")
-    
-    # Radius interpretation
-    if "radius" in extracted:
-        summary_lines.append(f"Vessel radius will start at {extracted['radius']*1000:.2f}mm.")
-    
-    # Spatial terms interpretation
-    if spatial_terms:
-        summary_lines.append(f"You used spatial terms ({', '.join(spatial_terms)}) - I'll need to confirm the coordinate frame before proceeding.")
-    
-    summary = " ".join(summary_lines)
+    if not summary:
+        summary_lines = []
+        
+        # Opening interpretation
+        if organ_type != "generic":
+            summary_lines.append(f"I understand you want to create a {organ_type} vascular network.")
+        else:
+            summary_lines.append("I understand you want to create a vascular network.")
+        
+        # Domain interpretation
+        if "domain_size" in extracted:
+            size = extracted["domain_size"]
+            summary_lines.append(f"The network will be generated within a {size[0]*1000:.0f}mm x {size[1]*1000:.0f}mm x {size[2]*1000:.0f}mm domain.")
+        else:
+            summary_lines.append("I'll use the default domain size since none was specified.")
+        
+        # I/O interpretation
+        io_parts = []
+        if "num_inlets" in extracted:
+            io_parts.append(f"{extracted['num_inlets']} inlet(s)")
+        if "num_outlets" in extracted:
+            io_parts.append(f"{extracted['num_outlets']} outlet(s)")
+        if io_parts:
+            summary_lines.append(f"The network will have {' and '.join(io_parts)}.")
+        
+        # Terminal/density interpretation
+        if "target_terminals" in extracted:
+            summary_lines.append(f"You're targeting {extracted['target_terminals']} terminal branches, which will determine the network's density and complexity.")
+        elif any(term in vague_terms for term in ["dense", "sparse", "many", "few"]):
+            density_term = next((t for t in vague_terms if t in ["dense", "sparse", "many", "few"]), None)
+            if density_term:
+                summary_lines.append(f"You mentioned '{density_term}' - I'll need to clarify what terminal count this maps to.")
+        
+        # Geometry interpretation
+        geo_terms = [t for t in vague_terms if t in ["tortuous", "smooth", "branched", "complex", "simple"]]
+        if geo_terms:
+            summary_lines.append(f"The network should have {', '.join(geo_terms)} characteristics.")
+        
+        # Radius interpretation
+        if "radius" in extracted:
+            summary_lines.append(f"Vessel radius will start at {extracted['radius']*1000:.2f}mm.")
+        
+        # Spatial terms interpretation
+        if spatial_terms:
+            summary_lines.append(f"You used spatial terms ({', '.join(spatial_terms)}) - I'll need to confirm the coordinate frame before proceeding.")
+        
+        summary = " ".join(summary_lines)
     
     return UnderstandingReport(
         summary=summary,
