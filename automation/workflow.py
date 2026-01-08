@@ -1,47 +1,70 @@
 """
-Single Agent Organ Generator V3 Workflow
+Single Agent Organ Generator V4 Workflow
 
 # =============================================================================
-# VERSION FLAG: V3 - Topology-Aware Questioning
+# VERSION FLAG: V4 - Topology-First Deterministic Questioning
 # =============================================================================
-# This is V3 of the Single Agent Organ Generator workflow.
+# This is V4 of the Single Agent Organ Generator workflow.
 # If you are seeing issues, verify you are running this version by checking
-# for this comment block. V3 introduces:
+# for this comment block. V4 introduces:
 #
-# 1. Topology-first gating: PATH vs TREE vs BACKBONE as first decision
-# 2. Explicit domain dimensions (not hidden behind "use defaults?")
-# 3. Ports as first-class citizens (outlet required for PATH topology)
-# 4. Backbone-specific questions for parallel leg structures
-# 5. Fixed DomainSection shape/type mismatch
-# 6. Adaptive response handling for meta-questions
-# 7. Conservative organ detection (generic unless explicit keywords)
+# 1. Two-layer architecture: Minimal Viable Spec (MVS) + Adaptive Modules
+# 2. Topology-first gating: PATH vs TREE vs BACKBONE as FIRST question
+# 3. Domain: explicit first, defaults only as fallback
+# 4. Ports: first-class and topology-dependent requirements
+# 5. Topology-specific "ready to generate" thresholds
+# 6. Routing/backbone questions: only when triggered by intent
+# 7. Embedding & voxel pitch: conditional, derived, and budgeted
+# 8. Interaction rules: reactive (meta questions, corrections, validation)
+# 9. Schema fill strategy: deterministic first, LLM second
+# 10. Consistency & safety checks before generation
 #
-# To verify you're running V3, check WORKFLOW_VERSION = "3.0"
+# Key changes from V3:
+# - PATH topology can include branching (defined as channel first)
+# - PATH requires outlet port (mandatory)
+# - TREE uses terminal strategy (not outlet ports by default)
+# - Pre-generation validation ensures MVS completeness
+# - Never declares "ready" until compile+artifact checks pass
+#
+# To verify you're running V4, check WORKFLOW_VERSION = "4.0.0"
 # =============================================================================
 
-This module implements the "Single Agent Organ Generator V3" workflow - a stateful,
+This module implements the "Single Agent Organ Generator V4" workflow - a stateful,
 interactive workflow for organ structure generation using LLM agents.
 
-V3 introduces topology-aware questioning with the following improvements:
-- Topology-first gating: PATH vs TREE vs BACKBONE determines question flow
-- Explicit domain dimensions asked before defaults
-- Ports as first-class citizens with outlet required for PATH
-- Backbone-specific questions for parallel leg structures
-- Conservative organ detection (generic unless explicit keywords)
-- Adaptive response handling for meta-questions
+V4 introduces topology-first deterministic questioning with the following improvements:
 
-V2 introduced the "Interpret -> Plan -> Ask" agent pattern:
-- Agent dialogue system for understanding user intent
-- Dynamic schema with activatable modules
-- LLM healthcheck and circuit breaker for reliability
-- Iteration feedback integration
+Two-Layer Architecture:
+- Layer A (MVS): Minimal Viable Spec - topology-dependent required fields
+- Layer B: Adaptive Modules - only activate when intent requires them
+
+Topology-First Flow:
+- Step 0: Confirm topology kind (FIRST question, gates all others)
+- Step 1: Domain dimensions (explicit first, defaults fallback)
+- Step 2: Ports (topology-dependent: PATH requires outlet, TREE uses terminals)
+- Step 3: Branching (for PATH, asked AFTER topology confirmed)
+- Step 4: Routing (PATH only, if not straight)
+- Step 5: Embedding (conditional, with print-resolution proxy)
+
+Topology-Specific Ready Thresholds:
+- PATH ready: domain + inlet + outlet + routing
+- TREE ready: domain + inlet + terminal strategy + min radius
+- BACKBONE ready: domain + leg config + ports
+
+Interaction Rules:
+- Every question accepts: direct answer, meta question, correction, uncertainty
+- Invalid answers: show expected format, re-ask immediately
+- Pre-generation validation: verify MVS, run spec compilation, check feasibility
+
+V3 introduced topology-aware questioning with backbone support.
+V2 introduced the "Interpret -> Plan -> Ask" agent pattern.
 
 The workflow follows these steps:
 0. PROJECT_INIT: Ask user for project name and global defaults
 1. OBJECT_PLANNING: Ask how many objects and create object folders
 2. FRAME_OF_REFERENCE: Establish coordinate conventions per object
-3. REQUIREMENTS_CAPTURE: Schema-gated requirements gathering
-4. SPEC_COMPILATION: Compile requirements to DesignSpec
+3. REQUIREMENTS_CAPTURE: Topology-first requirements gathering
+4. SPEC_COMPILATION: Deterministic spec compilation with validation
 5. GENERATION: Execute generation within object folder
 6. ANALYSIS_VALIDATION: Analyze and validate generated structure
 7. ITERATION: Accept user critique and iterate
@@ -49,20 +72,20 @@ The workflow follows these steps:
 9. COMPLETE: Close project
 
 Key Features:
+- Topology-first gating prevents irrelevant questions
+- Minimal Viable Spec ensures generation readiness
+- Deterministic spec fill (parsing + rules), LLM only for ambiguity
+- Pre-generation validation catches issues early
 - Per-object folder structure with versioned artifacts
-- Schema-gated requirements capture with dynamic modules
-- Agent dialogue: Understand -> Plan -> Ask flow
-- Fixed frame of reference before spatial discussions
-- Ability to pull context from previous attempts
-- Deterministic, reproducible generation
-- LLM healthcheck prevents infinite loops
+- Reactive interaction (meta questions, corrections, uncertainty)
+- Never loops silently - shows specific missing/invalid fields
 
 Usage:
-    from automation.workflow import SingleAgentOrganGeneratorV3
+    from automation.workflow import SingleAgentOrganGeneratorV4
     from automation.agent_runner import create_agent
     
     agent = create_agent(provider="openai", model="gpt-4")
-    workflow = SingleAgentOrganGeneratorV3(agent)
+    workflow = SingleAgentOrganGeneratorV4(agent)
     workflow.run()
 """
 
@@ -1030,20 +1053,27 @@ def detect_topology_kind(intent: str) -> str:
     """
     Detect the topology kind from the user's intent description.
     
-    V3: Added backbone detection for parallel leg structures.
+    V4: Updated priority order and PATH can include branching.
     
     Returns the topology kind based on keywords found in the intent string:
-    - "path": Simple inlet→outlet channel, no branching
+    - "path": Channel/tube connecting inlet to outlet (can include branching)
     - "backbone": Parallel leg structure (e.g., 3-leg backbone)
-    - "tree": Full tree structure with branching
+    - "tree": Full tree structure with terminals (no outlet port by default)
     - "loop": Looping/recirculating structure
     - "multi_tree": Multiple independent trees
+    
+    V4 Key Changes:
+    - PATH topology can include branching (defined as channel/path first)
+    - PATH requires outlet port (mandatory)
+    - TREE uses terminal strategy (not outlet ports by default)
+    - Heuristic defaults: "channel/tube/through/connect inlet to outlet" → PATH
+    - Heuristic defaults: "branching/vascular/perfusion/terminals" → TREE
     
     This determines which questions are relevant to ask.
     """
     intent_lower = intent.lower()
     
-    # V3: Check for backbone/parallel leg indicators FIRST
+    # V4: Check for backbone/parallel leg indicators FIRST
     # These are explicit design patterns that deserve targeted questions
     backbone_keywords = [
         "backbone", "parallel leg", "parallel channel", "3-leg", "3 leg",
@@ -1052,11 +1082,14 @@ def detect_topology_kind(intent: str) -> str:
         "parallel tube", "parallel pipe", "leg spacing", "equal spacing"
     ]
     
-    # Check for path/channel indicators (simple inlet→outlet)
+    # V4: PATH keywords - channel/tube designs that connect inlet to outlet
+    # These can include branching, but are defined as channel/path first
     path_keywords = [
         "channel", "tube", "pipe", "conduit", "duct", "passage",
         "single path", "straight", "direct", "simple", "inlet to outlet",
-        "inlet-outlet", "one inlet", "one outlet", "single inlet", "single outlet"
+        "inlet-outlet", "one inlet", "one outlet", "single inlet", "single outlet",
+        "through", "connect inlet", "connect outlet", "flow through",
+        "inlet and outlet", "inlet outlet"
     ]
     
     # Check for loop/recirculation indicators
@@ -1071,14 +1104,17 @@ def detect_topology_kind(intent: str) -> str:
         "parallel tree", "separate tree", "dual tree", "twin tree"
     ]
     
-    # Check for explicit tree indicators
+    # V4: TREE keywords - branching structures with terminals (no outlet by default)
+    # These are vascular/perfusion networks where flow ends at terminal points
     tree_keywords = [
-        "tree", "branch", "bifurcat", "terminal", "tip", "dendritic",
-        "hierarchical", "fractal", "vascular", "network", "distribute"
+        "tree", "vascular", "perfusion", "terminal", "tip", "dendritic",
+        "hierarchical", "fractal", "distribute", "arterial", "venous",
+        "capillary", "vessel", "blood", "organ"
     ]
     
-    # V3: Priority order: backbone > path > loop > multi_tree > tree (default)
-    # Backbone is checked first because it's a specific design pattern
+    # V4: Priority order: backbone > path > loop > multi_tree > tree (default)
+    # PATH is checked before TREE because "branching" alone doesn't mean TREE
+    # User must explicitly mention vascular/perfusion/terminal for TREE
     for keyword in backbone_keywords:
         if keyword in intent_lower:
             return "backbone"
@@ -1095,155 +1131,243 @@ def detect_topology_kind(intent: str) -> str:
         if keyword in intent_lower:
             return "multi_tree"
     
-    # Default to tree for most vascular/organ structures
+    # V4: Check for explicit tree indicators
+    for keyword in tree_keywords:
+        if keyword in intent_lower:
+            return "tree"
+    
+    # V4: Default to tree for most vascular/organ structures
+    # But if user mentions "branch" without other context, still default to tree
+    if "branch" in intent_lower or "bifurcat" in intent_lower:
+        return "tree"
+    
     return "tree"
 
 
 # =============================================================================
-# Topology-Specific Question Sets (Minimum Viable Spec + Adaptive Modules)
+# V4: Topology-Specific Question Sets (Minimal Viable Spec + Adaptive Modules)
 # =============================================================================
 # 
-# These question sets implement the "Minimum Viable Spec" approach:
-# - PATH: Simple inlet→outlet channel (5-7 questions total)
-# - TREE: Branching network with terminals (5-8 questions total)
-# - LOOP: Looping/recirculating structure
-# - MULTI_TREE: Multiple independent trees
+# These question sets implement the V4 "Minimal Viable Spec" (MVS) approach:
 #
-# Key principles:
+# Two-Layer Architecture:
+# - Layer A (MVS): Topology-dependent required fields for generation
+# - Layer B: Adaptive modules that only activate when intent requires them
+#
+# Key V4 Principles:
 # 1. Topology confirmation is FIRST (gates all subsequent questions)
-# 2. Domain dimensions are explicit (not hidden behind "use defaults?")
-# 3. Ports are first-class (inlet AND outlet for path topology)
-# 4. Embedding questions only when needed (with print-resolution proxy)
-# 5. "Sufficient-to-generate" threshold per topology
+# 2. Domain dimensions are explicit first, defaults only as fallback
+# 3. Ports are first-class and topology-dependent:
+#    - PATH: inlet + outlet REQUIRED (can include branching)
+#    - TREE: inlet + terminal strategy (no outlet by default)
+#    - BACKBONE: inlet + outlet + leg configuration
+# 4. Branching for PATH is asked AFTER topology is confirmed as channel/path
+# 5. Embedding questions only when needed (with print-resolution proxy)
+# 6. "Ready to generate" threshold per topology (MVS completeness)
+# 7. Every question accepts: direct answer, meta question, correction, uncertainty
+#
+# Topology-Specific Ready Thresholds:
+# - PATH ready: domain + inlet + outlet + routing
+# - TREE ready: domain + inlet + terminal strategy + min radius
+# - BACKBONE ready: domain + leg config + ports
+# - LOOP ready: domain + inlet + outlet + loop config
+# - MULTI_TREE ready: domain + tree count + per-tree settings
 
 TOPOLOGY_QUESTION_VARIANTS = {
     "path": {
-        # PATH topology: Simple inlet→outlet channel
-        # Required: topology, domain, inlet, outlet, route
-        # Optional: clearance, embedding
+        # =================================================================
+        # PATH topology: Channel/tube connecting inlet to outlet
+        # V4: Can include branching (defined as channel/path first)
+        # =================================================================
+        # MVS Required: topology, domain, inlet, outlet, routing
+        # Adaptive: branching, constraints, embedding
+        # Ready when: domain + inlet + outlet + routing defined
         "A": {
-            "name": "1. Topology Confirmation",
+            "name": "0. Topology Confirmation",
             "questions": [
-                ("topology_kind", "Is this a simple channel connecting inlet to outlet (path), or a branching network (tree)?", "path"),
+                ("topology_kind", "Is this best described as:\n  1. a single channel/path (can include branching)\n  2. a branching tree network (terminals, no outlet)\n  3. multiple channels\n  4. multiple branching networks\nEnter 1/2/3/4 or path/tree/multi_path/multi_tree:", "path"),
             ],
         },
         "B": {
-            "name": "2. Domain Dimensions",
+            "name": "1. Domain Dimensions",
             "questions": [
-                ("domain_dims", "What are the box dimensions (X Y Z) and units? Example: '20 60 30 mm'", "20 60 30 mm"),
-                ("boundary_margin", "Boundary margin - how far should channels stay from walls? (mm)", "1"),
+                ("domain_dims", "Domain dimensions + units (X Y Z), e.g. '30 60 20 mm':", None),
             ],
         },
         "C": {
-            "name": "3. Inlet Definition",
+            "name": "2. Inlet Definition",
             "questions": [
-                ("inlet_face", "Which face is the inlet on? (x_min/x_max/y_min/y_max/z_min/z_max)", "x_min"),
-                ("inlet_position", "Inlet position on face: center, or specify offsets (u,v in mm)?", "center"),
+                ("num_inlets", "How many inlets?", "1"),
+                ("inlet_face", "Inlet face (x_min/x_max/y_min/y_max/z_min/z_max):", "x_min"),
+                ("inlet_position", "Inlet position: center or offset (u,v in mm)?", "center"),
                 ("inlet_radius", "Inlet radius (mm)?", "2.0"),
             ],
         },
         "C2": {
-            "name": "4. Outlet Definition",
+            "name": "3. Outlet Definition (REQUIRED for PATH)",
             "questions": [
-                ("outlet_face", "Which face is the outlet on? (x_min/x_max/y_min/y_max/z_min/z_max)", "x_max"),
-                ("outlet_position", "Outlet position on face: center, or specify offsets (u,v in mm)?", "center"),
+                ("num_outlets", "How many outlets?", "1"),
+                ("outlet_face", "Outlet face (x_min/x_max/y_min/y_max/z_min/z_max):", "x_max"),
+                ("outlet_position", "Outlet position: center or offset (u,v in mm)?", "center"),
                 ("outlet_radius", "Outlet radius (mm)? (default = inlet radius)", None),
             ],
         },
         "D": {
-            "name": "5. Path Routing",
+            "name": "4. Path Routing",
             "questions": [
-                ("route_type", "How should the path route? (straight/single_bend/s_curve/via_points)", "straight"),
-                ("bend_radius", "If curved: minimum bend radius (mm)? (or 'auto')", "auto"),
+                ("route_type", "Route type: straight / single_bend / smooth_curve / via_points?", "straight"),
             ],
         },
-        "F": {
-            "name": "6. Constraints (Optional)",
+        "D2": {
+            "name": "4b. Routing Details (if not straight)",
             "questions": [
-                ("min_clearance", "Minimum clearance from other structures (mm)?", "1"),
-                ("wall_thickness", "Wall thickness for hollow channels (mm)? (or 'solid')", "solid"),
+                ("bend_radius", "Minimum bend radius (mm)? (or 'auto')", "auto"),
+            ],
+            "condition": "route_type != 'straight'",
+        },
+        "E": {
+            "name": "5. Branching (Optional for PATH)",
+            "questions": [
+                ("path_branching", "Does this channel include any branching? (yes/no)", "no"),
+            ],
+        },
+        "E2": {
+            "name": "5b. Branching Details (if branching)",
+            "questions": [
+                ("branch_count", "Number of branches?", "2"),
+                ("branch_style", "Branching style: symmetric / asymmetric?", "symmetric"),
+            ],
+            "condition": "path_branching == 'yes'",
+        },
+        "F": {
+            "name": "6. Constraints",
+            "questions": [
+                ("min_clearance", "Minimum clearance from walls/other structures (mm)?", "1"),
+                ("boundary_margin", "Boundary margin from domain walls (mm)?", "1"),
             ],
         },
         "H": {
             "name": "7. Embedding (Optional)",
             "questions": [
-                ("embed_requested", "Do you want to embed this into a voxel domain for 3D printing? (yes/no)", "no"),
-                ("min_feature_size", "If embedding: minimum printable feature size / nozzle diameter (mm)?", "0.4"),
-                ("voxel_pitch_confirm", "Suggested voxel pitch based on feature size. Accept? (yes/custom)", "yes"),
+                ("embed_requested", "Do you want embedded block STL (solid with internal voids)? (yes/no)", "no"),
             ],
         },
+        "H2": {
+            "name": "7b. Embedding Details (if embedding)",
+            "questions": [
+                ("min_feature_size", "Minimum printable feature size / nozzle diameter (mm)?", "0.4"),
+                ("voxel_pitch_confirm", "Suggested voxel pitch: {suggested_pitch:.3f}mm. Accept? (yes/custom)", "yes"),
+            ],
+            "condition": "embed_requested == 'yes'",
+        },
         "G": {
-            "name": "8. Acceptance Criteria",
+            "name": "8. Output Targets",
             "questions": [
                 ("watertight_required", "Require watertight mesh?", "yes"),
             ],
         },
     },
     "tree": {
-        # TREE topology: Branching network with terminals
-        # Required: topology, domain, inlet, terminal mode, branching
-        # Optional: outlet, embedding
+        # =================================================================
+        # TREE topology: Branching network with terminals (no outlet by default)
+        # V4: Uses terminal strategy instead of outlet ports
+        # =================================================================
+        # MVS Required: topology, domain, inlet, terminal strategy, min radius
+        # Adaptive: outlet (only if explicitly requested), embedding
+        # Ready when: domain + inlet + terminal strategy + min radius defined
         "A": {
-            "name": "1. Topology Confirmation",
+            "name": "0. Topology Confirmation",
             "questions": [
-                ("topology_kind", "Is this a branching tree network? (tree/path)", "tree"),
+                ("topology_kind", "Is this best described as:\n  1. a single channel/path (can include branching)\n  2. a branching tree network (terminals, no outlet)\n  3. multiple channels\n  4. multiple branching networks\nEnter 1/2/3/4 or path/tree/multi_path/multi_tree:", "tree"),
             ],
         },
         "B": {
-            "name": "2. Domain Dimensions",
+            "name": "1. Domain Dimensions",
             "questions": [
-                ("domain_dims", "What are the box dimensions (X Y Z) and units? Example: '20 60 30 mm'", "20 60 30 mm"),
-                ("boundary_margin", "Boundary margin - how far should vessels stay from walls? (mm)", "1"),
+                ("domain_dims", "Domain dimensions + units (X Y Z), e.g. '30 60 20 mm':", None),
             ],
         },
         "C": {
-            "name": "3. Inlet Definition",
+            "name": "2. Inlet Definition",
             "questions": [
-                ("inlet_face", "Which face is the inlet on? (x_min/x_max/y_min/y_max/z_min/z_max)", "x_min"),
-                ("inlet_position", "Inlet position on face: center, or specify offsets (u,v in mm)?", "center"),
+                ("num_inlets", "How many inlets?", "1"),
+                ("inlet_face", "Inlet face (x_min/x_max/y_min/y_max/z_min/z_max):", "x_min"),
+                ("inlet_position", "Inlet position: center or offset (u,v in mm)?", "center"),
                 ("inlet_radius", "Inlet radius (mm)?", "2.0"),
             ],
         },
         "C2": {
-            "name": "4. Outlet/Terminal Mode",
+            "name": "3. Terminal Strategy",
             "questions": [
-                ("terminal_mode", "Is this: (a) inlet→many terminals (no outlet port), or (b) inlet→outlet with branches?", "a"),
-                ("outlet_face", "If outlet port: which face? (x_min/x_max/y_min/y_max/z_min/z_max, or 'none')", "none"),
-                ("outlet_radius", "If outlet port: outlet radius (mm)?", None),
+                ("terminal_mode", "Terminal mode:\n  (a) target terminal count\n  (b) density bucket (sparse/moderate/dense)\n  (c) region-based perfusion goals\nEnter a/b/c:", "a"),
             ],
         },
-        "D": {
-            "name": "5. Terminal/Branching Configuration",
+        "C3": {
+            "name": "3b. Terminal Count (if mode a)",
             "questions": [
-                ("target_terminals", "Target terminal count? (or 'sparse'/'medium'/'dense')", "medium"),
+                ("target_terminals", "Target terminal count?", "100"),
+            ],
+            "condition": "terminal_mode == 'a'",
+        },
+        "C4": {
+            "name": "3c. Terminal Density (if mode b)",
+            "questions": [
+                ("terminal_density", "Terminal density: sparse / moderate / dense?", "moderate"),
+            ],
+            "condition": "terminal_mode == 'b'",
+        },
+        "C5": {
+            "name": "3d. Outlet Port (Optional for TREE)",
+            "questions": [
+                ("has_outlet", "Do you want an explicit outlet port? (yes/no)", "no"),
+            ],
+        },
+        "C6": {
+            "name": "3e. Outlet Definition (if outlet requested)",
+            "questions": [
+                ("outlet_face", "Outlet face (x_min/x_max/y_min/y_max/z_min/z_max):", "x_max"),
+                ("outlet_radius", "Outlet radius (mm)?", "2.0"),
+            ],
+            "condition": "has_outlet == 'yes'",
+        },
+        "D": {
+            "name": "4. Branching Configuration",
+            "questions": [
                 ("max_depth", "Maximum branching depth (levels)?", "6"),
-                ("branching_style", "Branching style: balanced, aggressive_early, or space_filling?", "balanced"),
+                ("branching_style", "Branching style: balanced / aggressive_early / space_filling?", "balanced"),
             ],
         },
         "E": {
-            "name": "6. Geometry",
+            "name": "5. Geometry",
             "questions": [
-                ("tapering", "Radius tapering profile? (murray/linear/fixed)", "murray"),
+                ("tapering", "Radius tapering profile: murray / linear / fixed?", "murray"),
                 ("min_radius", "Minimum terminal radius (mm)?", "0.1"),
             ],
         },
         "F": {
-            "name": "7. Constraints",
+            "name": "6. Constraints",
             "questions": [
                 ("ban_self_intersection", "Hard ban on self-intersections?", "yes"),
                 ("min_clearance", "Minimum clearance between vessels (mm)?", "0.5"),
+                ("boundary_margin", "Boundary margin from domain walls (mm)?", "1"),
             ],
         },
         "H": {
-            "name": "8. Embedding (Optional)",
+            "name": "7. Embedding (Optional)",
             "questions": [
-                ("embed_requested", "Do you want to embed this into a voxel domain for 3D printing? (yes/no)", "no"),
-                ("min_feature_size", "If embedding: minimum printable feature size / nozzle diameter (mm)?", "0.4"),
-                ("voxel_pitch_confirm", "Suggested voxel pitch based on feature size. Accept? (yes/custom)", "yes"),
+                ("embed_requested", "Do you want embedded block STL (solid with internal voids)? (yes/no)", "no"),
             ],
         },
+        "H2": {
+            "name": "7b. Embedding Details (if embedding)",
+            "questions": [
+                ("min_feature_size", "Minimum printable feature size / nozzle diameter (mm)?", "0.4"),
+                ("voxel_pitch_confirm", "Suggested voxel pitch: {suggested_pitch:.3f}mm. Accept? (yes/custom)", "yes"),
+            ],
+            "condition": "embed_requested == 'yes'",
+        },
         "G": {
-            "name": "9. Acceptance Criteria",
+            "name": "8. Acceptance Criteria",
             "questions": [
                 ("terminal_range", "Acceptable terminal count range? (e.g., 50-100, or 'any')", "any"),
                 ("watertight_required", "Require watertight mesh?", "yes"),
@@ -1251,35 +1375,45 @@ TOPOLOGY_QUESTION_VARIANTS = {
         },
     },
     "loop": {
+        # =================================================================
         # LOOP topology: Looping/recirculating structure
+        # =================================================================
+        # MVS Required: topology, domain, inlet, outlet, loop config
+        # Ready when: domain + inlet + outlet + loop config defined
         "A": {
-            "name": "1. Topology Confirmation",
+            "name": "0. Topology Confirmation",
             "questions": [
-                ("topology_kind", "Is this a looping/recirculating network?", "loop"),
+                ("topology_kind", "Is this a looping/recirculating network? (loop/path/tree)", "loop"),
             ],
         },
         "B": {
-            "name": "2. Domain Dimensions",
+            "name": "1. Domain Dimensions",
             "questions": [
-                ("domain_dims", "What are the box dimensions (X Y Z) and units? Example: '20 60 30 mm'", "20 60 30 mm"),
-                ("boundary_margin", "Boundary margin (mm)?", "1"),
+                ("domain_dims", "Domain dimensions + units (X Y Z), e.g. '30 60 20 mm':", None),
             ],
         },
         "C": {
-            "name": "3. Ports",
+            "name": "2. Ports",
             "questions": [
-                ("inlet_face", "Inlet face? (x_min/x_max/y_min/y_max/z_min/z_max)", "x_min"),
+                ("inlet_face", "Inlet face (x_min/x_max/y_min/y_max/z_min/z_max):", "x_min"),
                 ("inlet_radius", "Inlet radius (mm)?", "2.0"),
-                ("outlet_face", "Outlet face?", "x_max"),
+                ("outlet_face", "Outlet face:", "x_max"),
                 ("outlet_radius", "Outlet radius (mm)?", "2.0"),
             ],
         },
         "D": {
-            "name": "4. Loop Configuration",
+            "name": "3. Loop Configuration",
             "questions": [
                 ("loop_count", "Number of loops/anastomoses?", "1"),
-                ("loop_style", "Loop style: single_loop, mesh, or ladder?", "single_loop"),
+                ("loop_style", "Loop style: single_loop / mesh / ladder?", "single_loop"),
                 ("recirculation", "Allow recirculation paths?", "yes"),
+            ],
+        },
+        "F": {
+            "name": "4. Constraints",
+            "questions": [
+                ("min_clearance", "Minimum clearance (mm)?", "1"),
+                ("boundary_margin", "Boundary margin from domain walls (mm)?", "1"),
             ],
         },
         "G": {
@@ -1290,111 +1424,257 @@ TOPOLOGY_QUESTION_VARIANTS = {
         },
     },
     "multi_tree": {
+        # =================================================================
         # MULTI_TREE topology: Multiple independent trees
+        # =================================================================
+        # MVS Required: topology, domain, tree count, per-tree settings
+        # Ready when: domain + tree count + per-tree settings defined
         "A": {
-            "name": "1. Topology Confirmation",
+            "name": "0. Topology Confirmation",
             "questions": [
-                ("topology_kind", "Multiple independent branching trees?", "multi_tree"),
+                ("topology_kind", "Multiple independent branching trees? (multi_tree/tree)", "multi_tree"),
             ],
         },
         "B": {
-            "name": "2. Domain Dimensions",
+            "name": "1. Domain Dimensions",
             "questions": [
-                ("domain_dims", "What are the box dimensions (X Y Z) and units? Example: '20 60 30 mm'", "20 60 30 mm"),
-                ("boundary_margin", "Boundary margin (mm)?", "1"),
+                ("domain_dims", "Domain dimensions + units (X Y Z), e.g. '30 60 20 mm':", None),
             ],
         },
         "C": {
-            "name": "3. Tree Configuration",
+            "name": "2. Tree Configuration",
             "questions": [
                 ("tree_count", "Number of independent trees?", "2"),
-                ("shared_inlet", "Do trees share an inlet?", "no"),
+                ("shared_inlet", "Do trees share an inlet? (yes/no)", "no"),
             ],
         },
         "D": {
-            "name": "4. Per-Tree Settings",
+            "name": "3. Per-Tree Settings",
             "questions": [
                 ("target_terminals_per_tree", "Target terminals per tree?", "50"),
                 ("max_depth", "Maximum depth per tree?", "5"),
                 ("inlet_radius", "Inlet radius per tree (mm)?", "2.0"),
             ],
         },
+        "E": {
+            "name": "4. Geometry",
+            "questions": [
+                ("tapering", "Radius tapering profile: murray / linear / fixed?", "murray"),
+                ("min_radius", "Minimum terminal radius (mm)?", "0.1"),
+            ],
+        },
+        "F": {
+            "name": "5. Constraints",
+            "questions": [
+                ("min_clearance", "Minimum clearance between trees (mm)?", "1"),
+                ("boundary_margin", "Boundary margin from domain walls (mm)?", "1"),
+            ],
+        },
         "G": {
-            "name": "5. Acceptance Criteria",
+            "name": "6. Acceptance Criteria",
             "questions": [
                 ("watertight_required", "Require watertight mesh?", "yes"),
             ],
         },
     },
-    # V3: BACKBONE topology - Parallel leg structures (e.g., 3-leg backbone)
-    # This is a specific design pattern that deserves targeted questions
     "backbone": {
+        # =================================================================
         # BACKBONE topology: Parallel leg structure with manifold connections
-        # Required: topology, domain, leg count, leg spacing, ports
-        # Optional: leg connections, embedding
+        # V4: Triggered by "3-leg", "parallel backbone", "backbone" in intent
+        # =================================================================
+        # MVS Required: topology, domain, leg config, ports
+        # Adaptive: leg connections, embedding
+        # Ready when: domain + leg config + ports defined
         "A": {
-            "name": "1. Topology Confirmation",
+            "name": "0. Topology Confirmation",
             "questions": [
                 ("topology_kind", "Is this a parallel backbone/manifold structure with multiple legs? (backbone/path/tree)", "backbone"),
             ],
         },
         "B": {
-            "name": "2. Domain Dimensions",
+            "name": "1. Domain Dimensions",
             "questions": [
-                ("domain_dims", "What are the box dimensions (X Y Z) and units? Example: '30 60 20 mm'", "30 60 20 mm"),
-                ("boundary_margin", "Boundary margin - how far should channels stay from walls? (mm)", "1"),
+                ("domain_dims", "Domain dimensions + units (X Y Z), e.g. '30 60 20 mm':", None),
             ],
         },
         "C": {
-            "name": "3. Backbone Configuration",
+            "name": "2. Backbone Configuration",
             "questions": [
-                ("backbone_axis", "Backbone axis: along which axis do legs run? (x/y/z, or 'longest' for longest axis)", "longest"),
+                ("backbone_axis", "Backbone axis: along which axis do legs run? (x/y/z, or 'longest')", "longest"),
                 ("leg_count", "Number of parallel legs?", "3"),
-                ("leg_spacing", "Leg spacing: equal spacing? If yes, how far apart (mm)? (or 'equal')", "equal"),
-                ("leg_connection", "Do legs connect at ends? (ladder/u_shape/separate)", "separate"),
+                ("leg_spacing", "Leg spacing: 'equal' or specific distance (mm)?", "equal"),
+                ("leg_connection", "Leg connection at ends: ladder / u_shape / separate?", "separate"),
             ],
         },
         "C2": {
-            "name": "4. Port Configuration",
+            "name": "3. Port Configuration",
             "questions": [
-                ("port_style", "Port connection style: manifold (all legs share inlet/outlet) or individual (each leg has own port)?", "manifold"),
-                ("inlet_face", "Inlet face? (x_min/x_max/y_min/y_max/z_min/z_max)", "x_min"),
+                ("port_style", "Port style: manifold (shared inlet/outlet) or individual (per-leg ports)?", "manifold"),
+                ("inlet_face", "Inlet face (x_min/x_max/y_min/y_max/z_min/z_max):", "x_min"),
                 ("inlet_radius", "Inlet radius (mm)?", "2.0"),
-                ("outlet_face", "Outlet face? (x_min/x_max/y_min/y_max/z_min/z_max)", "x_max"),
+                ("outlet_face", "Outlet face:", "x_max"),
                 ("outlet_radius", "Outlet radius (mm)? (default = inlet radius)", None),
             ],
         },
         "D": {
-            "name": "5. Leg Geometry",
+            "name": "4. Leg Geometry",
             "questions": [
                 ("leg_radius", "Leg channel radius (mm)?", "1.5"),
-                ("route_type", "Leg routing: straight or curved?", "straight"),
-                ("bend_radius", "If curved: minimum bend radius (mm)? (or 'auto')", "auto"),
+                ("route_type", "Leg routing: straight / curved?", "straight"),
             ],
         },
+        "D2": {
+            "name": "4b. Leg Routing Details (if curved)",
+            "questions": [
+                ("bend_radius", "Minimum bend radius (mm)? (or 'auto')", "auto"),
+            ],
+            "condition": "route_type == 'curved'",
+        },
         "F": {
-            "name": "6. Constraints",
+            "name": "5. Constraints",
             "questions": [
                 ("min_clearance", "Minimum clearance between legs (mm)?", "1"),
-                ("wall_thickness", "Wall thickness for hollow channels (mm)? (or 'solid')", "solid"),
+                ("boundary_margin", "Boundary margin from domain walls (mm)?", "1"),
             ],
         },
         "H": {
-            "name": "7. Embedding (Optional)",
+            "name": "6. Embedding (Optional)",
             "questions": [
-                ("embed_requested", "Do you want to embed this into a voxel domain for 3D printing? (yes/no)", "no"),
-                ("min_feature_size", "If embedding: minimum printable feature size / nozzle diameter (mm)?", "0.4"),
-                ("voxel_pitch_confirm", "Suggested voxel pitch based on feature size. Accept? (yes/custom)", "yes"),
+                ("embed_requested", "Do you want embedded block STL (solid with internal voids)? (yes/no)", "no"),
             ],
         },
+        "H2": {
+            "name": "6b. Embedding Details (if embedding)",
+            "questions": [
+                ("min_feature_size", "Minimum printable feature size / nozzle diameter (mm)?", "0.4"),
+                ("voxel_pitch_confirm", "Suggested voxel pitch: {suggested_pitch:.3f}mm. Accept? (yes/custom)", "yes"),
+            ],
+            "condition": "embed_requested == 'yes'",
+        },
         "G": {
-            "name": "8. Acceptance Criteria",
+            "name": "7. Acceptance Criteria",
             "questions": [
                 ("watertight_required", "Require watertight mesh?", "yes"),
             ],
         },
     },
 }
+
+
+# =============================================================================
+# V4: Minimal Viable Spec (MVS) Completeness Checker
+# =============================================================================
+# 
+# This function checks if the requirements are complete enough to generate
+# based on the topology-specific ready thresholds.
+
+def check_mvs_completeness(requirements: 'ObjectRequirements', topology_kind: str) -> Tuple[bool, List[str]]:
+    """
+    V4: Check if Minimal Viable Spec (MVS) is complete for the given topology.
+    
+    Returns (is_complete, missing_fields) where:
+    - is_complete: True if ready to generate
+    - missing_fields: List of field names that are missing/invalid
+    
+    Topology-Specific Ready Thresholds:
+    - PATH ready: domain + inlet + outlet + routing
+    - TREE ready: domain + inlet + terminal strategy + min radius
+    - BACKBONE ready: domain + leg config + ports
+    - LOOP ready: domain + inlet + outlet + loop config
+    - MULTI_TREE ready: domain + tree count + per-tree settings
+    """
+    missing = []
+    
+    if not requirements.domain.size_m:
+        missing.append("domain_dims")
+    
+    if not requirements.inlets_outlets.inlets:
+        missing.append("inlet")
+    
+    if topology_kind == "path":
+        if not requirements.inlets_outlets.outlets:
+            missing.append("outlet (REQUIRED for PATH topology)")
+    
+    elif topology_kind == "tree":
+        has_terminal_strategy = (
+            requirements.topology.target_terminals is not None or
+            (hasattr(requirements.topology, 'terminal_mode') and requirements.topology.terminal_mode)
+        )
+        if not has_terminal_strategy:
+            missing.append("terminal_strategy")
+        if requirements.constraints.min_radius_m is None:
+            missing.append("min_radius")
+    
+    elif topology_kind == "backbone":
+        if not hasattr(requirements.topology, 'leg_count') or not requirements.topology.leg_count:
+            missing.append("leg_count")
+        if not requirements.inlets_outlets.outlets:
+            missing.append("outlet (REQUIRED for BACKBONE topology)")
+    
+    elif topology_kind == "loop":
+        if not requirements.inlets_outlets.outlets:
+            missing.append("outlet (REQUIRED for LOOP topology)")
+        if not hasattr(requirements.topology, 'loop_count') or not requirements.topology.loop_count:
+            missing.append("loop_count")
+    
+    elif topology_kind == "multi_tree":
+        if not hasattr(requirements.topology, 'tree_count') or not requirements.topology.tree_count:
+            missing.append("tree_count")
+    
+    return len(missing) == 0, missing
+
+
+def validate_pre_generation(requirements: 'ObjectRequirements', topology_kind: str) -> Tuple[bool, List[str]]:
+    """
+    V4: Run pre-generation validation checks.
+    
+    Before saying "Ready for generation":
+    1. Verify MVS completeness for selected topology
+    2. Validate spec object (units, required fields)
+    3. Confirm ports/outlets logic matches topology
+    4. Compute basic feasibility checks:
+       - channel radius + clearance fits within domain
+       - boundary margin not violated
+       - outlet exists for PATH
+    
+    Returns (is_valid, issues) where:
+    - is_valid: True if all checks pass
+    - issues: List of specific issues found
+    """
+    issues = []
+    
+    mvs_complete, mvs_missing = check_mvs_completeness(requirements, topology_kind)
+    if not mvs_complete:
+        for field in mvs_missing:
+            issues.append(f"Missing required field: {field}")
+    
+    if topology_kind == "path" and not requirements.inlets_outlets.outlets:
+        issues.append("PATH topology requires at least one outlet port")
+    
+    if requirements.domain.size_m:
+        domain_min = min(requirements.domain.size_m)
+        
+        if requirements.inlets_outlets.inlets:
+            for inlet in requirements.inlets_outlets.inlets:
+                if inlet.radius_m and inlet.radius_m > domain_min * 0.4:
+                    issues.append(f"Inlet radius ({inlet.radius_m*1000:.2f}mm) may be too large for domain")
+        
+        if requirements.constraints.min_clearance_m:
+            if requirements.constraints.min_clearance_m > domain_min * 0.3:
+                issues.append(f"Clearance ({requirements.constraints.min_clearance_m*1000:.2f}mm) may be too large for domain")
+        
+        if hasattr(requirements.constraints, 'boundary_margin_m') and requirements.constraints.boundary_margin_m:
+            if requirements.constraints.boundary_margin_m > domain_min * 0.2:
+                issues.append(f"Boundary margin ({requirements.constraints.boundary_margin_m*1000:.2f}mm) may be too large for domain")
+    
+    if (requirements.constraints.min_radius_m and requirements.embedding_export.voxel_pitch_m and
+        requirements.constraints.min_radius_m < requirements.embedding_export.voxel_pitch_m):
+        issues.append(
+            f"Min radius ({requirements.constraints.min_radius_m*1000:.2f}mm) smaller than "
+            f"voxel pitch ({requirements.embedding_export.voxel_pitch_m*1000:.2f}mm) - channels may not resolve"
+        )
+    
+    return len(issues) == 0, issues
 
 
 def get_tailored_questions(intent: str, base_questions: dict = None) -> dict:
@@ -2476,13 +2756,28 @@ def run_rule_based_capture(
     verbose: bool = True
 ) -> Tuple[ObjectRequirements, Dict[str, Any]]:
     """
-    Run the rule-based requirements capture loop.
+    V4: Run the rule-based requirements capture loop with topology-first gating.
     
-    This replaces the fixed question groups with an adaptive loop that:
-    1. Parses user intent to extract explicit values
-    2. Runs validators (missing, ambiguity, conflicts)
-    3. Generates minimal questions
-    4. Repeats until generation-ready
+    This implements the V4 "Minimal Viable Spec" (MVS) approach:
+    
+    Two-Layer Architecture:
+    - Layer A (MVS): Topology-dependent required fields for generation
+    - Layer B: Adaptive modules that only activate when intent requires them
+    
+    V4 Flow:
+    1. Detect topology kind from intent (gates all subsequent questions)
+    2. Parse user intent to extract explicit values
+    3. Run validators (missing, ambiguity, conflicts)
+    4. Generate minimal questions based on topology
+    5. Validate answers immediately (re-ask on invalid)
+    6. Run pre-generation validation before declaring ready
+    7. Repeat until MVS complete for topology
+    
+    Interaction Rules:
+    - Every question accepts: direct answer, meta question, correction, uncertainty
+    - If meta question: answer it, re-ask same question, don't advance state
+    - If invalid/unparseable: show expected format, re-ask immediately
+    - Pre-generation validation catches issues before generation
     
     The loop includes safeguards against infinite loops:
     - Tracks previously asked question sets to detect repetition
@@ -2676,6 +2971,23 @@ def run_rule_based_capture(
             if prop.field not in collected_answers:
                 _apply_default_to_requirements(requirements, prop)
                 collected_answers[prop.field] = prop.value
+    
+    topology_kind = requirements.topology.kind or detect_topology_kind(intent)
+    is_valid, issues = validate_pre_generation(requirements, topology_kind)
+    
+    if not is_valid:
+        if verbose:
+            print("\n" + "=" * 50)
+            print("  PRE-GENERATION VALIDATION FAILED")
+            print("=" * 50)
+            print("\nThe following issues were found:")
+            for issue in issues:
+                print(f"  - {issue}")
+            print("\nPlease address these issues before generation.")
+            print("=" * 50)
+    else:
+        if verbose:
+            print("\n[V4] Pre-generation validation passed. Ready for generation.")
     
     return requirements, collected_answers
 
@@ -3218,15 +3530,40 @@ def _apply_placement_to_outlets(req: ObjectRequirements, placement: str) -> None
 # Main Workflow Class
 # =============================================================================
 
-class SingleAgentOrganGeneratorV3:
+class SingleAgentOrganGeneratorV4:
     """
-    Single Agent Organ Generator V3 - Stateful workflow for organ structure generation.
+    Single Agent Organ Generator V4 - Topology-First Deterministic Questioning.
     
     This workflow implements an interactive, LLM-driven process for generating
     organ vascular structures with per-object folder structure, schema-gated
     requirements capture, and ability to pull context from previous attempts.
     
-    V3 Features:
+    V4 Features (Two-Layer Architecture):
+    - Layer A (MVS): Minimal Viable Spec - topology-dependent required fields
+    - Layer B: Adaptive Modules - only activate when intent requires them
+    
+    V4 Topology-First Flow:
+    - Step 0: Confirm topology kind (FIRST question, gates all others)
+    - Step 1: Domain dimensions (explicit first, defaults fallback)
+    - Step 2: Ports (topology-dependent: PATH requires outlet, TREE uses terminals)
+    - Step 3: Branching (for PATH, asked AFTER topology confirmed)
+    - Step 4: Routing (PATH only, if not straight)
+    - Step 5: Embedding (conditional, with print-resolution proxy)
+    
+    V4 Key Changes from V3:
+    - PATH topology can include branching (defined as channel/path first)
+    - PATH requires outlet port (mandatory)
+    - TREE uses terminal strategy (not outlet ports by default)
+    - Pre-generation validation ensures MVS completeness
+    - Never declares "ready" until compile+artifact checks pass
+    
+    V4 Interaction Rules:
+    - Every question accepts: direct answer, meta question, correction, uncertainty
+    - If meta question: answer it, re-ask same question, don't advance state
+    - If invalid/unparseable: show expected format, re-ask immediately
+    - Pre-generation validation catches issues before generation
+    
+    V3 Features (retained):
     - Agent dialogue system (Understand -> Plan -> Ask)
     - Dynamic schema with activatable modules
     - LLM healthcheck and circuit breaker
@@ -3236,8 +3573,8 @@ class SingleAgentOrganGeneratorV3:
     - Topology override escape mechanism
     """
     
-    WORKFLOW_NAME = "Single Agent Organ Generator V3"
-    WORKFLOW_VERSION = "3.0.0"
+    WORKFLOW_NAME = "Single Agent Organ Generator V4"
+    WORKFLOW_VERSION = "4.0.0"
     
     def __init__(
         self,
@@ -5472,5 +5809,6 @@ def run_single_agent_workflow(
     return workflow.run()
 
 
-SingleAgentOrganGeneratorV1 = SingleAgentOrganGeneratorV3
-SingleAgentOrganGeneratorV2 = SingleAgentOrganGeneratorV3
+SingleAgentOrganGeneratorV1 = SingleAgentOrganGeneratorV4
+SingleAgentOrganGeneratorV2 = SingleAgentOrganGeneratorV4
+SingleAgentOrganGeneratorV3 = SingleAgentOrganGeneratorV4
