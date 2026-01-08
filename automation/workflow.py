@@ -1585,9 +1585,8 @@ def check_mvs_completeness(requirements: 'ObjectRequirements', topology_kind: st
     """
     missing = []
     
-    if not requirements.domain.size_m or requirements.domain.size_m == (0.02, 0.06, 0.03):
-        if not requirements.domain.size_m:
-            missing.append("domain_dims")
+    if not requirements.domain.size_m:
+        missing.append("domain_dims")
     
     if not requirements.inlets_outlets.inlets:
         missing.append("inlet")
@@ -1595,13 +1594,14 @@ def check_mvs_completeness(requirements: 'ObjectRequirements', topology_kind: st
     if topology_kind == "path":
         if not requirements.inlets_outlets.outlets:
             missing.append("outlet (REQUIRED for PATH topology)")
-        if not hasattr(requirements.geometry, 'route_type') or not requirements.geometry.route_type:
-            pass
     
     elif topology_kind == "tree":
-        if requirements.topology.target_terminals is None:
-            if not hasattr(requirements.topology, 'terminal_mode') or not requirements.topology.terminal_mode:
-                missing.append("terminal_strategy")
+        has_terminal_strategy = (
+            requirements.topology.target_terminals is not None or
+            (hasattr(requirements.topology, 'terminal_mode') and requirements.topology.terminal_mode)
+        )
+        if not has_terminal_strategy:
+            missing.append("terminal_strategy")
         if requirements.constraints.min_radius_m is None:
             missing.append("min_radius")
     
@@ -1650,9 +1650,6 @@ def validate_pre_generation(requirements: 'ObjectRequirements', topology_kind: s
     
     if topology_kind == "path" and not requirements.inlets_outlets.outlets:
         issues.append("PATH topology requires at least one outlet port")
-    
-    if topology_kind == "tree" and requirements.inlets_outlets.outlets:
-        pass
     
     if requirements.domain.size_m:
         domain_min = min(requirements.domain.size_m)
