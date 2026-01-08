@@ -228,20 +228,78 @@ class ColonizationSpec:
         )
 
 
+# Topology kind type for explicit topology modes (Priority 4)
+TopologyKind = Literal["path", "tree", "loop", "multi_tree"]
+
+
 @dataclass
 class TreeSpec:
-    """Single tree specification."""
+    """Single tree specification.
+    
+    Parameters
+    ----------
+    inlets : List[InletSpec]
+        List of inlet specifications
+    outlets : List[OutletSpec]
+        List of outlet specifications
+    colonization : ColonizationSpec
+        Space colonization parameters
+    topology_kind : TopologyKind, optional
+        Explicit topology mode. Determines required fields and validation rules:
+        - "path": Simple inlet->outlet channel. Requires exactly 1 inlet and 1 outlet.
+                  No branching, terminals=0.
+        - "tree": Branching tree structure. Requires inlet(s), terminal targets or
+                  density target, and branching constraints.
+        - "loop": Closed loop structure. Requires at least 2 connection points.
+        - "multi_tree": Multiple independent trees. Requires multiple inlets.
+        Default: None (auto-inferred from inlets/outlets configuration)
+    terminal_count : int, optional
+        Target number of terminal nodes (for "tree" topology)
+    terminal_density : float, optional
+        Target terminal density per unit volume (for "tree" topology)
+    """
     
     inlets: List[InletSpec]
     outlets: List[OutletSpec]
     colonization: ColonizationSpec
+    topology_kind: Optional[TopologyKind] = None
+    terminal_count: Optional[int] = None
+    terminal_density: Optional[float] = None
+    
+    def __post_init__(self):
+        """Validate topology-specific requirements."""
+        if self.topology_kind == "path":
+            if len(self.inlets) != 1:
+                raise ValueError("'path' topology requires exactly 1 inlet")
+            if len(self.outlets) != 1:
+                raise ValueError("'path' topology requires exactly 1 outlet")
+        elif self.topology_kind == "tree":
+            if len(self.inlets) == 0:
+                raise ValueError("'tree' topology requires at least 1 inlet")
+            if self.terminal_count is None and self.terminal_density is None:
+                # Warning only - don't raise error for backward compatibility
+                pass
+        elif self.topology_kind == "loop":
+            total_ports = len(self.inlets) + len(self.outlets)
+            if total_ports < 2:
+                raise ValueError("'loop' topology requires at least 2 connection points")
+        elif self.topology_kind == "multi_tree":
+            if len(self.inlets) < 2:
+                raise ValueError("'multi_tree' topology requires at least 2 inlets")
     
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        result = {
             "inlets": [inlet.to_dict() for inlet in self.inlets],
             "outlets": [outlet.to_dict() for outlet in self.outlets],
             "colonization": self.colonization.to_dict(),
         }
+        if self.topology_kind is not None:
+            result["topology_kind"] = self.topology_kind
+        if self.terminal_count is not None:
+            result["terminal_count"] = self.terminal_count
+        if self.terminal_density is not None:
+            result["terminal_density"] = self.terminal_density
+        return result
     
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> 'TreeSpec':
@@ -249,6 +307,9 @@ class TreeSpec:
             inlets=[InletSpec.from_dict(i) for i in d["inlets"]],
             outlets=[OutletSpec.from_dict(o) for o in d["outlets"]],
             colonization=ColonizationSpec.from_dict(d["colonization"]),
+            topology_kind=d.get("topology_kind"),
+            terminal_count=d.get("terminal_count"),
+            terminal_density=d.get("terminal_density"),
         )
     
     @staticmethod

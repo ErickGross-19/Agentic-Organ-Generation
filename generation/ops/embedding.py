@@ -126,6 +126,65 @@ def _compute_ellipsoid_mask_slicewise(
     return mask
 
 
+class VoxelBudgetExceededError(Exception):
+    """
+    Raised when the voxel grid would exceed the maximum allowed budget.
+    
+    This error provides diagnostic information about the grid size and
+    suggestions for reducing complexity.
+    """
+    
+    def __init__(
+        self,
+        requested_voxels: int,
+        max_voxels: int,
+        grid_shape: Tuple[int, int, int],
+        voxel_pitch: float,
+        suggested_pitch: float,
+    ):
+        self.requested_voxels = requested_voxels
+        self.max_voxels = max_voxels
+        self.grid_shape = grid_shape
+        self.voxel_pitch = voxel_pitch
+        self.suggested_pitch = suggested_pitch
+        
+        message = (
+            f"Voxel budget exceeded: {requested_voxels:,} voxels requested, "
+            f"max allowed is {max_voxels:,}.\n"
+            f"Grid shape: {grid_shape[0]} x {grid_shape[1]} x {grid_shape[2]}\n"
+            f"Current pitch: {voxel_pitch:.4g}m\n"
+            f"Suggested pitch: {suggested_pitch:.4g}m (to fit within budget)"
+        )
+        super().__init__(message)
+
+
+def _estimate_memory_bytes(grid_shape: Tuple[int, int, int]) -> int:
+    """
+    Estimate memory usage for voxel grid operations.
+    
+    Accounts for multiple boolean masks and intermediate arrays.
+    """
+    total_voxels = grid_shape[0] * grid_shape[1] * grid_shape[2]
+    # Estimate: ~5 boolean masks + some float arrays for marching cubes
+    return total_voxels * 5 + total_voxels * 8  # 5 bytes for masks + 8 for floats
+
+
+def _suggest_pitch_for_budget(
+    domain_size: np.ndarray,
+    max_voxels: int,
+    padding: int = 2,
+) -> float:
+    """
+    Suggest a voxel pitch that would fit within the budget.
+    """
+    # Total voxels = (size/pitch + 2*padding)^3 for each dimension
+    # Simplified: assume cubic domain, solve for pitch
+    avg_size = np.mean(domain_size)
+    # Approximate: (avg_size/pitch)^3 ≈ max_voxels
+    suggested_pitch = avg_size / (max_voxels ** (1/3))
+    return suggested_pitch
+
+
 def embed_tree_as_negative_space(
     tree_stl_path: Union[str, Path],
     domain: DomainSpec,
@@ -140,6 +199,8 @@ def embed_tree_as_negative_space(
     geometry_units: str = INTERNAL_UNIT,
     use_morphological_shell: bool = True,
     output_units: str = DEFAULT_OUTPUT_UNIT,
+    max_voxels: Optional[int] = None,
+    auto_adjust_pitch: bool = False,
 ) -> Dict[str, Optional[trimesh.Trimesh]]:
     """
     Embed a vascular tree STL mesh into a domain as negative space (void).
@@ -188,6 +249,16 @@ def embed_tree_as_negative_space(
         Units for the output meshes. Default: "mm"
         Supported: "m", "mm", "cm", "um"
         Internal meter values are scaled to this unit for output.
+    max_voxels : int, optional
+        Maximum allowed voxel count (nx * ny * nz). If the computed grid would
+        exceed this budget, behavior depends on auto_adjust_pitch:
+        - If auto_adjust_pitch=False (default): raises VoxelBudgetExceededError
+        - If auto_adjust_pitch=True: automatically increases pitch to fit budget
+        Typical values: 100_000_000 (100M) for workstations, 500_000_000 for servers.
+        Default: None (no limit)
+    auto_adjust_pitch : bool
+        If True and max_voxels is set, automatically increase voxel_pitch to fit
+        within the budget instead of raising an error. Default: False
     
     Returns
     -------
@@ -197,6 +268,13 @@ def embed_tree_as_negative_space(
         - 'void': trimesh.Trimesh of the void volume (if output_void=True)
         - 'shell': trimesh.Trimesh of shell around void (if output_shell=True)
         - 'metadata': dict with voxel grid info and statistics
+    
+    Raises
+    ------
+    VoxelBudgetExceededError
+        If max_voxels is set, auto_adjust_pitch is False, and the computed grid
+        would exceed the budget. The error includes diagnostic information and
+        a suggested pitch value.
     
     Examples
     --------
@@ -283,7 +361,46 @@ def embed_tree_as_negative_space(
     grid_shape_padded = grid_shape + 2 * padding
     domain_min_padded = domain_min - padding * voxel_pitch
     
+    # Voxel budget check (Priority 3: complexity safeguards)
+    total_voxels = int(np.prod(grid_shape_padded))
+    domain_size = domain_max - domain_min
+    original_pitch = voxel_pitch
+    pitch_was_adjusted = False
+    
+    if max_voxels is not None and total_voxels > max_voxels:
+        suggested_pitch = _suggest_pitch_for_budget(domain_size, max_voxels, padding)
+        
+        if auto_adjust_pitch:
+            # Automatically increase pitch to fit within budget
+            print(f"WARNING: Voxel budget exceeded ({total_voxels:,} > {max_voxels:,})")
+            print(f"  Auto-adjusting pitch from {voxel_pitch:.4g}m to {suggested_pitch:.4g}m")
+            voxel_pitch = suggested_pitch
+            pitch_was_adjusted = True
+            
+            # Recompute grid shape with new pitch
+            grid_shape = np.ceil((domain_max - domain_min) / voxel_pitch).astype(int)
+            grid_shape = np.maximum(grid_shape, 10)
+            grid_shape_padded = grid_shape + 2 * padding
+            domain_min_padded = domain_min - padding * voxel_pitch
+            total_voxels = int(np.prod(grid_shape_padded))
+            print(f"  New grid shape: {grid_shape_padded} ({total_voxels:,} voxels)")
+        else:
+            # Raise error with diagnostic information
+            raise VoxelBudgetExceededError(
+                requested_voxels=total_voxels,
+                max_voxels=max_voxels,
+                grid_shape=tuple(grid_shape_padded),
+                voxel_pitch=voxel_pitch,
+                suggested_pitch=suggested_pitch,
+            )
+    
+    # Estimate and report memory usage
+    estimated_memory = _estimate_memory_bytes(tuple(grid_shape_padded))
+    memory_gb = estimated_memory / (1024 ** 3)
+    
     print(f"Creating voxel grid: {grid_shape_padded} voxels (with {padding}-voxel padding)")
+    print(f"  Total voxels: {total_voxels:,}")
+    print(f"  Estimated memory: {memory_gb:.2f} GB")
     print(f"Domain bounds: {domain_min} to {domain_max}")
     print(f"Padded bounds: {domain_min_padded} to {domain_min_padded + grid_shape_padded * voxel_pitch}")
     print(f"Voxel pitch: {voxel_pitch}")
@@ -556,6 +673,9 @@ def embed_tree_as_negative_space(
     result['metadata'] = {
         'voxel_pitch': voxel_pitch,
         'grid_shape': grid_shape_padded.tolist(),
+        'total_voxels': total_voxels,
+        'estimated_memory_bytes': estimated_memory,
+        'estimated_memory_gb': memory_gb,
         'domain_bounds': {
             'min': domain_min.tolist(),
             'max': domain_max.tolist(),
@@ -577,6 +697,13 @@ def embed_tree_as_negative_space(
         'dilation_voxels': dilation_voxels,
         'smoothing_iters': smoothing_iters,
         'output_units': output_units,
+        # Budget and pitch adjustment info (Priority 3)
+        'budget_info': {
+            'max_voxels': max_voxels,
+            'original_pitch': original_pitch,
+            'pitch_was_adjusted': pitch_was_adjusted,
+            'auto_adjust_pitch': auto_adjust_pitch,
+        },
     }
     
     from ..utils.units import UnitContext
