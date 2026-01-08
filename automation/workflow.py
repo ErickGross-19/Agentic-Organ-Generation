@@ -351,9 +351,10 @@ class TopologySection:
     - "tree": Full tree structure, all branching/terminal questions relevant
     - "loop": Looping structure with recirculation
     - "multi_tree": Multiple independent trees
+    - "backbone": V3 - Parallel leg structure with manifold connections
     """
     style: str = "tree"  # branching style: balanced, aggressive_early, space_filling
-    topology_kind: str = "tree"  # "path", "tree", "loop", "multi_tree"
+    topology_kind: str = "tree"  # "path", "tree", "loop", "multi_tree", "backbone"
     target_terminals: Optional[int] = None
     max_depth: Optional[int] = None
     branching_factor_range: Tuple[int, int] = (2, 2)
@@ -364,6 +365,13 @@ class TopologySection:
     loop_style: Optional[str] = None  # single_loop, mesh, ladder
     tree_count: Optional[int] = None  # for multi_tree topology
     shared_inlet: bool = False  # for multi_tree: do trees share an inlet?
+    # V3: Backbone-specific fields
+    backbone_axis: Optional[str] = None  # x, y, z, or "longest"
+    leg_count: Optional[int] = None  # number of parallel legs
+    leg_spacing: Optional[str] = None  # "equal" or specific value
+    leg_spacing_m: Optional[float] = None  # leg spacing in meters
+    leg_connection: Optional[str] = None  # ladder, u_shape, separate
+    port_style: Optional[str] = None  # manifold or individual
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -378,6 +386,12 @@ class TopologySection:
             "loop_style": self.loop_style,
             "tree_count": self.tree_count,
             "shared_inlet": self.shared_inlet,
+            "backbone_axis": self.backbone_axis,
+            "leg_count": self.leg_count,
+            "leg_spacing": self.leg_spacing,
+            "leg_spacing_m": self.leg_spacing_m,
+            "leg_connection": self.leg_connection,
+            "port_style": self.port_style,
         }
     
     @classmethod
@@ -394,6 +408,12 @@ class TopologySection:
             loop_style=d.get("loop_style"),
             tree_count=d.get("tree_count"),
             shared_inlet=d.get("shared_inlet", False),
+            backbone_axis=d.get("backbone_axis"),
+            leg_count=d.get("leg_count"),
+            leg_spacing=d.get("leg_spacing"),
+            leg_spacing_m=d.get("leg_spacing_m"),
+            leg_connection=d.get("leg_connection"),
+            port_style=d.get("port_style"),
         )
 
 
@@ -410,6 +430,8 @@ class GeometrySection:
     route_type: Optional[str] = None  # for path: straight, single_bend, s_curve, via_points
     bend_radius_m: Optional[float] = None  # minimum bend radius for curved paths
     wall_thickness_m: Optional[float] = None  # wall thickness for hollow channels
+    # V3: Backbone-specific geometry field
+    leg_radius_m: Optional[float] = None  # leg channel radius for backbone topology
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -422,6 +444,7 @@ class GeometrySection:
             "route_type": self.route_type,
             "bend_radius_m": self.bend_radius_m,
             "wall_thickness_m": self.wall_thickness_m,
+            "leg_radius_m": self.leg_radius_m,
         }
     
     @classmethod
@@ -436,6 +459,7 @@ class GeometrySection:
             route_type=d.get("route_type"),
             bend_radius_m=d.get("bend_radius_m"),
             wall_thickness_m=d.get("wall_thickness_m"),
+            leg_radius_m=d.get("leg_radius_m"),
         )
 
 
