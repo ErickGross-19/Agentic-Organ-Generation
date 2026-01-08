@@ -60,11 +60,11 @@ runner.code_executor.allowed_output_dirs = ["./output"]
 For production workflows, we recommend using the LLM to produce a structured specification, then executing generation locally:
 
 ```python
-from automation import SingleAgentOrganGeneratorV1
+from automation import SingleAgentOrganGeneratorV2
 from generation import design_from_spec
 
 # Use the workflow to capture requirements
-workflow = SingleAgentOrganGeneratorV1(provider="openai")
+workflow = SingleAgentOrganGeneratorV2(provider="openai")
 workflow.run()
 
 # Extract the compiled specification
@@ -463,11 +463,11 @@ Report any validation issues and suggest fixes.
 
 See the `examples/` directory for working examples:
 
-- `examples/single_agent_organgenerator_v1.ipynb` - Interactive Jupyter notebook demonstrating the Single Agent Organ Generator V1 workflow with all features including basic generation, interactive sessions, and validation workflows
+- `examples/single_agent_organgenerator_v2.ipynb` - Interactive Jupyter notebook demonstrating the Single Agent Organ Generator V2 workflow with all features including basic generation, interactive sessions, and validation workflows
 
-## Single Agent Organ Generator V1 Workflow
+## Single Agent Organ Generator V2 Workflow
 
-The Single Agent Organ Generator V1 provides an interactive, guided workflow for complete organ structure generation. It combines LLM-assisted requirements capture with deterministic generation and validation.
+The Single Agent Organ Generator V2 provides an interactive, guided workflow for complete organ structure generation. It combines LLM-assisted requirements capture with deterministic generation and validation, featuring an agent dialogue system that follows an Interpret → Plan → Ask pattern.
 
 ### Workflow States
 
@@ -681,7 +681,7 @@ Target terminals: None
 #### Programmatic Usage
 
 ```python
-from automation.workflow import SingleAgentOrganGeneratorV1, run_single_agent_workflow
+from automation.workflow import SingleAgentOrganGeneratorV2, run_single_agent_workflow
 from automation.agent_runner import create_agent
 
 # Option 1: Use convenience function
@@ -693,7 +693,7 @@ context = run_single_agent_workflow(
 
 # Option 2: Create workflow manually for more control
 agent = create_agent(provider="openai", model="gpt-4")
-workflow = SingleAgentOrganGeneratorV1(
+workflow = SingleAgentOrganGeneratorV2(
     agent=agent,
     base_output_dir="./my_projects",
     verbose=True,

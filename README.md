@@ -118,7 +118,7 @@ result = runner.run_task(
 
 ### Interactive Workflow
 
-The Single Agent Organ Generator V1 provides a guided, interactive workflow for organ structure generation. It features an adaptive rule engine that intelligently determines which questions to ask based on the user's input:
+The Single Agent Organ Generator V2 provides a guided, interactive workflow for organ structure generation. It features an adaptive rule engine that intelligently determines which questions to ask based on the user's input, along with an agent dialogue system that follows an Interpret → Plan → Ask pattern:
 
 ```python
 from automation.workflow import run_single_agent_workflow
@@ -402,14 +402,14 @@ These constraints are validated during post-embedding checks to ensure the gener
 
 The `examples/` directory contains working demonstrations of the system's capabilities:
 
-### Single Agent Organ Generator V1 Notebook
+### Single Agent Organ Generator V2 Notebook
 
-`examples/single_agent_organgenerator_v1.ipynb` provides an interactive tutorial covering:
+`examples/single_agent_organgenerator_v2.ipynb` provides an interactive tutorial covering:
 
 | Topic | Description |
 |-------|-------------|
 | Quick Start | Launch the workflow with `run_single_agent_workflow()` |
-| Workflow Control | Fine-grained control via `SingleAgentOrganGeneratorV1` class |
+| Workflow Control | Fine-grained control via `SingleAgentOrganGeneratorV2` class |
 | State Transitions | Programmatic progression using the `step()` method |
 | Persistence | Save and restore workflow state across sessions |
 | Visualization | Render and inspect generated STL meshes |

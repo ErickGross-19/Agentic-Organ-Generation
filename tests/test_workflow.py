@@ -1,5 +1,5 @@
 """
-Tests for the Single Agent Organ Generator V1 workflow.
+Tests for the Single Agent Organ Generator V2 workflow.
 
 These tests validate:
 - Workflow state transitions
@@ -142,15 +142,15 @@ class TestProjectContext:
         assert restored.feedback_history == original.feedback_history
 
 
-class TestSingleAgentOrganGeneratorV1:
-    """Tests for the SingleAgentOrganGeneratorV1 workflow class."""
+class TestSingleAgentOrganGeneratorV2:
+    """Tests for the SingleAgentOrganGeneratorV2 workflow class."""
     
     def test_workflow_creation(self):
         """Test creating a workflow instance."""
-        from automation.workflow import SingleAgentOrganGeneratorV1, WorkflowState
+        from automation.workflow import SingleAgentOrganGeneratorV2, WorkflowState
         
         mock_agent = Mock()
-        workflow = SingleAgentOrganGeneratorV1(
+        workflow = SingleAgentOrganGeneratorV2(
             agent=mock_agent,
             base_output_dir="/tmp/test_projects",
             verbose=False,
@@ -163,36 +163,36 @@ class TestSingleAgentOrganGeneratorV1:
     
     def test_workflow_name_and_version(self):
         """Test workflow name and version constants."""
-        from automation.workflow import SingleAgentOrganGeneratorV1
+        from automation.workflow import SingleAgentOrganGeneratorV2
         
-        assert SingleAgentOrganGeneratorV1.WORKFLOW_NAME == "Single Agent Organ Generator V1"
-        assert SingleAgentOrganGeneratorV1.WORKFLOW_VERSION == "1.0.0"
+        assert SingleAgentOrganGeneratorV2.WORKFLOW_NAME == "Single Agent Organ Generator V2"
+        assert SingleAgentOrganGeneratorV2.WORKFLOW_VERSION == "2.0.0"
     
     def test_workflow_get_state(self):
         """Test getting current workflow state."""
-        from automation.workflow import SingleAgentOrganGeneratorV1, WorkflowState
+        from automation.workflow import SingleAgentOrganGeneratorV2, WorkflowState
         
         mock_agent = Mock()
-        workflow = SingleAgentOrganGeneratorV1(agent=mock_agent, verbose=False)
+        workflow = SingleAgentOrganGeneratorV2(agent=mock_agent, verbose=False)
         
         assert workflow.get_state() == WorkflowState.INIT
     
     def test_workflow_get_context(self):
         """Test getting current project context."""
-        from automation.workflow import SingleAgentOrganGeneratorV1, ProjectContext
+        from automation.workflow import SingleAgentOrganGeneratorV2, ProjectContext
         
         mock_agent = Mock()
-        workflow = SingleAgentOrganGeneratorV1(agent=mock_agent, verbose=False)
+        workflow = SingleAgentOrganGeneratorV2(agent=mock_agent, verbose=False)
         
         ctx = workflow.get_context()
         assert isinstance(ctx, ProjectContext)
     
     def test_workflow_save_and_load_state(self):
         """Test saving and loading workflow state."""
-        from automation.workflow import SingleAgentOrganGeneratorV1, WorkflowState
+        from automation.workflow import SingleAgentOrganGeneratorV2, WorkflowState
         
         mock_agent = Mock()
-        workflow = SingleAgentOrganGeneratorV1(agent=mock_agent, verbose=False)
+        workflow = SingleAgentOrganGeneratorV2(agent=mock_agent, verbose=False)
         
         workflow.state = WorkflowState.REQUIREMENTS
         workflow.context.project_name = "saved_project"
@@ -204,7 +204,7 @@ class TestSingleAgentOrganGeneratorV1:
         try:
             workflow.save_state(filepath)
             
-            workflow2 = SingleAgentOrganGeneratorV1(agent=mock_agent, verbose=False)
+            workflow2 = SingleAgentOrganGeneratorV2(agent=mock_agent, verbose=False)
             workflow2.load_state(filepath)
             
             assert workflow2.state == WorkflowState.REQUIREMENTS
@@ -215,10 +215,10 @@ class TestSingleAgentOrganGeneratorV1:
     
     def test_workflow_step_init_to_requirements(self):
         """Test workflow step from INIT to REQUIREMENTS."""
-        from automation.workflow import SingleAgentOrganGeneratorV1, WorkflowState
+        from automation.workflow import SingleAgentOrganGeneratorV2, WorkflowState
         
         mock_agent = Mock()
-        workflow = SingleAgentOrganGeneratorV1(
+        workflow = SingleAgentOrganGeneratorV2(
             agent=mock_agent,
             base_output_dir="/tmp/test_projects",
             verbose=False,
@@ -232,10 +232,10 @@ class TestSingleAgentOrganGeneratorV1:
     
     def test_workflow_step_requirements_to_generating(self):
         """Test workflow step from REQUIREMENTS to GENERATING."""
-        from automation.workflow import SingleAgentOrganGeneratorV1, WorkflowState
+        from automation.workflow import SingleAgentOrganGeneratorV2, WorkflowState
         
         mock_agent = Mock()
-        workflow = SingleAgentOrganGeneratorV1(agent=mock_agent, verbose=False)
+        workflow = SingleAgentOrganGeneratorV2(agent=mock_agent, verbose=False)
         
         workflow.step("test_project")
         
@@ -246,10 +246,10 @@ class TestSingleAgentOrganGeneratorV1:
     
     def test_workflow_step_review_yes(self):
         """Test workflow step from REVIEW with 'yes' response."""
-        from automation.workflow import SingleAgentOrganGeneratorV1, WorkflowState
+        from automation.workflow import SingleAgentOrganGeneratorV2, WorkflowState
         
         mock_agent = Mock()
-        workflow = SingleAgentOrganGeneratorV1(agent=mock_agent, verbose=False)
+        workflow = SingleAgentOrganGeneratorV2(agent=mock_agent, verbose=False)
         
         workflow.state = WorkflowState.REVIEW
         
@@ -259,10 +259,10 @@ class TestSingleAgentOrganGeneratorV1:
     
     def test_workflow_step_review_no(self):
         """Test workflow step from REVIEW with 'no' response."""
-        from automation.workflow import SingleAgentOrganGeneratorV1, WorkflowState
+        from automation.workflow import SingleAgentOrganGeneratorV2, WorkflowState
         
         mock_agent = Mock()
-        workflow = SingleAgentOrganGeneratorV1(agent=mock_agent, verbose=False)
+        workflow = SingleAgentOrganGeneratorV2(agent=mock_agent, verbose=False)
         
         workflow.state = WorkflowState.REVIEW
         
@@ -272,10 +272,10 @@ class TestSingleAgentOrganGeneratorV1:
     
     def test_workflow_step_clarifying_to_generating(self):
         """Test workflow step from CLARIFYING to GENERATING."""
-        from automation.workflow import SingleAgentOrganGeneratorV1, WorkflowState
+        from automation.workflow import SingleAgentOrganGeneratorV2, WorkflowState
         
         mock_agent = Mock()
-        workflow = SingleAgentOrganGeneratorV1(agent=mock_agent, verbose=False)
+        workflow = SingleAgentOrganGeneratorV2(agent=mock_agent, verbose=False)
         
         workflow.state = WorkflowState.CLARIFYING
         
@@ -286,10 +286,10 @@ class TestSingleAgentOrganGeneratorV1:
     
     def test_workflow_step_quit(self):
         """Test workflow step with 'quit' command."""
-        from automation.workflow import SingleAgentOrganGeneratorV1, WorkflowState
+        from automation.workflow import SingleAgentOrganGeneratorV2, WorkflowState
         
         mock_agent = Mock()
-        workflow = SingleAgentOrganGeneratorV1(agent=mock_agent, verbose=False)
+        workflow = SingleAgentOrganGeneratorV2(agent=mock_agent, verbose=False)
         
         new_state, message = workflow.step("quit")
         
@@ -302,12 +302,12 @@ class TestWorkflowIntegration:
     
     def test_workflow_creates_output_directory(self):
         """Test that workflow creates output directory."""
-        from automation.workflow import SingleAgentOrganGeneratorV1
+        from automation.workflow import SingleAgentOrganGeneratorV2
         
         mock_agent = Mock()
         
         with tempfile.TemporaryDirectory() as tmpdir:
-            workflow = SingleAgentOrganGeneratorV1(
+            workflow = SingleAgentOrganGeneratorV2(
                 agent=mock_agent,
                 base_output_dir=tmpdir,
                 verbose=False,
