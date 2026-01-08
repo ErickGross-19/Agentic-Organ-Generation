@@ -2389,7 +2389,7 @@ class SingleAgentOrganGeneratorV2:
             print(f"I need to ask {len(questions)} question(s) to complete the specification:")
             print()
             for i, q in enumerate(questions, 1):
-                print(f"  {i}. {q.text}")
+                print(f"  {i}. {q.question_text}")
                 print(f"     Why: {q.reason} (rework cost: {q.rework_cost})")
             print()
         

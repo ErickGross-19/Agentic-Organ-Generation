@@ -563,7 +563,7 @@ def propose_plans(
         description="Grow the network organically using space colonization algorithm. "
                    "Branches grow toward attractor points, creating natural-looking structures.",
         strategy=GeneratorStrategy.SPACE_COLONIZATION,
-        utilities=["space_colonization", "bifurcate", "embed_in_domain", "export_stl"],
+        utilities=["space_colonization", "bifurcate", "grow_to_point", "embed_in_domain", "export_stl"],
         tunable_knobs=["attraction_distance", "kill_distance", "step_size", "branching_angle"],
         required_modules=["TopologyModule", "GeometryStyleModule"],
         pros=[
@@ -585,7 +585,7 @@ def propose_plans(
         description="Build a hierarchical tree structure with controlled branching. "
                    "More predictable topology with explicit depth and branching control.",
         strategy=GeneratorStrategy.TREE_BACKBONE,
-        utilities=["create_network", "bifurcate", "embed_in_domain", "export_stl"],
+        utilities=["create_network", "bifurcate", "grow_to_point", "embed_in_domain", "export_stl"],
         tunable_knobs=["max_depth", "branching_factor", "length_ratio", "radius_ratio"],
         required_modules=["TopologyModule", "ConstraintsModule"],
         pros=[
@@ -608,7 +608,7 @@ def propose_plans(
             description="Generate both arterial and portal venous trees with meeting shell "
                        "for anastomosis. Specific to liver vasculature.",
             strategy=GeneratorStrategy.DUAL_TREE,
-            utilities=["generate_liver_vasculature", "create_anastomosis", "embed_in_domain", "export_stl"],
+            utilities=["generate_liver_vasculature", "create_anastomosis", "grow_to_point", "embed_in_domain", "export_stl"],
             tunable_knobs=["arterial_segments", "venous_segments", "meeting_shell_radius"],
             required_modules=["TopologyModule", "GeometryStyleModule", "PerfusionZonesModule"],
             pros=[
@@ -630,7 +630,7 @@ def propose_plans(
             description="Use region-weighted space colonization with density multipliers "
                        "for different anatomical zones.",
             strategy=GeneratorStrategy.REGION_WEIGHTED,
-            utilities=["space_colonization", "zone_density", "embed_in_domain", "export_stl"],
+            utilities=["space_colonization", "zone_density", "grow_to_point", "embed_in_domain", "export_stl"],
             tunable_knobs=["zone_densities", "attraction_distance", "kill_distance"],
             required_modules=["TopologyModule", "GeometryStyleModule", "PerfusionZonesModule"],
             pros=[
@@ -651,7 +651,7 @@ def propose_plans(
             description="Generate network from multiple inlet points simultaneously. "
                        "Good for distributed perfusion or multiple supply vessels.",
             strategy=GeneratorStrategy.MULTI_ROOT,
-            utilities=["space_colonization", "multi_root_growth", "embed_in_domain", "export_stl"],
+            utilities=["space_colonization", "multi_root_growth", "grow_to_point", "embed_in_domain", "export_stl"],
             tunable_knobs=["num_roots", "root_positions", "attraction_distance"],
             required_modules=["TopologyModule", "GeometryStyleModule"],
             pros=[
