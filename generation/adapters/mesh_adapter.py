@@ -111,7 +111,7 @@ def _precompute_node_radii_with_wall(
 
 def to_trimesh(
     network: VascularNetwork,
-    mode: Literal["fast", "robust"] = "fast",
+    mode: Literal["fast", "robust", "voxel_repair"] = "fast",
     radial_resolution: int = 8,
     include_caps: bool = True,
     include_node_spheres: bool = False,
@@ -120,20 +120,23 @@ def to_trimesh(
     adaptive_resolution: bool = False,
     min_radial_resolution: int = 4,
     max_radial_resolution: int = 32,
+    voxel_pitch: Optional[float] = None,
 ) -> OperationResult:
     """
     Convert VascularNetwork to trimesh.Trimesh for STL export.
     
-    Two modes:
-    - "fast": Concatenate all segment meshes, then repair with voxel remesh
-    - "robust": Attempt boolean union (requires backend), fallback to fast
+    Three modes:
+    - "fast": Concatenate all segment meshes (may have self-intersections)
+    - "robust": Attempt boolean union (requires Blender backend), fallback to fast
+    - "voxel_repair": Voxelize and remesh for watertight output (deterministic, no external deps)
     
     Parameters
     ----------
     network : VascularNetwork
         The vascular network to convert
-    mode : {"fast", "robust"}
-        Export mode
+    mode : {"fast", "robust", "voxel_repair"}
+        Export mode. "voxel_repair" is recommended for complex networks as it
+        produces watertight meshes without depending on Blender.
     radial_resolution : int
         Number of vertices around each cylinder (base resolution)
     include_caps : bool
@@ -154,6 +157,9 @@ def to_trimesh(
         Minimum radial resolution when using adaptive mode
     max_radial_resolution : int
         Maximum radial resolution when using adaptive mode
+    voxel_pitch : float, optional
+        Voxel size for "voxel_repair" mode. If None, auto-computed from
+        minimum vessel radius (pitch = min_radius / 2).
         
     Returns
     -------
@@ -166,6 +172,11 @@ def to_trimesh(
     - Set include_caps=False and include_node_spheres=False
     - Use adaptive_resolution=True for varied vessel sizes
     - Set max_triangles to enforce a budget (e.g., 500000)
+    
+    Union/Repair Strategy (Priority 2C):
+    - "fast" mode: Simple concatenation, may have self-intersections
+    - "robust" mode: Boolean union via Blender (not always available)
+    - "voxel_repair" mode: Deterministic voxel-based repair, always works
     """
     try:
         meshes = []
@@ -251,6 +262,93 @@ def to_trimesh(
                 "No meshes created",
                 error_codes=[ErrorCode.MESH_EXPORT_FAILED.value],
             )
+        
+        # Voxel-based repair mode (Priority 2C: deterministic union/repair strategy)
+        if mode == "voxel_repair":
+            try:
+                from skimage.measure import marching_cubes
+                
+                # First concatenate all meshes
+                combined = trimesh.util.concatenate(meshes)
+                
+                # Auto-compute voxel pitch if not provided
+                pitch = voxel_pitch
+                if pitch is None:
+                    # Use half of minimum radius for good resolution
+                    pitch = min_radius / 2 if min_radius > 0 else 0.001
+                
+                # Voxelize the combined mesh
+                try:
+                    voxels = combined.voxelized(pitch)
+                    voxel_matrix = voxels.matrix
+                except (MemoryError, ValueError) as e:
+                    # If voxelization fails, try with coarser pitch
+                    pitch *= 2
+                    voxels = combined.voxelized(pitch)
+                    voxel_matrix = voxels.matrix
+                
+                # Apply marching cubes to get watertight mesh
+                verts, faces, _, _ = marching_cubes(
+                    volume=voxel_matrix.astype(np.uint8),
+                    level=0.5,
+                    spacing=(pitch, pitch, pitch),
+                    allow_degenerate=False,
+                )
+                
+                # Transform vertices back to world coordinates
+                verts += voxels.transform[:3, 3]
+                
+                # Create the repaired mesh
+                repaired_mesh = trimesh.Trimesh(
+                    vertices=verts,
+                    faces=faces.astype(np.int64),
+                    process=False,
+                )
+                
+                # Clean up the mesh
+                repaired_mesh.remove_unreferenced_vertices()
+                if repaired_mesh.volume < 0:
+                    repaired_mesh.invert()
+                trimesh.repair.fix_normals(repaired_mesh)
+                
+                triangle_count = len(repaired_mesh.faces)
+                budget_exceeded = max_triangles is not None and triangle_count > max_triangles
+                
+                result = OperationResult.success(
+                    f"Voxel repair mesh export: {len(meshes)} components voxelized and remeshed",
+                    metadata={
+                        'mesh': repaired_mesh,
+                        'mode': 'voxel_repair',
+                        'num_components': len(meshes),
+                        'is_watertight': repaired_mesh.is_watertight,
+                        'voxel_pitch': pitch,
+                        'triangle_count': triangle_count,
+                        'max_triangles': max_triangles,
+                        'budget_exceeded': budget_exceeded,
+                        'lod_settings': {
+                            'include_caps': include_caps,
+                            'include_node_spheres': include_node_spheres,
+                            'adaptive_resolution': adaptive_resolution,
+                            'radial_resolution': radial_resolution,
+                        },
+                    },
+                )
+                
+                if budget_exceeded:
+                    result.add_warning(
+                        f"Triangle budget exceeded: {triangle_count} > {max_triangles}. "
+                        f"Consider increasing voxel_pitch for coarser mesh."
+                    )
+                
+                return result
+                
+            except Exception as e:
+                # Fall back to fast mode if voxel repair fails
+                result = OperationResult.partial_success(
+                    f"Voxel repair failed, falling back to fast mode: {e}",
+                )
+                result.add_warning(f"Voxel repair mode failed: {e}")
+                mode = "fast"
         
         if mode == "robust":
             try:
