@@ -1505,6 +1505,11 @@ def run_rule_based_capture(
     3. Generates minimal questions
     4. Repeats until generation-ready
     
+    The loop includes safeguards against infinite loops:
+    - Tracks previously asked question sets to detect repetition
+    - Automatically applies defaults if same questions asked 2+ times
+    - Maximum iteration limit as final safeguard
+    
     Returns the updated requirements and collected answers.
     """
     engine = RuleEngine(organ_type)
@@ -1544,6 +1549,10 @@ def run_rule_based_capture(
     max_iterations = 10
     iteration = 0
     
+    previous_question_sets: List[frozenset] = []
+    repeat_count = 0
+    max_repeats = 2
+    
     while iteration < max_iterations:
         iteration += 1
         
@@ -1562,6 +1571,29 @@ def run_rule_based_capture(
             for prop in eval_result.proposed_defaults:
                 _apply_default_to_requirements(requirements, prop)
             break
+        
+        current_question_set = frozenset(q.field for q in questions)
+        
+        if current_question_set in previous_question_sets:
+            repeat_count += 1
+            if verbose:
+                print(f"\n[Warning] Same questions detected (repeat #{repeat_count})")
+            
+            if repeat_count >= max_repeats:
+                if verbose:
+                    print("\n[Info] Breaking loop - applying defaults to avoid infinite loop.")
+                for prop in eval_result.proposed_defaults:
+                    _apply_default_to_requirements(requirements, prop)
+                    collected_answers[prop.field] = prop.value
+                
+                for q in questions:
+                    if q.default_value and q.field not in collected_answers:
+                        collected_answers[q.field] = q.default_value
+                        _apply_answer_to_requirements(requirements, q.field, q.default_value)
+                break
+        else:
+            repeat_count = 0
+            previous_question_sets.append(current_question_set)
         
         if verbose:
             output = planner.format_turn_output(requirements, eval_result, questions)
@@ -1585,6 +1617,15 @@ def run_rule_based_capture(
             
             collected_answers[q.field] = answer
             _apply_answer_to_requirements(requirements, q.field, answer)
+    
+    if iteration >= max_iterations:
+        if verbose:
+            print(f"\n[Warning] Reached max iterations ({max_iterations}). Applying remaining defaults.")
+        eval_result = engine.evaluate(requirements, intent)
+        for prop in eval_result.proposed_defaults:
+            if prop.field not in collected_answers:
+                _apply_default_to_requirements(requirements, prop)
+                collected_answers[prop.field] = prop.value
     
     return requirements, collected_answers
 
@@ -2158,7 +2199,11 @@ class SingleAgentOrganGeneratorV2:
         print("Understanding your request...")
         print("-" * 40)
         
-        self.current_understanding = understand_object(intent, context)
+        llm_client = None
+        if hasattr(self.agent, 'client') and self.agent.client is not None:
+            llm_client = self.agent.client
+        
+        self.current_understanding = understand_object(intent, context, llm_client=llm_client)
         
         print()
         print("Here's what I understood:")
