@@ -63,6 +63,17 @@ from .subprocess_runner import run_script, print_run_summary
 from .artifact_verifier import verify_generation_stage, save_manifest, print_verification_summary
 from .llm_healthcheck import assert_llm_ready, MissingCredentialsError, ProviderMisconfiguredError, FatalLLMError, QuotaExhaustedError
 
+# Import DesignSpec classes for deterministic spec compilation
+from generation.specs.design_spec import (
+    DesignSpec,
+    BoxSpec,
+    EllipsoidSpec,
+    InletSpec,
+    OutletSpec,
+    ColonizationSpec,
+    TreeSpec,
+)
+
 
 class WorkflowStuckError(Exception):
     """
@@ -3899,12 +3910,212 @@ class SingleAgentOrganGeneratorV2:
         
         req.acceptance_criteria.mesh_watertight_required = answers.get("watertight_required", "yes").lower() in ("yes", "y")
     
+    def _compile_requirements_to_spec(self, requirements: ObjectRequirements, topology_kind: str) -> DesignSpec:
+        """
+        Deterministically compile ObjectRequirements to DesignSpec.
+        
+        This function builds the DesignSpec directly in Python without LLM involvement,
+        ensuring reliable and reproducible spec generation.
+        
+        Parameters
+        ----------
+        requirements : ObjectRequirements
+            The collected requirements from the user
+        topology_kind : str
+            The topology kind: "path", "tree", "loop", or "multi_tree"
+            
+        Returns
+        -------
+        DesignSpec
+            The compiled design specification
+        """
+        req = requirements
+        
+        # Build domain spec
+        domain_shape = req.domain.shape or "box"
+        domain_size = req.domain.size_m or (0.02, 0.06, 0.03)  # Default 20x60x30 mm
+        
+        if domain_shape == "ellipsoid":
+            # For ellipsoid, size represents semi-axes
+            domain_spec = EllipsoidSpec(
+                center=(0.0, 0.0, 0.0),
+                semi_axes=tuple(s / 2 for s in domain_size),  # Convert full size to semi-axes
+            )
+        else:
+            # Default to box
+            domain_spec = BoxSpec(
+                center=(0.0, 0.0, 0.0),
+                size=domain_size,
+            )
+        
+        # Build inlet specs from requirements
+        inlets = []
+        for i, port in enumerate(req.inlets_outlets.inlets):
+            position = port.position_m or (0.0, 0.0, 0.0)
+            radius = port.radius_m or 0.002  # Default 2mm
+            inlets.append(InletSpec(
+                position=position,
+                radius=radius,
+                vessel_type="arterial",
+            ))
+        
+        # If no inlets defined, create a default based on topology
+        if not inlets:
+            # Default inlet at x_min face center
+            inlet_x = -domain_size[0] / 2 + 0.001  # Slightly inside domain
+            inlets.append(InletSpec(
+                position=(inlet_x, 0.0, 0.0),
+                radius=0.002,
+                vessel_type="arterial",
+            ))
+        
+        # Build outlet specs from requirements
+        outlets = []
+        for i, port in enumerate(req.inlets_outlets.outlets):
+            position = port.position_m or (0.0, 0.0, 0.0)
+            radius = port.radius_m or 0.002  # Default 2mm
+            outlets.append(OutletSpec(
+                position=position,
+                radius=radius,
+                vessel_type="venous",
+            ))
+        
+        # For path topology, ensure we have an outlet
+        if topology_kind == "path" and not outlets:
+            # Default outlet at x_max face center
+            outlet_x = domain_size[0] / 2 - 0.001  # Slightly inside domain
+            outlets.append(OutletSpec(
+                position=(outlet_x, 0.0, 0.0),
+                radius=inlets[0].radius if inlets else 0.002,
+                vessel_type="venous",
+            ))
+        
+        # Build colonization spec from requirements
+        min_radius = req.constraints.min_radius_m or 0.0001  # Default 0.1mm
+        
+        # Adjust colonization parameters based on topology
+        if topology_kind == "path":
+            # For path: minimal colonization, just connect inlet to outlet
+            colonization = ColonizationSpec(
+                influence_radius=0.015,
+                kill_radius=0.002,
+                step_size=0.001,
+                max_steps=100,  # Fewer steps for simple path
+                initial_radius=inlets[0].radius if inlets else 0.002,
+                min_radius=min_radius,
+                radius_decay=1.0,  # No decay for path
+                encourage_bifurcation=False,  # No branching for path
+                max_children_per_node=1,  # Single path, no branching
+            )
+        else:
+            # For tree/loop/multi_tree: full colonization
+            target_terminals = req.topology.target_terminals or 50
+            colonization = ColonizationSpec(
+                influence_radius=0.015,
+                kill_radius=0.002,
+                step_size=0.001,
+                max_steps=500,
+                initial_radius=inlets[0].radius if inlets else 0.002,
+                min_radius=min_radius,
+                radius_decay=0.95,
+                encourage_bifurcation=True,
+                max_children_per_node=2,
+            )
+        
+        # Build tree spec with topology_kind
+        tree_spec = TreeSpec(
+            inlets=inlets,
+            outlets=outlets,
+            colonization=colonization,
+            topology_kind=topology_kind,
+            terminal_count=req.topology.target_terminals if topology_kind == "tree" else None,
+        )
+        
+        # Build final DesignSpec
+        design_spec = DesignSpec(
+            domain=domain_spec,
+            tree=tree_spec,
+            seed=42,  # Default seed for reproducibility
+            metadata={
+                "source": "deterministic_compilation",
+                "topology_kind": topology_kind,
+                "user_intent": req.identity.description or "",
+            },
+            output_units="mm",
+        )
+        
+        return design_spec
+    
+    def _validate_spec(self, spec_path: str, topology_kind: str) -> Tuple[bool, str]:
+        """
+        Validate that a spec file exists, loads correctly, and has required fields.
+        
+        Parameters
+        ----------
+        spec_path : str
+            Path to the spec.json file
+        topology_kind : str
+            Expected topology kind
+            
+        Returns
+        -------
+        Tuple[bool, str]
+            (is_valid, error_message)
+        """
+        # Check file exists
+        if not os.path.exists(spec_path):
+            return False, f"Spec file does not exist: {spec_path}"
+        
+        # Check JSON loads
+        try:
+            with open(spec_path, 'r') as f:
+                spec_data = json.load(f)
+        except json.JSONDecodeError as e:
+            return False, f"Invalid JSON in spec file: {e}"
+        except Exception as e:
+            return False, f"Error reading spec file: {e}"
+        
+        # Check DesignSpec.from_dict works
+        try:
+            spec = DesignSpec.from_dict(spec_data)
+        except Exception as e:
+            return False, f"Failed to parse DesignSpec: {e}"
+        
+        # Check required fields for topology
+        if topology_kind == "path":
+            # Path requires exactly 1 inlet and 1 outlet
+            if spec.tree:
+                if len(spec.tree.inlets) != 1:
+                    return False, f"Path topology requires exactly 1 inlet, got {len(spec.tree.inlets)}"
+                if len(spec.tree.outlets) != 1:
+                    return False, f"Path topology requires exactly 1 outlet, got {len(spec.tree.outlets)}"
+        elif topology_kind == "tree":
+            # Tree requires at least 1 inlet
+            if spec.tree and len(spec.tree.inlets) == 0:
+                return False, "Tree topology requires at least 1 inlet"
+        
+        # Check domain exists
+        if not spec.domain:
+            return False, "Spec missing domain"
+        
+        # Check units are valid
+        if spec.output_units not in ("m", "mm", "cm", "um"):
+            return False, f"Invalid output_units: {spec.output_units}"
+        
+        return True, ""
+    
     def _run_spec_compilation(self) -> None:
         """Run SPEC_COMPILATION state: Compile requirements to DesignSpec.
         
-        This step converts the collected requirements into a formal DesignSpec
-        that can be used for 3D structure generation. The process is transparent
-        and shows exactly what is being compiled.
+        This step uses DETERMINISTIC compilation - no LLM involvement.
+        The DesignSpec is built directly from requirements in Python,
+        ensuring reliable and reproducible spec generation.
+        
+        Key improvements over LLM-based compilation:
+        1. Deterministic: Same requirements always produce same spec
+        2. Reliable: No dependency on LLM file writing
+        3. Topology-aware: Different compilation for path vs tree
+        4. Validated: Post-compilation validation ensures spec is usable
         """
         obj = self.context.get_current_object()
         if not obj:
@@ -3917,10 +4128,14 @@ class SingleAgentOrganGeneratorV2:
         print("-" * 40)
         print()
         
-        req_dict = obj.requirements.to_dict()
+        req = obj.requirements
+        req_dict = req.to_dict()
+        
+        # Detect topology kind from requirements
+        topology_kind = req.topology.topology_kind or detect_topology_kind(obj.raw_intent)
         
         # Show transparency: display what we're compiling
-        print("Compiling requirements to DesignSpec...")
+        print("Compiling requirements to DesignSpec (deterministic)...")
         print()
         print("Input Requirements Summary:")
         print("-" * 30)
@@ -3940,9 +4155,9 @@ class SingleAgentOrganGeneratorV2:
             print(f"  Outlets: {len(io.get('outlets', []))}")
         
         # Show topology info
+        print(f"  Topology kind: {topology_kind}")
         if req_dict.get("topology"):
             topo = req_dict["topology"]
-            print(f"  Topology: {topo.get('topology_kind', topo.get('style', 'tree'))}")
             if topo.get("target_terminals"):
                 print(f"    Target terminals: {topo['target_terminals']}")
         
@@ -3957,85 +4172,60 @@ class SingleAgentOrganGeneratorV2:
         print(f"User intent: {obj.raw_intent[:100]}..." if len(obj.raw_intent) > 100 else f"User intent: {obj.raw_intent}")
         print()
         
-        # Build task prompt - generic by default, focus on user's actual requirements
-        task = f"""Compile the following requirements into a DesignSpec for 3D structure generation.
-
-IMPORTANT: Focus on the user's actual requirements. Do not assume organ-specific structures
-unless explicitly mentioned in the user's intent. Generate a structure that matches exactly
-what the user described.
-
-Requirements:
-{json.dumps(req_dict, indent=2)}
-
-Raw user intent:
-{obj.raw_intent}
-
-Instructions:
-1. Create a DesignSpec that matches the requirements exactly
-2. Use the generation.specs module classes (DesignSpec, EllipsoidSpec/BoxSpec, TreeSpec, ColonizationSpec)
-3. All values should be in METERS (internal units)
-4. Save the spec to: {obj.get_versioned_path(obj.spec_dir, "spec", "json")}
-5. Save the Python code used to: {obj.get_versioned_path(obj.code_dir, "generate", "py")}
-
-Provide complete, runnable Python code that:
-1. Creates the DesignSpec based on the user's requirements
-2. Saves it to JSON
-3. Is ready to be used for generation
-
-The code should be self-contained with all necessary imports.
-Focus on what the user actually asked for - do not add organ-specific assumptions."""
-
-        previous_context = self._get_previous_attempts_context(obj)
-        if previous_context:
-            task += f"\n\nContext from previous attempts:\n{previous_context}"
+        # Deterministic compilation - no LLM involved
+        print("Building DesignSpec from requirements...")
         
-        print("Sending to LLM for spec generation...")
-        
-        result = self.agent.run_task(
-            task=task,
-            context={
-                "object_name": obj.name,
-                "object_dir": obj.object_dir,
-                "version": obj.version,
-            }
-        )
-        
-        if result.status == TaskStatus.COMPLETED:
-            obj.spec_path = obj.get_versioned_path(obj.spec_dir, "spec", "json")
-            obj.code_path = obj.get_versioned_path(obj.code_dir, "generate", "py")
+        try:
+            design_spec = self._compile_requirements_to_spec(req, topology_kind)
+            
+            # Save spec to JSON
+            spec_path = obj.get_versioned_path(obj.spec_dir, "spec", "json")
+            os.makedirs(os.path.dirname(spec_path), exist_ok=True)
+            design_spec.to_json(spec_path)
+            
+            obj.spec_path = spec_path
             
             print()
             print("Spec compilation complete!")
             print(f"  Spec saved to: {obj.spec_path}")
-            print(f"  Code saved to: {obj.code_path}")
+            
+            # Validate the spec
+            is_valid, error_msg = self._validate_spec(spec_path, topology_kind)
+            if not is_valid:
+                print()
+                print(f"WARNING: Spec validation failed: {error_msg}")
+                print("Attempting to continue anyway...")
+            else:
+                print("  Spec validation: PASSED")
             
             # Show what was generated for transparency
-            if os.path.exists(obj.spec_path):
-                try:
-                    with open(obj.spec_path, 'r') as f:
-                        spec_data = json.load(f)
-                    print()
-                    print("Generated Spec Summary:")
-                    print("-" * 30)
-                    if spec_data.get("domain"):
-                        print(f"  Domain type: {spec_data['domain'].get('type', 'unknown')}")
-                    if spec_data.get("tree"):
-                        print(f"  Tree spec: present")
-                    if spec_data.get("colonization"):
-                        print(f"  Colonization spec: present")
-                    print("-" * 30)
-                except Exception as e:
-                    print(f"  (Could not read spec for summary: {e})")
+            print()
+            print("Generated Spec Summary:")
+            print("-" * 30)
+            print(f"  Domain type: {design_spec.domain.type}")
+            if isinstance(design_spec.domain, BoxSpec):
+                size = design_spec.domain.size
+                print(f"  Domain size: {size[0]*1000:.1f} x {size[1]*1000:.1f} x {size[2]*1000:.1f} mm")
+            print(f"  Topology kind: {topology_kind}")
+            if design_spec.tree:
+                print(f"  Inlets: {len(design_spec.tree.inlets)}")
+                print(f"  Outlets: {len(design_spec.tree.outlets)}")
+                if design_spec.tree.terminal_count:
+                    print(f"  Target terminals: {design_spec.tree.terminal_count}")
+            print(f"  Output units: {design_spec.output_units}")
+            print("-" * 30)
             
             self.state = WorkflowState.GENERATION
-        else:
+            
+        except Exception as e:
             print()
-            print(f"Spec compilation failed: {result.error}")
+            print(f"Spec compilation failed: {e}")
             print()
             print("Troubleshooting:")
             print("  1. Check that your requirements are complete")
             print("  2. Ensure domain size and I/O are specified")
-            print("  3. Review the error message above")
+            print("  3. For path topology: inlet and outlet are required")
+            print("  4. For tree topology: inlet and terminal count are required")
             print()
             print("Returning to requirements capture...")
             self.state = WorkflowState.REQUIREMENTS_CAPTURE
