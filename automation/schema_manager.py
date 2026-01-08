@@ -289,6 +289,82 @@ class SchemaManager:
         self.schema = ActiveSchema()
         self._patch_history = []
     
+    def activate_module(self, module_name: str) -> bool:
+        """
+        Activate a schema module.
+        
+        Wrapper around ActiveSchema.activate_module() for direct access.
+        
+        Parameters
+        ----------
+        module_name : str
+            Name of the module to activate (e.g., "TopologyModule")
+            
+        Returns
+        -------
+        bool
+            True if module was activated, False if already active or invalid
+        """
+        return self.schema.activate_module(module_name)
+    
+    def deactivate_module(self, module_name: str) -> bool:
+        """
+        Deactivate a schema module.
+        
+        Wrapper around ActiveSchema.deactivate_module() for direct access.
+        
+        Parameters
+        ----------
+        module_name : str
+            Name of the module to deactivate
+            
+        Returns
+        -------
+        bool
+            True if module was deactivated, False if not active or has dependents
+        """
+        return self.schema.deactivate_module(module_name)
+    
+    def is_module_active(self, module_name: str) -> bool:
+        """
+        Check if a module is currently active.
+        
+        Parameters
+        ----------
+        module_name : str
+            Name of the module to check
+            
+        Returns
+        -------
+        bool
+            True if module is active
+        """
+        return module_name in self.schema._active_modules
+    
+    def get_active_modules(self) -> List[str]:
+        """
+        Get list of currently active module names.
+        
+        Returns
+        -------
+        List[str]
+            Sorted list of active module names
+        """
+        return self.schema.active_modules
+    
+    def missing_required_fields(self) -> List[Any]:
+        """
+        Get required fields that don't have values.
+        
+        Wrapper around ActiveSchema.missing_required_fields() for direct access.
+        
+        Returns
+        -------
+        List[FieldDefinition]
+            List of missing required fields
+        """
+        return self.schema.missing_required_fields()
+    
     def update_from_user_turn(self, text: str) -> List[str]:
         """
         Update schema based on user input.
