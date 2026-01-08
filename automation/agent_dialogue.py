@@ -468,20 +468,53 @@ def understand_object(
         else:
             requirements_draft.confidence[field] = 0.3  # Low confidence for defaults
     
-    # Build summary
-    summary_parts = [f"You want to generate a {organ_type} vascular network"]
+    # Build a rich, interpretive summary
+    summary_lines = []
     
+    # Opening interpretation
+    if organ_type != "generic":
+        summary_lines.append(f"I understand you want to create a {organ_type} vascular network.")
+    else:
+        summary_lines.append("I understand you want to create a vascular network.")
+    
+    # Domain interpretation
     if "domain_size" in extracted:
         size = extracted["domain_size"]
-        summary_parts.append(f"with domain size {size[0]*1000:.0f}mm x {size[1]*1000:.0f}mm x {size[2]*1000:.0f}mm")
+        summary_lines.append(f"The network will be generated within a {size[0]*1000:.0f}mm x {size[1]*1000:.0f}mm x {size[2]*1000:.0f}mm domain.")
+    else:
+        summary_lines.append("I'll use the default domain size since none was specified.")
     
+    # I/O interpretation
+    io_parts = []
+    if "num_inlets" in extracted:
+        io_parts.append(f"{extracted['num_inlets']} inlet(s)")
+    if "num_outlets" in extracted:
+        io_parts.append(f"{extracted['num_outlets']} outlet(s)")
+    if io_parts:
+        summary_lines.append(f"The network will have {' and '.join(io_parts)}.")
+    
+    # Terminal/density interpretation
     if "target_terminals" in extracted:
-        summary_parts.append(f"targeting {extracted['target_terminals']} terminal branches")
+        summary_lines.append(f"You're targeting {extracted['target_terminals']} terminal branches, which will determine the network's density and complexity.")
+    elif any(term in vague_terms for term in ["dense", "sparse", "many", "few"]):
+        density_term = next((t for t in vague_terms if t in ["dense", "sparse", "many", "few"]), None)
+        if density_term:
+            summary_lines.append(f"You mentioned '{density_term}' - I'll need to clarify what terminal count this maps to.")
     
-    if vague_terms:
-        summary_parts.append(f"with {', '.join(vague_terms)} characteristics")
+    # Geometry interpretation
+    geo_terms = [t for t in vague_terms if t in ["tortuous", "smooth", "branched", "complex", "simple"]]
+    if geo_terms:
+        summary_lines.append(f"The network should have {', '.join(geo_terms)} characteristics.")
     
-    summary = ". ".join(summary_parts) + "."
+    # Radius interpretation
+    if "radius" in extracted:
+        summary_lines.append(f"Vessel radius will start at {extracted['radius']*1000:.2f}mm.")
+    
+    # Spatial terms interpretation
+    if spatial_terms:
+        summary_lines.append(f"You used spatial terms ({', '.join(spatial_terms)}) - I'll need to confirm the coordinate frame before proceeding.")
+    
+    summary = " ".join(summary_lines)
     
     return UnderstandingReport(
         summary=summary,
