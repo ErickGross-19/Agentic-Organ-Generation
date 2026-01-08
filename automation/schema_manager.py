@@ -365,6 +365,57 @@ class SchemaManager:
         """
         return self.schema.missing_required_fields()
     
+    def set_field_value(self, field_name: str, value: Any) -> None:
+        """
+        Set a field value in the schema.
+        
+        Wrapper around ActiveSchema.set_field_value() for direct access.
+        
+        Parameters
+        ----------
+        field_name : str
+            Name of the field to set
+        value : Any
+            Value to set
+        """
+        self.schema.set_field_value(field_name, value)
+    
+    def get_field_value(self, field_name: str) -> Any:
+        """
+        Get a field value from the schema.
+        
+        Wrapper around ActiveSchema.get_field_value() for direct access.
+        
+        Parameters
+        ----------
+        field_name : str
+            Name of the field to get
+            
+        Returns
+        -------
+        Any
+            The field value, or None if not set
+        """
+        return self.schema.get_field_value(field_name)
+    
+    def has_field_value(self, field_name: str) -> bool:
+        """
+        Check if a field has a value set.
+        
+        Wrapper around ActiveSchema.has_field_value() for direct access.
+        
+        Parameters
+        ----------
+        field_name : str
+            Name of the field to check
+            
+        Returns
+        -------
+        bool
+            True if the field has a value set
+        """
+        return self.schema.has_field_value(field_name)
+    
     def update_from_user_turn(self, text: str) -> List[str]:
         """
         Update schema based on user input.
