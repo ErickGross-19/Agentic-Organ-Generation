@@ -67,6 +67,7 @@ from .agent_dialogue import (
     propose_plans,
     format_user_summary,
     format_living_spec,
+    generate_requirements_summary,
     UnderstandingReport,
     PlanOption,
 )
@@ -1222,6 +1223,16 @@ class RuleEngine:
                 rework_cost="medium"
             ))
         
+        if req.inlets_outlets.inlets and not req.inlets_outlets.placement_rule:
+            result.missing_fields.append(RuleFlag(
+                rule_id="A1_inlet_placement",
+                family="A",
+                field="inlets_outlets.placement_rule",
+                message="Inlet placement rule is required for deterministic generation",
+                severity="required",
+                rework_cost="high"
+            ))
+        
         if check_finalization:
             if req.embedding_export.voxel_pitch_m is None:
                 result.missing_fields.append(RuleFlag(
@@ -1381,6 +1392,8 @@ class QuestionPlanner:
         "frame_of_reference": ("coordinate_frame", "Which axis is length/height/width? (x=length, y=depth, z=height)", None),
         "inlets_outlets.inlets": ("num_inlets", "How many inlets?", "1"),
         "inlets_outlets.outlets": ("num_outlets", "How many outlets?", "0"),
+        "inlets_outlets.placement_rule": ("inlet_placement", "Inlet placement? (x_min_face/x_max_face/y_min_face/y_max_face/z_min_face/z_max_face/center/custom)", "x_min_face"),
+        "inlets_outlets.outlet_placement": ("outlet_placement", "Outlet placement? (x_min_face/x_max_face/y_min_face/y_max_face/z_min_face/z_max_face/opposite_inlet/same_face/none)", "opposite_inlet"),
         "constraints.min_radius_m": ("min_channel_radius", "Minimum channel radius (mm)?", "0.1"),
         "constraints.min_clearance_m": ("min_clearance", "Minimum spacing between channels (mm)?", "0.2"),
         "topology.target_terminals": ("target_terminals", "Target complexity: ~200, ~500, or ~1000 terminals?", "200"),
@@ -1488,6 +1501,67 @@ class QuestionPlanner:
             lines.append("(Say 'use defaults' to accept all proposed defaults)")
         
         return "\n".join(lines)
+
+
+FIELD_VALIDATORS = {
+    "num_inlets": ("integer", "Please enter a whole number (e.g., 1, 2, 3)"),
+    "num_outlets": ("integer", "Please enter a whole number (e.g., 0, 1, 2)"),
+    "min_channel_radius": ("float", "Please enter a number in mm (e.g., 0.1, 0.5)"),
+    "min_clearance": ("float", "Please enter a number in mm (e.g., 0.2, 0.5)"),
+    "target_terminals": ("integer", "Please enter a whole number (e.g., 200, 500, 1000)"),
+    "voxel_pitch": ("float", "Please enter a number in mm (e.g., 0.3, 0.5)"),
+}
+
+
+def _validate_answer(field: str, answer: str) -> Tuple[bool, Optional[str]]:
+    """
+    Validate an answer for a specific field.
+    
+    Returns (is_valid, error_message).
+    If valid, error_message is None.
+    """
+    if field not in FIELD_VALIDATORS:
+        return True, None
+    
+    validator_type, error_hint = FIELD_VALIDATORS[field]
+    
+    answer = answer.strip()
+    if not answer:
+        return True, None
+    
+    import re
+    numeric_match = re.match(r'^([0-9]*\.?[0-9]+)', answer)
+    if numeric_match:
+        answer = numeric_match.group(1)
+    
+    if validator_type == "integer":
+        try:
+            int(float(answer))
+            return True, None
+        except ValueError:
+            return False, f"Invalid input: '{answer}' is not a valid integer. {error_hint}"
+    
+    elif validator_type == "float":
+        try:
+            float(answer)
+            return True, None
+        except ValueError:
+            return False, f"Invalid input: '{answer}' is not a valid number. {error_hint}"
+    
+    return True, None
+
+
+def _get_field_key_from_question(question: 'PlannedQuestion') -> str:
+    """Get the field key used for validation from a PlannedQuestion."""
+    field_to_key = {
+        "inlets_outlets.inlets": "num_inlets",
+        "inlets_outlets.outlets": "num_outlets",
+        "constraints.min_radius_m": "min_channel_radius",
+        "constraints.min_clearance_m": "min_clearance",
+        "topology.target_terminals": "target_terminals",
+        "embedding_export.voxel_pitch_m": "voxel_pitch",
+    }
+    return field_to_key.get(question.field, question.field)
 
 
 def run_rule_based_capture(
@@ -1601,19 +1675,40 @@ def run_rule_based_capture(
         
         for q in questions:
             default_str = f" [{q.default_value}]" if q.default_value else ""
-            answer = input(f"  {q.question_text}{default_str}: ").strip()
+            field_key = _get_field_key_from_question(q)
             
-            if answer.lower() in ("quit", "exit"):
-                return requirements, collected_answers
+            max_validation_attempts = 3
+            for attempt in range(max_validation_attempts):
+                answer = input(f"  {q.question_text}{default_str}: ").strip()
+                
+                if answer.lower() in ("quit", "exit"):
+                    return requirements, collected_answers
+                
+                if answer.lower() == "use defaults":
+                    for prop in eval_result.proposed_defaults:
+                        _apply_default_to_requirements(requirements, prop)
+                        collected_answers[prop.field] = prop.value
+                    break
+                
+                if not answer and q.default_value:
+                    answer = q.default_value
+                
+                is_valid, error_msg = _validate_answer(field_key, answer)
+                if is_valid:
+                    break
+                else:
+                    print(f"  [Error] {error_msg}")
+                    if attempt < max_validation_attempts - 1:
+                        print(f"  Please try again ({max_validation_attempts - attempt - 1} attempts remaining).")
+                    else:
+                        print(f"  Using default value: {q.default_value}")
+                        answer = q.default_value if q.default_value else answer
+            else:
+                if answer.lower() == "use defaults":
+                    break
             
             if answer.lower() == "use defaults":
-                for prop in eval_result.proposed_defaults:
-                    _apply_default_to_requirements(requirements, prop)
-                    collected_answers[prop.field] = prop.value
                 break
-            
-            if not answer and q.default_value:
-                answer = q.default_value
             
             collected_answers[q.field] = answer
             _apply_answer_to_requirements(requirements, q.field, answer)
@@ -1770,6 +1865,92 @@ def _apply_answer_to_requirements(req: ObjectRequirements, field: str, value: An
                     ))
         except (ValueError, TypeError):
             pass
+    
+    elif field == "inlets_outlets.placement_rule":
+        if isinstance(value, str):
+            placement = value.lower().strip()
+            valid_placements = [
+                "x_min_face", "x_max_face", "y_min_face", "y_max_face",
+                "z_min_face", "z_max_face", "center", "custom"
+            ]
+            if placement in valid_placements:
+                req.inlets_outlets.placement_rule = placement
+                _apply_placement_to_inlets(req, placement)
+            else:
+                req.inlets_outlets.placement_rule = placement
+    
+    elif field == "inlets_outlets.outlet_placement":
+        if isinstance(value, str):
+            placement = value.lower().strip()
+            _apply_placement_to_outlets(req, placement)
+
+
+def _apply_placement_to_inlets(req: ObjectRequirements, placement: str) -> None:
+    """Apply placement rule to inlet positions based on domain size."""
+    if not req.inlets_outlets.inlets:
+        return
+    
+    domain_size = req.domain.size_m or (0.02, 0.06, 0.03)
+    x_size, y_size, z_size = domain_size
+    
+    placement_positions = {
+        "x_min_face": (0.0, y_size / 2, z_size / 2),
+        "x_max_face": (x_size, y_size / 2, z_size / 2),
+        "y_min_face": (x_size / 2, 0.0, z_size / 2),
+        "y_max_face": (x_size / 2, y_size, z_size / 2),
+        "z_min_face": (x_size / 2, y_size / 2, 0.0),
+        "z_max_face": (x_size / 2, y_size / 2, z_size),
+        "center": (x_size / 2, y_size / 2, z_size / 2),
+    }
+    
+    if placement in placement_positions:
+        base_pos = placement_positions[placement]
+        for i, inlet in enumerate(req.inlets_outlets.inlets):
+            offset = i * 0.002
+            inlet.position_m = (base_pos[0], base_pos[1] + offset, base_pos[2])
+
+
+def _apply_placement_to_outlets(req: ObjectRequirements, placement: str) -> None:
+    """Apply placement rule to outlet positions based on domain size and inlet placement."""
+    if not req.inlets_outlets.outlets:
+        return
+    
+    domain_size = req.domain.size_m or (0.02, 0.06, 0.03)
+    x_size, y_size, z_size = domain_size
+    
+    inlet_placement = req.inlets_outlets.placement_rule or "x_min_face"
+    
+    opposite_map = {
+        "x_min_face": "x_max_face",
+        "x_max_face": "x_min_face",
+        "y_min_face": "y_max_face",
+        "y_max_face": "y_min_face",
+        "z_min_face": "z_max_face",
+        "z_max_face": "z_min_face",
+        "center": "x_max_face",
+    }
+    
+    placement_positions = {
+        "x_min_face": (0.0, y_size / 2, z_size / 2),
+        "x_max_face": (x_size, y_size / 2, z_size / 2),
+        "y_min_face": (x_size / 2, 0.0, z_size / 2),
+        "y_max_face": (x_size / 2, y_size, z_size / 2),
+        "z_min_face": (x_size / 2, y_size / 2, 0.0),
+        "z_max_face": (x_size / 2, y_size / 2, z_size),
+    }
+    
+    if placement == "opposite_inlet":
+        placement = opposite_map.get(inlet_placement, "x_max_face")
+    elif placement == "same_face":
+        placement = inlet_placement
+    elif placement == "none":
+        return
+    
+    if placement in placement_positions:
+        base_pos = placement_positions[placement]
+        for i, outlet in enumerate(req.inlets_outlets.outlets):
+            offset = i * 0.002
+            outlet.position_m = (base_pos[0], base_pos[1] + offset, base_pos[2])
 
 
 # =============================================================================
@@ -1856,7 +2037,18 @@ class SingleAgentOrganGeneratorV2:
             )
     
     def run(self) -> ProjectContext:
-        """Run the complete workflow interactively."""
+        """Run the complete workflow interactively.
+        
+        Raises
+        ------
+        MissingCredentialsError
+            If LLM API credentials are missing
+        ProviderMisconfiguredError
+            If LLM provider is misconfigured
+        FatalLLMError
+            If LLM ping fails fatally
+        """
+        self._run_llm_preflight_check()
         self._print_header()
         
         while self.state != WorkflowState.COMPLETE:
@@ -1864,6 +2056,61 @@ class SingleAgentOrganGeneratorV2:
         
         self._print_completion()
         return self.context
+    
+    def _run_llm_preflight_check(self) -> None:
+        """Run LLM preflight check before starting the workflow.
+        
+        This prevents infinite loops when the LLM isn't properly configured
+        by performing hard readiness checks before any workflow starts.
+        
+        Raises
+        ------
+        MissingCredentialsError
+            If LLM API credentials are missing
+        ProviderMisconfiguredError
+            If LLM provider is misconfigured
+        FatalLLMError
+            If LLM ping fails fatally
+        """
+        if hasattr(self.agent, 'client') and self.agent.client is not None:
+            client = self.agent.client
+            if hasattr(client, 'config'):
+                config = client.config
+                provider = getattr(config, 'provider', None)
+                api_key = getattr(config, 'api_key', None)
+                api_base = getattr(config, 'api_base', None)
+                model = getattr(config, 'model', None)
+                
+                if provider:
+                    if self.verbose:
+                        print()
+                        print("=" * 60)
+                        print("  LLM Preflight Check")
+                        print("=" * 60)
+                    
+                    try:
+                        assert_llm_ready(
+                            provider=provider,
+                            api_key=api_key,
+                            api_base=api_base,
+                            model=model,
+                            skip_ping=False,
+                            verbose=self.verbose
+                        )
+                        if self.verbose:
+                            print()
+                    except (MissingCredentialsError, ProviderMisconfiguredError, FatalLLMError) as e:
+                        print()
+                        print("=" * 60)
+                        print("  LLM CONFIGURATION ERROR")
+                        print("=" * 60)
+                        print()
+                        print(f"Error: {e}")
+                        print()
+                        print("The workflow cannot proceed without a working LLM connection.")
+                        print("Please fix the configuration and try again.")
+                        print()
+                        raise
     
     def step(self, user_input: str) -> Tuple[WorkflowState, str]:
         """Process user input and advance workflow by one step."""
@@ -2462,6 +2709,9 @@ class SingleAgentOrganGeneratorV2:
         print("-" * 40)
         spec_summary = self.schema_manager.get_spec_summary()
         print(spec_summary)
+        
+        object_summary = generate_requirements_summary(obj.requirements)
+        print(object_summary)
         
         print()
         print("Requirements captured and saved.")

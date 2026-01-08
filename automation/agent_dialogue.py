@@ -925,6 +925,127 @@ def format_user_summary(
     return "\n".join(lines)
 
 
+def generate_requirements_summary(requirements: Any) -> str:
+    """
+    Generate a text summary of the object the system believes the user wants to generate.
+    
+    This function produces a human-readable summary of all captured requirements,
+    including domain specifications, inlet/outlet configuration, constraints,
+    topology settings, and export parameters.
+    
+    Parameters
+    ----------
+    requirements : ObjectRequirements
+        The captured requirements object from the workflow
+        
+    Returns
+    -------
+    str
+        A formatted text summary of the object to be generated
+    """
+    lines = []
+    
+    lines.append("")
+    lines.append("=" * 60)
+    lines.append("  OBJECT SUMMARY - What You're About to Generate")
+    lines.append("=" * 60)
+    lines.append("")
+    
+    if hasattr(requirements, 'identity') and requirements.identity:
+        if requirements.identity.name:
+            lines.append(f"Name: {requirements.identity.name}")
+        if requirements.identity.description:
+            lines.append(f"Description: {requirements.identity.description}")
+        lines.append("")
+    
+    lines.append("DOMAIN SPECIFICATION:")
+    if hasattr(requirements, 'domain') and requirements.domain:
+        domain = requirements.domain
+        domain_type = getattr(domain, 'type', 'box') or 'box'
+        lines.append(f"  Type: {domain_type}")
+        if domain.size_m:
+            size = domain.size_m
+            lines.append(f"  Size: {size[0]*1000:.1f} x {size[1]*1000:.1f} x {size[2]*1000:.1f} mm")
+    else:
+        lines.append("  [Using defaults]")
+    lines.append("")
+    
+    lines.append("INLET/OUTLET CONFIGURATION:")
+    if hasattr(requirements, 'inlets_outlets') and requirements.inlets_outlets:
+        io = requirements.inlets_outlets
+        num_inlets = len(io.inlets) if io.inlets else 0
+        num_outlets = len(io.outlets) if io.outlets else 0
+        lines.append(f"  Inlets: {num_inlets}")
+        lines.append(f"  Outlets: {num_outlets}")
+        if io.placement_rule:
+            lines.append(f"  Inlet Placement: {io.placement_rule}")
+        if io.inlets:
+            for i, inlet in enumerate(io.inlets):
+                pos = getattr(inlet, 'position_m', None)
+                if pos:
+                    lines.append(f"    Inlet {i+1}: position ({pos[0]*1000:.1f}, {pos[1]*1000:.1f}, {pos[2]*1000:.1f}) mm")
+        if io.outlets:
+            for i, outlet in enumerate(io.outlets):
+                pos = getattr(outlet, 'position_m', None)
+                if pos:
+                    lines.append(f"    Outlet {i+1}: position ({pos[0]*1000:.1f}, {pos[1]*1000:.1f}, {pos[2]*1000:.1f}) mm")
+    else:
+        lines.append("  [Not specified]")
+    lines.append("")
+    
+    lines.append("CONSTRAINTS:")
+    if hasattr(requirements, 'constraints') and requirements.constraints:
+        constraints = requirements.constraints
+        if constraints.min_radius_m:
+            lines.append(f"  Minimum channel radius: {constraints.min_radius_m*1000:.3f} mm")
+        if constraints.min_clearance_m:
+            lines.append(f"  Minimum clearance: {constraints.min_clearance_m*1000:.3f} mm")
+    else:
+        lines.append("  [Using defaults]")
+    lines.append("")
+    
+    lines.append("TOPOLOGY:")
+    if hasattr(requirements, 'topology') and requirements.topology:
+        topology = requirements.topology
+        if topology.target_terminals:
+            lines.append(f"  Target terminals: {topology.target_terminals}")
+        if topology.branching_style:
+            lines.append(f"  Branching style: {topology.branching_style}")
+    else:
+        lines.append("  [Using defaults]")
+    lines.append("")
+    
+    lines.append("GEOMETRY:")
+    if hasattr(requirements, 'geometry') and requirements.geometry:
+        geometry = requirements.geometry
+        if geometry.tortuosity is not None:
+            tortuosity_desc = "low" if geometry.tortuosity < 0.3 else "medium" if geometry.tortuosity < 0.7 else "high"
+            lines.append(f"  Tortuosity: {tortuosity_desc} ({geometry.tortuosity:.2f})")
+        if geometry.radius_profile:
+            lines.append(f"  Radius profile: {geometry.radius_profile}")
+        if geometry.symmetry_axis:
+            lines.append(f"  Symmetry axis: {geometry.symmetry_axis}")
+    else:
+        lines.append("  [Using defaults]")
+    lines.append("")
+    
+    lines.append("EXPORT SETTINGS:")
+    if hasattr(requirements, 'embedding_export') and requirements.embedding_export:
+        export = requirements.embedding_export
+        if export.voxel_pitch_m:
+            lines.append(f"  Voxel pitch: {export.voxel_pitch_m*1000:.3f} mm")
+        if export.stl_units:
+            lines.append(f"  STL units: {export.stl_units}")
+    else:
+        lines.append("  [Using defaults]")
+    
+    lines.append("")
+    lines.append("=" * 60)
+    lines.append("")
+    
+    return "\n".join(lines)
+
+
 def format_living_spec(
     understanding: UnderstandingReport,
     chosen_plan: Optional[PlanOption] = None,

@@ -104,11 +104,11 @@ def print_review_prompt(
         print()
     
     print("Actions:")
-    print("  run    - Execute the script now")
-    print("  done   - Skip execution (assume already run manually)")
-    print("  cancel - Cancel workflow, keep files")
-    print("  view   - View the script contents")
-    print("  edit   - Open script in editor (if available)")
+    print("  run (or yes/y) - Execute the script now")
+    print("  done           - Skip execution (assume already run manually)")
+    print("  cancel (or no/n) - Cancel workflow, keep files")
+    print("  view           - View the script contents")
+    print("  edit           - Open script in editor (if available)")
     print()
 
 
@@ -227,7 +227,7 @@ def interactive_review(
                 message="Cancelled by user interrupt",
             )
         
-        if response in ("run", "r"):
+        if response in ("run", "r", "yes", "y"):
             return ReviewResult(
                 action=ReviewAction.RUN,
                 should_execute=True,
@@ -242,7 +242,7 @@ def interactive_review(
                 message="User indicated script was run manually",
             )
         
-        elif response in ("cancel", "c", "quit", "exit", "q"):
+        elif response in ("cancel", "c", "quit", "exit", "q", "no", "n"):
             return ReviewResult(
                 action=ReviewAction.CANCEL,
                 should_execute=False,
@@ -271,7 +271,7 @@ def interactive_review(
         
         else:
             print(f"Unknown action: '{response}'")
-            print("Valid actions: run, done, cancel, view, edit")
+            print("Valid actions: run (yes/y), done, cancel (no/n), view, edit")
 
 
 def auto_review(skip_execution: bool = False) -> ReviewResult:
