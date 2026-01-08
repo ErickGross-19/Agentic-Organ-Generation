@@ -78,6 +78,26 @@ class FatalLLMError(LLMError):
     pass
 
 
+class QuotaExhaustedError(FatalLLMError):
+    """
+    Raised when API quota is exhausted or billing is disabled.
+    
+    This is a FATAL error, not transient. A quota=0 or billing-disabled 429
+    means the project cannot call the model at all, unlike a transient rate
+    limit which can be retried.
+    """
+    
+    def __init__(self, provider: str, message: Optional[str] = None):
+        self.provider = provider
+        if message is None:
+            message = (
+                f"API quota exhausted or billing disabled for provider '{provider}'. "
+                f"This is a permanent error - the project cannot make API calls.\n"
+                f"Please check your billing settings and quota limits."
+            )
+        super().__init__(message)
+
+
 # =============================================================================
 # Retry Configuration
 # =============================================================================
@@ -114,6 +134,12 @@ PROVIDER_ENV_VARS = {
     "groq": "GROQ_API_KEY",
     "devin": "DEVIN_API_KEY",
     "local": None,  # Local doesn't require API key but needs api_base
+}
+
+# Alternative env vars that are also accepted for certain providers
+PROVIDER_ALT_ENV_VARS = {
+    "google": ["GEMINI_API_KEY"],
+    "gemini": ["GEMINI_API_KEY"],
 }
 
 PROVIDER_DEFAULT_MODELS = {
@@ -182,10 +208,22 @@ def check_credentials(provider: str, api_key: Optional[str] = None) -> None:
     if api_key:
         return
     
+    # Check primary env var
     if env_var and os.environ.get(env_var):
         return
     
-    raise MissingCredentialsError(provider=provider, env_var=env_var)
+    # Check alternative env vars (e.g., GEMINI_API_KEY for google/gemini)
+    alt_env_vars = PROVIDER_ALT_ENV_VARS.get(provider_lower, [])
+    for alt_var in alt_env_vars:
+        if os.environ.get(alt_var):
+            return
+    
+    # Build helpful error message listing all accepted env vars
+    all_vars = [env_var] if env_var else []
+    all_vars.extend(alt_env_vars)
+    env_var_str = " or ".join(all_vars) if all_vars else "API_KEY"
+    
+    raise MissingCredentialsError(provider=provider, env_var=env_var_str)
 
 
 def check_provider_config(
@@ -269,6 +307,13 @@ def ping_llm(
         env_var = PROVIDER_ENV_VARS.get(provider_lower)
         if env_var:
             api_key = os.environ.get(env_var)
+        # Check alternative env vars (e.g., GEMINI_API_KEY for google/gemini)
+        if not api_key:
+            alt_env_vars = PROVIDER_ALT_ENV_VARS.get(provider_lower, [])
+            for alt_var in alt_env_vars:
+                api_key = os.environ.get(alt_var)
+                if api_key:
+                    break
     
     config = LLMConfig(
         provider=provider,
@@ -301,8 +346,32 @@ def ping_llm(
     except Exception as e:
         error_str = str(e).lower()
         
-        # Check for transient errors
-        if any(term in error_str for term in ["timeout", "rate limit", "429", "503", "502"]):
+        # Check for quota exhaustion / billing disabled errors FIRST
+        # These are FATAL, not transient - the project cannot make API calls at all
+        quota_indicators = [
+            "quota",
+            "billing",
+            "limit=0",
+            "requests limit 0",
+            "free_tier_limit",
+            "exceeded your current quota",
+            "insufficient_quota",
+            "billing_not_active",
+            "billing hard limit",
+            "you exceeded your current quota",
+            "resource has been exhausted",
+        ]
+        if any(term in error_str for term in quota_indicators):
+            raise QuotaExhaustedError(
+                provider=provider,
+                message=f"API quota exhausted or billing disabled: {e}"
+            )
+        
+        # Check for transient rate limit errors (NOT quota exhaustion)
+        # A transient 429 is "try again later"; quota=0 is "cannot call at all"
+        transient_indicators = ["timeout", "503", "502", "temporarily unavailable", "overloaded"]
+        rate_limit_transient = "429" in error_str and not any(q in error_str for q in quota_indicators)
+        if any(term in error_str for term in transient_indicators) or rate_limit_transient:
             raise TransientLLMError(f"Ping failed with transient error: {e}")
         
         # Check for credential errors
@@ -546,7 +615,7 @@ def get_provider_setup_instructions(provider: str) -> str:
     elif provider_lower in ("google", "gemini"):
         instructions.extend([
             "1. Get an API key from https://makersuite.google.com/app/apikey",
-            f"2. Set the environment variable: export {env_var}=...",
+            f"2. Set the environment variable: export {env_var}=... OR export GEMINI_API_KEY=...",
             "3. Or pass api_key='...' when creating the client",
         ])
     elif provider_lower == "mistral":

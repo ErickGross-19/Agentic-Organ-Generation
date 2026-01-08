@@ -61,7 +61,35 @@ from .script_writer import write_script, get_run_command
 from .review_gate import run_review_gate, ReviewAction
 from .subprocess_runner import run_script, print_run_summary
 from .artifact_verifier import verify_generation_stage, save_manifest, print_verification_summary
-from .llm_healthcheck import assert_llm_ready, MissingCredentialsError, ProviderMisconfiguredError, FatalLLMError
+from .llm_healthcheck import assert_llm_ready, MissingCredentialsError, ProviderMisconfiguredError, FatalLLMError, QuotaExhaustedError
+
+
+class WorkflowStuckError(Exception):
+    """
+    Raised when the workflow is stuck in an infinite loop.
+    
+    This error provides diagnostic information about why the workflow
+    is stuck, such as repeated state/question combinations.
+    """
+    
+    def __init__(
+        self,
+        state: str,
+        question_id: Optional[str],
+        repetition_count: int,
+        diagnosis: str,
+    ):
+        self.state = state
+        self.question_id = question_id
+        self.repetition_count = repetition_count
+        self.diagnosis = diagnosis
+        message = (
+            f"Workflow stuck: state '{state}' "
+            f"(question: {question_id or 'N/A'}) "
+            f"repeated {repetition_count} times.\n"
+            f"Diagnosis: {diagnosis}"
+        )
+        super().__init__(message)
 from .agent_dialogue import (
     understand_object,
     propose_plans,
@@ -2005,6 +2033,12 @@ class SingleAgentOrganGeneratorV2:
         
         self.prompt_session = ReactivePromptSession()
         
+        # Progress watchdog: track (state, question_id) repetition counts
+        # to detect infinite loops and provide clear diagnostics
+        self._state_repetition_counts: Dict[Tuple[str, Optional[str]], int] = {}
+        self._max_state_repetitions: int = 5  # Stop if same state/question repeated > N times
+        self._last_state_key: Optional[Tuple[str, Optional[str]]] = None
+        
         os.makedirs(base_output_dir, exist_ok=True)
     
     def _assert_schema_manager_interface(self) -> None:
@@ -2047,15 +2081,122 @@ class SingleAgentOrganGeneratorV2:
             If LLM provider is misconfigured
         FatalLLMError
             If LLM ping fails fatally
+        WorkflowStuckError
+            If the workflow is stuck in an infinite loop
         """
         self._run_llm_preflight_check()
         self._print_header()
         
         while self.state != WorkflowState.COMPLETE:
+            # Progress watchdog: check for infinite loops
+            self._check_progress_watchdog()
             self._run_state()
         
         self._print_completion()
         return self.context
+    
+    def _check_progress_watchdog(self) -> None:
+        """
+        Check if the workflow is stuck in an infinite loop.
+        
+        Tracks (state, question_id) combinations and raises WorkflowStuckError
+        if the same combination is repeated too many times without progress.
+        
+        Raises
+        ------
+        WorkflowStuckError
+            If the workflow is stuck (same state/question repeated > max times)
+        """
+        # Build current state key: (state_name, current_question_id)
+        question_id = None
+        if self.current_question_group:
+            question_id = f"{self.current_question_group}:{self.current_question_index}"
+        
+        state_key = (self.state.value, question_id)
+        
+        # Check if this is the same state as last iteration
+        if state_key == self._last_state_key:
+            # Increment repetition count
+            self._state_repetition_counts[state_key] = (
+                self._state_repetition_counts.get(state_key, 0) + 1
+            )
+            
+            repetition_count = self._state_repetition_counts[state_key]
+            
+            if repetition_count > self._max_state_repetitions:
+                # Diagnose the issue
+                diagnosis = self._diagnose_stuck_workflow(state_key)
+                
+                # Print diagnostic message
+                print()
+                print("=" * 60)
+                print("  WORKFLOW STUCK - INFINITE LOOP DETECTED")
+                print("=" * 60)
+                print()
+                print(f"State: {self.state.value}")
+                print(f"Question: {question_id or 'N/A'}")
+                print(f"Repetitions: {repetition_count}")
+                print()
+                print("Diagnosis:")
+                print(f"  {diagnosis}")
+                print()
+                
+                raise WorkflowStuckError(
+                    state=self.state.value,
+                    question_id=question_id,
+                    repetition_count=repetition_count,
+                    diagnosis=diagnosis,
+                )
+        else:
+            # State changed, reset tracking for new state
+            self._last_state_key = state_key
+            # Keep history but don't reset - we want to detect oscillations too
+    
+    def _diagnose_stuck_workflow(self, state_key: Tuple[str, Optional[str]]) -> str:
+        """
+        Diagnose why the workflow is stuck.
+        
+        Returns a human-readable diagnosis string.
+        """
+        state_name, question_id = state_key
+        
+        # Check for common issues
+        diagnostics = []
+        
+        # Check if LLM is reachable
+        if hasattr(self.agent, 'client') and self.agent.client is not None:
+            diagnostics.append("LLM client is configured")
+        else:
+            diagnostics.append("LLM client may not be properly configured")
+        
+        # Check for missing required fields
+        if hasattr(self, 'schema_manager'):
+            try:
+                missing = self.schema_manager.missing_required_fields()
+                if missing:
+                    diagnostics.append(f"Missing required fields: {', '.join(missing)}")
+            except Exception:
+                pass
+        
+        # Check current object state
+        current_obj = self.context.get_current_object()
+        if current_obj:
+            diagnostics.append(f"Current object: {current_obj.name} (status: {current_obj.status})")
+        else:
+            diagnostics.append("No current object selected")
+        
+        # Check for parse failures (indicated by repeated questions)
+        if question_id:
+            diagnostics.append(
+                f"Question '{question_id}' is being repeated - "
+                "likely due to invalid input parsing or validation failure"
+            )
+        
+        # Build diagnosis message
+        if not diagnostics:
+            return "Unknown cause - workflow is stuck without clear reason"
+        
+        return "; ".join(diagnostics)
     
     def _run_llm_preflight_check(self) -> None:
         """Run LLM preflight check before starting the workflow.
@@ -2218,8 +2359,21 @@ class SingleAgentOrganGeneratorV2:
         print("-" * 40)
         print()
         
-        project_name = input("Project name: ").strip()
-        if project_name.lower() in ("quit", "exit"):
+        project_name_help = create_question_help(
+            question_id="project_name",
+            question_text="Project name",
+            default_value=f"project_{int(time.time())}",
+            why_asking="The project name is used to create a folder for all outputs and to identify this generation session.",
+            examples=["liver_vasculature", "kidney_network", "test_run_001"],
+        )
+        project_name, intent = self.prompt_session.ask_until_answer(
+            question_id="project_name",
+            question_text="Project name",
+            default_value=f"project_{int(time.time())}",
+            help_info=project_name_help,
+            show_context=False,
+        )
+        if intent == TurnIntent.CANCEL:
             self.state = WorkflowState.COMPLETE
             return
         
@@ -2236,11 +2390,23 @@ class SingleAgentOrganGeneratorV2:
         os.makedirs(self.context.output_dir, exist_ok=True)
         os.makedirs(os.path.join(self.context.output_dir, "objects"), exist_ok=True)
         
-        output_dir_input = input(f"Output directory [{self.context.output_dir}]: ").strip()
-        if output_dir_input.lower() in ("quit", "exit"):
+        output_dir_help = create_question_help(
+            question_id="output_dir",
+            question_text="Output directory",
+            default_value=self.context.output_dir,
+            why_asking="The output directory is where all generated files, meshes, and reports will be saved.",
+        )
+        output_dir_input, intent = self.prompt_session.ask_until_answer(
+            question_id="output_dir",
+            question_text=f"Output directory",
+            default_value=self.context.output_dir,
+            help_info=output_dir_help,
+            show_context=False,
+        )
+        if intent == TurnIntent.CANCEL:
             self.state = WorkflowState.COMPLETE
             return
-        if output_dir_input:
+        if output_dir_input and output_dir_input != self.context.output_dir:
             self.context.output_dir = output_dir_input
             os.makedirs(self.context.output_dir, exist_ok=True)
             os.makedirs(os.path.join(self.context.output_dir, "objects"), exist_ok=True)
@@ -2295,15 +2461,40 @@ class SingleAgentOrganGeneratorV2:
                 self.context.units_export = units_answer
                 self.prompt_session.show_change_summary("units_export", None, units_answer)
             
-            domain_input = input("Default embed domain (L,W,H in meters): ").strip()
-            if domain_input:
+            def validate_domain_input(value: str) -> Tuple[bool, str]:
+                """Validate domain input format (L,W,H in meters)."""
+                if not value:
+                    return True, ""  # Empty is OK, keeps default
                 try:
-                    parts = [float(x.strip()) for x in domain_input.split(",")]
-                    if len(parts) == 3:
-                        self.context.default_embed_domain = tuple(parts)
-                        self.prompt_session.show_change_summary("default_embed_domain", None, tuple(parts))
+                    parts = [float(x.strip()) for x in value.split(",")]
+                    if len(parts) != 3:
+                        return False, "Expected 3 values (L,W,H) separated by commas"
+                    if any(p <= 0 for p in parts):
+                        return False, "All dimensions must be positive"
+                    return True, ""
                 except ValueError:
-                    print("Invalid format, keeping default.")
+                    return False, "Invalid number format. Use comma-separated decimals (e.g., 0.02,0.06,0.03)"
+            
+            domain_help = create_question_help(
+                question_id="default_embed_domain",
+                question_text="Default embed domain (L,W,H in meters)",
+                default_value=f"{self.context.default_embed_domain[0]},{self.context.default_embed_domain[1]},{self.context.default_embed_domain[2]}",
+                why_asking="The embed domain defines the bounding box for the generated structure.",
+                examples=["0.02,0.06,0.03", "0.05,0.05,0.05"],
+            )
+            domain_input, _ = self.prompt_session.ask_until_answer(
+                question_id="default_embed_domain",
+                question_text="Default embed domain (L,W,H in meters)",
+                default_value=f"{self.context.default_embed_domain[0]},{self.context.default_embed_domain[1]},{self.context.default_embed_domain[2]}",
+                help_info=domain_help,
+                validator=validate_domain_input,
+                show_context=False,
+            )
+            if domain_input:
+                parts = [float(x.strip()) for x in domain_input.split(",")]
+                if len(parts) == 3:
+                    self.context.default_embed_domain = tuple(parts)
+                    self.prompt_session.show_change_summary("default_embed_domain", None, tuple(parts))
             
             flow_help = create_question_help(
                 question_id="flow_solver",
@@ -2337,34 +2528,83 @@ class SingleAgentOrganGeneratorV2:
         print("-" * 40)
         print()
         
-        num_objects_input = input("How many objects in this project? [1]: ").strip()
-        if num_objects_input.lower() in ("quit", "exit"):
+        def validate_num_objects(value: str) -> Tuple[bool, str]:
+            """Validate number of objects input."""
+            if not value:
+                return True, ""  # Empty is OK, defaults to 1
+            try:
+                n = int(value)
+                if n < 1:
+                    return False, "Number of objects must be at least 1"
+                if n > 100:
+                    return False, "Maximum 100 objects per project"
+                return True, ""
+            except ValueError:
+                return False, "Please enter a valid integer"
+        
+        num_objects_help = create_question_help(
+            question_id="num_objects",
+            question_text="How many objects in this project?",
+            default_value="1",
+            why_asking="Each object represents a separate vascular network to generate. Multiple objects can be variants of the same design or completely different structures.",
+        )
+        num_objects_input, intent = self.prompt_session.ask_until_answer(
+            question_id="num_objects",
+            question_text="How many objects in this project?",
+            default_value="1",
+            help_info=num_objects_help,
+            validator=validate_num_objects,
+            show_context=False,
+        )
+        if intent == TurnIntent.CANCEL:
             self.state = WorkflowState.COMPLETE
             return
         
-        try:
-            num_objects = int(num_objects_input) if num_objects_input else 1
-        except ValueError:
-            num_objects = 1
-            print("Invalid number, using 1 object.")
-        
+        num_objects = int(num_objects_input) if num_objects_input else 1
         if num_objects < 1:
             num_objects = 1
         
         if num_objects > 1:
-            variant_input = input("Variants of same concept or different objects? (variants/different): ").strip().lower()
-            if variant_input.lower() in ("quit", "exit"):
+            variant_help = create_question_help(
+                question_id="variant_mode",
+                question_text="Variants of same concept or different objects?",
+                default_value="different",
+                options=["variants", "different"],
+                why_asking="Variants share the same base design with parameter variations. Different objects are independent designs.",
+            )
+            variant_input, intent = self.prompt_session.ask_until_answer(
+                question_id="variant_mode",
+                question_text="Variants of same concept or different objects? (variants/different)",
+                default_value="different",
+                allowed_values=["variants", "different", "v", "d"],
+                help_info=variant_help,
+                show_context=False,
+            )
+            if intent == TurnIntent.CANCEL:
                 self.state = WorkflowState.COMPLETE
                 return
-            self.context.variant_mode = variant_input.startswith("v")
+            self.context.variant_mode = variant_input.lower().startswith("v")
         
         print()
         print("Give each object a short name (or press Enter for auto-generated slugs):")
         
         for i in range(num_objects):
             default_name = f"object_{i+1:03d}"
-            name_input = input(f"  Object {i+1} name [{default_name}]: ").strip()
-            if name_input.lower() in ("quit", "exit"):
+            name_help = create_question_help(
+                question_id=f"object_name_{i+1}",
+                question_text=f"Object {i+1} name",
+                default_value=default_name,
+                why_asking="The object name is used to identify this structure and create its output folder.",
+                examples=["liver_arterial", "kidney_network", "test_bifurcation"],
+            )
+            name_input, intent = self.prompt_session.ask_until_answer(
+                question_id=f"object_name_{i+1}",
+                question_text=f"  Object {i+1} name",
+                default_value=default_name,
+                help_info=name_help,
+                show_context=False,
+            )
+            if intent == TurnIntent.CANCEL:
                 self.state = WorkflowState.COMPLETE
                 return
             
@@ -2571,32 +2811,118 @@ class SingleAgentOrganGeneratorV2:
         
         frame = obj.requirements.frame_of_reference
         
-        origin_input = input("Use domain center as (0,0,0)? (yes/no) [yes]: ").strip().lower()
-        if origin_input in ("quit", "exit"):
+        origin_help = create_question_help(
+            question_id="use_domain_center",
+            question_text="Use domain center as (0,0,0)?",
+            default_value="yes",
+            options=["yes", "no"],
+            why_asking="The origin defines where (0,0,0) is located. Domain center is the most common choice.",
+        )
+        origin_answer, intent = self.prompt_session.ask_yes_no(
+            question_id="use_domain_center",
+            question_text="Use domain center as (0,0,0)?",
+            default=True,
+            help_info=origin_help,
+        )
+        if intent == TurnIntent.CANCEL:
             self.state = WorkflowState.COMPLETE
             return
-        if origin_input in ("no", "n"):
+        if not origin_answer:
             frame.origin = "custom"
-            custom_origin = input("Specify origin (x,y,z in meters): ").strip()
+            def validate_origin(value: str) -> Tuple[bool, str]:
+                if not value:
+                    return True, ""
+                try:
+                    parts = [float(x.strip()) for x in value.split(",")]
+                    if len(parts) != 3:
+                        return False, "Expected 3 values (x,y,z) separated by commas"
+                    return True, ""
+                except ValueError:
+                    return False, "Invalid number format"
+            
+            custom_origin_help = create_question_help(
+                question_id="custom_origin",
+                question_text="Specify origin (x,y,z in meters)",
+                why_asking="Custom origin allows you to define where (0,0,0) is located.",
+                examples=["0,0,0", "0.01,0.03,0.015"],
+            )
+            custom_origin, _ = self.prompt_session.ask_until_answer(
+                question_id="custom_origin",
+                question_text="Specify origin (x,y,z in meters)",
+                help_info=custom_origin_help,
+                validator=validate_origin,
+                show_context=False,
+            )
             if custom_origin:
                 frame.origin = custom_origin
         
         print()
         print("Which axis is which for you?")
         print("  Default: X=width (left-right), Y=depth (front-back), Z=height (up-down)")
-        change_axes = input("Change axis mapping? (yes/no) [no]: ").strip().lower()
-        if change_axes in ("quit", "exit"):
+        change_axes_help = create_question_help(
+            question_id="change_axes",
+            question_text="Change axis mapping?",
+            default_value="no",
+            options=["yes", "no"],
+            why_asking="Axis mapping defines how X, Y, Z correspond to width, depth, and height.",
+        )
+        change_axes_answer, intent = self.prompt_session.ask_yes_no(
+            question_id="change_axes",
+            question_text="Change axis mapping?",
+            default=False,
+            help_info=change_axes_help,
+        )
+        if intent == TurnIntent.CANCEL:
             self.state = WorkflowState.COMPLETE
             return
-        if change_axes in ("yes", "y"):
-            x_axis = input("X axis represents (width/depth/height) [width]: ").strip().lower() or "width"
-            y_axis = input("Y axis represents (width/depth/height) [depth]: ").strip().lower() or "depth"
-            z_axis = input("Z axis represents (width/depth/height) [height]: ").strip().lower() or "height"
-            frame.axes = {"x": x_axis, "y": y_axis, "z": z_axis}
+        if change_axes_answer:
+            x_axis_help = create_question_help(
+                question_id="x_axis",
+                question_text="X axis represents",
+                default_value="width",
+                options=["width", "depth", "height"],
+            )
+            x_axis, _ = self.prompt_session.ask_until_answer(
+                question_id="x_axis",
+                question_text="X axis represents (width/depth/height)",
+                default_value="width",
+                allowed_values=["width", "depth", "height"],
+                help_info=x_axis_help,
+                show_context=False,
+            )
+            y_axis, _ = self.prompt_session.ask_until_answer(
+                question_id="y_axis",
+                question_text="Y axis represents (width/depth/height)",
+                default_value="depth",
+                allowed_values=["width", "depth", "height"],
+                show_context=False,
+            )
+            z_axis, _ = self.prompt_session.ask_until_answer(
+                question_id="z_axis",
+                question_text="Z axis represents (width/depth/height)",
+                default_value="height",
+                allowed_values=["width", "depth", "height"],
+                show_context=False,
+            )
+            frame.axes = {"x": x_axis or "width", "y": y_axis or "depth", "z": z_axis or "height"}
         
         print()
-        viewpoint = input("Viewpoint for left/right? (front/top/side) [front]: ").strip().lower()
-        if viewpoint in ("quit", "exit"):
+        viewpoint_help = create_question_help(
+            question_id="viewpoint",
+            question_text="Viewpoint for left/right?",
+            default_value="front",
+            options=["front", "top", "side"],
+            why_asking="The viewpoint determines how 'left' and 'right' are interpreted.",
+        )
+        viewpoint, intent = self.prompt_session.ask_until_answer(
+            question_id="viewpoint",
+            question_text="Viewpoint for left/right? (front/top/side)",
+            default_value="front",
+            allowed_values=["front", "top", "side"],
+            help_info=viewpoint_help,
+            show_context=False,
+        )
+        if intent == TurnIntent.CANCEL:
             self.state = WorkflowState.COMPLETE
             return
         if viewpoint in ("front", "top", "side"):
@@ -2719,11 +3045,23 @@ class SingleAgentOrganGeneratorV2:
         
         print()
         print("Please confirm these requirements are accurate before we generate.")
-        confirm = input("Proceed with generation? (yes/no) [yes]: ").strip().lower()
-        if confirm in ("quit", "exit"):
+        confirm_help = create_question_help(
+            question_id="proceed_generation",
+            question_text="Proceed with generation?",
+            default_value="yes",
+            options=["yes", "no"],
+            why_asking="Confirming requirements before generation ensures the design matches your intent.",
+        )
+        confirm_answer, intent = self.prompt_session.ask_yes_no(
+            question_id="proceed_generation",
+            question_text="Proceed with generation?",
+            default=True,
+            help_info=confirm_help,
+        )
+        if intent == TurnIntent.CANCEL:
             self.state = WorkflowState.COMPLETE
             return
-        if confirm in ("no", "n"):
+        if not confirm_answer:
             print("\nRestarting requirements capture...")
             obj.requirements = ObjectRequirements()
             obj.requirements.identity.object_name = obj.name
@@ -2973,8 +3311,20 @@ Provide complete, runnable Python code in a ```python code block."""
             print(f"\nLLM failed to generate script: {result.error}")
             obj.status = "failed"
             
-            retry = input("Retry with adjusted parameters? (yes/no) [yes]: ").strip().lower()
-            if retry in ("no", "n"):
+            retry_help = create_question_help(
+                question_id="retry_generation",
+                question_text="Retry with adjusted parameters?",
+                default_value="yes",
+                options=["yes", "no"],
+                why_asking="Retrying allows you to adjust parameters and try again.",
+            )
+            retry_answer, intent = self.prompt_session.ask_yes_no(
+                question_id="retry_generation",
+                question_text="Retry with adjusted parameters?",
+                default=True,
+                help_info=retry_help,
+            )
+            if intent == TurnIntent.CANCEL or not retry_answer:
                 self._move_to_next_object_or_complete()
             else:
                 self.state = WorkflowState.REQUIREMENTS_CAPTURE
@@ -3055,8 +3405,20 @@ Provide complete, runnable Python code in a ```python code block."""
                     print(f"\nScript execution failed")
                     obj.status = "failed"
                     
-                    retry = input("Retry with adjusted parameters? (yes/no) [yes]: ").strip().lower()
-                    if retry in ("no", "n"):
+                    retry_help = create_question_help(
+                        question_id="retry_execution",
+                        question_text="Retry with adjusted parameters?",
+                        default_value="yes",
+                        options=["yes", "no"],
+                        why_asking="Retrying allows you to adjust parameters and try again.",
+                    )
+                    retry_answer, intent = self.prompt_session.ask_yes_no(
+                        question_id="retry_execution",
+                        question_text="Retry with adjusted parameters?",
+                        default=True,
+                        help_info=retry_help,
+                    )
+                    if intent == TurnIntent.CANCEL or not retry_answer:
                         self._move_to_next_object_or_complete()
                     else:
                         self.state = WorkflowState.REQUIREMENTS_CAPTURE
@@ -3084,8 +3446,20 @@ Provide complete, runnable Python code in a ```python code block."""
                     print("\nArtifact verification failed")
                     obj.status = "failed"
                     
-                    retry = input("Retry with adjusted parameters? (yes/no) [yes]: ").strip().lower()
-                    if retry in ("no", "n"):
+                    retry_help = create_question_help(
+                        question_id="retry_verification",
+                        question_text="Retry with adjusted parameters?",
+                        default_value="yes",
+                        options=["yes", "no"],
+                        why_asking="Retrying allows you to adjust parameters and try again.",
+                    )
+                    retry_answer, intent = self.prompt_session.ask_yes_no(
+                        question_id="retry_verification",
+                        question_text="Retry with adjusted parameters?",
+                        default=True,
+                        help_info=retry_help,
+                    )
+                    if intent == TurnIntent.CANCEL or not retry_answer:
                         self._move_to_next_object_or_complete()
                     else:
                         self.state = WorkflowState.REQUIREMENTS_CAPTURE
@@ -3236,23 +3610,45 @@ Provide complete analysis results."""
         print("To visualize, open the STL file in a 3D viewer (MeshLab, Blender, etc.)")
         print()
         
-        response = input("Is this structure acceptable? (yes/no): ").strip().lower()
+        accept_help = create_question_help(
+            question_id="accept_structure",
+            question_text="Is this structure acceptable?",
+            options=["yes", "no"],
+            why_asking="If acceptable, the workflow will finalize the structure. If not, you can provide feedback for improvements.",
+        )
+        accept_answer, intent = self.prompt_session.ask_yes_no(
+            question_id="accept_structure",
+            question_text="Is this structure acceptable?",
+            default=None,  # No default - user must explicitly choose
+            help_info=accept_help,
+        )
         
-        if response in ("quit", "exit"):
+        if intent == TurnIntent.CANCEL:
             self.state = WorkflowState.COMPLETE
             return
         
-        if response in ("yes", "y"):
+        if accept_answer:
             obj.status = "accepted"
             self.state = WorkflowState.FINALIZATION
-        elif response in ("no", "n"):
+        else:
             print()
             print("Please describe what's wrong and what changes you'd like:")
             print("Examples: 'denser near top', 'avoid crossing', 'bigger outlet', 'more symmetry'")
             
-            feedback = input("Feedback: ").strip()
+            feedback_help = create_question_help(
+                question_id="iteration_feedback",
+                question_text="Feedback",
+                why_asking="Your feedback helps the system understand what to improve in the next iteration.",
+                examples=["denser near top", "avoid crossing", "bigger outlet", "more symmetry"],
+            )
+            feedback, intent = self.prompt_session.ask_until_answer(
+                question_id="iteration_feedback",
+                question_text="Feedback",
+                help_info=feedback_help,
+                show_context=False,
+            )
             
-            if feedback.lower() in ("quit", "exit"):
+            if intent == TurnIntent.CANCEL:
                 self.state = WorkflowState.COMPLETE
                 return
             
@@ -3273,8 +3669,6 @@ Provide complete analysis results."""
             print(f"\nThank you for your feedback. Regenerating (v{obj.version})...")
             
             self.state = WorkflowState.SPEC_COMPILATION
-        else:
-            print("Please answer 'yes' or 'no'.")
     
     def _run_finalization(self) -> None:
         """Run FINALIZATION state: Embed and produce final outputs."""
