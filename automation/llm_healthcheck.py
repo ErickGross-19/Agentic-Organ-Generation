@@ -320,7 +320,7 @@ def ping_llm(
         model=model,
         api_key=api_key,
         api_base=api_base,
-        max_tokens=10,
+        max_tokens=32,  # Use 32 to reduce edge cases with "max_tokens" finish reason
         temperature=0.0,
     )
     
@@ -331,7 +331,7 @@ def ping_llm(
     try:
         response = client.chat(
             message="Reply with exactly: OK",
-            max_tokens=10,
+            max_tokens=32,  # Use 32 to reduce edge cases with "max_tokens" finish reason
             temperature=0.0,
         )
         
