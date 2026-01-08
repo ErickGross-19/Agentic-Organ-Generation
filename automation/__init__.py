@@ -40,6 +40,53 @@ Example:
 
 from .agent_runner import AgentRunner, AgentConfig, TaskResult, create_agent
 from .llm_client import LLMClient, LLMConfig
+from .execution_modes import (
+    ExecutionMode,
+    DEFAULT_EXECUTION_MODE,
+    parse_execution_mode,
+    should_write_script,
+    should_pause_for_review,
+    should_execute,
+    get_mode_description,
+)
+from .script_artifacts import (
+    ArtifactProfile,
+    ArtifactManifest,
+    ArtifactsJson,
+    generation_expected_files,
+    analysis_expected_files,
+    final_expected_files,
+    get_artifact_profile,
+)
+from .script_writer import (
+    write_script,
+    get_run_command,
+    extract_code_block,
+    scan_for_suspicious_patterns,
+    ScriptWriteResult,
+)
+from .review_gate import (
+    ReviewAction,
+    ReviewResult,
+    run_review_gate,
+    interactive_review,
+    auto_review,
+)
+from .subprocess_runner import (
+    run_script,
+    RunResult,
+    print_run_summary,
+    DEFAULT_TIMEOUT_SECONDS,
+)
+from .artifact_verifier import (
+    verify_artifacts,
+    verify_generation_stage,
+    verify_final_stage,
+    save_manifest,
+    print_verification_summary,
+    VerificationResult,
+    FileCheckResult,
+)
 from .workflow import (
     SingleAgentOrganGeneratorV1,
     WorkflowState,
@@ -72,12 +119,55 @@ from .workflow import (
 )
 
 __all__ = [
+    # Core agent components
     "AgentRunner",
     "AgentConfig",
     "TaskResult",
     "LLMClient",
     "LLMConfig",
     "create_agent",
+    # Execution modes
+    "ExecutionMode",
+    "DEFAULT_EXECUTION_MODE",
+    "parse_execution_mode",
+    "should_write_script",
+    "should_pause_for_review",
+    "should_execute",
+    "get_mode_description",
+    # Script artifacts
+    "ArtifactProfile",
+    "ArtifactManifest",
+    "ArtifactsJson",
+    "generation_expected_files",
+    "analysis_expected_files",
+    "final_expected_files",
+    "get_artifact_profile",
+    # Script writer
+    "write_script",
+    "get_run_command",
+    "extract_code_block",
+    "scan_for_suspicious_patterns",
+    "ScriptWriteResult",
+    # Review gate
+    "ReviewAction",
+    "ReviewResult",
+    "run_review_gate",
+    "interactive_review",
+    "auto_review",
+    # Subprocess runner
+    "run_script",
+    "RunResult",
+    "print_run_summary",
+    "DEFAULT_TIMEOUT_SECONDS",
+    # Artifact verifier
+    "verify_artifacts",
+    "verify_generation_stage",
+    "verify_final_stage",
+    "save_manifest",
+    "print_verification_summary",
+    "VerificationResult",
+    "FileCheckResult",
+    # Workflow
     "SingleAgentOrganGeneratorV1",
     "WorkflowState",
     "ProjectContext",
