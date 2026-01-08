@@ -2217,10 +2217,14 @@ class SingleAgentOrganGeneratorV2:
             show_context=False,
         )
         
-        if choice_intent == TurnIntent.CANCEL:
+        if choice_intent in (TurnIntent.CANCEL, TurnIntent.BACK):
             return False
         
         choice = choice.upper()
+        if choice not in plan_options:
+            print(f"Invalid choice '{choice}'. Please choose from: {', '.join(plan_options)}")
+            return False
+        
         if choice in plan_options:
             plan_index = ord(choice) - ord('A')
             self.chosen_plan = self.current_plans[plan_index]
