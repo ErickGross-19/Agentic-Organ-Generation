@@ -289,8 +289,16 @@ class ZoneDensity:
 
 @dataclass
 class TopologySection:
-    """Section 5: Topology intent."""
+    """Section 5: Topology intent.
+    
+    topology_kind determines which questions are relevant:
+    - "path": Simple inlet→outlet channel, no branching questions
+    - "tree": Full tree structure, all branching/terminal questions relevant
+    - "loop": Looping structure with recirculation
+    - "multi_tree": Multiple independent trees
+    """
     style: str = "tree"
+    topology_kind: str = "tree"  # "path", "tree", "loop", "multi_tree"
     target_terminals: Optional[int] = None
     max_depth: Optional[int] = None
     branching_factor_range: Tuple[int, int] = (2, 2)
@@ -299,6 +307,7 @@ class TopologySection:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "style": self.style,
+            "topology_kind": self.topology_kind,
             "target_terminals": self.target_terminals,
             "max_depth": self.max_depth,
             "branching_factor_range": list(self.branching_factor_range),
@@ -309,6 +318,7 @@ class TopologySection:
     def from_dict(cls, d: Dict[str, Any]) -> "TopologySection":
         return cls(
             style=d.get("style", "tree"),
+            topology_kind=d.get("topology_kind", "tree"),
             target_terminals=d.get("target_terminals"),
             max_depth=d.get("max_depth"),
             branching_factor_range=tuple(d.get("branching_factor_range", [2, 2])),
@@ -890,13 +900,139 @@ def detect_organ_type(intent: str) -> str:
     return "generic"
 
 
+def detect_topology_kind(intent: str) -> str:
+    """
+    Detect the topology kind from the user's intent description.
+    
+    Returns the topology kind based on keywords found in the intent string:
+    - "path": Simple inlet→outlet channel, no branching
+    - "tree": Full tree structure with branching
+    - "loop": Looping/recirculating structure
+    - "multi_tree": Multiple independent trees
+    
+    This determines which questions are relevant to ask.
+    """
+    intent_lower = intent.lower()
+    
+    # Check for path/channel indicators (simple inlet→outlet)
+    path_keywords = [
+        "channel", "tube", "pipe", "conduit", "duct", "passage",
+        "single path", "straight", "direct", "simple", "inlet to outlet",
+        "inlet-outlet", "one inlet", "one outlet", "single inlet", "single outlet"
+    ]
+    
+    # Check for loop/recirculation indicators
+    loop_keywords = [
+        "loop", "recircul", "cycle", "circular", "closed", "return",
+        "anastomo", "connect back", "reconnect"
+    ]
+    
+    # Check for multi-tree indicators
+    multi_tree_keywords = [
+        "multiple tree", "multi-tree", "several tree", "independent tree",
+        "parallel tree", "separate tree", "dual tree", "twin tree"
+    ]
+    
+    # Check for explicit tree indicators
+    tree_keywords = [
+        "tree", "branch", "bifurcat", "terminal", "tip", "dendritic",
+        "hierarchical", "fractal", "vascular", "network", "distribute"
+    ]
+    
+    # Priority order: path > loop > multi_tree > tree (default)
+    for keyword in path_keywords:
+        if keyword in intent_lower:
+            return "path"
+    
+    for keyword in loop_keywords:
+        if keyword in intent_lower:
+            return "loop"
+    
+    for keyword in multi_tree_keywords:
+        if keyword in intent_lower:
+            return "multi_tree"
+    
+    # Default to tree for most vascular/organ structures
+    return "tree"
+
+
+# Topology-specific question variants
+# Questions are adapted based on topology_kind to avoid asking irrelevant questions
+TOPOLOGY_QUESTION_VARIANTS = {
+    "path": {
+        # For simple path/channel: skip branching questions, focus on path geometry
+        "D": {
+            "name": "Topology (Simple Path)",
+            "questions": [
+                ("topology_kind", "Topology type: simple path (inlet→outlet)", "path"),
+                ("path_style", "Path style: straight, curved, or serpentine?", "straight"),
+                ("path_segments", "Number of path segments?", "1"),
+            ],
+        },
+        "G": {
+            "name": "Acceptance Criteria (Path)",
+            "questions": [
+                ("min_radius_threshold", "Min radius threshold?", None),
+                ("watertight_required", "Require watertight mesh?", "yes"),
+                ("path_length_target", "Target path length? (or 'auto')", "auto"),
+            ],
+        },
+    },
+    "tree": {
+        # Full tree structure: all branching/terminal questions
+        "D": {
+            "name": "Topology (Tree Structure)",
+            "questions": [
+                ("topology_kind", "Topology type: branching tree", "tree"),
+                ("strict_tree", "Strict tree (no loops)?", "yes"),
+                ("target_terminals", "Target terminal tip count?", None),
+                ("max_depth", "Maximum depth (levels)?", None),
+                ("branching_style", "Balanced or aggressive early branching?", "balanced"),
+                ("perfusion_zones", "Perfusion zones needing more density? (describe or 'none')", "none"),
+            ],
+        },
+    },
+    "loop": {
+        # Looping structure: questions about recirculation
+        "D": {
+            "name": "Topology (Looping Network)",
+            "questions": [
+                ("topology_kind", "Topology type: looping network", "loop"),
+                ("loop_count", "Number of loops/anastomoses?", "1"),
+                ("loop_style", "Loop style: single loop, mesh, or ladder?", "single loop"),
+                ("recirculation", "Allow recirculation paths?", "yes"),
+            ],
+        },
+    },
+    "multi_tree": {
+        # Multiple independent trees
+        "D": {
+            "name": "Topology (Multiple Trees)",
+            "questions": [
+                ("topology_kind", "Topology type: multiple independent trees", "multi_tree"),
+                ("tree_count", "Number of independent trees?", "2"),
+                ("shared_inlet", "Do trees share an inlet?", "no"),
+                ("target_terminals_per_tree", "Target terminals per tree?", None),
+                ("max_depth", "Maximum depth per tree?", None),
+            ],
+        },
+    },
+}
+
+
 def get_tailored_questions(intent: str, base_questions: dict = None) -> dict:
     """
     Get question groups tailored to the user's described object.
     
-    This function detects the organ type from the intent and returns
-    a modified QUESTION_GROUPS dictionary with organ-specific questions
-    for groups C, D, and E (the most organ-specific groups).
+    This function detects both the organ type and topology kind from the intent
+    and returns a modified QUESTION_GROUPS dictionary with context-specific
+    questions. This makes the questioning more adaptive to the conversation:
+    
+    - Organ type affects groups C, D, E (organ-specific questions)
+    - Topology kind affects group D, G (topology-specific questions)
+    
+    For example, a simple "channel" won't be asked about branching/terminals,
+    while a "vascular tree" will get full tree-related questions.
     
     Parameters
     ----------
@@ -908,21 +1044,28 @@ def get_tailored_questions(intent: str, base_questions: dict = None) -> dict:
     Returns
     -------
     dict
-        Modified question groups with organ-specific variants
+        Modified question groups with context-specific variants
     """
     if base_questions is None:
         base_questions = QUESTION_GROUPS.copy()
     else:
         base_questions = base_questions.copy()
     
+    # First, apply organ-specific variants
     organ_type = detect_organ_type(intent)
-    
     if organ_type in ORGAN_QUESTION_VARIANTS:
         organ_variants = ORGAN_QUESTION_VARIANTS[organ_type]
-        
         for group_key in ["C", "D", "E"]:
             if group_key in organ_variants:
                 base_questions[group_key] = organ_variants[group_key]
+    
+    # Then, apply topology-specific variants (these take precedence for group D)
+    # This ensures we don't ask irrelevant branching questions for simple paths
+    topology_kind = detect_topology_kind(intent)
+    if topology_kind in TOPOLOGY_QUESTION_VARIANTS:
+        topology_variants = TOPOLOGY_QUESTION_VARIANTS[topology_kind]
+        for group_key in topology_variants:
+            base_questions[group_key] = topology_variants[group_key]
     
     return base_questions
 

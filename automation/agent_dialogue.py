@@ -1009,10 +1009,16 @@ def generate_requirements_summary(requirements: Any) -> str:
     lines.append("TOPOLOGY:")
     if hasattr(requirements, 'topology') and requirements.topology:
         topology = requirements.topology
-        if topology.target_terminals:
+        if hasattr(topology, 'topology_kind') and topology.topology_kind:
+            lines.append(f"  Topology kind: {topology.topology_kind}")
+        if hasattr(topology, 'style') and topology.style:
+            lines.append(f"  Topology style: {topology.style}")
+        if hasattr(topology, 'target_terminals') and topology.target_terminals:
             lines.append(f"  Target terminals: {topology.target_terminals}")
-        if topology.branching_style:
-            lines.append(f"  Branching style: {topology.branching_style}")
+        if hasattr(topology, 'max_depth') and topology.max_depth:
+            lines.append(f"  Max depth: {topology.max_depth}")
+        if hasattr(topology, 'branching_factor_range') and topology.branching_factor_range:
+            lines.append(f"  Branching factor: {topology.branching_factor_range[0]}-{topology.branching_factor_range[1]}")
     else:
         lines.append("  [Using defaults]")
     lines.append("")
@@ -1020,13 +1026,17 @@ def generate_requirements_summary(requirements: Any) -> str:
     lines.append("GEOMETRY:")
     if hasattr(requirements, 'geometry') and requirements.geometry:
         geometry = requirements.geometry
-        if geometry.tortuosity is not None:
+        if hasattr(geometry, 'tortuosity') and geometry.tortuosity is not None:
             tortuosity_desc = "low" if geometry.tortuosity < 0.3 else "medium" if geometry.tortuosity < 0.7 else "high"
             lines.append(f"  Tortuosity: {tortuosity_desc} ({geometry.tortuosity:.2f})")
-        if geometry.radius_profile:
+        if hasattr(geometry, 'radius_profile') and geometry.radius_profile:
             lines.append(f"  Radius profile: {geometry.radius_profile}")
-        if geometry.symmetry_axis:
-            lines.append(f"  Symmetry axis: {geometry.symmetry_axis}")
+        if hasattr(geometry, 'branch_angle_deg') and geometry.branch_angle_deg:
+            angle_range = geometry.branch_angle_deg
+            lines.append(f"  Branch angle: {angle_range.get('min', 30)}-{angle_range.get('max', 90)} deg")
+        if hasattr(geometry, 'segment_length_m') and geometry.segment_length_m:
+            seg_len = geometry.segment_length_m
+            lines.append(f"  Segment length: {seg_len.get('min', 0)*1000:.2f}-{seg_len.get('max', 0)*1000:.2f} mm")
     else:
         lines.append("  [Using defaults]")
     lines.append("")
