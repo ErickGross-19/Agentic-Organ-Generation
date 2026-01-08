@@ -58,11 +58,11 @@ Key Features:
 - LLM healthcheck prevents infinite loops
 
 Usage:
-    from automation.workflow import SingleAgentOrganGeneratorV2
+    from automation.workflow import SingleAgentOrganGeneratorV3
     from automation.agent_runner import create_agent
     
     agent = create_agent(provider="openai", model="gpt-4")
-    workflow = SingleAgentOrganGeneratorV2(agent)
+    workflow = SingleAgentOrganGeneratorV3(agent)
     workflow.run()
 """
 
@@ -3218,22 +3218,25 @@ def _apply_placement_to_outlets(req: ObjectRequirements, placement: str) -> None
 # Main Workflow Class
 # =============================================================================
 
-class SingleAgentOrganGeneratorV2:
+class SingleAgentOrganGeneratorV3:
     """
-    Single Agent Organ Generator V2 - Stateful workflow for organ structure generation.
+    Single Agent Organ Generator V3 - Stateful workflow for organ structure generation.
     
     This workflow implements an interactive, LLM-driven process for generating
     organ vascular structures with per-object folder structure, schema-gated
     requirements capture, and ability to pull context from previous attempts.
     
-    V2 Features:
+    V3 Features:
     - Agent dialogue system (Understand -> Plan -> Ask)
     - Dynamic schema with activatable modules
     - LLM healthcheck and circuit breaker
     - Iteration feedback integration
+    - Topology-aware questioning (path, tree, backbone, loop, multi_tree)
+    - Adaptive response handling (meta-questions, corrections, uncertainty)
+    - Topology override escape mechanism
     """
     
-    WORKFLOW_NAME = "Single Agent Organ Generator V2"
+    WORKFLOW_NAME = "Single Agent Organ Generator V3"
     WORKFLOW_VERSION = "3.0.0"
     
     def __init__(
@@ -5428,7 +5431,7 @@ def run_single_agent_workflow(
         **kwargs,
     )
     
-    workflow = SingleAgentOrganGeneratorV2(
+    workflow = SingleAgentOrganGeneratorV3(
         agent=agent,
         base_output_dir=base_output_dir,
     )
@@ -5436,4 +5439,5 @@ def run_single_agent_workflow(
     return workflow.run()
 
 
-SingleAgentOrganGeneratorV1 = SingleAgentOrganGeneratorV2
+SingleAgentOrganGeneratorV1 = SingleAgentOrganGeneratorV3
+SingleAgentOrganGeneratorV2 = SingleAgentOrganGeneratorV3

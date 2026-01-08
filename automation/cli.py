@@ -19,7 +19,7 @@ from .task_templates import (
     validate_structure_prompt,
     iterate_design_prompt,
 )
-from .workflow import SingleAgentOrganGeneratorV2
+from .workflow import SingleAgentOrganGeneratorV3
 from .execution_modes import ExecutionMode, parse_execution_mode, DEFAULT_EXECUTION_MODE
 from .llm_healthcheck import (
     assert_llm_ready,
@@ -142,10 +142,10 @@ def main():
         help="Initial task to start with",
     )
     
-    # Workflow command (Single Agent Organ Generator V2)
+    # Workflow command (Single Agent Organ Generator V3)
     wf_parser = subparsers.add_parser(
         "workflow",
-        help="Run Single Agent Organ Generator V2 workflow"
+        help="Run Single Agent Organ Generator V3 workflow"
     )
     wf_parser.add_argument(
         "--output-dir", "-O",
@@ -325,10 +325,10 @@ def run_interactive(agent: AgentRunner, args):
 
 
 def run_workflow(agent: AgentRunner, args):
-    """Run the Single Agent Organ Generator V2 workflow."""
+    """Run the Single Agent Organ Generator V3 workflow."""
     execution_mode = parse_execution_mode(args.execution_mode)
     
-    workflow = SingleAgentOrganGeneratorV2(
+    workflow = SingleAgentOrganGeneratorV3(
         agent=agent,
         base_output_dir=args.output_dir,
         verbose=args.verbose,

@@ -15,7 +15,7 @@ Main Components:
     - schema_manager: Dynamic schema with activatable modules
 
 Workflows:
-    - SingleAgentOrganGeneratorV2: Interactive workflow for organ structure generation
+    - SingleAgentOrganGeneratorV3: Interactive workflow for organ structure generation
       that guides users through project setup, requirements, generation, review,
       and finalization. V2 introduces the "Interpret -> Plan -> Ask" agent pattern.
 
@@ -36,8 +36,8 @@ Example:
     ... )
     
     >>> # Or use the workflow
-    >>> from automation import SingleAgentOrganGeneratorV2
-    >>> workflow = SingleAgentOrganGeneratorV2(runner)
+    >>> from automation import SingleAgentOrganGeneratorV3
+    >>> workflow = SingleAgentOrganGeneratorV3(runner)
     >>> context = workflow.run()
 """
 
@@ -92,7 +92,7 @@ from .artifact_verifier import (
 )
 from .workflow import (
     SingleAgentOrganGeneratorV1,
-    SingleAgentOrganGeneratorV2,
+    SingleAgentOrganGeneratorV3,
     WorkflowState,
     ProjectContext,
     ObjectContext,
@@ -225,7 +225,7 @@ __all__ = [
     "FileCheckResult",
     # Workflow
     "SingleAgentOrganGeneratorV1",
-    "SingleAgentOrganGeneratorV2",
+    "SingleAgentOrganGeneratorV3",
     "WorkflowState",
     "ProjectContext",
     "ObjectContext",

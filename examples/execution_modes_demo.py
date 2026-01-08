@@ -2,7 +2,7 @@
 Execution Modes Demo
 
 This script demonstrates the three execution modes available in the
-Single Agent Organ Generator V2 workflow:
+Single Agent Organ Generator V3 workflow:
 
 1. WRITE_ONLY: Generate script, don't run
 2. REVIEW_THEN_RUN: Generate script, pause for review, then run (default)
@@ -20,7 +20,7 @@ import os
 sys.path.insert(0, os.path.abspath(".."))
 
 from automation import (
-    SingleAgentOrganGeneratorV2,
+    SingleAgentOrganGeneratorV3,
     ExecutionMode,
     parse_execution_mode,
     DEFAULT_EXECUTION_MODE,
@@ -77,7 +77,7 @@ def demo_workflow_with_mode(mode_str: str):
         verbose=True,
     )
     
-    workflow = SingleAgentOrganGeneratorV2(
+    workflow = SingleAgentOrganGeneratorV3(
         agent=agent,
         base_output_dir="./outputs",
         verbose=True,
