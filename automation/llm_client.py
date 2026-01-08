@@ -468,49 +468,46 @@ class LLMClient:
         temperature: float,
         max_tokens: int,
     ) -> LLMResponse:
-        """Call Google Gemini API."""
+        """Call Google Gemini API using the new Google GenAI SDK."""
         try:
-            import google.generativeai as genai
+            from google import genai
+            from google.genai import types
         except ImportError:
-            raise ImportError("google-generativeai package not installed. Run: pip install google-generativeai")
+            raise ImportError("google-genai package not installed. Run: pip install google-genai")
         
         if self.config.api_key is None:
-            raise ValueError("Google API key not provided. Set GOOGLE_API_KEY or pass api_key.")
+            raise ValueError("Google API key not provided. Set GOOGLE_API_KEY or GEMINI_API_KEY or pass api_key.")
         
-        genai.configure(api_key=self.config.api_key)
+        client = genai.Client(api_key=self.config.api_key)
         
         model_name = self.config.model
         if model_name in ("gpt-4", "default"):
-            model_name = "gemini-1.5-pro"
-        
-        model = genai.GenerativeModel(model_name)
+            model_name = "gemini-2.0-flash"
         
         system_content = None
-        chat_messages = []
+        contents = []
         
         for m in messages:
             if m.role == "system":
                 system_content = m.content
             elif m.role == "user":
-                chat_messages.append({"role": "user", "parts": [m.content]})
+                contents.append(types.Content(role="user", parts=[types.Part(text=m.content)]))
             elif m.role == "assistant":
-                chat_messages.append({"role": "model", "parts": [m.content]})
+                contents.append(types.Content(role="model", parts=[types.Part(text=m.content)]))
         
-        generation_config = genai.GenerationConfig(
+        config = types.GenerateContentConfig(
             temperature=temperature,
             max_output_tokens=max_tokens,
         )
         
         if system_content:
-            model = genai.GenerativeModel(
-                model_name,
-                system_instruction=system_content,
-            )
+            config.system_instruction = system_content
         
-        chat = model.start_chat(history=chat_messages[:-1] if chat_messages else [])
-        
-        last_message = chat_messages[-1]["parts"][0] if chat_messages else ""
-        response = chat.send_message(last_message, generation_config=generation_config)
+        response = client.models.generate_content(
+            model=model_name,
+            contents=contents,
+            config=config,
+        )
         
         usage_metadata = getattr(response, 'usage_metadata', None)
         prompt_tokens = getattr(usage_metadata, 'prompt_token_count', 0) if usage_metadata else 0
