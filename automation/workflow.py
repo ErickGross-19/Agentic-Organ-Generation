@@ -4184,8 +4184,14 @@ class SingleAgentOrganGeneratorV3:
     def _run_requirements_capture(self) -> None:
         """Run REQUIREMENTS_CAPTURE state: Rule-based adaptive requirements gathering.
         
-        V2: Uses SchemaManager for dynamic schema with activatable modules.
-        Questions are ranked by rework cost (frame, scale, I/O first).
+        V3: Topology-aware questioning with adaptive response handling.
+        
+        V3 Features:
+        - Topology detection (path, tree, backbone, loop, multi_tree) gates question flow
+        - Topology override escape mechanism for user correction
+        - Adaptive response handling (meta-questions, corrections, uncertainty)
+        - Uses SchemaManager for dynamic schema with activatable modules
+        - Questions ranked by rework cost (frame, scale, I/O first)
         
         This method uses the RuleEngine to determine what questions to ask based on:
         - Missing required fields (Family A - Completeness)
@@ -4193,9 +4199,10 @@ class SingleAgentOrganGeneratorV3:
         - Conflicts/feasibility issues (Family C - Conflict)
         
         The attempt strategy is:
-        1. Infer from user text (high confidence only)
-        2. Propose concrete defaults (mark as assumed)
-        3. Ask targeted questions (only if needed)
+        1. Detect topology from user intent (gates subsequent questions)
+        2. Infer from user text (high confidence only)
+        3. Propose concrete defaults (mark as assumed)
+        4. Ask targeted questions (only if needed)
         """
         obj = self.context.get_current_object()
         if not obj:
@@ -4222,6 +4229,23 @@ class SingleAgentOrganGeneratorV3:
         else:
             organ_type = "generic"  # Force generic if not explicitly organ-related
             print("\nUsing generic structure mode based on your description.")
+        
+        # V3: Detect topology kind from user intent - this gates subsequent questions
+        topology_kind = detect_topology_kind(obj.raw_intent)
+        obj.requirements.topology.topology_kind = topology_kind
+        
+        # Map topology to human-readable descriptions
+        topology_descriptions = {
+            "path": "simple channel connecting inlet to outlet",
+            "tree": "branching vascular network with terminals",
+            "backbone": "parallel leg structure (e.g., 3-leg backbone)",
+            "loop": "looping/recirculating structure",
+            "multi_tree": "multiple independent trees",
+        }
+        
+        print(f"\nDetected topology: {topology_kind}")
+        print(f"  ({topology_descriptions.get(topology_kind, 'custom topology')})")
+        print("  Say 'change topology' or 'wrong topology' at any question to correct this.")
         
         print("\nUsing adaptive rule-based requirements capture.")
         print("The system will ask only the questions needed based on your description.")
