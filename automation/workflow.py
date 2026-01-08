@@ -1,8 +1,14 @@
 """
-Single Agent Organ Generator V1 Workflow
+Single Agent Organ Generator V2 Workflow
 
-This module implements the "Single Agent Organ Generator V1" workflow - a stateful,
+This module implements the "Single Agent Organ Generator V2" workflow - a stateful,
 interactive workflow for organ structure generation using LLM agents.
+
+V2 introduces the "Interpret -> Plan -> Ask" agent pattern:
+- Agent dialogue system for understanding user intent
+- Dynamic schema with activatable modules
+- LLM healthcheck and circuit breaker for reliability
+- Iteration feedback integration
 
 The workflow follows these steps:
 0. PROJECT_INIT: Ask user for project name and global defaults
@@ -18,17 +24,19 @@ The workflow follows these steps:
 
 Key Features:
 - Per-object folder structure with versioned artifacts
-- Schema-gated requirements capture
+- Schema-gated requirements capture with dynamic modules
+- Agent dialogue: Understand -> Plan -> Ask flow
 - Fixed frame of reference before spatial discussions
 - Ability to pull context from previous attempts
 - Deterministic, reproducible generation
+- LLM healthcheck prevents infinite loops
 
 Usage:
-    from automation.workflow import SingleAgentOrganGeneratorV1
+    from automation.workflow import SingleAgentOrganGeneratorV2
     from automation.agent_runner import create_agent
     
     agent = create_agent(provider="openai", model="gpt-4")
-    workflow = SingleAgentOrganGeneratorV1(agent)
+    workflow = SingleAgentOrganGeneratorV2(agent)
     workflow.run()
 """
 
@@ -56,7 +64,7 @@ from .artifact_verifier import verify_generation_stage, save_manifest, print_ver
 
 
 class WorkflowState(Enum):
-    """States in the Single Agent Organ Generator V1 workflow."""
+    """States in the Single Agent Organ Generator V2 workflow."""
     PROJECT_INIT = "project_init"
     OBJECT_PLANNING = "object_planning"
     FRAME_OF_REFERENCE = "frame_of_reference"
@@ -1708,16 +1716,22 @@ def _apply_answer_to_requirements(req: ObjectRequirements, field: str, value: An
 # Main Workflow Class
 # =============================================================================
 
-class SingleAgentOrganGeneratorV1:
+class SingleAgentOrganGeneratorV2:
     """
-    Single Agent Organ Generator V1 - Stateful workflow for organ structure generation.
+    Single Agent Organ Generator V2 - Stateful workflow for organ structure generation.
     
     This workflow implements an interactive, LLM-driven process for generating
     organ vascular structures with per-object folder structure, schema-gated
     requirements capture, and ability to pull context from previous attempts.
+    
+    V2 Features:
+    - Agent dialogue system (Understand -> Plan -> Ask)
+    - Dynamic schema with activatable modules
+    - LLM healthcheck and circuit breaker
+    - Iteration feedback integration
     """
     
-    WORKFLOW_NAME = "Single Agent Organ Generator V1"
+    WORKFLOW_NAME = "Single Agent Organ Generator V2"
     WORKFLOW_VERSION = "2.0.0"
     
     def __init__(
@@ -2875,7 +2889,7 @@ def run_single_agent_workflow(
     **kwargs,
 ) -> ProjectContext:
     """
-    Convenience function to run the Single Agent Organ Generator V1 workflow.
+    Convenience function to run the Single Agent Organ Generator V2 workflow.
     
     Parameters
     ----------
@@ -2904,9 +2918,12 @@ def run_single_agent_workflow(
         **kwargs,
     )
     
-    workflow = SingleAgentOrganGeneratorV1(
+    workflow = SingleAgentOrganGeneratorV2(
         agent=agent,
         base_output_dir=base_output_dir,
     )
     
     return workflow.run()
+
+
+SingleAgentOrganGeneratorV1 = SingleAgentOrganGeneratorV2

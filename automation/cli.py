@@ -19,8 +19,15 @@ from .task_templates import (
     validate_structure_prompt,
     iterate_design_prompt,
 )
-from .workflow import SingleAgentOrganGeneratorV1
+from .workflow import SingleAgentOrganGeneratorV2
 from .execution_modes import ExecutionMode, parse_execution_mode, DEFAULT_EXECUTION_MODE
+from .llm_healthcheck import (
+    assert_llm_ready,
+    MissingCredentialsError,
+    ProviderMisconfiguredError,
+    FatalLLMError,
+    get_provider_setup_instructions,
+)
 
 
 def main():
@@ -135,10 +142,10 @@ def main():
         help="Initial task to start with",
     )
     
-    # Workflow command (Single Agent Organ Generator V1)
+    # Workflow command (Single Agent Organ Generator V2)
     wf_parser = subparsers.add_parser(
         "workflow",
-        help="Run Single Agent Organ Generator V1 workflow"
+        help="Run Single Agent Organ Generator V2 workflow"
     )
     wf_parser.add_argument(
         "--output-dir", "-O",
@@ -191,6 +198,25 @@ def main():
     
     if args.command is None:
         parser.print_help()
+        sys.exit(1)
+    
+    # Perform LLM preflight check before creating agent
+    try:
+        assert_llm_ready(
+            provider=args.provider,
+            api_key=args.api_key,
+            skip_ping=False,
+            verbose=args.verbose,
+        )
+    except MissingCredentialsError as e:
+        print(f"\nError: {e}")
+        print(f"\n{get_provider_setup_instructions(args.provider)}")
+        sys.exit(1)
+    except ProviderMisconfiguredError as e:
+        print(f"\nError: {e}")
+        sys.exit(1)
+    except FatalLLMError as e:
+        print(f"\nFatal LLM error: {e}")
         sys.exit(1)
     
     # Create agent
@@ -299,10 +325,10 @@ def run_interactive(agent: AgentRunner, args):
 
 
 def run_workflow(agent: AgentRunner, args):
-    """Run the Single Agent Organ Generator V1 workflow."""
+    """Run the Single Agent Organ Generator V2 workflow."""
     execution_mode = parse_execution_mode(args.execution_mode)
     
-    workflow = SingleAgentOrganGeneratorV1(
+    workflow = SingleAgentOrganGeneratorV2(
         agent=agent,
         base_output_dir=args.output_dir,
         verbose=args.verbose,

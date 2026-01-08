@@ -10,6 +10,7 @@ from typing import List, Dict, Any, Optional, Callable
 from enum import Enum
 import json
 import os
+import time
 
 
 class LLMProvider(Enum):
@@ -47,6 +48,12 @@ class LLMConfig:
         Sampling temperature (0.0 = deterministic, 1.0 = creative)
     system_prompt : str, optional
         System prompt to prepend to all conversations
+    max_retries : int
+        Maximum number of retries for transient errors (default: 3)
+    retry_delay : float
+        Initial delay between retries in seconds (default: 1.0)
+    retry_max_delay : float
+        Maximum delay between retries in seconds (default: 30.0)
     """
     provider: str = "openai"
     model: str = "gpt-4"
@@ -55,6 +62,9 @@ class LLMConfig:
     max_tokens: int = 4096
     temperature: float = 0.7
     system_prompt: Optional[str] = None
+    max_retries: int = 3
+    retry_delay: float = 1.0
+    retry_max_delay: float = 30.0
     
     def __post_init__(self):
         # Try to get API key from environment if not provided
@@ -217,27 +227,65 @@ class LLMClient:
         temperature: float,
         max_tokens: int,
     ) -> LLMResponse:
-        """Make the actual API call based on provider."""
+        """Make the actual API call based on provider with retry logic."""
         provider = self.config.provider.lower()
         
-        if provider == "openai":
-            return self._call_openai(messages, temperature, max_tokens)
-        elif provider == "anthropic":
-            return self._call_anthropic(messages, temperature, max_tokens)
-        elif provider == "local":
-            return self._call_local(messages, temperature, max_tokens)
-        elif provider in ("xai", "grok"):
-            return self._call_xai(messages, temperature, max_tokens)
-        elif provider in ("google", "gemini"):
-            return self._call_google(messages, temperature, max_tokens)
-        elif provider == "mistral":
-            return self._call_mistral(messages, temperature, max_tokens)
-        elif provider == "groq":
-            return self._call_groq(messages, temperature, max_tokens)
-        elif provider == "devin":
-            return self._call_devin(messages, temperature, max_tokens)
-        else:
+        # Get the appropriate provider method
+        provider_methods = {
+            "openai": self._call_openai,
+            "anthropic": self._call_anthropic,
+            "local": self._call_local,
+            "xai": self._call_xai,
+            "grok": self._call_xai,
+            "google": self._call_google,
+            "gemini": self._call_google,
+            "mistral": self._call_mistral,
+            "groq": self._call_groq,
+            "devin": self._call_devin,
+        }
+        
+        if provider not in provider_methods:
             raise ValueError(f"Unsupported provider: {provider}")
+        
+        method = provider_methods[provider]
+        
+        # Retry logic with exponential backoff
+        last_error = None
+        delay = self.config.retry_delay
+        
+        for attempt in range(self.config.max_retries + 1):
+            try:
+                return method(messages, temperature, max_tokens)
+            except Exception as e:
+                last_error = e
+                error_str = str(e).lower()
+                
+                # Check if this is a transient error that should be retried
+                is_transient = any(term in error_str for term in [
+                    "timeout", "rate limit", "429", "503", "502", "504",
+                    "connection", "temporary", "overloaded", "capacity"
+                ])
+                
+                # Check if this is a fatal error that should not be retried
+                is_fatal = any(term in error_str for term in [
+                    "unauthorized", "401", "invalid api key", "authentication",
+                    "not found", "404", "invalid model", "permission denied"
+                ])
+                
+                if is_fatal or attempt >= self.config.max_retries:
+                    # Don't retry fatal errors or if we've exhausted retries
+                    raise
+                
+                if is_transient:
+                    # Wait before retrying with exponential backoff
+                    time.sleep(delay)
+                    delay = min(delay * 2, self.config.retry_max_delay)
+                else:
+                    # Unknown error type, raise immediately
+                    raise
+        
+        # Should not reach here, but just in case
+        raise last_error if last_error else RuntimeError("Unexpected retry loop exit")
     
     def _call_openai(
         self,
