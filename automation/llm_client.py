@@ -27,6 +27,33 @@ class LLMProvider(Enum):
     DEVIN = "devin"  # Devin AI via session-based API
 
 
+def _safe_int(value, default: int = 0) -> int:
+    """
+    Safely convert a value to int, returning default if None or invalid.
+    
+    This is used for defensive token counting where SDK responses may have
+    None values or missing fields.
+    
+    Parameters
+    ----------
+    value : Any
+        Value to convert to int
+    default : int
+        Default value if conversion fails (default: 0)
+        
+    Returns
+    -------
+    int
+        The converted value or default
+    """
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass
 class LLMConfig:
     """
@@ -520,9 +547,34 @@ class LLMClient:
             config=config,
         )
         
+        # Defensive token parsing: handle None values and different SDK field names
+        # The google.genai SDK may return None for token counts or use different field names
         usage_metadata = getattr(response, 'usage_metadata', None)
-        prompt_tokens = getattr(usage_metadata, 'prompt_token_count', 0) if usage_metadata else 0
-        completion_tokens = getattr(usage_metadata, 'candidates_token_count', 0) if usage_metadata else 0
+        
+        # Try multiple attribute names for prompt tokens (compatibility shim)
+        prompt_tokens = 0
+        if usage_metadata:
+            prompt_tokens = _safe_int(
+                getattr(usage_metadata, 'prompt_token_count', None) or
+                getattr(usage_metadata, 'input_token_count', None),
+                0
+            )
+        
+        # Try multiple attribute names for completion tokens (compatibility shim)
+        completion_tokens = 0
+        if usage_metadata:
+            completion_tokens = _safe_int(
+                getattr(usage_metadata, 'candidates_token_count', None) or
+                getattr(usage_metadata, 'output_token_count', None),
+                0
+            )
+        
+        # Try to get total from SDK, otherwise compute it
+        total_tokens = prompt_tokens + completion_tokens
+        if usage_metadata:
+            sdk_total = _safe_int(getattr(usage_metadata, 'total_token_count', None), 0)
+            if sdk_total > 0:
+                total_tokens = sdk_total
         
         return LLMResponse(
             content=response.text,
@@ -530,7 +582,7 @@ class LLMClient:
             usage={
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
-                "total_tokens": prompt_tokens + completion_tokens,
+                "total_tokens": total_tokens,
             },
             finish_reason="stop",
             raw_response=None,
