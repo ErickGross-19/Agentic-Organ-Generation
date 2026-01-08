@@ -463,11 +463,35 @@ Report any validation issues and suggest fixes.
 
 See the `examples/` directory for working examples:
 
-- `examples/single_agent_organgenerator_v2.ipynb` - Interactive Jupyter notebook demonstrating the Single Agent Organ Generator V2 workflow with all features including basic generation, interactive sessions, and validation workflows
+- `examples/single_agent_organgenerator_v2.ipynb` - Interactive Jupyter notebook demonstrating the Single Agent Organ Generator V3 workflow with all features including basic generation, interactive sessions, and validation workflows
 
-## Single Agent Organ Generator V2 Workflow
+## Single Agent Organ Generator V3 Workflow
 
-The Single Agent Organ Generator V2 provides an interactive, guided workflow for complete organ structure generation. It combines LLM-assisted requirements capture with deterministic generation and validation, featuring an agent dialogue system that follows an Interpret → Plan → Ask pattern.
+The Single Agent Organ Generator V3 (class name `SingleAgentOrganGeneratorV2` for backward compatibility) provides an interactive, guided workflow for complete organ structure generation. It combines LLM-assisted requirements capture with deterministic generation and validation, featuring an agent dialogue system that follows an Interpret → Plan → Ask pattern.
+
+### V3 Improvements
+
+V3 introduces topology-aware questioning logic that significantly improves the requirements capture experience:
+
+| Feature | V2 Behavior | V3 Behavior |
+|---------|-------------|-------------|
+| **Topology Detection** | Tree-first bias | Topology-first gating (backbone/path/tree/loop/multi_tree) |
+| **Domain Questions** | "Use defaults?" before asking size | Explicit dimension question first |
+| **Outlet Requirement** | Optional for all topologies | Required for PATH and BACKBONE topologies |
+| **Backbone Support** | Not supported | Dedicated question module for parallel leg structures |
+| **Question Relevance** | Same questions for all structures | Topology-specific "Minimum Viable Spec" question sets |
+
+### Supported Topologies
+
+V3 detects and handles five distinct topology types:
+
+| Topology | Description | Trigger Keywords | Required Fields |
+|----------|-------------|------------------|-----------------|
+| **BACKBONE** | Parallel leg structure with manifold | "backbone", "parallel leg", "3-leg", "manifold" | leg_count, inlet, outlet |
+| **PATH** | Simple inlet→outlet channel | "channel", "tube", "pipe", "straight" | inlet, outlet |
+| **TREE** | Branching network with terminals | "tree", "branch", "vascular", "bifurcate" | inlet, target_terminals |
+| **LOOP** | Looping/recirculating structure | "loop", "recirculate", "anastomosis" | inlet, outlet, loop_count |
+| **MULTI_TREE** | Multiple independent trees | "multiple trees", "dual tree" | tree_count, inlet_radius |
 
 ### Workflow States
 

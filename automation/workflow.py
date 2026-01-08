@@ -1,10 +1,36 @@
 """
-Single Agent Organ Generator V2 Workflow
+Single Agent Organ Generator V3 Workflow
 
-This module implements the "Single Agent Organ Generator V2" workflow - a stateful,
+# =============================================================================
+# VERSION FLAG: V3 - Topology-Aware Questioning
+# =============================================================================
+# This is V3 of the Single Agent Organ Generator workflow.
+# If you are seeing issues, verify you are running this version by checking
+# for this comment block. V3 introduces:
+#
+# 1. Topology-first gating: PATH vs TREE vs BACKBONE as first decision
+# 2. Explicit domain dimensions (not hidden behind "use defaults?")
+# 3. Ports as first-class citizens (outlet required for PATH topology)
+# 4. Backbone-specific questions for parallel leg structures
+# 5. Fixed DomainSection shape/type mismatch
+# 6. Adaptive response handling for meta-questions
+# 7. Conservative organ detection (generic unless explicit keywords)
+#
+# To verify you're running V3, check WORKFLOW_VERSION = "3.0"
+# =============================================================================
+
+This module implements the "Single Agent Organ Generator V3" workflow - a stateful,
 interactive workflow for organ structure generation using LLM agents.
 
-V2 introduces the "Interpret -> Plan -> Ask" agent pattern:
+V3 introduces topology-aware questioning with the following improvements:
+- Topology-first gating: PATH vs TREE vs BACKBONE determines question flow
+- Explicit domain dimensions asked before defaults
+- Ports as first-class citizens with outlet required for PATH
+- Backbone-specific questions for parallel leg structures
+- Conservative organ detection (generic unless explicit keywords)
+- Adaptive response handling for meta-questions
+
+V2 introduced the "Interpret -> Plan -> Ask" agent pattern:
 - Agent dialogue system for understanding user intent
 - Dynamic schema with activatable modules
 - LLM healthcheck and circuit breaker for reliability
@@ -199,11 +225,29 @@ class FrameOfReferenceSection:
 
 @dataclass
 class DomainSection:
-    """Section 3: Domain specification."""
+    """Section 3: Domain specification.
+    
+    V3 Note: The field is named `type` but a `shape` property alias is provided
+    for backward compatibility with code that expects `domain.shape`.
+    """
     type: str = "box"
     size_m: Tuple[float, float, float] = (0.02, 0.06, 0.03)
     center_m: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     margin_m: float = 0.001
+    
+    @property
+    def shape(self) -> str:
+        """Alias for `type` field for backward compatibility.
+        
+        V3 Fix: Some code paths used `domain.shape` instead of `domain.type`.
+        This property provides backward compatibility.
+        """
+        return self.type
+    
+    @shape.setter
+    def shape(self, value: str) -> None:
+        """Setter for shape alias."""
+        object.__setattr__(self, 'type', value)
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -216,7 +260,7 @@ class DomainSection:
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "DomainSection":
         return cls(
-            type=d.get("type", "box"),
+            type=d.get("type", d.get("shape", "box")),
             size_m=tuple(d.get("size_m", [0.02, 0.06, 0.03])),
             center_m=tuple(d.get("center_m", [0.0, 0.0, 0.0])),
             margin_m=d.get("margin_m", 0.001),
@@ -307,9 +351,10 @@ class TopologySection:
     - "tree": Full tree structure, all branching/terminal questions relevant
     - "loop": Looping structure with recirculation
     - "multi_tree": Multiple independent trees
+    - "backbone": V3 - Parallel leg structure with manifold connections
     """
     style: str = "tree"  # branching style: balanced, aggressive_early, space_filling
-    topology_kind: str = "tree"  # "path", "tree", "loop", "multi_tree"
+    topology_kind: str = "tree"  # "path", "tree", "loop", "multi_tree", "backbone"
     target_terminals: Optional[int] = None
     max_depth: Optional[int] = None
     branching_factor_range: Tuple[int, int] = (2, 2)
@@ -320,6 +365,13 @@ class TopologySection:
     loop_style: Optional[str] = None  # single_loop, mesh, ladder
     tree_count: Optional[int] = None  # for multi_tree topology
     shared_inlet: bool = False  # for multi_tree: do trees share an inlet?
+    # V3: Backbone-specific fields
+    backbone_axis: Optional[str] = None  # x, y, z, or "longest"
+    leg_count: Optional[int] = None  # number of parallel legs
+    leg_spacing: Optional[str] = None  # "equal" or specific value
+    leg_spacing_m: Optional[float] = None  # leg spacing in meters
+    leg_connection: Optional[str] = None  # ladder, u_shape, separate
+    port_style: Optional[str] = None  # manifold or individual
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -334,6 +386,12 @@ class TopologySection:
             "loop_style": self.loop_style,
             "tree_count": self.tree_count,
             "shared_inlet": self.shared_inlet,
+            "backbone_axis": self.backbone_axis,
+            "leg_count": self.leg_count,
+            "leg_spacing": self.leg_spacing,
+            "leg_spacing_m": self.leg_spacing_m,
+            "leg_connection": self.leg_connection,
+            "port_style": self.port_style,
         }
     
     @classmethod
@@ -350,6 +408,12 @@ class TopologySection:
             loop_style=d.get("loop_style"),
             tree_count=d.get("tree_count"),
             shared_inlet=d.get("shared_inlet", False),
+            backbone_axis=d.get("backbone_axis"),
+            leg_count=d.get("leg_count"),
+            leg_spacing=d.get("leg_spacing"),
+            leg_spacing_m=d.get("leg_spacing_m"),
+            leg_connection=d.get("leg_connection"),
+            port_style=d.get("port_style"),
         )
 
 
@@ -366,6 +430,8 @@ class GeometrySection:
     route_type: Optional[str] = None  # for path: straight, single_bend, s_curve, via_points
     bend_radius_m: Optional[float] = None  # minimum bend radius for curved paths
     wall_thickness_m: Optional[float] = None  # wall thickness for hollow channels
+    # V3: Backbone-specific geometry field
+    leg_radius_m: Optional[float] = None  # leg channel radius for backbone topology
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -378,6 +444,7 @@ class GeometrySection:
             "route_type": self.route_type,
             "bend_radius_m": self.bend_radius_m,
             "wall_thickness_m": self.wall_thickness_m,
+            "leg_radius_m": self.leg_radius_m,
         }
     
     @classmethod
@@ -392,6 +459,7 @@ class GeometrySection:
             route_type=d.get("route_type"),
             bend_radius_m=d.get("bend_radius_m"),
             wall_thickness_m=d.get("wall_thickness_m"),
+            leg_radius_m=d.get("leg_radius_m"),
         )
 
 
@@ -962,8 +1030,11 @@ def detect_topology_kind(intent: str) -> str:
     """
     Detect the topology kind from the user's intent description.
     
+    V3: Added backbone detection for parallel leg structures.
+    
     Returns the topology kind based on keywords found in the intent string:
     - "path": Simple inlet→outlet channel, no branching
+    - "backbone": Parallel leg structure (e.g., 3-leg backbone)
     - "tree": Full tree structure with branching
     - "loop": Looping/recirculating structure
     - "multi_tree": Multiple independent trees
@@ -971,6 +1042,15 @@ def detect_topology_kind(intent: str) -> str:
     This determines which questions are relevant to ask.
     """
     intent_lower = intent.lower()
+    
+    # V3: Check for backbone/parallel leg indicators FIRST
+    # These are explicit design patterns that deserve targeted questions
+    backbone_keywords = [
+        "backbone", "parallel leg", "parallel channel", "3-leg", "3 leg",
+        "three-leg", "three leg", "multi-leg", "multiple leg", "ladder",
+        "manifold", "header", "distributor", "collector", "parallel path",
+        "parallel tube", "parallel pipe", "leg spacing", "equal spacing"
+    ]
     
     # Check for path/channel indicators (simple inlet→outlet)
     path_keywords = [
@@ -997,7 +1077,12 @@ def detect_topology_kind(intent: str) -> str:
         "hierarchical", "fractal", "vascular", "network", "distribute"
     ]
     
-    # Priority order: path > loop > multi_tree > tree (default)
+    # V3: Priority order: backbone > path > loop > multi_tree > tree (default)
+    # Backbone is checked first because it's a specific design pattern
+    for keyword in backbone_keywords:
+        if keyword in intent_lower:
+            return "backbone"
+    
     for keyword in path_keywords:
         if keyword in intent_lower:
             return "path"
@@ -1241,6 +1326,74 @@ TOPOLOGY_QUESTION_VARIANTS = {
             ],
         },
     },
+    # V3: BACKBONE topology - Parallel leg structures (e.g., 3-leg backbone)
+    # This is a specific design pattern that deserves targeted questions
+    "backbone": {
+        # BACKBONE topology: Parallel leg structure with manifold connections
+        # Required: topology, domain, leg count, leg spacing, ports
+        # Optional: leg connections, embedding
+        "A": {
+            "name": "1. Topology Confirmation",
+            "questions": [
+                ("topology_kind", "Is this a parallel backbone/manifold structure with multiple legs? (backbone/path/tree)", "backbone"),
+            ],
+        },
+        "B": {
+            "name": "2. Domain Dimensions",
+            "questions": [
+                ("domain_dims", "What are the box dimensions (X Y Z) and units? Example: '30 60 20 mm'", "30 60 20 mm"),
+                ("boundary_margin", "Boundary margin - how far should channels stay from walls? (mm)", "1"),
+            ],
+        },
+        "C": {
+            "name": "3. Backbone Configuration",
+            "questions": [
+                ("backbone_axis", "Backbone axis: along which axis do legs run? (x/y/z, or 'longest' for longest axis)", "longest"),
+                ("leg_count", "Number of parallel legs?", "3"),
+                ("leg_spacing", "Leg spacing: equal spacing? If yes, how far apart (mm)? (or 'equal')", "equal"),
+                ("leg_connection", "Do legs connect at ends? (ladder/u_shape/separate)", "separate"),
+            ],
+        },
+        "C2": {
+            "name": "4. Port Configuration",
+            "questions": [
+                ("port_style", "Port connection style: manifold (all legs share inlet/outlet) or individual (each leg has own port)?", "manifold"),
+                ("inlet_face", "Inlet face? (x_min/x_max/y_min/y_max/z_min/z_max)", "x_min"),
+                ("inlet_radius", "Inlet radius (mm)?", "2.0"),
+                ("outlet_face", "Outlet face? (x_min/x_max/y_min/y_max/z_min/z_max)", "x_max"),
+                ("outlet_radius", "Outlet radius (mm)? (default = inlet radius)", None),
+            ],
+        },
+        "D": {
+            "name": "5. Leg Geometry",
+            "questions": [
+                ("leg_radius", "Leg channel radius (mm)?", "1.5"),
+                ("route_type", "Leg routing: straight or curved?", "straight"),
+                ("bend_radius", "If curved: minimum bend radius (mm)? (or 'auto')", "auto"),
+            ],
+        },
+        "F": {
+            "name": "6. Constraints",
+            "questions": [
+                ("min_clearance", "Minimum clearance between legs (mm)?", "1"),
+                ("wall_thickness", "Wall thickness for hollow channels (mm)? (or 'solid')", "solid"),
+            ],
+        },
+        "H": {
+            "name": "7. Embedding (Optional)",
+            "questions": [
+                ("embed_requested", "Do you want to embed this into a voxel domain for 3D printing? (yes/no)", "no"),
+                ("min_feature_size", "If embedding: minimum printable feature size / nozzle diameter (mm)?", "0.4"),
+                ("voxel_pitch_confirm", "Suggested voxel pitch based on feature size. Accept? (yes/custom)", "yes"),
+            ],
+        },
+        "G": {
+            "name": "8. Acceptance Criteria",
+            "questions": [
+                ("watertight_required", "Require watertight mesh?", "yes"),
+            ],
+        },
+    },
 }
 
 
@@ -1248,16 +1401,22 @@ def get_tailored_questions(intent: str, base_questions: dict = None) -> dict:
     """
     Get question groups tailored to the user's described object.
     
+    V3: Added backbone topology detection for parallel leg structures.
+    
     This function implements topology-first gating:
-    1. Detect topology kind from intent (path/tree/loop/multi_tree)
+    1. Detect topology kind from intent (backbone/path/tree/loop/multi_tree)
     2. Use the complete topology-specific question set
     3. Only fall back to base questions if no topology detected
     
     The topology-specific question sets are designed as "Minimum Viable Spec":
+    - BACKBONE: 6-8 questions (topology, domain, leg config, ports, geometry, embed?)
     - PATH: 5-7 questions (topology, domain, inlet, outlet, route, embed?)
     - TREE: 5-8 questions (topology, domain, inlet, terminals, branching, embed?)
+    - LOOP: 4-5 questions (topology, domain, ports, loop config)
+    - MULTI_TREE: 4-5 questions (topology, domain, tree config, per-tree settings)
     
     This ensures:
+    - "Backbone/parallel leg" requests get backbone-specific questions
     - Simple "channel" requests don't get asked about branching/terminals
     - "Vascular tree" requests get full tree-related questions
     - Domain dimensions are always asked explicitly (not hidden behind defaults)
@@ -1387,6 +1546,33 @@ def get_topology_completeness_rules(topology_kind: str) -> dict:
                 "target_terminals_per_tree",
                 "max_depth",
                 "boundary_margin",
+            ],
+        },
+        # V3: BACKBONE topology completeness rules
+        "backbone": {
+            "required_fields": [
+                "topology_kind",
+                "domain_dims",
+                "leg_count",
+                "inlet_face",
+                "inlet_radius",
+                "outlet_face",
+            ],
+            "optional_fields": [
+                "backbone_axis",
+                "leg_spacing",
+                "leg_connection",
+                "port_style",
+                "inlet_position",
+                "outlet_position",
+                "outlet_radius",
+                "leg_radius",
+                "route_type",
+                "bend_radius",
+                "boundary_margin",
+                "min_clearance",
+                "wall_thickness",
+                "embed_requested",
             ],
         },
     }
@@ -2009,6 +2195,229 @@ FIELD_VALIDATORS = {
 }
 
 
+class ResponseType:
+    """V3: Response classification types for adaptive response handling (Section F)."""
+    ANSWER = "answer"
+    META_QUESTION = "meta_question"
+    CORRECTION = "correction"
+    UNCERTAINTY = "uncertainty"
+    TOPOLOGY_OVERRIDE = "topology_override"
+    COMMAND = "command"
+
+
+VALID_TOPOLOGIES = ["path", "tree", "loop", "multi_tree", "backbone"]
+
+
+META_QUESTION_PATTERNS = [
+    "what is", "what are", "what's", "whats",
+    "how do", "how does", "how should", "how can",
+    "why do", "why does", "why should",
+    "can you explain", "explain", "tell me about",
+    "what do you mean", "what does that mean",
+    "default", "defaults", "what are the defaults",
+    "example", "examples", "give me an example",
+    "help", "?",
+]
+
+
+CORRECTION_PATTERNS = [
+    "actually", "no wait", "sorry", "i meant", "i mean",
+    "change that", "change it", "let me change", "correction",
+    "not that", "wrong", "mistake", "go back", "undo",
+    "instead", "rather", "should be", "make it",
+]
+
+
+UNCERTAINTY_PATTERNS = [
+    "i don't know", "i dont know", "not sure", "unsure",
+    "no idea", "idk", "dunno", "whatever", "you decide",
+    "up to you", "your choice", "recommend", "suggest",
+    "what would you", "what do you think", "best option",
+]
+
+
+TOPOLOGY_OVERRIDE_PATTERNS = [
+    "change topology", "wrong topology", "not a tree", "not tree",
+    "not a path", "not path", "not backbone", "not a backbone",
+    "should be path", "should be tree", "should be backbone",
+    "should be loop", "should be multi_tree",
+    "switch to path", "switch to tree", "switch to backbone",
+    "switch to loop", "switch to multi_tree",
+    "use path", "use tree", "use backbone", "use loop", "use multi_tree",
+    "it's a path", "it's a tree", "it's a backbone", "it's a loop",
+    "this is a path", "this is a tree", "this is a backbone",
+    "misclassified", "wrong type", "incorrect topology",
+]
+
+
+def _classify_response(response: str, field: str = "") -> Tuple[str, Optional[str]]:
+    """
+    V3: Classify user response for adaptive handling (Section F).
+    
+    Returns (response_type, extracted_value).
+    
+    Response types:
+    - ANSWER: Valid answer to the question
+    - META_QUESTION: User asking about the question itself ("what are defaults?")
+    - CORRECTION: User correcting a previous answer ("actually, make it 2")
+    - UNCERTAINTY: User expressing uncertainty ("I don't know")
+    - TOPOLOGY_OVERRIDE: User wants to change detected topology
+    - COMMAND: Special command (quit, exit, use defaults)
+    """
+    response_lower = response.lower().strip()
+    
+    if not response_lower:
+        return ResponseType.ANSWER, None
+    
+    if response_lower in ("quit", "exit"):
+        return ResponseType.COMMAND, "quit"
+    if response_lower == "use defaults":
+        return ResponseType.COMMAND, "use_defaults"
+    
+    for pattern in TOPOLOGY_OVERRIDE_PATTERNS:
+        if pattern in response_lower:
+            for topo in VALID_TOPOLOGIES:
+                if topo in response_lower:
+                    return ResponseType.TOPOLOGY_OVERRIDE, topo
+            return ResponseType.TOPOLOGY_OVERRIDE, None
+    
+    for pattern in META_QUESTION_PATTERNS:
+        if response_lower.startswith(pattern) or pattern in response_lower:
+            if response_lower.endswith("?") or any(p in response_lower for p in ["what", "how", "why", "explain", "help"]):
+                return ResponseType.META_QUESTION, response
+    
+    for pattern in UNCERTAINTY_PATTERNS:
+        if pattern in response_lower:
+            return ResponseType.UNCERTAINTY, response
+    
+    for pattern in CORRECTION_PATTERNS:
+        if response_lower.startswith(pattern) or pattern in response_lower:
+            return ResponseType.CORRECTION, response
+    
+    return ResponseType.ANSWER, response
+
+
+def _answer_meta_question(question_field: str, user_question: str, current_value: Any = None) -> str:
+    """
+    V3: Answer a meta-question about a field (Section F).
+    
+    Returns an explanation string to display to the user.
+    """
+    field_explanations = {
+        "num_inlets": {
+            "description": "Number of inlet ports where fluid enters the structure",
+            "defaults": "Default is 1 inlet. Most structures have a single inlet.",
+            "examples": "1 for simple channel, 2+ for parallel feeds",
+        },
+        "num_outlets": {
+            "description": "Number of outlet ports where fluid exits the structure",
+            "defaults": "Default is 1 outlet for path topology, 0 for tree (terminals are exits)",
+            "examples": "1 for channel, 0 for perfusion tree with terminal endpoints",
+        },
+        "domain_size": {
+            "description": "Physical dimensions of the bounding box (width x length x height)",
+            "defaults": "Default is 20x60x30 mm",
+            "examples": "30 60 20 mm, 2x6x3 cm, 0.02 0.06 0.03 m",
+        },
+        "topology.topology_kind": {
+            "description": "Structure type: path (simple channel), tree (branching), backbone (parallel legs), loop, or multi_tree",
+            "defaults": "Auto-detected from your description",
+            "examples": "path for inlet→outlet channel, tree for vascular branching, backbone for 3-leg parallel",
+        },
+        "target_terminals": {
+            "description": "Number of terminal endpoints for tree structures",
+            "defaults": "Default is 200 terminals",
+            "examples": "100 for sparse, 500 for dense, 1000+ for high-resolution",
+        },
+        "min_channel_radius": {
+            "description": "Minimum channel radius constraint in mm",
+            "defaults": "Default is 0.1 mm (100 microns)",
+            "examples": "0.05 for fine detail, 0.2 for robust printing",
+        },
+        "voxel_pitch": {
+            "description": "Resolution for embedded domain output (voxel size)",
+            "defaults": "Calculated as min_feature / 3 for adequate resolution",
+            "examples": "0.1 mm for fine detail, 0.3 mm for faster processing",
+        },
+        "backbone_axis": {
+            "description": "Axis along which the backbone runs (x, y, z, or 'longest')",
+            "defaults": "Default is 'longest' (auto-detect longest domain axis)",
+            "examples": "y for vertical backbone, x for horizontal",
+        },
+        "leg_count": {
+            "description": "Number of parallel legs in backbone topology",
+            "defaults": "Default is 3 legs",
+            "examples": "2 for simple parallel, 3 for three-leg, 5+ for ladder",
+        },
+        "leg_spacing": {
+            "description": "Distance between parallel legs",
+            "defaults": "Default is 'equal' (evenly distributed across domain)",
+            "examples": "'equal' or specific value like '10 mm'",
+        },
+    }
+    
+    user_q_lower = user_question.lower()
+    
+    info = field_explanations.get(question_field, {
+        "description": f"This field configures {question_field.replace('_', ' ')}",
+        "defaults": "A sensible default will be applied if you skip this question",
+        "examples": "Enter a value appropriate for your design",
+    })
+    
+    if "default" in user_q_lower:
+        return f"  [Info] {info['defaults']}"
+    elif "example" in user_q_lower:
+        return f"  [Info] Examples: {info['examples']}"
+    elif "what" in user_q_lower or "explain" in user_q_lower or "help" in user_q_lower:
+        return f"  [Info] {info['description']}\n  Defaults: {info['defaults']}\n  Examples: {info['examples']}"
+    else:
+        return f"  [Info] {info['description']}"
+
+
+def _handle_topology_override(
+    requirements: 'ObjectRequirements',
+    new_topology: Optional[str],
+    verbose: bool = True
+) -> Tuple[bool, Optional[str]]:
+    """
+    V3: Handle topology override request.
+    
+    Returns (success, message).
+    If new_topology is None, prompts user to select one.
+    """
+    if new_topology is None:
+        print("\n  Available topologies:")
+        print("    1. path     - Simple inlet→outlet channel")
+        print("    2. tree     - Branching vascular network")
+        print("    3. backbone - Parallel leg structure (3-leg, manifold)")
+        print("    4. loop     - Looping/recirculating structure")
+        print("    5. multi_tree - Multiple independent trees")
+        
+        choice = input("  Select topology (1-5 or name): ").strip().lower()
+        
+        topology_map = {
+            "1": "path", "2": "tree", "3": "backbone", "4": "loop", "5": "multi_tree",
+            "path": "path", "tree": "tree", "backbone": "backbone", 
+            "loop": "loop", "multi_tree": "multi_tree", "multitree": "multi_tree",
+        }
+        
+        new_topology = topology_map.get(choice)
+        if not new_topology:
+            return False, f"Invalid selection: '{choice}'. Please try again."
+    
+    if new_topology not in VALID_TOPOLOGIES:
+        return False, f"Invalid topology: '{new_topology}'. Valid options: {', '.join(VALID_TOPOLOGIES)}"
+    
+    old_topology = requirements.topology.topology_kind
+    requirements.topology.topology_kind = new_topology
+    
+    if verbose:
+        print(f"\n  [Topology Override] Changed from '{old_topology}' to '{new_topology}'")
+        print(f"  Questions will now be tailored for {new_topology} topology.")
+    
+    return True, f"Topology changed to '{new_topology}'"
+
+
 def _validate_answer(field: str, answer: str) -> Tuple[bool, Optional[str]]:
     """
     Validate an answer for a specific field.
@@ -2174,23 +2583,72 @@ def run_rule_based_capture(
             field_key = _get_field_key_from_question(q)
             
             max_validation_attempts = 3
+            question_answered = False
+            topology_changed = False
+            
             for attempt in range(max_validation_attempts):
-                answer = input(f"  {q.question_text}{default_str}: ").strip()
+                raw_answer = input(f"  {q.question_text}{default_str}: ").strip()
                 
-                if answer.lower() in ("quit", "exit"):
-                    return requirements, collected_answers
+                response_type, extracted_value = _classify_response(raw_answer, q.field)
                 
-                if answer.lower() == "use defaults":
-                    for prop in eval_result.proposed_defaults:
-                        _apply_default_to_requirements(requirements, prop)
-                        collected_answers[prop.field] = prop.value
-                    break
+                if response_type == ResponseType.COMMAND:
+                    if extracted_value == "quit":
+                        return requirements, collected_answers
+                    elif extracted_value == "use_defaults":
+                        for prop in eval_result.proposed_defaults:
+                            _apply_default_to_requirements(requirements, prop)
+                            collected_answers[prop.field] = prop.value
+                        question_answered = True
+                        break
                 
-                if not answer and q.default_value:
-                    answer = q.default_value
+                elif response_type == ResponseType.TOPOLOGY_OVERRIDE:
+                    success, msg = _handle_topology_override(requirements, extracted_value, verbose)
+                    if success:
+                        topology_changed = True
+                        previous_question_sets.clear()
+                        repeat_count = 0
+                        break
+                    else:
+                        print(f"  [Error] {msg}")
+                        continue
                 
-                is_valid, error_msg = _validate_answer(field_key, answer)
+                elif response_type == ResponseType.META_QUESTION:
+                    explanation = _answer_meta_question(q.field, raw_answer)
+                    print(explanation)
+                    print("  (Please answer the question above)")
+                    continue
+                
+                elif response_type == ResponseType.UNCERTAINTY:
+                    if q.default_value:
+                        print(f"  [Info] No problem! Using default: {q.default_value}")
+                        raw_answer = q.default_value
+                    else:
+                        print("  [Info] I'll use a sensible default for this field.")
+                        question_answered = True
+                        break
+                
+                elif response_type == ResponseType.CORRECTION:
+                    import re
+                    numbers = re.findall(r'[\d.]+', raw_answer)
+                    if numbers:
+                        raw_answer = numbers[0]
+                        print(f"  [Info] Got it, using: {raw_answer}")
+                    else:
+                        words = raw_answer.lower().split()
+                        for word in reversed(words):
+                            if word not in ["actually", "no", "wait", "sorry", "i", "meant", "mean", "make", "it", "change", "to", "be"]:
+                                raw_answer = word
+                                print(f"  [Info] Got it, using: {raw_answer}")
+                                break
+                
+                if not raw_answer and q.default_value:
+                    raw_answer = q.default_value
+                
+                is_valid, error_msg = _validate_answer(field_key, raw_answer)
                 if is_valid:
+                    collected_answers[q.field] = raw_answer
+                    _apply_answer_to_requirements(requirements, q.field, raw_answer)
+                    question_answered = True
                     break
                 else:
                     print(f"  [Error] {error_msg}")
@@ -2198,16 +2656,17 @@ def run_rule_based_capture(
                         print(f"  Please try again ({max_validation_attempts - attempt - 1} attempts remaining).")
                     else:
                         print(f"  Using default value: {q.default_value}")
-                        answer = q.default_value if q.default_value else answer
-            else:
-                if answer.lower() == "use defaults":
-                    break
+                        raw_answer = q.default_value if q.default_value else raw_answer
+                        collected_answers[q.field] = raw_answer
+                        _apply_answer_to_requirements(requirements, q.field, raw_answer)
+                        question_answered = True
             
-            if answer.lower() == "use defaults":
+            if topology_changed:
                 break
             
-            collected_answers[q.field] = answer
-            _apply_answer_to_requirements(requirements, q.field, answer)
+            if not question_answered and q.default_value:
+                collected_answers[q.field] = q.default_value
+                _apply_answer_to_requirements(requirements, q.field, q.default_value)
     
     if iteration >= max_iterations:
         if verbose:
@@ -2638,6 +3097,53 @@ def _apply_answer_to_requirements(req: ObjectRequirements, field: str, value: An
         if isinstance(value, str):
             val = value.lower().strip()
             req.topology.shared_inlet = val in ("yes", "y", "true", "1")
+    
+    # =========================================================================
+    # V3: Backbone-specific field handlers
+    # =========================================================================
+    
+    elif field == "backbone_axis":
+        # Set backbone axis (x, y, z, or 'longest')
+        if isinstance(value, str):
+            req.topology.backbone_axis = value.lower().strip()
+    
+    elif field == "leg_count":
+        # Set number of parallel legs
+        if isinstance(value, str):
+            try:
+                req.topology.leg_count = int(value.strip())
+            except ValueError:
+                pass
+    
+    elif field == "leg_spacing":
+        # Set leg spacing (equal or specific mm value)
+        if isinstance(value, str):
+            val = value.lower().strip()
+            if val == "equal":
+                req.topology.leg_spacing = "equal"
+            else:
+                try:
+                    req.topology.leg_spacing_m = float(val) / 1000
+                except ValueError:
+                    req.topology.leg_spacing = val
+    
+    elif field == "leg_connection":
+        # Set leg connection type (ladder, u_shape, separate)
+        if isinstance(value, str):
+            req.topology.leg_connection = value.lower().strip()
+    
+    elif field == "port_style":
+        # Set port connection style (manifold or individual)
+        if isinstance(value, str):
+            req.topology.port_style = value.lower().strip()
+    
+    elif field == "leg_radius":
+        # Set leg channel radius in mm
+        if isinstance(value, str):
+            try:
+                req.geometry.leg_radius_m = float(value.strip()) / 1000
+            except ValueError:
+                pass
 
 
 def _apply_placement_to_inlets(req: ObjectRequirements, placement: str) -> None:
@@ -2728,7 +3234,7 @@ class SingleAgentOrganGeneratorV2:
     """
     
     WORKFLOW_NAME = "Single Agent Organ Generator V2"
-    WORKFLOW_VERSION = "2.0.0"
+    WORKFLOW_VERSION = "3.0.0"
     
     def __init__(
         self,
