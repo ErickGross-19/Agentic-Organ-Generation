@@ -1862,7 +1862,7 @@ class SingleAgentOrganGeneratorV2:
             if obj.final_manifest:
                 print(f"    Manifest: {obj.final_manifest}")
         print()
-        print("Thank you for using the Single Agent Organ Generator V1!")
+        print("Thank you for using the Single Agent Organ Generator V2!")
     
     def _run_state(self) -> None:
         """Run the current state's logic."""
