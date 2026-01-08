@@ -2447,13 +2447,13 @@ class SingleAgentOrganGeneratorV2:
         print("=" * 60)
         print()
         print("This workflow will guide you through generating one or more")
-        print("vascular/tubular 3D structures. Type 'quit' at any time to exit.")
+        print("3D structures based on your description. Type 'quit' at any time to exit.")
         print()
         print("Core Principles:")
         print("  1. Spec-first, deterministic execution")
         print("  2. Schema-gated clarity")
         print("  3. Fixed frame of reference")
-        print("  4. Hierarchical decomposition")
+        print("  4. Focus on your actual requirements")
         print("  5. Iteration loop is per object")
         print()
     
@@ -2475,7 +2475,7 @@ class SingleAgentOrganGeneratorV2:
             if obj.final_manifest:
                 print(f"    Manifest: {obj.final_manifest}")
         print()
-        print("Thank you for using the Single Agent Organ Generator V2!")
+        print("Thank you for using the 3D Structure Generator!")
     
     def _run_state(self) -> None:
         """Run the current state's logic."""
@@ -2689,7 +2689,7 @@ class SingleAgentOrganGeneratorV2:
             question_id="num_objects",
             question_text="How many objects in this project?",
             default_value="1",
-            why_asking="Each object represents a separate vascular network to generate. Multiple objects can be variants of the same design or completely different structures.",
+            why_asking="Each object represents a separate 3D structure to generate. Multiple objects can be variants of the same design or completely different structures.",
         )
         num_objects_input, intent = self.prompt_session.ask_until_answer(
             question_id="num_objects",
@@ -2785,13 +2785,13 @@ class SingleAgentOrganGeneratorV2:
         if description_help is None:
             description_help = create_question_help(
                 question_id="object_description",
-                question_text="Describe the vascular network you want to generate",
-                why_asking="Your description helps the agent understand what kind of network to create, including topology, density, and any special requirements.",
+                question_text="Describe the 3D structure you want to generate",
+                why_asking="Your description helps the agent understand what kind of structure to create, including topology, density, and any special requirements.",
                 impact="A detailed description leads to better initial understanding and fewer follow-up questions.",
                 examples=[
-                    "A dense hepatic vascular tree with 3 inlets and 50 terminals",
+                    "A branching tree structure with 3 inlets and 50 terminals",
                     "A simple Y-shaped bifurcation for testing",
-                    "A coronary-like network with tortuous vessels",
+                    "A channel connecting two points with smooth curves",
                 ],
             )
         
@@ -3114,14 +3114,24 @@ class SingleAgentOrganGeneratorV2:
         print(f"Step 3: Requirements Capture ({obj.name})")
         print("-" * 40)
         
+        # Only detect organ type if user explicitly mentions organ-specific terms
+        # Otherwise, use generic mode to focus on what the user actually described
         organ_type = detect_organ_type(obj.raw_intent)
         
-        if organ_type != "generic":
-            print(f"\nDetected organ type: {organ_type}")
-            print("Questions will be tailored to this organ type.")
+        # Be more conservative about organ detection - only mention if very explicit
+        explicit_organ_keywords = ["liver", "kidney", "lung", "heart", "hepatic", "renal", "pulmonary", "coronary"]
+        intent_lower = obj.raw_intent.lower()
+        is_explicit_organ = any(kw in intent_lower for kw in explicit_organ_keywords)
         
-        print("\nUsing adaptive rule-based requirements capture with dynamic schema.")
-        print("The system will ask only the questions needed based on your intent.")
+        if is_explicit_organ and organ_type != "generic":
+            print(f"\nDetected structure type: {organ_type}")
+            print("Questions will be tailored to this structure type.")
+        else:
+            organ_type = "generic"  # Force generic if not explicitly organ-related
+            print("\nUsing generic structure mode based on your description.")
+        
+        print("\nUsing adaptive rule-based requirements capture.")
+        print("The system will ask only the questions needed based on your description.")
         print("Say 'use defaults' at any time to accept all proposed defaults.")
         print()
         
@@ -3317,7 +3327,12 @@ class SingleAgentOrganGeneratorV2:
         req.acceptance_criteria.mesh_watertight_required = answers.get("watertight_required", "yes").lower() in ("yes", "y")
     
     def _run_spec_compilation(self) -> None:
-        """Run SPEC_COMPILATION state: Compile requirements to DesignSpec."""
+        """Run SPEC_COMPILATION state: Compile requirements to DesignSpec.
+        
+        This step converts the collected requirements into a formal DesignSpec
+        that can be used for 3D structure generation. The process is transparent
+        and shows exactly what is being compiled.
+        """
         obj = self.context.get_current_object()
         if not obj:
             self.state = WorkflowState.COMPLETE
@@ -3328,11 +3343,53 @@ class SingleAgentOrganGeneratorV2:
         print(f"Step 4: Spec Compilation ({obj.name})")
         print("-" * 40)
         print()
-        print("Compiling requirements to DesignSpec...")
         
         req_dict = obj.requirements.to_dict()
         
-        task = f"""Compile the following requirements into a DesignSpec for vascular network generation.
+        # Show transparency: display what we're compiling
+        print("Compiling requirements to DesignSpec...")
+        print()
+        print("Input Requirements Summary:")
+        print("-" * 30)
+        
+        # Show domain info
+        if req_dict.get("domain"):
+            domain = req_dict["domain"]
+            print(f"  Domain: {domain.get('shape', 'box')}")
+            if domain.get("size_m"):
+                size = domain["size_m"]
+                print(f"    Size: {size[0]*1000:.1f} x {size[1]*1000:.1f} x {size[2]*1000:.1f} mm")
+        
+        # Show I/O info
+        if req_dict.get("inlets_outlets"):
+            io = req_dict["inlets_outlets"]
+            print(f"  Inlets: {len(io.get('inlets', []))}")
+            print(f"  Outlets: {len(io.get('outlets', []))}")
+        
+        # Show topology info
+        if req_dict.get("topology"):
+            topo = req_dict["topology"]
+            print(f"  Topology: {topo.get('topology_kind', topo.get('style', 'tree'))}")
+            if topo.get("target_terminals"):
+                print(f"    Target terminals: {topo['target_terminals']}")
+        
+        # Show constraints
+        if req_dict.get("constraints"):
+            cons = req_dict["constraints"]
+            if cons.get("min_radius_m"):
+                print(f"  Min radius: {cons['min_radius_m']*1000:.3f} mm")
+        
+        print("-" * 30)
+        print()
+        print(f"User intent: {obj.raw_intent[:100]}..." if len(obj.raw_intent) > 100 else f"User intent: {obj.raw_intent}")
+        print()
+        
+        # Build task prompt - generic by default, focus on user's actual requirements
+        task = f"""Compile the following requirements into a DesignSpec for 3D structure generation.
+
+IMPORTANT: Focus on the user's actual requirements. Do not assume organ-specific structures
+unless explicitly mentioned in the user's intent. Generate a structure that matches exactly
+what the user described.
 
 Requirements:
 {json.dumps(req_dict, indent=2)}
@@ -3341,22 +3398,25 @@ Raw user intent:
 {obj.raw_intent}
 
 Instructions:
-1. Create a DesignSpec that matches the requirements
+1. Create a DesignSpec that matches the requirements exactly
 2. Use the generation.specs module classes (DesignSpec, EllipsoidSpec/BoxSpec, TreeSpec, ColonizationSpec)
 3. All values should be in METERS (internal units)
 4. Save the spec to: {obj.get_versioned_path(obj.spec_dir, "spec", "json")}
 5. Save the Python code used to: {obj.get_versioned_path(obj.code_dir, "generate", "py")}
 
 Provide complete, runnable Python code that:
-1. Creates the DesignSpec
+1. Creates the DesignSpec based on the user's requirements
 2. Saves it to JSON
 3. Is ready to be used for generation
 
-The code should be self-contained with all necessary imports."""
+The code should be self-contained with all necessary imports.
+Focus on what the user actually asked for - do not add organ-specific assumptions."""
 
         previous_context = self._get_previous_attempts_context(obj)
         if previous_context:
             task += f"\n\nContext from previous attempts:\n{previous_context}"
+        
+        print("Sending to LLM for spec generation...")
         
         result = self.agent.run_task(
             task=task,
@@ -3371,14 +3431,40 @@ The code should be self-contained with all necessary imports."""
             obj.spec_path = obj.get_versioned_path(obj.spec_dir, "spec", "json")
             obj.code_path = obj.get_versioned_path(obj.code_dir, "generate", "py")
             
-            print("\nSpec compilation complete!")
-            print(f"  Spec: {obj.spec_path}")
-            print(f"  Code: {obj.code_path}")
+            print()
+            print("Spec compilation complete!")
+            print(f"  Spec saved to: {obj.spec_path}")
+            print(f"  Code saved to: {obj.code_path}")
+            
+            # Show what was generated for transparency
+            if os.path.exists(obj.spec_path):
+                try:
+                    with open(obj.spec_path, 'r') as f:
+                        spec_data = json.load(f)
+                    print()
+                    print("Generated Spec Summary:")
+                    print("-" * 30)
+                    if spec_data.get("domain"):
+                        print(f"  Domain type: {spec_data['domain'].get('type', 'unknown')}")
+                    if spec_data.get("tree"):
+                        print(f"  Tree spec: present")
+                    if spec_data.get("colonization"):
+                        print(f"  Colonization spec: present")
+                    print("-" * 30)
+                except Exception as e:
+                    print(f"  (Could not read spec for summary: {e})")
             
             self.state = WorkflowState.GENERATION
         else:
-            print(f"\nSpec compilation failed: {result.error}")
-            print("Please review the requirements and try again.")
+            print()
+            print(f"Spec compilation failed: {result.error}")
+            print()
+            print("Troubleshooting:")
+            print("  1. Check that your requirements are complete")
+            print("  2. Ensure domain size and I/O are specified")
+            print("  3. Review the error message above")
+            print()
+            print("Returning to requirements capture...")
             self.state = WorkflowState.REQUIREMENTS_CAPTURE
     
     def _run_generation(self) -> None:
@@ -3413,11 +3499,14 @@ The code should be self-contained with all necessary imports."""
         network_path = obj.get_versioned_path(obj.outputs_dir, "network", "json")
         mesh_path = obj.get_versioned_path(obj.mesh_dir, "mesh_network", "stl")
         
-        task = f"""Generate a Python script for vascular network generation based on the spec.
+        task = f"""Generate a Python script for 3D structure generation based on the spec.
 
 Spec file: {obj.spec_path}
 
-IMPORTANT: The script MUST follow these requirements:
+IMPORTANT: Focus on the user's actual requirements from the spec. Do not assume organ-specific
+structures unless explicitly specified. Generate exactly what the user described.
+
+The script MUST follow these requirements:
 1. Read the output directory from environment variable ORGAN_AGENT_OUTPUT_DIR
 2. Define a main() function as the entry point
 3. Save the network to: network.json (relative to OUTPUT_DIR)
@@ -3642,7 +3731,7 @@ Provide complete, runnable Python code in a ```python code block."""
         print()
         print("Analyzing and validating generated structure...")
         
-        task = f"""Analyze and validate the generated vascular network.
+        task = f"""Analyze and validate the generated 3D structure.
 
 Network file: {obj.network_path}
 Mesh file: {obj.mesh_path}
@@ -3829,13 +3918,13 @@ Provide complete analysis results."""
         
         embed_domain = self.context.default_embed_domain
         
-        task = f"""Finalize the organ structure for object '{obj.name}'.
+        task = f"""Finalize the 3D structure for object '{obj.name}'.
 
 Network file: {obj.network_path}
 Mesh file: {obj.mesh_path}
 
 Requirements:
-1. Embed the vascular network into the domain as negative space:
+1. Embed the structure into the domain as negative space:
    - Domain: box {embed_domain[0]*1000:.0f}mm x {embed_domain[1]*1000:.0f}mm x {embed_domain[2]*1000:.0f}mm
    - Use embed_tree_as_negative_space() or equivalent
    - Save void STL to: {os.path.join(obj.final_dir, "embed", "void.stl")}
