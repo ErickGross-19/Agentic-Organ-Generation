@@ -9,12 +9,15 @@ Main Components:
     - agent_runner: Generic agent runner that works with standard LLM APIs
     - llm_client: Client for interacting with LLM APIs (OpenAI, Anthropic, etc.)
     - task_templates: Pre-built task prompts for common operations
-    - workflow: Single Agent Organ Generator V1 workflow
+    - workflow: Single Agent Organ Generator V2 workflow
+    - llm_healthcheck: LLM readiness checks and circuit breaker
+    - agent_dialogue: Understand -> Plan -> Ask dialogue system
+    - schema_manager: Dynamic schema with activatable modules
 
 Workflows:
-    - SingleAgentOrganGeneratorV1: Interactive workflow for organ structure generation
+    - SingleAgentOrganGeneratorV2: Interactive workflow for organ structure generation
       that guides users through project setup, requirements, generation, review,
-      and finalization.
+      and finalization. V2 introduces the "Interpret -> Plan -> Ask" agent pattern.
 
 Example:
     >>> from automation import AgentRunner, LLMClient
@@ -33,8 +36,8 @@ Example:
     ... )
     
     >>> # Or use the workflow
-    >>> from automation import SingleAgentOrganGeneratorV1
-    >>> workflow = SingleAgentOrganGeneratorV1(runner)
+    >>> from automation import SingleAgentOrganGeneratorV2
+    >>> workflow = SingleAgentOrganGeneratorV2(runner)
     >>> context = workflow.run()
 """
 
@@ -89,6 +92,7 @@ from .artifact_verifier import (
 )
 from .workflow import (
     SingleAgentOrganGeneratorV1,
+    SingleAgentOrganGeneratorV2,
     WorkflowState,
     ProjectContext,
     ObjectContext,
@@ -116,6 +120,58 @@ from .workflow import (
     RuleEngine,
     QuestionPlanner,
     run_rule_based_capture,
+)
+from .llm_healthcheck import (
+    assert_llm_ready,
+    check_credentials,
+    check_provider_config,
+    ping_llm,
+    with_retry,
+    get_provider_setup_instructions,
+    LLMError,
+    MissingCredentialsError,
+    ProviderMisconfiguredError,
+    TransientLLMError,
+    FatalLLMError,
+    RetryConfig,
+    HealthCheckResult,
+)
+from .agent_dialogue import (
+    understand_object,
+    propose_plans,
+    format_user_summary,
+    format_living_spec,
+    UnderstandingReport,
+    PlanOption,
+    GeneratorStrategy,
+    Assumption,
+    Ambiguity,
+    Risk,
+)
+from .schema_modules import (
+    SchemaModule,
+    FieldDefinition,
+    FieldType,
+    ALL_MODULES,
+    CORE_FIELD_GROUPS,
+    get_all_core_fields,
+    get_module,
+    get_modules_for_triggers,
+)
+from .schema_manager import (
+    SchemaManager,
+    ActiveSchema,
+    SchemaPatch,
+    ModulePatch,
+    FieldPatch,
+    Question,
+)
+from .schema_patch_validator import (
+    validate_schema_patch,
+    validate_module_patch,
+    validate_field_patch,
+    validate_custom_field,
+    suggest_patch_fixes,
 )
 
 __all__ = [
@@ -169,6 +225,7 @@ __all__ = [
     "FileCheckResult",
     # Workflow
     "SingleAgentOrganGeneratorV1",
+    "SingleAgentOrganGeneratorV2",
     "WorkflowState",
     "ProjectContext",
     "ObjectContext",
@@ -196,4 +253,51 @@ __all__ = [
     "RuleEngine",
     "QuestionPlanner",
     "run_rule_based_capture",
+    # LLM Healthcheck
+    "assert_llm_ready",
+    "check_credentials",
+    "check_provider_config",
+    "ping_llm",
+    "with_retry",
+    "get_provider_setup_instructions",
+    "LLMError",
+    "MissingCredentialsError",
+    "ProviderMisconfiguredError",
+    "TransientLLMError",
+    "FatalLLMError",
+    "RetryConfig",
+    "HealthCheckResult",
+    # Agent Dialogue
+    "understand_object",
+    "propose_plans",
+    "format_user_summary",
+    "format_living_spec",
+    "UnderstandingReport",
+    "PlanOption",
+    "GeneratorStrategy",
+    "Assumption",
+    "Ambiguity",
+    "Risk",
+    # Schema Modules
+    "SchemaModule",
+    "FieldDefinition",
+    "FieldType",
+    "ALL_MODULES",
+    "CORE_FIELD_GROUPS",
+    "get_all_core_fields",
+    "get_module",
+    "get_modules_for_triggers",
+    # Schema Manager
+    "SchemaManager",
+    "ActiveSchema",
+    "SchemaPatch",
+    "ModulePatch",
+    "FieldPatch",
+    "Question",
+    # Schema Patch Validator
+    "validate_schema_patch",
+    "validate_module_patch",
+    "validate_field_patch",
+    "validate_custom_field",
+    "suggest_patch_fixes",
 ]

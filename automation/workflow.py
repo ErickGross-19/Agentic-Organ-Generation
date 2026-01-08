@@ -1,8 +1,14 @@
 """
-Single Agent Organ Generator V1 Workflow
+Single Agent Organ Generator V2 Workflow
 
-This module implements the "Single Agent Organ Generator V1" workflow - a stateful,
+This module implements the "Single Agent Organ Generator V2" workflow - a stateful,
 interactive workflow for organ structure generation using LLM agents.
+
+V2 introduces the "Interpret -> Plan -> Ask" agent pattern:
+- Agent dialogue system for understanding user intent
+- Dynamic schema with activatable modules
+- LLM healthcheck and circuit breaker for reliability
+- Iteration feedback integration
 
 The workflow follows these steps:
 0. PROJECT_INIT: Ask user for project name and global defaults
@@ -18,17 +24,19 @@ The workflow follows these steps:
 
 Key Features:
 - Per-object folder structure with versioned artifacts
-- Schema-gated requirements capture
+- Schema-gated requirements capture with dynamic modules
+- Agent dialogue: Understand -> Plan -> Ask flow
 - Fixed frame of reference before spatial discussions
 - Ability to pull context from previous attempts
 - Deterministic, reproducible generation
+- LLM healthcheck prevents infinite loops
 
 Usage:
-    from automation.workflow import SingleAgentOrganGeneratorV1
+    from automation.workflow import SingleAgentOrganGeneratorV2
     from automation.agent_runner import create_agent
     
     agent = create_agent(provider="openai", model="gpt-4")
-    workflow = SingleAgentOrganGeneratorV1(agent)
+    workflow = SingleAgentOrganGeneratorV2(agent)
     workflow.run()
 """
 
@@ -53,10 +61,20 @@ from .script_writer import write_script, get_run_command
 from .review_gate import run_review_gate, ReviewAction
 from .subprocess_runner import run_script, print_run_summary
 from .artifact_verifier import verify_generation_stage, save_manifest, print_verification_summary
+from .llm_healthcheck import assert_llm_ready, MissingCredentialsError, ProviderMisconfiguredError, FatalLLMError
+from .agent_dialogue import (
+    understand_object,
+    propose_plans,
+    format_user_summary,
+    format_living_spec,
+    UnderstandingReport,
+    PlanOption,
+)
+from .schema_manager import SchemaManager, ActiveSchema
 
 
 class WorkflowState(Enum):
-    """States in the Single Agent Organ Generator V1 workflow."""
+    """States in the Single Agent Organ Generator V2 workflow."""
     PROJECT_INIT = "project_init"
     OBJECT_PLANNING = "object_planning"
     FRAME_OF_REFERENCE = "frame_of_reference"
@@ -1708,16 +1726,22 @@ def _apply_answer_to_requirements(req: ObjectRequirements, field: str, value: An
 # Main Workflow Class
 # =============================================================================
 
-class SingleAgentOrganGeneratorV1:
+class SingleAgentOrganGeneratorV2:
     """
-    Single Agent Organ Generator V1 - Stateful workflow for organ structure generation.
+    Single Agent Organ Generator V2 - Stateful workflow for organ structure generation.
     
     This workflow implements an interactive, LLM-driven process for generating
     organ vascular structures with per-object folder structure, schema-gated
     requirements capture, and ability to pull context from previous attempts.
+    
+    V2 Features:
+    - Agent dialogue system (Understand -> Plan -> Ask)
+    - Dynamic schema with activatable modules
+    - LLM healthcheck and circuit breaker
+    - Iteration feedback integration
     """
     
-    WORKFLOW_NAME = "Single Agent Organ Generator V1"
+    WORKFLOW_NAME = "Single Agent Organ Generator V2"
     WORKFLOW_VERSION = "2.0.0"
     
     def __init__(
@@ -1727,6 +1751,7 @@ class SingleAgentOrganGeneratorV1:
         verbose: bool = True,
         execution_mode: ExecutionMode = DEFAULT_EXECUTION_MODE,
         timeout_seconds: float = 300.0,
+        skip_healthcheck: bool = False,
     ):
         self.agent = agent
         self.base_output_dir = base_output_dir
@@ -1739,6 +1764,12 @@ class SingleAgentOrganGeneratorV1:
         self.current_question_group: Optional[str] = None
         self.current_question_index: int = 0
         self.collected_answers: Dict[str, Any] = {}
+        
+        self.schema_manager = SchemaManager()
+        
+        self.current_understanding: Optional[UnderstandingReport] = None
+        self.current_plans: Optional[List[PlanOption]] = None
+        self.chosen_plan: Optional[PlanOption] = None
         
         os.makedirs(base_output_dir, exist_ok=True)
     
@@ -1977,7 +2008,14 @@ class SingleAgentOrganGeneratorV1:
         self.state = WorkflowState.FRAME_OF_REFERENCE
     
     def _collect_initial_intent(self, obj: ObjectContext) -> bool:
-        """Collect initial intent for an object. Returns False if user quits."""
+        """Collect initial intent for an object. Returns False if user quits.
+        
+        V2: After collecting raw intent, runs the agent dialogue:
+        1. understand_object() - produces UnderstandingReport
+        2. propose_plans() - produces list of PlanOptions
+        3. Shows understanding and plans to user
+        4. User picks a plan
+        """
         print()
         print(f"--- Object: {obj.name} ---")
         print()
@@ -1998,6 +2036,95 @@ class SingleAgentOrganGeneratorV1:
         intent_path = os.path.join(obj.intent_dir, "intent.txt")
         with open(intent_path, 'w') as f:
             f.write(intent)
+        
+        self.schema_manager.reset()
+        self.schema_manager.update_from_user_turn(intent)
+        
+        context = {
+            "project_name": self.context.project_name,
+            "object_name": obj.name,
+            "previous_objects": [o.name for o in self.context.objects if o != obj],
+        }
+        
+        print()
+        print("-" * 40)
+        print("Understanding your request...")
+        print("-" * 40)
+        
+        self.current_understanding = understand_object(intent, context)
+        
+        print()
+        print("Here's what I understood:")
+        print()
+        print(f"  {self.current_understanding.summary}")
+        print()
+        
+        if self.current_understanding.assumptions:
+            print("Assumptions I'm making:")
+            for assumption in self.current_understanding.assumptions:
+                print(f"  - {assumption.reason} (confidence: {assumption.confidence})")
+            print()
+        
+        if self.current_understanding.ambiguities:
+            print("Ambiguities I noticed:")
+            for ambiguity in self.current_understanding.ambiguities:
+                print(f"  - {ambiguity.description}")
+            print()
+        
+        if self.current_understanding.risks:
+            print("Potential risks:")
+            for risk in self.current_understanding.risks:
+                print(f"  - [{risk.severity}] {risk.description}")
+            print()
+        
+        self.current_plans = propose_plans(self.current_understanding, context)
+        
+        print("-" * 40)
+        print("Generation Strategies")
+        print("-" * 40)
+        print()
+        
+        for i, plan in enumerate(self.current_plans):
+            letter = chr(ord('A') + i)
+            print(f"Option {letter}: {plan.name}")
+            print(f"  Approach: {plan.description}")
+            print(f"  Utilities: {', '.join(plan.utilities)}")
+            if plan.tunable_knobs:
+                print(f"  Tunable: {', '.join(plan.tunable_knobs)}")
+            print()
+        
+        while True:
+            choice = input("Choose a plan (A/B/C) or 'quit': ").strip().upper()
+            if choice.lower() in ("quit", "exit"):
+                return False
+            
+            if choice in [chr(ord('A') + i) for i in range(len(self.current_plans))]:
+                plan_index = ord(choice) - ord('A')
+                self.chosen_plan = self.current_plans[plan_index]
+                print(f"\nSelected: Option {choice} - {self.chosen_plan.name}")
+                
+                for module_name in self.chosen_plan.required_modules:
+                    self.schema_manager.activate_module(module_name)
+                
+                break
+            else:
+                print(f"Invalid choice. Please enter A, B, or C.")
+        
+        understanding_path = os.path.join(obj.intent_dir, "understanding.json")
+        with open(understanding_path, 'w') as f:
+            json.dump({
+                "summary": self.current_understanding.summary,
+                "assumptions": [{"field": a.field, "reason": a.reason, "confidence": a.confidence} for a in self.current_understanding.assumptions],
+                "ambiguities": [{"description": a.description, "field": a.field} for a in self.current_understanding.ambiguities],
+                "risks": [{"description": r.description, "severity": r.severity} for r in self.current_understanding.risks],
+                "chosen_plan": {
+                    "name": self.chosen_plan.name,
+                    "description": self.chosen_plan.description,
+                    "strategy": self.chosen_plan.strategy.value,
+                    "utilities": self.chosen_plan.utilities,
+                    "modules": self.chosen_plan.required_modules,
+                }
+            }, f, indent=2)
         
         return True
     
@@ -2079,6 +2206,9 @@ class SingleAgentOrganGeneratorV1:
     def _run_requirements_capture(self) -> None:
         """Run REQUIREMENTS_CAPTURE state: Rule-based adaptive requirements gathering.
         
+        V2: Uses SchemaManager for dynamic schema with activatable modules.
+        Questions are ranked by rework cost (frame, scale, I/O first).
+        
         This method uses the RuleEngine to determine what questions to ask based on:
         - Missing required fields (Family A - Completeness)
         - Ambiguous user language (Family B - Ambiguity)
@@ -2105,10 +2235,30 @@ class SingleAgentOrganGeneratorV1:
             print(f"\nDetected organ type: {organ_type}")
             print("Questions will be tailored to this organ type.")
         
-        print("\nUsing adaptive rule-based requirements capture.")
+        print("\nUsing adaptive rule-based requirements capture with dynamic schema.")
         print("The system will ask only the questions needed based on your intent.")
         print("Say 'use defaults' at any time to accept all proposed defaults.")
         print()
+        
+        missing_fields = self.schema_manager.missing_required_fields()
+        ambiguities = []
+        if self.current_understanding and self.current_understanding.ambiguities:
+            ambiguities = [a.description for a in self.current_understanding.ambiguities]
+        
+        questions = self.schema_manager.plan_questions(
+            missing_fields=missing_fields,
+            ambiguities=ambiguities,
+            conflicts=[],
+            max_questions=5
+        )
+        
+        if questions:
+            print(f"I need to ask {len(questions)} question(s) to complete the specification:")
+            print()
+            for i, q in enumerate(questions, 1):
+                print(f"  {i}. {q.text}")
+                print(f"     Why: {q.reason} (rework cost: {q.rework_cost})")
+            print()
         
         updated_req, collected = run_rule_based_capture(
             requirements=obj.requirements,
@@ -2120,10 +2270,20 @@ class SingleAgentOrganGeneratorV1:
         obj.requirements = updated_req
         self.collected_answers = collected
         
+        for field, value in collected.items():
+            self.schema_manager.set_field_value(field, value)
+        
         self._apply_answers_to_requirements(obj)
         
         req_path = obj.get_versioned_path(obj.intent_dir, "requirements", "json")
         obj.requirements.to_json(req_path)
+        
+        print()
+        print("-" * 40)
+        print("Living Spec Summary")
+        print("-" * 40)
+        spec_summary = self.schema_manager.get_spec_summary()
+        print(spec_summary)
         
         print()
         print("Requirements captured and saved.")
@@ -2140,6 +2300,7 @@ class SingleAgentOrganGeneratorV1:
             obj.requirements = ObjectRequirements()
             obj.requirements.identity.object_name = obj.name
             obj.requirements.identity.object_slug = obj.slug
+            self.schema_manager.reset()
             return
         
         self.state = WorkflowState.SPEC_COMPILATION
@@ -2588,7 +2749,14 @@ Provide complete analysis results."""
             self.state = WorkflowState.ITERATION
     
     def _run_iteration(self) -> None:
-        """Run ITERATION state: Accept user critique and iterate."""
+        """Run ITERATION state: Accept user critique and iterate.
+        
+        V2: Uses SchemaManager.update_from_results() to activate modules based on:
+        - Collisions -> activate ComplexityBudget + stricter clearance fields
+        - Mesh too heavy -> activate MeshQuality module
+        - Embedding memory failure -> require voxel_pitch + memory_policy fields
+        - User asks "optimize flow" -> activate FlowPhysics module
+        """
         obj = self.context.get_current_object()
         if not obj:
             self.state = WorkflowState.COMPLETE
@@ -2601,14 +2769,40 @@ Provide complete analysis results."""
         print()
         
         print("Generated files:")
-        if obj.mesh_path and os.path.exists(obj.mesh_path):
+        mesh_exists = obj.mesh_path and os.path.exists(obj.mesh_path)
+        analysis_exists = obj.analysis_path and os.path.exists(obj.analysis_path)
+        
+        if mesh_exists:
             print(f"  [OK] Mesh: {obj.mesh_path}")
         else:
             print(f"  [--] Mesh: Not generated")
-        if obj.analysis_path and os.path.exists(obj.analysis_path):
+        if analysis_exists:
             print(f"  [OK] Analysis: {obj.analysis_path}")
         else:
             print(f"  [--] Analysis: Not generated")
+        
+        results = {
+            "mesh_generated": mesh_exists,
+            "analysis_generated": analysis_exists,
+            "version": obj.version,
+        }
+        
+        if analysis_exists:
+            try:
+                with open(obj.analysis_path, 'r') as f:
+                    analysis_data = json.load(f)
+                results["collision_count"] = analysis_data.get("collision_count", 0)
+                results["mesh_faces"] = analysis_data.get("mesh_faces", 0)
+                results["embedding_failed"] = analysis_data.get("embedding_failed", False)
+            except (json.JSONDecodeError, IOError):
+                pass
+        
+        modules_activated = self.schema_manager.update_from_results(results)
+        if modules_activated:
+            print()
+            print("Based on results, activated additional schema modules:")
+            for module in modules_activated:
+                print(f"  - {module}")
         
         print()
         print("To visualize, open the STL file in a 3D viewer (MeshLab, Blender, etc.)")
@@ -2639,6 +2833,13 @@ Provide complete analysis results."""
                 return
             
             obj.feedback_history.append(feedback)
+            
+            self.schema_manager.update_from_user_turn(feedback)
+            
+            if "flow" in feedback.lower() or "optimize" in feedback.lower():
+                self.schema_manager.activate_module("FlowPhysicsModule")
+                print("  -> Activated FlowPhysicsModule based on feedback")
+            
             obj.increment_version()
             
             print(f"\nThank you for your feedback. Regenerating (v{obj.version})...")
@@ -2875,7 +3076,7 @@ def run_single_agent_workflow(
     **kwargs,
 ) -> ProjectContext:
     """
-    Convenience function to run the Single Agent Organ Generator V1 workflow.
+    Convenience function to run the Single Agent Organ Generator V2 workflow.
     
     Parameters
     ----------
@@ -2904,9 +3105,12 @@ def run_single_agent_workflow(
         **kwargs,
     )
     
-    workflow = SingleAgentOrganGeneratorV1(
+    workflow = SingleAgentOrganGeneratorV2(
         agent=agent,
         base_output_dir=base_output_dir,
     )
     
     return workflow.run()
+
+
+SingleAgentOrganGeneratorV1 = SingleAgentOrganGeneratorV2
