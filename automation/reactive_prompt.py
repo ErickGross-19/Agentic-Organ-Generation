@@ -64,6 +64,10 @@ META_QUESTION_PATTERNS = {
         r"\bhelp\s+me\b",
         r"\bi\s+(don'?t|do\s+not)\s+(understand|know)\b",
         r"\bwhat\s+should\s+i\s+(do|say|enter)\b",
+        r"\bwhat\s+(does|is)\s+\w+\s+(mean|terminology)\b",
+        r"\bexplain\s+(the\s+)?terminology\b",
+        r"\bwhat\s+does\s+\w+\s+mean\b",
+        r"\bdefine\s+\w+\b",
     ],
     TurnIntent.BACK: [
         r"^\s*back\s*$",
