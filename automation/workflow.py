@@ -71,6 +71,15 @@ from .agent_dialogue import (
     PlanOption,
 )
 from .schema_manager import SchemaManager, ActiveSchema
+from .reactive_prompt import (
+    ReactivePromptSession,
+    TurnIntent,
+    interpret_user_turn,
+    GlobalDefaults,
+    get_question_help,
+    create_question_help,
+    WORKFLOW_QUESTION_HELP,
+)
 
 
 class WorkflowState(Enum):
@@ -1766,12 +1775,44 @@ class SingleAgentOrganGeneratorV2:
         self.collected_answers: Dict[str, Any] = {}
         
         self.schema_manager = SchemaManager()
+        self._assert_schema_manager_interface()
         
         self.current_understanding: Optional[UnderstandingReport] = None
         self.current_plans: Optional[List[PlanOption]] = None
         self.chosen_plan: Optional[PlanOption] = None
         
+        self.prompt_session = ReactivePromptSession()
+        
         os.makedirs(base_output_dir, exist_ok=True)
+    
+    def _assert_schema_manager_interface(self) -> None:
+        """
+        Verify SchemaManager has the expected interface.
+        
+        Raises RuntimeError if required methods are missing, preventing
+        cryptic errors later in the workflow.
+        """
+        required_methods = [
+            "activate_module",
+            "deactivate_module",
+            "is_module_active",
+            "get_active_modules",
+            "missing_required_fields",
+            "update_from_results",
+            "plan_questions",
+            "get_spec_summary",
+        ]
+        
+        missing = []
+        for method in required_methods:
+            if not hasattr(self.schema_manager, method) or not callable(getattr(self.schema_manager, method)):
+                missing.append(method)
+        
+        if missing:
+            raise RuntimeError(
+                f"SchemaManager is missing required methods: {', '.join(missing)}. "
+                f"Please ensure SchemaManager implements the expected interface."
+            )
     
     def run(self) -> ProjectContext:
         """Run the complete workflow interactively."""
@@ -1923,16 +1964,48 @@ class SingleAgentOrganGeneratorV2:
         domain = self.context.default_embed_domain
         print(f"  - Default embed domain: {domain[0]*1000:.0f}mm x {domain[1]*1000:.0f}mm x {domain[2]*1000:.0f}mm")
         print(f"  - Flow solver: {'ON' if self.context.flow_solver_enabled else 'OFF'}")
+        print()
+        print(GlobalDefaults.get_defaults_text())
         
-        change_defaults = input("Change any defaults? (yes/no) [no]: ").strip().lower()
-        if change_defaults in ("quit", "exit"):
+        defaults_help = create_question_help(
+            question_id="change_defaults",
+            question_text="Change any defaults?",
+            default_value="no",
+            options=["yes", "no"],
+            why_asking="Global defaults provide sensible starting values for voxel pitch, clearances, and other parameters. You can customize them if needed.",
+            impact="Choosing 'yes' will prompt you for each parameter individually.",
+        )
+        
+        change_answer, intent = self.prompt_session.ask_yes_no(
+            question_id="change_defaults",
+            question_text="Change any defaults?",
+            default=False,
+            help_info=defaults_help,
+        )
+        
+        if intent == TurnIntent.CANCEL:
             self.state = WorkflowState.COMPLETE
             return
         
-        if change_defaults in ("yes", "y"):
-            units = input(f"Export units (mm/cm/m/um) [{self.context.units_export}]: ").strip().lower()
-            if units in ("mm", "cm", "m", "um"):
-                self.context.units_export = units
+        if change_answer:
+            units_help = create_question_help(
+                question_id="export_units",
+                question_text="Export units",
+                default_value=self.context.units_export,
+                options=["mm", "cm", "m", "um"],
+                why_asking="Export units determine the scale of the output STL files.",
+            )
+            units_answer, _ = self.prompt_session.ask_until_answer(
+                question_id="export_units",
+                question_text="Export units (mm/cm/m/um)",
+                default_value=self.context.units_export,
+                allowed_values=["mm", "cm", "m", "um"],
+                help_info=units_help,
+                show_context=False,
+            )
+            if units_answer in ("mm", "cm", "m", "um"):
+                self.context.units_export = units_answer
+                self.prompt_session.show_change_summary("units_export", None, units_answer)
             
             domain_input = input("Default embed domain (L,W,H in meters): ").strip()
             if domain_input:
@@ -1940,12 +2013,26 @@ class SingleAgentOrganGeneratorV2:
                     parts = [float(x.strip()) for x in domain_input.split(",")]
                     if len(parts) == 3:
                         self.context.default_embed_domain = tuple(parts)
+                        self.prompt_session.show_change_summary("default_embed_domain", None, tuple(parts))
                 except ValueError:
                     print("Invalid format, keeping default.")
             
-            flow = input("Enable flow solver? (yes/no) [no]: ").strip().lower()
-            if flow in ("yes", "y"):
+            flow_help = create_question_help(
+                question_id="flow_solver",
+                question_text="Enable flow solver?",
+                default_value="no",
+                options=["yes", "no"],
+                why_asking="The flow solver validates that the generated network has plausible fluid dynamics.",
+            )
+            flow_answer, _ = self.prompt_session.ask_yes_no(
+                question_id="flow_solver",
+                question_text="Enable flow solver?",
+                default=False,
+                help_info=flow_help,
+            )
+            if flow_answer:
                 self.context.flow_solver_enabled = True
+                self.prompt_session.show_change_summary("flow_solver_enabled", False, True)
         
         self.context.save_project_json()
         
@@ -2023,8 +2110,28 @@ class SingleAgentOrganGeneratorV2:
         print("inlets/outlets should be, any constraints):")
         print()
         
-        intent = input("Description: ").strip()
-        if intent.lower() in ("quit", "exit"):
+        description_help = get_question_help("object_description")
+        if description_help is None:
+            description_help = create_question_help(
+                question_id="object_description",
+                question_text="Describe the vascular network you want to generate",
+                why_asking="Your description helps the agent understand what kind of network to create, including topology, density, and any special requirements.",
+                impact="A detailed description leads to better initial understanding and fewer follow-up questions.",
+                examples=[
+                    "A dense hepatic vascular tree with 3 inlets and 50 terminals",
+                    "A simple Y-shaped bifurcation for testing",
+                    "A coronary-like network with tortuous vessels",
+                ],
+            )
+        
+        intent, intent_type = self.prompt_session.ask_until_answer(
+            question_id="object_description",
+            question_text="Description",
+            help_info=description_help,
+            show_context=False,
+        )
+        
+        if intent_type == TurnIntent.CANCEL:
             return False
         
         if not intent:
@@ -2093,22 +2200,35 @@ class SingleAgentOrganGeneratorV2:
                 print(f"  Tunable: {', '.join(plan.tunable_knobs)}")
             print()
         
-        while True:
-            choice = input("Choose a plan (A/B/C) or 'quit': ").strip().upper()
-            if choice.lower() in ("quit", "exit"):
-                return False
+        plan_options = [chr(ord('A') + i) for i in range(len(self.current_plans))]
+        plan_help = create_question_help(
+            question_id="plan_selection",
+            question_text="Which generation plan would you like to use?",
+            options=plan_options,
+            why_asking="Different plans use different generation strategies optimized for different network types.",
+            impact="The chosen plan determines which algorithms and parameters are used for generation.",
+        )
+        
+        choice, choice_intent = self.prompt_session.ask_until_answer(
+            question_id="plan_selection",
+            question_text=f"Choose a plan ({'/'.join(plan_options)})",
+            allowed_values=plan_options + [o.lower() for o in plan_options],
+            help_info=plan_help,
+            show_context=False,
+        )
+        
+        if choice_intent == TurnIntent.CANCEL:
+            return False
+        
+        choice = choice.upper()
+        if choice in plan_options:
+            plan_index = ord(choice) - ord('A')
+            self.chosen_plan = self.current_plans[plan_index]
+            print(f"\nSelected: Option {choice} - {self.chosen_plan.name}")
+            self.prompt_session.show_change_summary("generation_plan", None, self.chosen_plan.name)
             
-            if choice in [chr(ord('A') + i) for i in range(len(self.current_plans))]:
-                plan_index = ord(choice) - ord('A')
-                self.chosen_plan = self.current_plans[plan_index]
-                print(f"\nSelected: Option {choice} - {self.chosen_plan.name}")
-                
-                for module_name in self.chosen_plan.required_modules:
-                    self.schema_manager.activate_module(module_name)
-                
-                break
-            else:
-                print(f"Invalid choice. Please enter A, B, or C.")
+            for module_name in self.chosen_plan.required_modules:
+                self.schema_manager.activate_module(module_name)
         
         understanding_path = os.path.join(obj.intent_dir, "understanding.json")
         with open(understanding_path, 'w') as f:
