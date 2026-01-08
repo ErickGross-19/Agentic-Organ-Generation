@@ -54,6 +54,104 @@ def _safe_int(value, default: int = 0) -> int:
         return default
 
 
+def _extract_gemini_text(response) -> tuple:
+    """
+    Extract text content from a Gemini API response.
+    
+    The google.genai SDK can return text in different places depending on
+    the model, response type, and safety filtering. This function tries
+    multiple extraction strategies.
+    
+    Parameters
+    ----------
+    response : GenerateContentResponse
+        Response from google.genai generate_content call
+        
+    Returns
+    -------
+    tuple
+        (text_content, finish_reason, diagnostic_info)
+        - text_content: str - The extracted text (may be empty)
+        - finish_reason: str - The finish reason (stop, safety, etc.)
+        - diagnostic_info: dict - Debug info about extraction
+    """
+    text_content = ""
+    finish_reason = "unknown"
+    diagnostic_info = {
+        "extraction_method": None,
+        "candidates_count": 0,
+        "has_safety_ratings": False,
+        "safety_blocked": False,
+        "block_reason": None,
+    }
+    
+    # Strategy 1: Try response.text (convenience property)
+    try:
+        if hasattr(response, 'text') and response.text:
+            text_content = response.text
+            diagnostic_info["extraction_method"] = "response.text"
+    except (ValueError, AttributeError):
+        # response.text can raise ValueError if no valid candidate
+        pass
+    
+    # Strategy 2: Extract from candidates[0].content.parts
+    if not text_content:
+        candidates = getattr(response, 'candidates', None) or []
+        diagnostic_info["candidates_count"] = len(candidates) if candidates else 0
+        
+        if candidates:
+            candidate = candidates[0]
+            
+            # Get finish reason from candidate
+            candidate_finish = getattr(candidate, 'finish_reason', None)
+            if candidate_finish:
+                # Convert enum to string if needed
+                finish_reason = str(candidate_finish).lower()
+                if hasattr(candidate_finish, 'name'):
+                    finish_reason = candidate_finish.name.lower()
+            
+            # Check for safety blocking
+            safety_ratings = getattr(candidate, 'safety_ratings', None)
+            if safety_ratings:
+                diagnostic_info["has_safety_ratings"] = True
+                for rating in safety_ratings:
+                    blocked = getattr(rating, 'blocked', False)
+                    if blocked:
+                        diagnostic_info["safety_blocked"] = True
+                        category = getattr(rating, 'category', 'unknown')
+                        diagnostic_info["block_reason"] = str(category)
+                        break
+            
+            # Extract text from content.parts
+            content = getattr(candidate, 'content', None)
+            if content:
+                parts = getattr(content, 'parts', None) or []
+                text_parts = []
+                for part in parts:
+                    part_text = getattr(part, 'text', None)
+                    if part_text:
+                        text_parts.append(part_text)
+                if text_parts:
+                    text_content = "".join(text_parts)
+                    diagnostic_info["extraction_method"] = "candidates[0].content.parts"
+    
+    # Strategy 3: Check prompt_feedback for blocking
+    if not text_content:
+        prompt_feedback = getattr(response, 'prompt_feedback', None)
+        if prompt_feedback:
+            block_reason = getattr(prompt_feedback, 'block_reason', None)
+            if block_reason:
+                diagnostic_info["safety_blocked"] = True
+                diagnostic_info["block_reason"] = str(block_reason)
+                finish_reason = "blocked"
+    
+    # Default finish reason if we got text but no explicit reason
+    if text_content and finish_reason == "unknown":
+        finish_reason = "stop"
+    
+    return text_content, finish_reason, diagnostic_info
+
+
 @dataclass
 class LLMConfig:
     """
@@ -547,6 +645,17 @@ class LLMClient:
             config=config,
         )
         
+        # Extract text content using robust extraction (handles empty response.text)
+        text_content, finish_reason, diagnostic_info = _extract_gemini_text(response)
+        
+        # If content is empty and response was blocked, raise a clear error
+        if not text_content and diagnostic_info.get("safety_blocked"):
+            block_reason = diagnostic_info.get("block_reason", "unknown")
+            raise ValueError(
+                f"Gemini response blocked by safety filter: {block_reason}. "
+                f"Candidates: {diagnostic_info.get('candidates_count', 0)}"
+            )
+        
         # Defensive token parsing: handle None values and different SDK field names
         # The google.genai SDK may return None for token counts or use different field names
         usage_metadata = getattr(response, 'usage_metadata', None)
@@ -577,15 +686,15 @@ class LLMClient:
                 total_tokens = sdk_total
         
         return LLMResponse(
-            content=response.text,
+            content=text_content,
             model=model_name,
             usage={
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
                 "total_tokens": total_tokens,
             },
-            finish_reason="stop",
-            raw_response=None,
+            finish_reason=finish_reason,
+            raw_response={"diagnostic_info": diagnostic_info},
         )
     
     def _call_mistral(
