@@ -14,12 +14,12 @@ from .security import SecureConfig
 
 
 SUPPORTED_PROVIDERS = [
-    ("OpenAI", "openai", "gpt-4"),
-    ("Anthropic", "anthropic", "claude-3-opus-20240229"),
-    ("Google Gemini", "google", "gemini-1.5-pro"),
+    ("OpenAI", "openai", "gpt-4o"),
+    ("Anthropic", "anthropic", "claude-3-5-sonnet-20241022"),
+    ("Google Gemini", "google", "gemini-2.0-flash"),
     ("Mistral", "mistral", "mistral-large-latest"),
-    ("xAI (Grok)", "xai", "grok-beta"),
-    ("Groq", "groq", "llama-3.1-70b-versatile"),
+    ("xAI (Grok)", "xai", "grok-2"),
+    ("Groq", "groq", "llama-3.3-70b-versatile"),
     ("Local (OpenAI-compatible)", "local", "local-model"),
 ]
 
@@ -34,12 +34,12 @@ PROVIDER_ENV_VARS = {
 }
 
 PROVIDER_MODELS = {
-    "openai": ["gpt-4", "gpt-4-turbo", "gpt-4o", "gpt-3.5-turbo"],
-    "anthropic": ["claude-3-opus-20240229", "claude-3-sonnet-20240229", "claude-3-haiku-20240307"],
-    "google": ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-pro"],
-    "mistral": ["mistral-large-latest", "mistral-medium-latest", "mistral-small-latest"],
-    "xai": ["grok-beta", "grok-2"],
-    "groq": ["llama-3.1-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"],
+    "openai": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4", "o1", "o1-mini", "o1-preview", "gpt-3.5-turbo"],
+    "anthropic": ["claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022", "claude-3-opus-20240229", "claude-3-sonnet-20240229", "claude-3-haiku-20240307"],
+    "google": ["gemini-2.0-flash", "gemini-2.0-flash-exp", "gemini-2.0-flash-thinking-exp", "gemini-1.5-pro", "gemini-1.5-flash", "gemini-1.5-flash-8b", "gemini-pro"],
+    "mistral": ["mistral-large-latest", "mistral-medium-latest", "mistral-small-latest", "codestral-latest"],
+    "xai": ["grok-2", "grok-2-mini", "grok-beta"],
+    "groq": ["llama-3.3-70b-versatile", "llama-3.1-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"],
     "local": ["local-model"],
 }
 
