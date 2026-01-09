@@ -397,8 +397,9 @@ class SpecCompiler:
         
         # Format values for template
         replacements = {
-            "{{OBJECT_NAME}}": object_name,
-            "{{VERSION}}": str(version),
+                        "{{OBJECT_NAME}}": object_name,
+                        "{{VERSION}}": str(version),
+                        "{{VERSION_PADDED}}": f"{version:03d}",
             "{{OUTPUT_DIR}}": output_dir,
             "{{SEED}}": str(spec.seed or 42),
             "{{DOMAIN_TYPE}}": domain_type,
@@ -501,13 +502,13 @@ class SpecCompiler:
                 os.makedirs(output_dir, exist_ok=True)
                 
                 # Export network
-                network_path = os.path.join(output_dir, f"network_v{{VERSION:03d}}.json")
+                network_path = os.path.join(output_dir, f"network_v{{VERSION_PADDED}}.json")
                 network.to_json(network_path)
                 print(f"  Network saved: {network_path}")
                 
                 # Export mesh
                 mesh = to_trimesh(network)
-                mesh_path = os.path.join(output_dir, f"mesh_v{{VERSION:03d}}.stl")
+                mesh_path = os.path.join(output_dir, f"mesh_v{{VERSION_PADDED}}.stl")
                 export_stl(mesh, mesh_path, units="{{OUTPUT_UNITS}}")
                 print(f"  Mesh saved: {mesh_path}")
                 
@@ -617,13 +618,13 @@ class SpecCompiler:
                 os.makedirs(output_dir, exist_ok=True)
                 
                 # Export network
-                network_path = os.path.join(output_dir, f"network_v{{VERSION:03d}}.json")
+                network_path = os.path.join(output_dir, f"network_v{{VERSION_PADDED}}.json")
                 network.to_json(network_path)
                 print(f"  Network saved: {network_path}")
                 
                 # Export mesh
                 mesh = to_trimesh(network)
-                mesh_path = os.path.join(output_dir, f"mesh_v{{VERSION:03d}}.stl")
+                mesh_path = os.path.join(output_dir, f"mesh_v{{VERSION_PADDED}}.stl")
                 export_stl(mesh, mesh_path, units="{{OUTPUT_UNITS}}")
                 print(f"  Mesh saved: {mesh_path}")
                 
@@ -735,13 +736,13 @@ class SpecCompiler:
                 os.makedirs(output_dir, exist_ok=True)
                 
                 # Export network
-                network_path = os.path.join(output_dir, f"network_v{{VERSION:03d}}.json")
+                network_path = os.path.join(output_dir, f"network_v{{VERSION_PADDED}}.json")
                 network.to_json(network_path)
                 print(f"  Network saved: {network_path}")
                 
                 # Export mesh
                 mesh = to_trimesh(network)
-                mesh_path = os.path.join(output_dir, f"mesh_v{{VERSION:03d}}.stl")
+                mesh_path = os.path.join(output_dir, f"mesh_v{{VERSION_PADDED}}.stl")
                 export_stl(mesh, mesh_path, units="{{OUTPUT_UNITS}}")
                 print(f"  Mesh saved: {mesh_path}")
                 
@@ -848,13 +849,13 @@ class SpecCompiler:
                 os.makedirs(output_dir, exist_ok=True)
                 
                 # Export network
-                network_path = os.path.join(output_dir, f"network_v{{VERSION:03d}}.json")
+                network_path = os.path.join(output_dir, f"network_v{{VERSION_PADDED}}.json")
                 network.to_json(network_path)
                 print(f"  Network saved: {network_path}")
                 
                 # Export mesh
                 mesh = to_trimesh(network)
-                mesh_path = os.path.join(output_dir, f"mesh_v{{VERSION:03d}}.stl")
+                mesh_path = os.path.join(output_dir, f"mesh_v{{VERSION_PADDED}}.stl")
                 export_stl(mesh, mesh_path, units="{{OUTPUT_UNITS}}")
                 print(f"  Mesh saved: {mesh_path}")
                 
@@ -975,13 +976,13 @@ class SpecCompiler:
                 os.makedirs(output_dir, exist_ok=True)
                 
                 # Export network
-                network_path = os.path.join(output_dir, f"network_v{{VERSION:03d}}.json")
+                network_path = os.path.join(output_dir, f"network_v{{VERSION_PADDED}}.json")
                 combined_network.to_json(network_path)
                 print(f"  Network saved: {network_path}")
                 
                 # Export mesh
                 mesh = to_trimesh(combined_network)
-                mesh_path = os.path.join(output_dir, f"mesh_v{{VERSION:03d}}.stl")
+                mesh_path = os.path.join(output_dir, f"mesh_v{{VERSION_PADDED}}.stl")
                 export_stl(mesh, mesh_path, units="{{OUTPUT_UNITS}}")
                 print(f"  Mesh saved: {mesh_path}")
                 
