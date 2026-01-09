@@ -9,6 +9,7 @@ import os
 import sys
 import json
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Callable, Tuple
 from datetime import datetime
@@ -30,7 +31,7 @@ from .object_registry import ObjectRegistry
 from .agents import ConceptSpecAgent, CodingBuildAgent, ValidationQAAgent
 from .gates import GateManager, GateContext, GateResult, ApprovalChoice
 from .retention import RetentionManager
-from .safety import SafetyManager, SafetyConfig
+from .safety import SafetyManager, SafetyConfig, create_safe_runner_script
 
 
 class WorkflowState(Enum):
@@ -115,7 +116,7 @@ class MOGSRunner:
     def __init__(
         self,
         objects_base_dir: str,
-        llm_client: Optional[Any] = None,
+        llm_client: Any,
         approval_callback: Optional[Callable[[GateContext], GateResult]] = None,
         auto_approve: bool = False,
     ):
@@ -126,13 +127,25 @@ class MOGSRunner:
         ----------
         objects_base_dir : str
             Base directory for all objects
-        llm_client : Any, optional
-            LLM client for agent interactions
+        llm_client : Any
+            LLM client for agent interactions (required)
         approval_callback : Callable, optional
             Callback for approval gates
         auto_approve : bool
             If True, automatically approve all gates (for testing)
+            
+        Raises
+        ------
+        ValueError
+            If llm_client is None
         """
+        # Validate LLM client is provided
+        if llm_client is None:
+            raise ValueError(
+                "llm_client is required. MOGS cannot run without a valid LLM client. "
+                "Please provide an LLM client instance (e.g., from automation.llm_client.LLMClient)."
+            )
+        
         self.objects_base_dir = os.path.abspath(objects_base_dir)
         self.llm_client = llm_client
         self.approval_callback = approval_callback
@@ -496,6 +509,9 @@ class MOGSRunner:
         safety_manager.save_execution_metadata(run_dir, metadata)
         safety_manager.save_sanitized_environment(run_dir, env)
         
+        # Get project directory for safe runner (the object's project folder)
+        project_dir = self._folder_manager.project_dir
+        
         for script_name in scripts:
             script_path = os.path.join(scripts_dir, script_name)
             
@@ -508,12 +524,35 @@ class MOGSRunner:
             if warnings:
                 self._folder_manager.log_warning(f"Script {script_name} warnings: {warnings}")
             
-            # Execute script
-            self._folder_manager.log_event(f"Executing {script_name}")
+            # Execute script using safe runner wrapper
+            self._folder_manager.log_event(f"Executing {script_name} via safe runner")
             
+            # Create safe runner wrapper script
+            wrapper_content = create_safe_runner_script(
+                script_path=script_path,
+                output_dir=outputs_dir,
+                project_dir=project_dir,
+            )
+            
+            # Write wrapper to temporary file and execute it
+            wrapper_fd = None
+            wrapper_path = None
             try:
+                # Create temporary wrapper script
+                wrapper_fd, wrapper_path = tempfile.mkstemp(
+                    suffix=".py",
+                    prefix=f"mogs_safe_runner_{script_name}_",
+                )
+                with os.fdopen(wrapper_fd, 'w') as f:
+                    f.write(wrapper_content)
+                wrapper_fd = None  # fd is now closed
+                
+                # Make wrapper executable
+                os.chmod(wrapper_path, 0o755)
+                
+                # Execute the wrapper script (which enforces safety constraints)
                 result = subprocess.run(
-                    [sys.executable, script_path],
+                    [sys.executable, wrapper_path],
                     env=env,
                     cwd=scripts_dir,
                     capture_output=True,
@@ -545,6 +584,18 @@ class MOGSRunner:
             except Exception as e:
                 self._folder_manager.log_event(f"Script {script_name} error: {e}")
                 return False
+            finally:
+                # Clean up temporary wrapper script
+                if wrapper_fd is not None:
+                    try:
+                        os.close(wrapper_fd)
+                    except OSError:
+                        pass
+                if wrapper_path is not None and os.path.exists(wrapper_path):
+                    try:
+                        os.remove(wrapper_path)
+                    except OSError:
+                        pass
         
         return True
     
@@ -626,8 +677,8 @@ class MOGSRunner:
 
 
 def create_mogs_runner(
+    llm_client: Any,
     objects_base_dir: str = "./objects",
-    llm_client: Optional[Any] = None,
     auto_approve: bool = False,
 ) -> MOGSRunner:
     """
@@ -635,10 +686,10 @@ def create_mogs_runner(
     
     Parameters
     ----------
+    llm_client : Any
+        LLM client (required)
     objects_base_dir : str
         Base directory for objects
-    llm_client : Any, optional
-        LLM client
     auto_approve : bool
         Auto-approve all gates
         
@@ -646,6 +697,11 @@ def create_mogs_runner(
     -------
     MOGSRunner
         Configured MOGS runner
+        
+    Raises
+    ------
+    ValueError
+        If llm_client is None
     """
     return MOGSRunner(
         objects_base_dir=objects_base_dir,
