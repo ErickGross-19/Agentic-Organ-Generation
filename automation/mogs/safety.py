@@ -12,12 +12,17 @@ Implements non-negotiable safety constraints for script execution:
 import os
 import sys
 import json
-import resource
 import signal
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Set
 from datetime import datetime
 from pathlib import Path
+
+try:
+    import resource
+    RESOURCE_AVAILABLE = True
+except ImportError:
+    RESOURCE_AVAILABLE = False
 
 from .models import get_timestamp
 from .folder_manager import FolderManager
@@ -216,7 +221,12 @@ class SafetyManager:
         Apply resource limits to the current process.
         
         This should be called in a subprocess before executing a script.
+        Note: Resource limits are only available on Unix-like systems.
+        On Windows, this method is a no-op.
         """
+        if not RESOURCE_AVAILABLE:
+            return
+        
         limits = self.get_resource_limits()
         
         # Memory limit (soft and hard)
