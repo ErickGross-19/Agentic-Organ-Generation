@@ -389,6 +389,25 @@ def validate_and_repair_geometry(
         "radius_mean": float(np.mean(radii)) if radii else 0.0,
     }
 
+    drift_metrics = compute_drift_metrics(
+        original_spec=None,
+        centerline_graph=G_centerline,
+        connectivity_info=connectivity_info,
+        min_channel_diameter_threshold=0.0005,
+    )
+    
+    if drift_metrics["drift_errors"]:
+        print(f"[DRIFT VALIDATION] Errors detected:")
+        for err in drift_metrics["drift_errors"]:
+            print(f"  - {err}")
+        print(f"[DRIFT VALIDATION] Suggested fixes:")
+        for fix in drift_metrics["suggested_fixes"]:
+            print(f"  - {fix}")
+    elif drift_metrics["drift_warnings"]:
+        print(f"[DRIFT VALIDATION] Warnings:")
+        for warn in drift_metrics["drift_warnings"]:
+            print(f"  - {warn}")
+
     network_results = compute_poiseuille_network(
         G_centerline,
         mu=1.0,
@@ -417,6 +436,7 @@ def validate_and_repair_geometry(
         connectivity=connectivity_info,
         centerline_summary=centerline_summary,
         poiseuille_summary=poiseuille_summary,
+        drift_metrics=drift_metrics,
     )
 
     if report_path is not None:

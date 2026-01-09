@@ -56,3 +56,4 @@ class ValidationReport:
     connectivity: Dict[str, Any]
     centerline_summary: Dict[str, Any]
     poiseuille_summary: Dict[str, Any]
+    drift_metrics: Optional[Dict[str, Any]] = None
