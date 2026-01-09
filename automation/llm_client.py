@@ -605,10 +605,11 @@ class LLMClient:
         """Call Google Gemini API using the new Google GenAI SDK.
         
         Supported Gemini models include:
+        - gemini-3-flash-preview (latest preview)
+        - gemini-3-flash (latest generation)
         - gemini-2.5-flash (recommended default)
         - gemini-2.5-flash-lite (faster, lower cost)
         - gemini-2.5-flash-tts (text-to-speech capable)
-        - gemini-3-flash (latest generation)
         - gemini-2.0-flash (previous generation)
         - gemini-1.5-pro (previous generation)
         
