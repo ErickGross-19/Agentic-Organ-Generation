@@ -301,7 +301,7 @@ class MainWindow:
             input_frame,
             text="Send",
             command=self._send_input,
-            state="disabled",
+            state="normal",
         )
         self.send_btn.grid(row=0, column=1, padx=(5, 0))
         
@@ -461,7 +461,7 @@ class MainWindow:
         if self.workflow_manager.start_workflow(config):
             self.start_btn.config(state="disabled")
             self.stop_btn.config(state="normal")
-            self.send_btn.config(state="normal")
+            # Send button is always enabled - _send_input handles the no-workflow case
             self.progress.start()
     
     def _validate_agent_config(self) -> tuple:
@@ -493,16 +493,26 @@ class MainWindow:
         self.workflow_manager.stop_workflow()
         self.start_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
-        self.send_btn.config(state="disabled")
+        # Send button stays enabled - _send_input handles the no-workflow case
         self.progress.stop()
     
     def _send_input(self):
         """Send user input to workflow."""
         text = self.input_var.get().strip()
-        if text:
+        if not text:
+            return
+        
+        # Check if workflow is running
+        if not self.workflow_manager.is_running:
+            self._append_chat("system", "Please start a workflow first (File > New Workflow or Ctrl+N)")
+            return
+        
+        try:
             self._append_chat("user", text)
             self.workflow_manager.send_input(text)
             self.input_var.set("")
+        except Exception as e:
+            self._append_chat("error", f"Failed to send input: {e}")
     
     def _on_workflow_message(self, message: WorkflowMessage):
         """Handle message from workflow."""
@@ -516,10 +526,9 @@ class MainWindow:
             if status in (WorkflowStatus.COMPLETED, WorkflowStatus.FAILED, WorkflowStatus.CANCELLED):
                 self.start_btn.config(state="normal")
                 self.stop_btn.config(state="disabled")
-                self.send_btn.config(state="disabled")
+                # Send button stays enabled - _send_input handles the no-workflow case
                 self.progress.stop()
             elif status == WorkflowStatus.WAITING_INPUT:
-                self.send_btn.config(state="normal")
                 self.input_entry.focus_set()
         
         self.root.after(0, update)
