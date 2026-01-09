@@ -37,7 +37,11 @@ def main():
     args = parser.parse_args()
     
     if args.version:
-        print("Organ Generator v1.0")
+        try:
+            from gui import __version__
+            print(f"Organ Generator v{__version__}")
+        except ImportError:
+            print("Organ Generator v1.0.0")
         print("https://github.com/ErickGross-19/Agentic-Organ-Generation")
         return 0
     

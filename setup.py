@@ -7,7 +7,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="agentic-organ-generation",
-    version="0.1.0",
+    version="1.0.0",
     author="Erick Gross",
     author_email="erickgross1924@gmail.com",
     description="LLM/agent-driven generation and validation of 3D organ structures",
@@ -37,14 +37,29 @@ setup(
     ],
     extras_require={
         "mesh": ["pymeshfix>=0.16.0"],
-        "llm": ["openai>=1.0.0", "anthropic>=0.18.0"],
+        "llm": [
+            "openai>=1.0.0",
+            "anthropic>=0.18.0",
+            "google-genai>=1.0.0",
+            "mistralai>=1.0.0",
+        ],
+        "gui": [
+            "matplotlib>=3.5.0",
+            "keyring>=23.0.0",
+        ],
         "dev": ["pytest>=7.0.0", "pytest-cov>=4.0.0"],
         "all": [
             "pymeshfix>=0.16.0",
             "openai>=1.0.0",
             "anthropic>=0.18.0",
+            "google-genai>=1.0.0",
+            "mistralai>=1.0.0",
+            "matplotlib>=3.5.0",
+            "keyring>=23.0.0",
             "pytest>=7.0.0",
             "pytest-cov>=4.0.0",
+            "tqdm>=4.60.0",
+            "scikit-image>=0.18.0",
         ],
     },
     entry_points={

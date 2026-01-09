@@ -5,6 +5,7 @@ Manages the execution of Single Agent and MOGS workflows.
 Provides a unified interface for workflow control and status monitoring.
 """
 
+import io
 import os
 import sys
 import threading
@@ -13,6 +14,26 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, Callable, List
 from enum import Enum
 from pathlib import Path
+
+
+class OutputCapture(io.StringIO):
+    """Capture stdout/stderr and forward to a callback."""
+    
+    def __init__(self, callback: Callable[[str], None], original_stream):
+        super().__init__()
+        self._callback = callback
+        self._original = original_stream
+    
+    def write(self, text: str) -> int:
+        if text and text.strip():
+            self._callback(text.rstrip())
+        if self._original:
+            self._original.write(text)
+        return len(text)
+    
+    def flush(self):
+        if self._original:
+            self._original.flush()
 
 
 class WorkflowType(Enum):
@@ -132,6 +153,9 @@ class WorkflowManager:
         provider: str,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
+        api_base: Optional[str] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
         **kwargs,
     ) -> bool:
         """
@@ -145,6 +169,12 @@ class WorkflowManager:
             API key for the provider
         model : str, optional
             Model name
+        api_base : str, optional
+            Custom API base URL (required for local provider)
+        temperature : float
+            Sampling temperature (0.0-1.0)
+        max_tokens : int
+            Maximum tokens in response
         **kwargs
             Additional configuration options
             
@@ -159,6 +189,17 @@ class WorkflowManager:
             
             self._send_message("system", f"Initializing {provider} agent...")
             
+            llm_config = LLMConfig(
+                provider=provider,
+                api_key=api_key,
+                model=model or "default",
+                api_base=api_base,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            
+            self._llm_client = LLMClient(config=llm_config)
+            
             self._agent = create_agent(
                 provider=provider,
                 api_key=api_key,
@@ -166,13 +207,7 @@ class WorkflowManager:
                 verbose=kwargs.get("verbose", True),
             )
             
-            self._llm_client = LLMClient(
-                provider=provider,
-                api_key=api_key,
-                model=model,
-            )
-            
-            self._send_message("system", f"Agent initialized: {provider}/{model or 'default'}")
+            self._send_message("system", f"Agent initialized: {provider}/{model or 'default'} (temp={temperature}, max_tokens={max_tokens})")
             return True
             
         except Exception as e:
@@ -206,6 +241,12 @@ class WorkflowManager:
         self._artifacts.clear()
         self._conversation_history.clear()
         
+        while not self._input_queue.empty():
+            try:
+                self._input_queue.get_nowait()
+            except queue.Empty:
+                break
+        
         self._workflow_thread = threading.Thread(
             target=self._run_workflow_thread,
             daemon=True,
@@ -216,7 +257,19 @@ class WorkflowManager:
     
     def _run_workflow_thread(self):
         """Run workflow in background thread."""
+        original_stdout = sys.stdout
+        original_stderr = sys.stderr
+        
+        def on_output(text: str):
+            self._send_message("output", text)
+        
+        stdout_capture = OutputCapture(on_output, original_stdout)
+        stderr_capture = OutputCapture(on_output, original_stderr)
+        
         try:
+            sys.stdout = stdout_capture
+            sys.stderr = stderr_capture
+            
             self._set_status(WorkflowStatus.INITIALIZING, "Starting workflow...")
             
             if self._config.workflow_type == WorkflowType.SINGLE_AGENT:
@@ -229,9 +282,19 @@ class WorkflowManager:
         except Exception as e:
             self._set_status(WorkflowStatus.FAILED, str(e))
             self._send_message("error", f"Workflow failed: {e}")
+        finally:
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
     
     def _run_single_agent_workflow(self):
-        """Run Single Agent Organ Generator workflow."""
+        """
+        Run Single Agent Organ Generator workflow.
+        
+        Note: This method temporarily replaces builtins.input() with a GUI-based
+        input function to intercept workflow prompts. This is a known limitation
+        that affects any code using input() during workflow execution. For better
+        isolation, consider running workflows in a subprocess in future versions.
+        """
         try:
             from automation.workflow import SingleAgentOrganGeneratorV4
             from automation.execution_modes import parse_execution_mode
@@ -307,7 +370,6 @@ class WorkflowManager:
         except Exception as e:
             self._set_status(WorkflowStatus.FAILED, str(e))
             self._send_message("error", f"Single Agent workflow failed: {e}")
-            raise
     
     def _run_mogs_workflow(self):
         """Run MOGS (Multi-Agent Organ Generation System) workflow."""
@@ -337,26 +399,39 @@ class WorkflowManager:
                         response = self._input_queue.get(timeout=0.5)
                         self._set_status(WorkflowStatus.RUNNING, "Processing approval")
                         
-                        if response.lower() in ("approve", "yes", "y", "ok"):
+                        response_lower = response.lower().strip()
+                        if response_lower in ("approve", "yes", "y", "ok", "approved"):
                             return GateResult(
                                 gate_type=context.gate_type,
                                 spec_version=context.spec_version,
                                 choice=ApprovalChoice.APPROVE,
                                 comments="Approved via GUI",
                             )
-                        elif response.lower() in ("refine", "revise"):
+                        elif response_lower.startswith("refine") or response_lower.startswith("revise"):
+                            refinement_notes = response
+                            if ":" in response:
+                                refinement_notes = response.split(":", 1)[1].strip()
+                            elif " " in response:
+                                refinement_notes = response.split(" ", 1)[1].strip()
                             return GateResult(
                                 gate_type=context.gate_type,
                                 spec_version=context.spec_version,
                                 choice=ApprovalChoice.REFINE,
-                                refinement_notes=response,
+                                refinement_notes=refinement_notes or response,
+                            )
+                        elif response_lower in ("reject", "no", "n", "rejected"):
+                            return GateResult(
+                                gate_type=context.gate_type,
+                                spec_version=context.spec_version,
+                                choice=ApprovalChoice.REJECT,
+                                comments="Rejected via GUI",
                             )
                         else:
                             return GateResult(
                                 gate_type=context.gate_type,
                                 spec_version=context.spec_version,
-                                choice=ApprovalChoice.REJECT,
-                                comments=response,
+                                choice=ApprovalChoice.REFINE,
+                                refinement_notes=response,
                             )
                     except queue.Empty:
                         continue
@@ -443,7 +518,6 @@ class WorkflowManager:
         except Exception as e:
             self._set_status(WorkflowStatus.FAILED, str(e))
             self._send_message("error", f"MOGS workflow failed: {e}")
-            raise
     
     def send_input(self, text: str):
         """
