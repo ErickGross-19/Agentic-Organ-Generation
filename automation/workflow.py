@@ -1029,14 +1029,36 @@ def detect_organ_type(intent: str) -> str:
     """
     Detect the organ type from the user's intent description.
     
+    V4 FIX: Made detection more conservative to avoid false positives.
+    Only matches explicit organ names, not vague perfusion language.
+    
     Returns the organ key (liver, kidney, lung, heart, generic) based on
     keywords found in the intent string.
+    
+    Generic keywords that should NOT trigger organ detection:
+    - "test block", "scaffold", "coupon", "calibration", "manifold", "device"
+    - "perfusion", "vascular", "channel", "flow" (without explicit organ)
     """
     intent_lower = intent.lower()
     
+    # V4 FIX: Strong keywords for generic mode - if any of these are present,
+    # default to generic regardless of other keywords
+    generic_keywords = [
+        "test block", "test piece", "scaffold", "coupon", "calibration",
+        "manifold", "device", "prototype", "sample", "demo", "example",
+        "generic", "simple", "basic", "custom"
+    ]
+    
+    for keyword in generic_keywords:
+        if keyword in intent_lower:
+            return "generic"
+    
+    # V4 FIX: Only use explicit organ names, not vague anatomical terms
+    # Removed "portal", "lobule", "sinusoid" from liver (too generic for perfusion)
+    # Removed "cortex", "medulla" from kidney (too generic)
     organ_keywords = {
-        "liver": ["liver", "hepatic", "hepato", "lobule", "sinusoid", "portal"],
-        "kidney": ["kidney", "renal", "nephron", "glomerul", "cortex", "medulla", "ureter"],
+        "liver": ["liver", "hepatic", "hepato"],
+        "kidney": ["kidney", "renal", "nephron", "glomerul", "ureter"],
         "lung": ["lung", "pulmonary", "bronch", "alveol", "respiratory", "airway"],
         "heart": ["heart", "coronary", "cardiac", "myocard", "ventricle", "atrium", "aortic"],
     }
@@ -2232,6 +2254,24 @@ class RuleEngine:
                 rework_cost="high"
             ))
         
+        # V4 FIX: Add outlet placement rule when outlets exist
+        # This ensures outlet face/placement is asked for topologies that require outlets
+        if req.inlets_outlets.outlets:
+            # Check if any outlet has a default/placeholder position (0,0,0)
+            has_default_positions = any(
+                outlet.position_m == (0.0, 0.0, 0.0) or outlet.position_m == (0, 0, 0)
+                for outlet in req.inlets_outlets.outlets
+            )
+            if has_default_positions:
+                result.missing_fields.append(RuleFlag(
+                    rule_id="A1_outlet_placement",
+                    family="A",
+                    field="inlets_outlets.outlet_placement",
+                    message="Outlet placement rule is required for deterministic generation",
+                    severity="required",
+                    rework_cost="high"
+                ))
+        
         if check_finalization:
             if req.embedding_export.voxel_pitch_m is None:
                 result.missing_fields.append(RuleFlag(
@@ -2441,10 +2481,16 @@ class QuestionPlanner:
         "constraints.min_clearance_m": ("min_clearance", "Minimum spacing between channels (mm)?", "0.2"),
         "topology.target_terminals": ("target_terminals", "Target complexity: ~200, ~500, or ~1000 terminals?", "200"),
         "domain.size_m": ("domain_size", "Use default box 0.02x0.06x0.03 m? (yes/custom)", "yes"),
-        "embedding_export.voxel_pitch_m": ("voxel_pitch", "Voxel pitch for embedding (mm)?", "0.3"),
+        "embedding_export.voxel_pitch_m": ("voxel_pitch", "Voxel pitch for embedding (mm)? (enter number or 'yes' for default)", "0.3"),
         "embedding_export.stl_units": ("export_units", "Export units? (mm/cm)", "mm"),
         "geometry.tortuosity": ("tortuosity", "Vessel tortuosity? (low/medium/high)", "low"),
         "geometry.symmetry_axis": ("symmetry_axis", "Symmetric around which axis? (x/y/z/none)", "none"),
+        # V4 FIX: Add backbone-specific field mappings to ensure questions are asked
+        "topology.leg_count": ("leg_count", "How many parallel legs?", "3"),
+        "topology.backbone_axis": ("backbone_axis", "Backbone axis? (x/y/z/longest)", "longest"),
+        "topology.leg_spacing": ("leg_spacing", "Leg spacing? (equal or mm value)", "equal"),
+        "topology.leg_connection": ("leg_connection", "Leg connection type? (ladder/u_shape/separate)", "ladder"),
+        "topology.port_style": ("port_style", "Port connection style? (manifold/individual)", "manifold"),
     }
     
     def plan(
@@ -3233,13 +3279,27 @@ def _apply_answer_to_requirements(req: ObjectRequirements, field: str, value: An
                     req.domain.size_m = parsed
     
     elif field == "embedding_export.voxel_pitch_m":
-        try:
-            if isinstance(value, str):
-                req.embedding_export.voxel_pitch_m = float(value) / 1000
+        # V4 FIX: Handle "yes"/"default"/"?" responses for voxel pitch
+        # User can enter:
+        # - numeric value in mm (e.g., "0.3", "0.2")
+        # - "yes" or "default" to accept the default value
+        # - "?" to get help (handled elsewhere)
+        if isinstance(value, str):
+            val_lower = value.lower().strip()
+            # Accept "yes"/"default" to use the default voxel pitch (0.3mm = 0.0003m)
+            if val_lower in ("yes", "y", "default"):
+                req.embedding_export.voxel_pitch_m = 0.0003  # Default 0.3mm
             else:
+                try:
+                    req.embedding_export.voxel_pitch_m = float(val_lower) / 1000
+                except (ValueError, TypeError):
+                    # If parsing fails, use default
+                    req.embedding_export.voxel_pitch_m = 0.0003
+        else:
+            try:
                 req.embedding_export.voxel_pitch_m = float(value)
-        except (ValueError, TypeError):
-            pass
+            except (ValueError, TypeError):
+                pass
     
     elif field == "embedding_export.stl_units":
         if isinstance(value, str):
@@ -4747,34 +4807,15 @@ class SingleAgentOrganGeneratorV4:
         print("Say 'use defaults' at any time to accept all proposed defaults.")
         print()
         
-        missing_fields = self.schema_manager.missing_required_fields()
-        ambiguities = []
-        if self.current_understanding and self.current_understanding.ambiguities:
-            # Convert Ambiguity objects to dicts for plan_questions
-            ambiguities = [
-                {
-                    "field": a.field,
-                    "description": a.description,
-                    "options": a.options,
-                    "impact": a.impact,
-                }
-                for a in self.current_understanding.ambiguities
-            ]
-        
-        questions = self.schema_manager.plan_questions(
-            missing=missing_fields,
-            ambiguities=ambiguities,
-            conflicts=[],
-            max_questions=5
-        )
-        
-        if questions:
-            print(f"I need to ask {len(questions)} question(s) to complete the specification:")
-            print()
-            for i, q in enumerate(questions, 1):
-                print(f"  {i}. {q.question_text}")
-                print(f"     Why: {q.reason} (rework cost: {q.rework_cost})")
-            print()
+        # V4 FIX: Removed misleading schema_manager.plan_questions() output.
+        # The questions displayed here were from a different system than what
+        # run_rule_based_capture() actually asks, causing confusion where users
+        # would see "I need to ask 5 questions" but then different questions
+        # (or no questions) would actually be asked.
+        #
+        # Now run_rule_based_capture() handles all question planning and display
+        # using the QuestionPlanner class, which ensures consistency between
+        # what is displayed and what is actually asked.
         
         updated_req, collected = run_rule_based_capture(
             requirements=obj.requirements,
@@ -4837,7 +4878,12 @@ class SingleAgentOrganGeneratorV4:
         self.state = WorkflowState.SPEC_COMPILATION
     
     def _apply_answers_to_requirements(self, obj: ObjectContext) -> None:
-        """Apply collected answers to the requirements schema."""
+        """Apply collected answers to the requirements schema.
+        
+        V4 FIX: This function now respects existing values from rule-based capture.
+        It only fills in missing fields and does NOT rebuild lists that already have data.
+        This prevents the legacy applier from overwriting values set by run_rule_based_capture().
+        """
         req = obj.requirements
         answers = self.collected_answers
         
@@ -4860,31 +4906,43 @@ class SingleAgentOrganGeneratorV4:
             except ValueError:
                 pass
         
-        try:
-            num_inlets = int(answers.get("num_inlets", "1"))
-            num_outlets = int(answers.get("num_outlets", "0"))
-        except ValueError:
-            num_inlets = 1
-            num_outlets = 0
+        # V4 FIX: Only rebuild inlets/outlets if they are EMPTY and answers provide counts.
+        # This prevents overwriting values already set by run_rule_based_capture().
+        # The rule-based capture uses field-path keys like "inlets_outlets.outlets" which
+        # correctly populate the lists. The legacy keys "num_inlets"/"num_outlets" should
+        # only be used as a fallback when the lists are empty.
         
-        inlet_radii = answers.get("inlet_radius", "0.002").split(",")
-        outlet_radii = answers.get("outlet_radius", "0.001").split(",")
+        # Check if inlets already exist from rule-based capture
+        if not req.inlets_outlets.inlets:
+            try:
+                num_inlets = int(answers.get("num_inlets", "1"))
+            except ValueError:
+                num_inlets = 1
+            
+            inlet_radii = answers.get("inlet_radius", "0.002").split(",")
+            
+            for i in range(num_inlets):
+                radius = float(inlet_radii[i % len(inlet_radii)].strip()) / 1000 if inlet_radii else 0.002
+                req.inlets_outlets.inlets.append(PortSpec(
+                    name=f"inlet_{i+1}",
+                    radius_m=radius,
+                ))
         
-        req.inlets_outlets.inlets = []
-        for i in range(num_inlets):
-            radius = float(inlet_radii[i % len(inlet_radii)].strip()) / 1000 if inlet_radii else 0.002
-            req.inlets_outlets.inlets.append(PortSpec(
-                name=f"inlet_{i+1}",
-                radius_m=radius,
-            ))
-        
-        req.inlets_outlets.outlets = []
-        for i in range(num_outlets):
-            radius = float(outlet_radii[i % len(outlet_radii)].strip()) / 1000 if outlet_radii else 0.001
-            req.inlets_outlets.outlets.append(PortSpec(
-                name=f"outlet_{i+1}",
-                radius_m=radius,
-            ))
+        # Check if outlets already exist from rule-based capture
+        if not req.inlets_outlets.outlets:
+            try:
+                num_outlets = int(answers.get("num_outlets", "0"))
+            except ValueError:
+                num_outlets = 0
+            
+            outlet_radii = answers.get("outlet_radius", "0.001").split(",")
+            
+            for i in range(num_outlets):
+                radius = float(outlet_radii[i % len(outlet_radii)].strip()) / 1000 if outlet_radii else 0.001
+                req.inlets_outlets.outlets.append(PortSpec(
+                    name=f"outlet_{i+1}",
+                    radius_m=radius,
+                ))
         
         req.inlets_outlets.placement_rule = answers.get("inlet_outlet_location", "")
         
