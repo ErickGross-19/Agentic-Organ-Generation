@@ -196,6 +196,7 @@ class IdentitySection:
     object_slug: str = ""
     version: int = 1
     notes: str = ""
+    description: str = ""  # User's original intent/description for the object
     
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -2367,13 +2368,15 @@ class RuleEngine:
         
         if (req.constraints.min_radius_m and req.embedding_export.voxel_pitch_m and
             req.constraints.min_radius_m < req.embedding_export.voxel_pitch_m):
+            old_min_radius = req.constraints.min_radius_m
+            req.constraints.min_radius_m = req.embedding_export.voxel_pitch_m
             result.conflict_flags.append(RuleFlag(
                 rule_id="C1_printability",
                 family="C",
                 field="constraints.min_radius_m",
-                message=f"Min radius ({req.constraints.min_radius_m*1000:.2f}mm) smaller than voxel pitch ({req.embedding_export.voxel_pitch_m*1000:.2f}mm)",
-                severity="required",
-                rework_cost="high"
+                message=f"Auto-clamped min radius from {old_min_radius*1000:.2f}mm to {req.constraints.min_radius_m*1000:.2f}mm (must be >= voxel pitch)",
+                severity="info",
+                rework_cost="none"
             ))
         
         if req.topology.target_terminals and req.constraints.min_clearance_m:
@@ -2473,24 +2476,23 @@ class QuestionPlanner:
     
     FIELD_TO_QUESTION = {
         "frame_of_reference": ("coordinate_frame", "Which axis is length/height/width? (x=length, y=depth, z=height)", None),
-        "inlets_outlets.inlets": ("num_inlets", "How many inlets?", "1"),
-        "inlets_outlets.outlets": ("num_outlets", "How many outlets?", "0"),
-        "inlets_outlets.placement_rule": ("inlet_placement", "Inlet placement? (x_min_face/x_max_face/y_min_face/y_max_face/z_min_face/z_max_face/center/custom)", "x_min_face"),
-        "inlets_outlets.outlet_placement": ("outlet_placement", "Outlet placement? (x_min_face/x_max_face/y_min_face/y_max_face/z_min_face/z_max_face/opposite_inlet/same_face/none)", "opposite_inlet"),
-        "constraints.min_radius_m": ("min_channel_radius", "Minimum channel radius (mm)?", "0.1"),
-        "constraints.min_clearance_m": ("min_clearance", "Minimum spacing between channels (mm)?", "0.2"),
-        "topology.target_terminals": ("target_terminals", "Target complexity: ~200, ~500, or ~1000 terminals?", "200"),
-        "domain.size_m": ("domain_size", "Use default box 0.02x0.06x0.03 m? (yes/custom)", "yes"),
-        "embedding_export.voxel_pitch_m": ("voxel_pitch", "Voxel pitch for embedding (mm)? (enter number or 'yes' for default)", "0.3"),
-        "embedding_export.stl_units": ("export_units", "Export units? (mm/cm)", "mm"),
-        "geometry.tortuosity": ("tortuosity", "Vessel tortuosity? (low/medium/high)", "low"),
-        "geometry.symmetry_axis": ("symmetry_axis", "Symmetric around which axis? (x/y/z/none)", "none"),
-        # V4 FIX: Add backbone-specific field mappings to ensure questions are asked
-        "topology.leg_count": ("leg_count", "How many parallel legs?", "3"),
-        "topology.backbone_axis": ("backbone_axis", "Backbone axis? (x/y/z/longest)", "longest"),
-        "topology.leg_spacing": ("leg_spacing", "Leg spacing? (equal or mm value)", "equal"),
-        "topology.leg_connection": ("leg_connection", "Leg connection type? (ladder/u_shape/separate)", "ladder"),
-        "topology.port_style": ("port_style", "Port connection style? (manifold/individual)", "manifold"),
+        "inlets_outlets.inlets": ("num_inlets", "How many inlet ports (where fluid enters)?", "1"),
+        "inlets_outlets.outlets": ("num_outlets", "How many outlet ports (where fluid exits)?", "0"),
+        "inlets_outlets.placement_rule": ("inlet_placement", "Where should inlets be placed? Options: x_min_face (left), x_max_face (right), y_min_face (front), y_max_face (back), z_min_face (bottom), z_max_face (top), center, custom", "x_min_face"),
+        "inlets_outlets.outlet_placement": ("outlet_placement", "Where should outlets be placed? Options: opposite_inlet (recommended), same_face, x_min_face, x_max_face, y_min_face, y_max_face, z_min_face, z_max_face, none", "opposite_inlet"),
+        "constraints.min_radius_m": ("min_channel_radius", "Minimum channel radius in mm (smallest vessel diameter will be 2x this)?", "0.1"),
+        "constraints.min_clearance_m": ("min_clearance", "Minimum spacing between channels in mm (prevents vessels from touching)?", "0.2"),
+        "topology.target_terminals": ("target_terminals", "How many terminal endpoints? (200=simple, 500=medium, 1000=complex)", "200"),
+        "domain.size_m": ("domain_size", "Domain size: enter 'yes' for default 20x60x30mm, or specify as 'WxDxH mm' (e.g., '10x10x10 mm')", "yes"),
+        "embedding_export.voxel_pitch_m": ("voxel_pitch", "Voxel resolution in mm (smaller=finer detail but slower)? Enter number or 'yes' for 0.3mm default", "0.3"),
+        "embedding_export.stl_units": ("export_units", "STL export units? (mm recommended for 3D printing, cm for larger models)", "mm"),
+        "geometry.tortuosity": ("tortuosity", "How curved should vessels be? (low=straight, medium=natural curves, high=very winding)", "low"),
+        "geometry.symmetry_axis": ("symmetry_axis", "Mirror the network around an axis? (x/y/z for symmetry, none for asymmetric)", "none"),
+        "topology.leg_count": ("leg_count", "How many parallel legs in the backbone structure?", "3"),
+        "topology.backbone_axis": ("backbone_axis", "Which axis should the main backbone run along? (x/y/z, or 'longest' to auto-detect)", "longest"),
+        "topology.leg_spacing": ("leg_spacing", "Spacing between legs: 'equal' for uniform distribution, or specify distance in mm", "equal"),
+        "topology.leg_connection": ("leg_connection", "How should legs connect? (ladder=cross-connections, u_shape=U-turns at ends, separate=independent)", "ladder"),
+        "topology.port_style": ("port_style", "Port connection style: 'manifold' (single inlet feeds all) or 'individual' (separate inlet per leg)", "manifold"),
     }
     
     def plan(

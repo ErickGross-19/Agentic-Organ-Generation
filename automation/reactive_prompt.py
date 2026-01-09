@@ -456,7 +456,8 @@ class ReactivePromptSession:
         default_str = "y" if default else "n"
         
         def yes_no_validator(answer: str) -> Tuple[bool, str]:
-            if answer.lower() in ["y", "yes", "n", "no", ""]:
+            # Strip whitespace before validation to handle "yes " or " y" inputs
+            if answer.strip().lower() in ["y", "yes", "n", "no", ""]:
                 return True, ""
             return False, "Please enter 'y' or 'n'"
         
@@ -472,7 +473,8 @@ class ReactivePromptSession:
         if intent in (TurnIntent.BACK, TurnIntent.CANCEL):
             return False, intent
         
-        return answer.lower() in ["y", "yes", ""], intent
+        # Strip whitespace before checking to handle "yes " or " y" inputs
+        return answer.strip().lower() in ["y", "yes", ""], intent
     
     def show_understanding(self, understanding: Dict[str, Any]) -> None:
         """

@@ -114,8 +114,8 @@ def extract_code_block(text: str) -> Tuple[Optional[str], List[str]]:
     """
     warnings = []
     
-    # Match ```python ... ``` blocks
-    pattern = r"```(?:python)?\s*\n(.*?)```"
+    # Match ```python, ```py, ```python3, or plain ``` blocks
+    pattern = r"```(?:python3?|py)?\s*\n(.*?)```"
     matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
     
     if matches:

@@ -104,11 +104,13 @@ def print_review_prompt(
         print()
     
     print("Actions:")
-    print("  run (or yes/y) - Execute the script now")
-    print("  done           - Skip execution (assume already run manually)")
+    print("  run (or yes/y) - EXECUTE THE SCRIPT NOW to generate mesh files")
+    print("  done           - Skip execution (only if you already ran the script manually)")
     print("  cancel (or no/n) - Cancel workflow, keep files")
     print("  view           - View the script contents")
     print("  edit           - Open script in editor (if available)")
+    print()
+    print(">>> To generate your mesh, choose 'run' <<<")
     print()
 
 
@@ -186,6 +188,7 @@ def interactive_review(
     object_name: str = "",
     version: int = 1,
     input_func: Optional[Callable[[str], str]] = None,
+    expected_outputs: Optional[List[str]] = None,
 ) -> ReviewResult:
     """
     Run interactive review gate.
@@ -204,6 +207,9 @@ def interactive_review(
         Version number of the script
     input_func : Callable, optional
         Custom input function (for notebook compatibility)
+    expected_outputs : List[str], optional
+        List of expected output file paths. If provided and user chooses 'done',
+        will warn if these files don't exist.
         
     Returns
     -------
@@ -235,6 +241,18 @@ def interactive_review(
             )
         
         elif response in ("done", "d", "skip"):
+            if expected_outputs:
+                missing_files = [f for f in expected_outputs if not os.path.exists(f)]
+                if missing_files:
+                    print()
+                    print("WARNING: The following expected output files were not found:")
+                    for f in missing_files:
+                        print(f"  - {f}")
+                    print()
+                    print("This suggests the script may not have been run yet.")
+                    print("Choose 'run' to execute the script, or 'done' again to continue anyway.")
+                    print()
+                    continue
             return ReviewResult(
                 action=ReviewAction.DONE,
                 should_execute=False,
@@ -314,6 +332,7 @@ def run_review_gate(
     interactive: bool = True,
     auto_run: bool = False,
     input_func: Optional[Callable[[str], str]] = None,
+    expected_outputs: Optional[List[str]] = None,
 ) -> ReviewResult:
     """
     Run the review gate with appropriate mode.
@@ -336,6 +355,9 @@ def run_review_gate(
         If not interactive, whether to auto-run or skip
     input_func : Callable, optional
         Custom input function (for notebook compatibility)
+    expected_outputs : List[str], optional
+        List of expected output file paths. If provided and user chooses 'done',
+        will warn if these files don't exist.
         
     Returns
     -------
@@ -352,4 +374,5 @@ def run_review_gate(
         object_name=object_name,
         version=version,
         input_func=input_func,
+        expected_outputs=expected_outputs,
     )
