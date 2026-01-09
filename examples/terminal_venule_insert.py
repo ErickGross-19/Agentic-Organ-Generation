@@ -146,32 +146,36 @@ class InsertGeometry:
     """
     Geometric parameters for the 48-well compatible insert.
     
-    The insert has an elliptical/capsule-like cross-section with a FLAT TOP FACE
-    where all ports are located. This provides:
-    - Stable seating in the well
-    - Flat interface for port connections (tubing, needles)
-    - Smooth body for easy insertion/removal
+    The insert is shaped like a STANDING ELLIPSE with the top cut off:
+    - Imagine an egg standing upright, then slice off the top
+    - The top face is a FLAT CIRCULAR cross-section where all ports are located
+    - The body tapers downward (ellipsoidal shape)
+    - This provides stable seating in the well and flat interface for ports
     
     Coordinate System:
     - Origin at center of top face
-    - X/Y: horizontal plane (elliptical cross-section)
+    - X/Y: horizontal plane (CIRCULAR cross-section at top)
     - Z: vertical axis, NEGATIVE Z goes DOWN into the insert
+    
+    Shape Description:
+    - Top face: circular with radius = top_radius
+    - Body: ellipsoidal, taller than wide (standing ellipse)
+    - The Z semi-axis is LARGER than X/Y semi-axes for tree-like depth
     
     Attributes
     ----------
-    major_radius : float
-        Major radius of elliptical cross-section in meters.
-        Default: 0.004m (4mm) for ~8mm major diameter.
+    top_radius : float
+        Radius of the circular top face in meters.
+        Default: 0.004m (4mm) for ~8mm diameter top face.
         Must fit within 48-well (~11.3mm diameter) with clearance.
-        
-    minor_radius : float
-        Minor radius of elliptical cross-section in meters.
-        Default: 0.003m (3mm) for ~6mm minor diameter.
-        Set equal to major_radius for circular cross-section.
+        X and Y semi-axes are equal to this value for circular top.
         
     depth : float
         Vertical depth of insert (how far channels can grow down) in meters.
-        Default: 0.004m (4mm). Channels grow from z=0 (top) to z=-depth.
+        Default: 0.008m (8mm). This is the Z semi-axis.
+        Channels grow from z=0 (top) to z=-depth.
+        IMPORTANT: depth > top_radius creates a "standing ellipse" shape
+        that encourages tree-like downward growth.
         
     wall_thickness : float
         Minimum wall thickness at insert edges in meters.
@@ -181,9 +185,8 @@ class InsertGeometry:
         Margin from edge of top face where ports should not be placed, in meters.
         Default: 0.0005m (0.5mm). Ensures ports are accessible.
     """
-    major_radius: float = 0.004          # 4mm major radius
-    minor_radius: float = 0.003          # 3mm minor radius (capsule shape)
-    depth: float = 0.004                 # 4mm depth for channel growth
+    top_radius: float = 0.004            # 4mm radius for circular top face
+    depth: float = 0.008                 # 8mm depth (taller than wide for tree-like growth)
     wall_thickness: float = 0.0005       # 0.5mm wall thickness
     top_face_margin: float = 0.0005      # 0.5mm margin from edge for ports
 
@@ -247,34 +250,39 @@ class ColonizationParameters:
     Growth Direction: DOWNWARD from top face (negative Z direction)
     
     These control how the vascular network grows from inlets on the top face
-    downward into the volume, creating converging tree topology.
+    downward into the volume, creating TREE-LIKE topology (not star-like).
+    
+    Key parameters for tree-like growth:
+    - Higher directional_bias (0.6-0.8) keeps growth going downward
+    - Smaller influence_radius encourages linear growth before branching
+    - Moderate bifurcation_probability creates branching at depth
     
     Attributes
     ----------
     influence_radius : float
         Radius within which tissue points attract growing tips, in meters.
-        Default: 0.002m (2mm). Larger = longer-range attraction, sparser network.
+        Default: 0.0015m (1.5mm). Smaller = more linear growth before branching.
         
     kill_radius : float
         Radius within which tissue points are considered "perfused" and removed.
-        Default: 0.0005m (0.5mm). Smaller = denser network coverage.
+        Default: 0.0004m (0.4mm). Smaller = denser network coverage.
         
     step_size : float
         Growth step size per iteration, in meters.
-        Default: 0.0005m (0.5mm). Smaller = smoother curves, more iterations.
+        Default: 0.0004m (0.4mm). Smaller = smoother curves, more iterations.
         
     max_steps : int
         Maximum number of growth iterations.
-        Default: 100. Increase for denser networks.
+        Default: 150. More steps for deeper tree growth.
         
     directional_bias : float
         Weight for preferred direction (downward) vs pure attraction.
-        Range: 0.0-1.0. Default: 0.4.
-        Higher = more vertical growth, lower = more organic branching.
+        Range: 0.0-1.0. Default: 0.7.
+        Higher = more vertical/tree-like growth, lower = more star-like spread.
         
     smoothing_weight : float
         Weight for smoothing growth direction with previous direction.
-        Range: 0.0-1.0. Default: 0.3.
+        Range: 0.0-1.0. Default: 0.4.
         Higher = smoother, more gradual curves.
         
     encourage_bifurcation : bool
@@ -283,21 +291,22 @@ class ColonizationParameters:
         
     bifurcation_probability : float
         Probability of bifurcating when conditions are met.
-        Range: 0.0-1.0. Default: 0.5.
+        Range: 0.0-1.0. Default: 0.4.
+        Lower = fewer but deeper branches (more tree-like).
         
     bifurcation_angle_threshold_deg : float
         Minimum angle spread (degrees) between attractions to trigger bifurcation.
-        Default: 30.0 degrees.
+        Default: 45.0 degrees. Higher = more selective branching.
     """
-    influence_radius: float = 0.002         # 2mm attraction range
-    kill_radius: float = 0.0005             # 0.5mm perfusion radius
-    step_size: float = 0.0005               # 0.5mm growth step
-    max_steps: int = 100                    # Maximum iterations
-    directional_bias: float = 0.4           # Bias toward downward growth
-    smoothing_weight: float = 0.3           # Direction smoothing
+    influence_radius: float = 0.0015        # 1.5mm - smaller for linear growth
+    kill_radius: float = 0.0004             # 0.4mm perfusion radius
+    step_size: float = 0.0004               # 0.4mm growth step
+    max_steps: int = 150                    # More iterations for deep growth
+    directional_bias: float = 0.7           # Strong downward bias for tree-like growth
+    smoothing_weight: float = 0.4           # Direction smoothing
     encourage_bifurcation: bool = True      # Enable branching
-    bifurcation_probability: float = 0.5    # Branching probability
-    bifurcation_angle_threshold_deg: float = 30.0  # Min angle for bifurcation
+    bifurcation_probability: float = 0.4    # Lower = deeper before branching
+    bifurcation_angle_threshold_deg: float = 45.0  # Higher = more selective branching
 
 
 @dataclass
@@ -362,7 +371,7 @@ class MultiInputConfig:
         Default: 6. Range: 4-8 recommended.
         
     inlet_radial_fraction : float
-        Fraction of major_radius where inlets are positioned.
+        Fraction of top_radius where inlets are positioned.
         Default: 0.7. Inlets at 70% of radius from center.
         Range: 0.5-0.85. Higher = closer to edge.
         
@@ -383,6 +392,11 @@ def get_colonization_params_for_density(density: DensityPreset) -> ColonizationP
     """
     Get colonization parameters for a given density preset.
     
+    All presets are tuned for TREE-LIKE growth (not star-like):
+    - Strong directional bias keeps growth going downward
+    - Smaller influence radius encourages linear growth before branching
+    - Moderate bifurcation creates branching at depth
+    
     Parameters
     ----------
     density : DensityPreset
@@ -395,21 +409,25 @@ def get_colonization_params_for_density(density: DensityPreset) -> ColonizationP
     """
     if density == DensityPreset.LOW:
         return ColonizationParameters(
-            influence_radius=0.003,         # 3mm - longer range, sparser
-            kill_radius=0.001,              # 1mm - larger kill radius
-            step_size=0.0008,               # 0.8mm - larger steps
-            max_steps=50,                   # Fewer iterations
-            directional_bias=0.5,           # More directional
-            bifurcation_probability=0.3,    # Less branching
+            influence_radius=0.002,         # 2mm - longer range, sparser
+            kill_radius=0.0008,             # 0.8mm - larger kill radius
+            step_size=0.0006,               # 0.6mm - larger steps
+            max_steps=100,                  # Fewer iterations
+            directional_bias=0.8,           # Very strong downward bias
+            smoothing_weight=0.5,           # Smoother curves
+            bifurcation_probability=0.25,   # Less branching, deeper growth
+            bifurcation_angle_threshold_deg=50.0,  # More selective branching
         )
     elif density == DensityPreset.HIGH:
         return ColonizationParameters(
-            influence_radius=0.0015,        # 1.5mm - shorter range, denser
+            influence_radius=0.001,         # 1mm - shorter range, denser
             kill_radius=0.0003,             # 0.3mm - smaller kill radius
             step_size=0.0003,               # 0.3mm - smaller steps
-            max_steps=200,                  # More iterations
-            directional_bias=0.3,           # More organic
-            bifurcation_probability=0.7,    # More branching
+            max_steps=250,                  # More iterations for deep growth
+            directional_bias=0.6,           # Strong but allows some spread
+            smoothing_weight=0.3,           # Less smoothing for more detail
+            bifurcation_probability=0.5,    # More branching
+            bifurcation_angle_threshold_deg=35.0,  # More branching opportunities
         )
     else:  # MEDIUM (default)
         return ColonizationParameters()
@@ -554,19 +572,27 @@ def validate_parameters(
         )
     
     # Check geometry constraints
-    if geometry.wall_thickness >= geometry.minor_radius * 0.3:
+    if geometry.wall_thickness >= geometry.top_radius * 0.3:
         issues.append(
             f"WARNING: wall_thickness ({geometry.wall_thickness*1000:.2f}mm) "
-            f">= 30% of minor_radius ({geometry.minor_radius*1000:.2f}mm). "
+            f">= 30% of top_radius ({geometry.top_radius*1000:.2f}mm). "
             "Wall thickness may be too large."
         )
     
     # Check 48-well compatibility
-    max_diameter = 2 * geometry.major_radius
+    max_diameter = 2 * geometry.top_radius
     if max_diameter > 0.010:  # 10mm
         issues.append(
             f"WARNING: Insert diameter ({max_diameter*1000:.1f}mm) > 10mm. "
             "May not fit in 48-well plate (~11.3mm wells) with adequate clearance."
+        )
+    
+    # Check aspect ratio for tree-like growth
+    aspect_ratio = geometry.depth / geometry.top_radius
+    if aspect_ratio < 1.5:
+        issues.append(
+            f"WARNING: Aspect ratio (depth/radius = {aspect_ratio:.1f}) < 1.5. "
+            "Consider increasing depth for better tree-like growth (recommended: 2.0+)."
         )
     
     return issues
@@ -758,29 +784,32 @@ def create_single_input_spec(
     logger.info("Creating single-input design specification...")
     logger.info("  Port layout: All ports on TOP FACE (z=0)")
     logger.info("  Growth direction: DOWNWARD (negative Z)")
+    logger.info("  Shape: STANDING ELLIPSE with flat circular top")
     
-    # Define ellipsoid domain centered below top face
-    # Top face is at z=0, domain extends downward to z=-depth
-    # Using ellipsoid with center at z=-depth/2
+    # Define ellipsoid domain as a STANDING ELLIPSE (taller than wide)
+    # - Top face is at z=0 (flat circular cross-section)
+    # - Domain extends downward to z=-depth
+    # - X and Y semi-axes are equal (circular top) = top_radius
+    # - Z semi-axis is depth/2 (centered at z=-depth/2)
+    # This creates a "standing egg" shape that encourages tree-like downward growth
     domain_center_z = -geometry.depth / 2
     
     domain = EllipsoidSpec(
         type="ellipsoid",
         center=(0.0, 0.0, domain_center_z),
-        semi_axes=(geometry.major_radius, geometry.minor_radius, geometry.depth / 2),
+        # X=Y=top_radius for circular top, Z=depth/2 for standing ellipse
+        semi_axes=(geometry.top_radius, geometry.top_radius, geometry.depth / 2),
     )
     
-    logger.info(f"  Domain: ellipsoid centered at z={domain_center_z*1000:.1f}mm")
-    logger.info(f"  Semi-axes: ({geometry.major_radius*1000:.1f}mm, "
-               f"{geometry.minor_radius*1000:.1f}mm, {geometry.depth/2*1000:.1f}mm)")
+    logger.info(f"  Domain: STANDING ellipsoid centered at z={domain_center_z*1000:.1f}mm")
+    logger.info(f"  Semi-axes: X=Y={geometry.top_radius*1000:.1f}mm (circular top), "
+               f"Z={geometry.depth/2*1000:.1f}mm (depth)")
+    logger.info(f"  Aspect ratio (depth/radius): {geometry.depth / geometry.top_radius:.1f}x (taller than wide)")
     
     # Single inlet near top face, positioned inside the ellipsoid domain
-    # For an ellipsoid centered at z=-depth/2 with semi-axis z=depth/2,
-    # we need to position the inlet slightly below z=0 to be inside the domain.
-    # At z=-0.1*depth (10% below top), the ellipsoid cross-section allows
-    # radial positions up to ~sqrt(1 - 0.1²) ≈ 0.995 of the semi-axes.
-    # Position inlet at 60% of that available radius for safety margin.
-    inlet_z_fraction = 0.15  # 15% below top face
+    # For a standing ellipsoid, the top is at z=0 where the cross-section is circular.
+    # Position inlet slightly below top face to be inside the domain.
+    inlet_z_fraction = 0.08  # 8% below top face (closer to top for tree-like growth)
     inlet_z = -geometry.depth * inlet_z_fraction
     
     # Calculate max radial position at this z level
@@ -788,9 +817,9 @@ def create_single_input_spec(
     # At z = inlet_z, max radius fraction = sqrt(1 - ((inlet_z - domain_center_z) / (depth/2))²)
     z_normalized = (inlet_z - domain_center_z) / (geometry.depth / 2)
     max_radial_fraction = math.sqrt(max(0, 1 - z_normalized**2))
-    inlet_radial_fraction = 0.6 * max_radial_fraction  # 60% of available radius
+    inlet_radial_fraction = 0.7 * max_radial_fraction  # 70% of available radius
     
-    inlet_x = geometry.major_radius * inlet_radial_fraction
+    inlet_x = geometry.top_radius * inlet_radial_fraction
     
     inlet = InletSpec(
         position=(inlet_x, 0.0, inlet_z),
@@ -904,40 +933,46 @@ def create_multi_input_spec(
     logger.info(f"Creating multi-input design specification ({multi_config.num_inlets} inlets)...")
     logger.info("  Port layout: All ports on TOP FACE (z=0)")
     logger.info("  Growth direction: DOWNWARD (negative Z)")
+    logger.info("  Shape: STANDING ELLIPSE with flat circular top")
     
-    # Define ellipsoid domain centered below top face
+    # Define ellipsoid domain as a STANDING ELLIPSE (taller than wide)
+    # - Top face is at z=0 (flat circular cross-section)
+    # - X and Y semi-axes are equal (circular top) = top_radius
+    # - Z semi-axis is depth/2 (centered at z=-depth/2)
     domain_center_z = -geometry.depth / 2
     
     domain = EllipsoidSpec(
         type="ellipsoid",
         center=(0.0, 0.0, domain_center_z),
-        semi_axes=(geometry.major_radius, geometry.minor_radius, geometry.depth / 2),
+        # X=Y=top_radius for circular top, Z=depth/2 for standing ellipse
+        semi_axes=(geometry.top_radius, geometry.top_radius, geometry.depth / 2),
     )
     
-    logger.info(f"  Domain: ellipsoid centered at z={domain_center_z*1000:.1f}mm")
-    logger.info(f"  Semi-axes: ({geometry.major_radius*1000:.1f}mm, "
-               f"{geometry.minor_radius*1000:.1f}mm, {geometry.depth/2*1000:.1f}mm)")
+    logger.info(f"  Domain: STANDING ellipsoid centered at z={domain_center_z*1000:.1f}mm")
+    logger.info(f"  Semi-axes: X=Y={geometry.top_radius*1000:.1f}mm (circular top), "
+               f"Z={geometry.depth/2*1000:.1f}mm (depth)")
+    logger.info(f"  Aspect ratio (depth/radius): {geometry.depth / geometry.top_radius:.1f}x (taller than wide)")
     
     # Create multiple inlets distributed around perimeter, positioned inside the ellipsoid
     # Position inlets slightly below top face to be inside the domain
     inlets = []
-    inlet_z_fraction = 0.15  # 15% below top face
+    inlet_z_fraction = 0.08  # 8% below top face (closer to top for tree-like growth)
     inlet_z = -geometry.depth * inlet_z_fraction
     
     # Calculate max radial position at this z level
     z_normalized = (inlet_z - domain_center_z) / (geometry.depth / 2)
     max_radial_fraction = math.sqrt(max(0, 1 - z_normalized**2))
     # Use configured radial fraction but cap at available space
-    effective_radial_fraction = min(multi_config.inlet_radial_fraction, 0.6 * max_radial_fraction)
+    effective_radial_fraction = min(multi_config.inlet_radial_fraction, 0.7 * max_radial_fraction)
     
     for i in range(multi_config.num_inlets):
         # Calculate angle with optional offset
         angle = (2 * math.pi * i / multi_config.num_inlets + 
                 math.radians(multi_config.inlet_angular_offset_deg))
         
-        # Position on ellipse at effective_radial_fraction of radii
-        inlet_x = geometry.major_radius * effective_radial_fraction * math.cos(angle)
-        inlet_y = geometry.minor_radius * effective_radial_fraction * math.sin(angle)
+        # Position on circle at effective_radial_fraction of top_radius (circular top)
+        inlet_x = geometry.top_radius * effective_radial_fraction * math.cos(angle)
+        inlet_y = geometry.top_radius * effective_radial_fraction * math.sin(angle)
         
         inlet = InletSpec(
             position=(inlet_x, inlet_y, inlet_z),
@@ -1017,6 +1052,83 @@ def create_multi_input_spec(
 # CUSTOM NETWORK GENERATION (with proper constraints in meters)
 # =============================================================================
 
+def sample_biased_points_for_tree_growth(
+    domain,
+    n_points: int,
+    seed: int = 42,
+    depth_bias: float = 0.7,
+) -> np.ndarray:
+    """
+    Sample tissue points with bias toward deeper regions for tree-like growth.
+    
+    Instead of uniform sampling, this function puts more points in the lower
+    regions of the domain to encourage the network to grow DOWNWARD like a tree
+    rather than spreading outward like a star.
+    
+    The sampling uses a depth-weighted distribution where points at the bottom
+    of the domain are more likely to be sampled than points at the top.
+    
+    Parameters
+    ----------
+    domain : DomainSpec
+        The domain to sample from (must have sample_points and get_bounds methods)
+    n_points : int
+        Total number of points to sample
+    seed : int
+        Random seed for reproducibility
+    depth_bias : float
+        How strongly to bias toward deeper regions (0.0-1.0).
+        0.0 = uniform sampling (no bias)
+        1.0 = strong bias toward bottom
+        Default: 0.7 (strong bias for tree-like growth)
+        
+    Returns
+    -------
+    np.ndarray
+        Array of sampled points with shape (n_points, 3)
+    """
+    rng = np.random.default_rng(seed)
+    
+    # Get domain bounds
+    bounds = domain.get_bounds()
+    z_min = bounds[4]  # z_min
+    z_max = bounds[5]  # z_max
+    z_range = z_max - z_min
+    
+    # Sample more points than needed, then filter with depth-weighted probability
+    oversample_factor = 3
+    candidate_points = domain.sample_points(n_points * oversample_factor, seed=seed)
+    
+    # Calculate depth-weighted probabilities for each point
+    # Points at z_min (bottom) get higher probability, points at z_max (top) get lower
+    z_values = candidate_points[:, 2]
+    
+    # Normalize z to [0, 1] where 0 = top (z_max), 1 = bottom (z_min)
+    depth_normalized = (z_max - z_values) / z_range
+    
+    # Apply bias: probability = (1 - depth_bias) + depth_bias * depth_normalized
+    # This gives uniform sampling when depth_bias=0, and strong bottom bias when depth_bias=1
+    probabilities = (1 - depth_bias) + depth_bias * depth_normalized
+    probabilities = probabilities / probabilities.sum()  # Normalize to sum to 1
+    
+    # Select points based on weighted probabilities
+    selected_indices = rng.choice(
+        len(candidate_points),
+        size=min(n_points, len(candidate_points)),
+        replace=False,
+        p=probabilities,
+    )
+    
+    selected_points = candidate_points[selected_indices]
+    
+    logger.info(f"  Biased sampling: {len(selected_points)} points with depth_bias={depth_bias}")
+    logger.info(f"  Z range: [{z_min*1000:.1f}mm, {z_max*1000:.1f}mm]")
+    logger.info(f"  Mean Z of sampled points: {selected_points[:, 2].mean()*1000:.2f}mm "
+               f"(uniform would be ~{(z_min + z_max)/2*1000:.2f}mm)")
+    
+    return selected_points
+
+
 def generate_network_from_spec(
     spec: DesignSpec,
     vessels: VesselDimensions = DEFAULT_VESSEL_DIMENSIONS,
@@ -1091,9 +1203,14 @@ def generate_network_from_spec(
         if not result.is_success():
             logger.warning(f"Failed to add outlet: {result.message}")
     
-    # Sample tissue points from domain
-    tissue_points = domain.sample_points(n_points=1500, seed=spec.seed)
-    logger.info(f"  Sampled {len(tissue_points)} tissue points from domain")
+    # Sample tissue points from domain with BIASED sampling for tree-like growth
+    # More points at the bottom encourages the network to grow DOWNWARD like a tree
+    tissue_points = sample_biased_points_for_tree_growth(
+        domain=domain,
+        n_points=2000,  # More points for deeper growth
+        seed=spec.seed,
+        depth_bias=0.7,  # Strong bias toward bottom for tree-like growth
+    )
     
     # Create custom BranchingConstraints in METERS (not millimeters)
     constraints = BranchingConstraints(
@@ -1368,10 +1485,11 @@ def generate_insert(
         "variant": variant_name,
         "units": "millimeters (mm)",
         "insert_geometry": {
-            "major_radius_mm": DEFAULT_INSERT_GEOMETRY.major_radius * 1000,
-            "minor_radius_mm": DEFAULT_INSERT_GEOMETRY.minor_radius * 1000,
+            "top_radius_mm": DEFAULT_INSERT_GEOMETRY.top_radius * 1000,
             "depth_mm": DEFAULT_INSERT_GEOMETRY.depth * 1000,
+            "aspect_ratio": DEFAULT_INSERT_GEOMETRY.depth / DEFAULT_INSERT_GEOMETRY.top_radius,
             "wall_thickness_mm": DEFAULT_INSERT_GEOMETRY.wall_thickness * 1000,
+            "shape": "standing_ellipse_with_flat_circular_top",
         },
         "vessel_dimensions": {
             "outlet_radius_mm": vessels.outlet_radius * 1000,
