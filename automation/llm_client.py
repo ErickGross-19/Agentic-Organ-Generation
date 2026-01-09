@@ -266,6 +266,9 @@ class LLMClient:
         provider: Optional[str] = None,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
+        api_base: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
     ):
         if config is None:
             config = LLMConfig()
@@ -277,6 +280,12 @@ class LLMClient:
             config.api_key = api_key
         if model is not None:
             config.model = model
+        if api_base is not None:
+            config.api_base = api_base
+        if temperature is not None:
+            config.temperature = temperature
+        if max_tokens is not None:
+            config.max_tokens = max_tokens
         
         self.config = config
         self._conversation_history: List[Message] = []

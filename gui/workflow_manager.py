@@ -204,6 +204,9 @@ class WorkflowManager:
                 provider=provider,
                 api_key=api_key,
                 model=model,
+                api_base=api_base,
+                temperature=temperature,
+                max_tokens=max_tokens,
                 verbose=kwargs.get("verbose", True),
             )
             
