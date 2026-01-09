@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Optional, Sequence, Any, List, Tuple
+from typing import Optional, Sequence, Any, List, Tuple, Dict
 import numpy as np
 import networkx as nx
 from scipy import ndimage
@@ -16,6 +16,137 @@ from .mesh.diagnostics import compute_diagnostics, compute_surface_quality
 from .analysis.connectivity import analyze_connectivity_voxel
 from .analysis.centerline import extract_centerline_graph
 from .analysis.cfd import compute_poiseuille_network
+
+
+def compute_drift_metrics(
+    original_spec: Optional[Dict[str, Any]],
+    centerline_graph: nx.Graph,
+    connectivity_info: Dict[str, Any],
+    min_channel_diameter_threshold: float = 0.0005,
+) -> Dict[str, Any]:
+    """
+    Compute drift-aware validation metrics after embedding/repair.
+    
+    Priority E: Automatically compute min channel diameter, connectivity,
+    and drift vs original network spec. Promotes failures back into
+    automation loop with actionable messages.
+    
+    Parameters
+    ----------
+    original_spec : dict, optional
+        Original network specification with expected values:
+        - expected_min_radius: float (in meters)
+        - expected_num_inlets: int
+        - expected_num_outlets: int
+        - expected_connectivity: bool (inlet-outlet connected)
+    centerline_graph : nx.Graph
+        Extracted centerline graph with radius attributes
+    connectivity_info : dict
+        Connectivity analysis results
+    min_channel_diameter_threshold : float
+        Minimum acceptable channel diameter in meters (default: 0.5mm = 0.0005m)
+    
+    Returns
+    -------
+    drift_metrics : dict
+        Dictionary containing:
+        - min_channel_diameter: float (actual minimum)
+        - min_channel_diameter_ok: bool
+        - connectivity_preserved: bool
+        - inlet_outlet_connected: bool
+        - drift_warnings: list of str (actionable messages)
+        - drift_errors: list of str (critical failures)
+        - suggested_fixes: list of str (parameter adjustments)
+    """
+    drift_warnings = []
+    drift_errors = []
+    suggested_fixes = []
+    
+    radii = [
+        float(data.get("radius", 0.0))
+        for _, data in centerline_graph.nodes(data=True)
+        if data.get("radius") is not None and data.get("radius") > 0
+    ]
+    
+    if radii:
+        min_radius = min(radii)
+        max_radius = max(radii)
+        mean_radius = np.mean(radii)
+        min_channel_diameter = 2 * min_radius
+    else:
+        min_radius = 0.0
+        max_radius = 0.0
+        mean_radius = 0.0
+        min_channel_diameter = 0.0
+        drift_warnings.append("No valid radii found in centerline graph")
+    
+    min_channel_diameter_ok = min_channel_diameter >= min_channel_diameter_threshold
+    if not min_channel_diameter_ok:
+        drift_errors.append(
+            f"Min channel diameter {min_channel_diameter*1000:.3f}mm below threshold "
+            f"{min_channel_diameter_threshold*1000:.3f}mm"
+        )
+        suggested_fixes.append(
+            f"Increase voxel_pitch or reduce smoothing_iters to preserve small channels"
+        )
+    
+    num_components = connectivity_info.get("num_components", 1)
+    connectivity_preserved = num_components == 1
+    if not connectivity_preserved:
+        drift_errors.append(f"Network split into {num_components} disconnected components")
+        suggested_fixes.append(
+            "Reduce voxel_pitch or increase dilation_iters to maintain connectivity"
+        )
+    
+    inlet_outlet_connected = connectivity_info.get("inlet_outlet_connected", True)
+    if not inlet_outlet_connected:
+        drift_errors.append("Inlet and outlet are not connected after repair")
+        suggested_fixes.append(
+            "Check that inlet/outlet ports are not sealed during embedding"
+        )
+    
+    if original_spec:
+        expected_min_radius = original_spec.get("expected_min_radius")
+        if expected_min_radius and min_radius > 0:
+            radius_drift = (expected_min_radius - min_radius) / expected_min_radius
+            if radius_drift > 0.2:
+                drift_warnings.append(
+                    f"Min radius drifted by {radius_drift*100:.1f}% "
+                    f"(expected: {expected_min_radius*1000:.3f}mm, actual: {min_radius*1000:.3f}mm)"
+                )
+                suggested_fixes.append(
+                    f"Reduce smoothing_iters or use constraint-preserving smoothing"
+                )
+        
+        expected_num_inlets = original_spec.get("expected_num_inlets")
+        expected_num_outlets = original_spec.get("expected_num_outlets")
+        if expected_num_inlets or expected_num_outlets:
+            actual_inlets = connectivity_info.get("num_inlets", 0)
+            actual_outlets = connectivity_info.get("num_outlets", 0)
+            if expected_num_inlets and actual_inlets != expected_num_inlets:
+                drift_warnings.append(
+                    f"Inlet count changed: expected {expected_num_inlets}, got {actual_inlets}"
+                )
+            if expected_num_outlets and actual_outlets != expected_num_outlets:
+                drift_warnings.append(
+                    f"Outlet count changed: expected {expected_num_outlets}, got {actual_outlets}"
+                )
+    
+    return {
+        "min_channel_diameter": min_channel_diameter,
+        "min_channel_diameter_mm": min_channel_diameter * 1000,
+        "min_channel_diameter_ok": min_channel_diameter_ok,
+        "min_radius": min_radius,
+        "max_radius": max_radius,
+        "mean_radius": mean_radius,
+        "connectivity_preserved": connectivity_preserved,
+        "num_components": num_components,
+        "inlet_outlet_connected": inlet_outlet_connected,
+        "drift_warnings": drift_warnings,
+        "drift_errors": drift_errors,
+        "suggested_fixes": suggested_fixes,
+        "validation_passed": len(drift_errors) == 0,
+    }
 
 
 def make_scaffold_shell_from_fluid(

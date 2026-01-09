@@ -57,9 +57,13 @@ class RunResult:
 def build_environment(
     object_dir: str,
     extra_env: Optional[Dict[str, str]] = None,
+    restrict_network: bool = True,
+    restrict_output_dir: bool = True,
 ) -> Dict[str, str]:
     """
     Build the environment for subprocess execution.
+    
+    Priority D: Safer agentic execution with output directory restrictions.
     
     Parameters
     ----------
@@ -67,6 +71,10 @@ def build_environment(
         Path to the object directory (set as ORGAN_AGENT_OUTPUT_DIR)
     extra_env : Dict[str, str], optional
         Additional environment variables to set
+    restrict_network : bool
+        If True, set environment variable to signal network restrictions (default: True)
+    restrict_output_dir : bool
+        If True, set environment variable to restrict file writes to output dir (default: True)
         
     Returns
     -------
@@ -76,7 +84,16 @@ def build_environment(
     env = os.environ.copy()
     
     # Set the output directory environment variable
-    env['ORGAN_AGENT_OUTPUT_DIR'] = os.path.abspath(object_dir)
+    abs_output_dir = os.path.abspath(object_dir)
+    env['ORGAN_AGENT_OUTPUT_DIR'] = abs_output_dir
+    
+    # Priority D: Set restriction flags for safer execution
+    if restrict_output_dir:
+        env['ORGAN_AGENT_RESTRICT_OUTPUT'] = '1'
+        env['ORGAN_AGENT_ALLOWED_WRITE_DIRS'] = abs_output_dir
+    
+    if restrict_network:
+        env['ORGAN_AGENT_RESTRICT_NETWORK'] = '1'
     
     # Ensure Python can find the generation and validity modules
     # by adding the repo root to PYTHONPATH
