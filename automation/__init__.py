@@ -174,6 +174,46 @@ from .schema_patch_validator import (
     suggest_patch_fixes,
 )
 
+# Streamlined Workflow Components (V5)
+from .contextual_dialogue import (
+    ContextualDialogue,
+    DialogueContext,
+    DialogueResponse,
+    DialogueIntent,
+    ConversationTurn,
+)
+from .spec_compiler import (
+    SpecCompiler,
+    CompilationResult,
+    ValidationResult,
+    TopologyTemplate,
+    compile_spec_to_script,
+)
+from .adaptation_engine import (
+    AdaptationEngine,
+    AdaptationResult,
+    GenerationResult,
+    Issue,
+    IssueCategory,
+    Suggestion,
+    SuggestionPriority,
+)
+from .output_generator import (
+    OutputGenerator,
+    ArtifactPackage,
+    ArtifactInfo,
+    OutputFormat,
+    Resolution,
+    GenerationRecipe,
+)
+from .streamlined_workflow import (
+    StreamlinedWorkflow,
+    StreamlinedState,
+    ProjectContext as StreamlinedProjectContext,
+    WorkflowResult as StreamlinedWorkflowResult,
+    run_streamlined_workflow,
+)
+
 # MOGS - MultiAgentOrgan Generation System
 from .mogs import (
     # Runner
@@ -359,4 +399,33 @@ __all__ = [
     "ObjectManifest",
     "SpecVersion",
     "ValidationReport",
+    # Streamlined Workflow Components (V5)
+    "ContextualDialogue",
+    "DialogueContext",
+    "DialogueResponse",
+    "DialogueIntent",
+    "ConversationTurn",
+    "SpecCompiler",
+    "CompilationResult",
+    "ValidationResult",
+    "TopologyTemplate",
+    "compile_spec_to_script",
+    "AdaptationEngine",
+    "AdaptationResult",
+    "GenerationResult",
+    "Issue",
+    "IssueCategory",
+    "Suggestion",
+    "SuggestionPriority",
+    "OutputGenerator",
+    "ArtifactPackage",
+    "ArtifactInfo",
+    "OutputFormat",
+    "Resolution",
+    "GenerationRecipe",
+    "StreamlinedWorkflow",
+    "StreamlinedState",
+    "StreamlinedProjectContext",
+    "StreamlinedWorkflowResult",
+    "run_streamlined_workflow",
 ]
