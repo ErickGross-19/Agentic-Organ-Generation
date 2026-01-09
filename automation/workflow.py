@@ -3621,14 +3621,15 @@ def _apply_answer_to_requirements(req: ObjectRequirements, field: str, value: An
     
     # =========================================================================
     # V3: Backbone-specific field handlers
+    # V4 FIX: Use full field paths (topology.X) to match QuestionPlanner mappings
     # =========================================================================
     
-    elif field == "backbone_axis":
+    elif field == "topology.backbone_axis" or field == "backbone_axis":
         # Set backbone axis (x, y, z, or 'longest')
         if isinstance(value, str):
             req.topology.backbone_axis = value.lower().strip()
     
-    elif field == "leg_count":
+    elif field == "topology.leg_count" or field == "leg_count":
         # Set number of parallel legs
         if isinstance(value, str):
             try:
@@ -3636,7 +3637,7 @@ def _apply_answer_to_requirements(req: ObjectRequirements, field: str, value: An
             except ValueError:
                 pass
     
-    elif field == "leg_spacing":
+    elif field == "topology.leg_spacing" or field == "leg_spacing":
         # Set leg spacing (equal or specific mm value)
         if isinstance(value, str):
             val = value.lower().strip()
@@ -3648,12 +3649,12 @@ def _apply_answer_to_requirements(req: ObjectRequirements, field: str, value: An
                 except ValueError:
                     req.topology.leg_spacing = val
     
-    elif field == "leg_connection":
+    elif field == "topology.leg_connection" or field == "leg_connection":
         # Set leg connection type (ladder, u_shape, separate)
         if isinstance(value, str):
             req.topology.leg_connection = value.lower().strip()
     
-    elif field == "port_style":
+    elif field == "topology.port_style" or field == "port_style":
         # Set port connection style (manifold or individual)
         if isinstance(value, str):
             req.topology.port_style = value.lower().strip()
