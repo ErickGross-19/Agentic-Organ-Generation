@@ -155,6 +155,20 @@ The rule engine minimizes user interaction by intelligently determining which qu
 
 The system follows a three-tier approach: infer from user text, propose sensible defaults, then ask targeted questions only when necessary.
 
+### Graphical User Interface
+
+The GUI provides a visual interface for workflow execution with integrated STL visualization:
+
+```bash
+# Launch the GUI
+python main.py
+
+# Or as a module
+python -m gui
+```
+
+The GUI features workflow selection (Single Agent or MOGS), agent configuration with secure API key storage, a three-panel layout (chat, output, STL viewer), and real-time 3D mesh visualization. For detailed GUI documentation, see [gui/README.md](gui/README.md).
+
 ### Command-Line Interface
 
 The CLI provides convenient access to all major operations:
@@ -206,8 +220,18 @@ Agentic-Organ-Generation/
 │   ├── cli.py                  # Command-line interface
 │   └── README.md               # Detailed documentation
 │
+├── gui/                        # Part D: Graphical User Interface
+│   ├── main_window.py          # Primary application window
+│   ├── workflow_manager.py     # Workflow orchestration
+│   ├── stl_viewer.py           # 3D STL visualization
+│   ├── agent_config.py         # LLM configuration panel
+│   ├── security.py             # Encrypted API key storage
+│   └── README.md               # Detailed documentation
+│
 ├── examples/                   # Example scripts
 ├── tests/                      # Test suites
+├── main.py                     # GUI entry point
+├── build.spec                  # PyInstaller configuration
 ├── README.md                   # This file
 ├── requirements.txt            # Dependencies
 └── setup.py                    # Package setup
