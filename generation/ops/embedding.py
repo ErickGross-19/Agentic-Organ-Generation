@@ -315,17 +315,37 @@ def embed_tree_as_negative_space(
     tree_center = (tree_min + tree_max) / 2
     tree_size = tree_max - tree_min
     
+    # Priority A: Read .units.json sidecar file if it exists (trust it over heuristics)
+    sidecar_path = Path(str(tree_stl_path) + ".units.json")
+    sidecar_units = None
+    if sidecar_path.exists():
+        import json
+        try:
+            with open(sidecar_path, 'r') as f:
+                sidecar_data = json.load(f)
+            sidecar_units = sidecar_data.get("units")
+            if sidecar_units:
+                print(f"Found .units.json sidecar: STL units = {sidecar_units}")
+        except (json.JSONDecodeError, IOError) as e:
+            print(f"Warning: Could not read sidecar file {sidecar_path}: {e}")
+    
     if stl_units == "auto":
-        max_dimension = np.max(tree_size)
-        if max_dimension < 1.0:
-            stl_units = "m"
-            print(f"Auto-detected STL units: meters (max dimension: {max_dimension:.4f}m)")
-        elif max_dimension < 1000.0:
-            stl_units = "mm"
-            print(f"Auto-detected STL units: millimeters (max dimension: {max_dimension:.1f}mm)")
+        # If sidecar file exists and has units, trust it over heuristics
+        if sidecar_units:
+            stl_units = sidecar_units
+            print(f"Using units from sidecar file: {stl_units}")
         else:
-            stl_units = "mm"
-            print(f"Warning: STL max dimension {max_dimension:.1f} is unusually large. Assuming millimeters.")
+            # Fall back to heuristics based on mesh size
+            max_dimension = np.max(tree_size)
+            if max_dimension < 1.0:
+                stl_units = "m"
+                print(f"Auto-detected STL units: meters (max dimension: {max_dimension:.4f}m)")
+            elif max_dimension < 1000.0:
+                stl_units = "mm"
+                print(f"Auto-detected STL units: millimeters (max dimension: {max_dimension:.1f}mm)")
+            else:
+                stl_units = "mm"
+                print(f"Warning: STL max dimension {max_dimension:.1f} is unusually large. Assuming millimeters.")
     
     if stl_units != geometry_units:
         from ..utils.units import convert_length

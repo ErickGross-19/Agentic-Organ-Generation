@@ -322,15 +322,21 @@ def validate_and_repair_geometry(
     dilation_iters: int = 3,
     smoothing_method: str = "taubin",
     smoothing_iters: int = 10,
+    max_voxels: float = 3e7,
 ):
     """
     Validate and repair geometry from STL file with auto voxel pitch selection.
     
     This is a convenience wrapper around voxel_remesh_and_smooth that:
     1. Loads the mesh from file
-    2. Auto-selects voxel pitch if not provided (D2: Auto-pitch selection)
-    3. Applies voxel remeshing and smoothing
-    4. Optionally saves a report
+    2. Reads .units.json sidecar file if present (Priority A: unit-aware)
+    3. Auto-selects voxel pitch if not provided based on mesh size
+    4. Applies voxel remeshing and smoothing with voxel budget control
+    5. Optionally saves a report
+    
+    Units: All spatial parameters are in METERS (SI units) internally.
+    The function auto-detects mesh units from .units.json sidecar files
+    or uses heuristics based on mesh size.
     
     Parameters
     ----------
@@ -348,6 +354,8 @@ def validate_and_repair_geometry(
         "taubin" or "laplacian" (default: "taubin")
     smoothing_iters : int
         Number of smoothing iterations (default: 10)
+    max_voxels : float
+        Maximum voxel count for budget control (default: 3e7)
         
     Returns
     -------
@@ -358,17 +366,66 @@ def validate_and_repair_geometry(
     """
     import trimesh
     import numpy as np
+    import json
+    from pathlib import Path
+    
+    input_path = Path(input_path)
     
     # Load mesh
-    mesh_orig = trimesh.load(input_path, force="mesh")
+    mesh_orig = trimesh.load(str(input_path), force="mesh")
     
-    # D2: Auto-select voxel pitch if not provided
-    if voxel_pitch is None:
+    # Priority A: Read .units.json sidecar file if it exists
+    sidecar_path = Path(str(input_path) + ".units.json")
+    mesh_units = None
+    if sidecar_path.exists():
+        try:
+            with open(sidecar_path, 'r') as f:
+                sidecar_data = json.load(f)
+            mesh_units = sidecar_data.get("units")
+            if mesh_units:
+                print(f"Found .units.json sidecar: mesh units = {mesh_units}")
+        except (json.JSONDecodeError, IOError) as e:
+            print(f"Warning: Could not read sidecar file {sidecar_path}: {e}")
+    
+    # Auto-detect units if no sidecar file
+    extents = mesh_orig.bounding_box.extents.astype(float)
+    Lmax = float(np.max(extents))
+    
+    if mesh_units is None:
+        # Heuristic: if max dimension < 1.0, assume meters; otherwise mm
+        if Lmax < 1.0:
+            mesh_units = "m"
+            print(f"Auto-detected mesh units: meters (max dimension: {Lmax:.4f}m)")
+        else:
+            mesh_units = "mm"
+            print(f"Auto-detected mesh units: millimeters (max dimension: {Lmax:.1f}mm)")
+    
+    # Scale mesh to meters if needed
+    if mesh_units == "mm":
+        mesh_orig.apply_scale(0.001)  # mm to m
         extents = mesh_orig.bounding_box.extents.astype(float)
         Lmax = float(np.max(extents))
+        print(f"Scaled mesh from mm to meters (new Lmax: {Lmax:.6f}m)")
+    elif mesh_units == "cm":
+        mesh_orig.apply_scale(0.01)  # cm to m
+        extents = mesh_orig.bounding_box.extents.astype(float)
+        Lmax = float(np.max(extents))
+        print(f"Scaled mesh from cm to meters (new Lmax: {Lmax:.6f}m)")
+    
+    # Auto-select voxel pitch if not provided
+    if voxel_pitch is None:
         target_resolution = 256
         voxel_pitch = Lmax / target_resolution
         print(f"Auto-selected voxel_pitch = {voxel_pitch:.6f}m for {target_resolution} voxel resolution")
+    
+    # Priority C: Voxel budget check
+    grid_shape = np.ceil(extents / voxel_pitch).astype(int)
+    total_voxels = int(np.prod(grid_shape))
+    if max_voxels is not None and total_voxels > max_voxels:
+        suggested_pitch = (np.prod(extents) / max_voxels) ** (1/3)
+        print(f"WARNING: Voxel budget exceeded ({total_voxels:,} > {max_voxels:,.0f})")
+        print(f"  Auto-adjusting pitch from {voxel_pitch:.6f}m to {suggested_pitch:.6f}m")
+        voxel_pitch = suggested_pitch
     
     # Apply voxel remeshing
     use_taubin = (smoothing_method.lower() == "taubin")

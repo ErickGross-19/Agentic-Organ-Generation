@@ -113,21 +113,44 @@ def grow_branch(
     
     warnings = []
     if check_collisions:
-        spatial_index = network.get_spatial_index()
-        nearby = spatial_index.query_nearby_segments(
-            new_position,
-            target_radius * 3.0,
+        from .collision import check_segment_collision_swept, check_domain_boundary_clearance
+        
+        parent_pos = np.array([
+            parent_node.position.x,
+            parent_node.position.y,
+            parent_node.position.z,
+        ])
+        new_pos = np.array([
+            new_position.x,
+            new_position.y,
+            new_position.z,
+        ])
+        
+        has_collision, collision_details = check_segment_collision_swept(
+            network,
+            new_seg_start=parent_pos,
+            new_seg_end=new_pos,
+            new_seg_radius=target_radius,
+            exclude_node_ids=[from_node_id],
+            min_clearance=0.0005,
         )
         
-        for seg in nearby:
-            if seg.start_node_id == from_node_id or seg.end_node_id == from_node_id:
-                continue
-            
-            dist = spatial_index._point_to_segment_distance(new_position, seg)
-            min_clearance = target_radius + seg.geometry.mean_radius() + 0.0005
-            
-            if dist < min_clearance:
-                warnings.append(f"Near collision with segment {seg.id} (distance: {dist:.4f}m)")
+        for detail in collision_details:
+            warnings.append(
+                f"Near collision with segment {detail['segment_id']} "
+                f"(clearance: {detail['clearance']:.4f}m, required: {detail['min_required']:.4f}m)"
+            )
+        
+        if hasattr(network, 'domain') and network.domain is not None:
+            fits, margin = check_domain_boundary_clearance(
+                network.domain,
+                parent_pos,
+                new_pos,
+                target_radius,
+                wall_thickness=0.0003,
+            )
+            if not fits:
+                warnings.append(f"Tube may extend outside domain (margin: {margin:.4f}m)")
     
     new_node_id = network.id_gen.next_id()
     new_node = Node(
@@ -306,21 +329,44 @@ def grow_to_point(
     
     warnings = []
     if check_collisions:
-        spatial_index = network.get_spatial_index()
-        nearby = spatial_index.query_nearby_segments(
-            target_point,
-            target_radius * 3.0,
+        from .collision import check_segment_collision_swept, check_domain_boundary_clearance
+        
+        parent_pos = np.array([
+            parent_node.position.x,
+            parent_node.position.y,
+            parent_node.position.z,
+        ])
+        target_pos = np.array([
+            target_point.x,
+            target_point.y,
+            target_point.z,
+        ])
+        
+        has_collision, collision_details = check_segment_collision_swept(
+            network,
+            new_seg_start=parent_pos,
+            new_seg_end=target_pos,
+            new_seg_radius=target_radius,
+            exclude_node_ids=[from_node_id],
+            min_clearance=0.001,
         )
         
-        for seg in nearby:
-            if seg.start_node_id == from_node_id or seg.end_node_id == from_node_id:
-                continue
-            
-            dist = spatial_index._point_to_segment_distance(target_point, seg)
-            min_clearance = target_radius + seg.geometry.mean_radius() + 0.001
-            
-            if dist < min_clearance:
-                warnings.append(f"Near collision with segment {seg.id} (distance: {dist:.4f})")
+        for detail in collision_details:
+            warnings.append(
+                f"Near collision with segment {detail['segment_id']} "
+                f"(clearance: {detail['clearance']:.4f}m, required: {detail['min_required']:.4f}m)"
+            )
+        
+        if hasattr(network, 'domain') and network.domain is not None:
+            fits, margin = check_domain_boundary_clearance(
+                network.domain,
+                parent_pos,
+                target_pos,
+                target_radius,
+                wall_thickness=0.0003,
+            )
+            if not fits:
+                warnings.append(f"Tube may extend outside domain (margin: {margin:.4f}m)")
     
     new_node_id = network.id_gen.next_id()
     new_node = Node(
