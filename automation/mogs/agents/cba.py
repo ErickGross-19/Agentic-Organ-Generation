@@ -250,9 +250,13 @@ GENERATION_DIR = OUTPUT_DIR / "generation"
 ANALYSIS_DIR = OUTPUT_DIR / "analysis"
 ANALYSIS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Import validation library
-from validity import run_pre_embedding_validation
-from validity.mesh import load_mesh, compute_mesh_stats
+# Import validation library (optional - may not be available)
+try:
+    from validity import run_pre_embedding_validation
+    from validity.mesh import compute_mesh_stats
+except ImportError:
+    run_pre_embedding_validation = None
+    compute_mesh_stats = None
 
 
 def load_network():
@@ -262,7 +266,7 @@ def load_network():
         return json.load(f)
 
 
-def load_mesh():
+def load_raw_mesh():
     """Load the raw void mesh."""
     mesh_path = GENERATION_DIR / "mesh_raw_void.stl"
     try:
@@ -350,7 +354,7 @@ def main():
     network_data = load_network()
     
     print("Loading mesh...")
-    mesh = load_mesh()
+    mesh = load_raw_mesh()
     
     print("Computing metrics...")
     metrics = compute_metrics(network_data, mesh)
