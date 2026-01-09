@@ -76,17 +76,14 @@ from dataclasses import dataclass, asdict
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from generation import (
-    design_from_spec,
     create_network,
     add_inlet,
     add_outlet,
     space_colonization_step,
     VascularNetwork,
-    BoxDomain,
 )
 from generation.specs.design_spec import (
     DesignSpec,
-    BoxSpec,
     EllipsoidSpec,
     TreeSpec,
     InletSpec,
@@ -94,7 +91,7 @@ from generation.specs.design_spec import (
     ColonizationSpec,
 )
 from generation.specs.compile import compile_domain
-from generation.adapters.mesh_adapter import to_trimesh, export_stl
+from generation.adapters.mesh_adapter import to_trimesh
 from generation.ops.embedding import embed_tree_as_negative_space
 from generation.ops.space_colonization import SpaceColonizationParams
 from generation.rules.constraints import BranchingConstraints
