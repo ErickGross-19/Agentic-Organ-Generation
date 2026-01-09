@@ -233,7 +233,7 @@ class WorkflowManager:
     def _run_single_agent_workflow(self):
         """Run Single Agent Organ Generator workflow."""
         try:
-            from automation.workflow import SingleAgentOrganGeneratorV3
+            from automation.workflow import SingleAgentOrganGeneratorV4
             from automation.execution_modes import parse_execution_mode
             
             self._send_message("system", "Starting Single Agent Organ Generator V4...")
@@ -243,7 +243,7 @@ class WorkflowManager:
             
             os.makedirs(self._config.output_dir, exist_ok=True)
             
-            workflow = SingleAgentOrganGeneratorV3(
+            workflow = SingleAgentOrganGeneratorV4(
                 agent=self._agent,
                 base_output_dir=self._config.output_dir,
                 verbose=self._config.verbose,
