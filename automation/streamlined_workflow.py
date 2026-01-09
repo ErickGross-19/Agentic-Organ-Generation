@@ -577,7 +577,12 @@ class StreamlinedWorkflow:
         )
         
         # Tree spec
+        # Note: "backbone" is not a valid TopologyKind in TreeSpec, so we map it to "tree"
+        # The SpecCompiler has a separate BACKBONE template for code generation
         topology_kind = values.get('topology_kind', 'tree')
+        valid_topology_kinds = ('path', 'tree', 'loop', 'multi_tree')
+        if topology_kind not in valid_topology_kinds:
+            topology_kind = 'tree'  # Default to tree for unsupported topologies
         
         tree = TreeSpec(
             inlets=inlets,
