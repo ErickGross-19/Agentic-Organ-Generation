@@ -953,6 +953,9 @@ def create_agent(
     output_dir: str = "./output",
     execution_mode: Optional[str] = None,
     timeout_seconds: float = 300.0,
+    api_base: Optional[str] = None,
+    temperature: float = 0.7,
+    max_tokens: int = 4096,
     **kwargs,
 ) -> AgentRunner:
     """
@@ -977,6 +980,12 @@ def create_agent(
         - "auto_run": Generate script and run automatically
     timeout_seconds : float
         Timeout for script execution in seconds (default: 300)
+    api_base : str, optional
+        Custom API base URL (required for local provider)
+    temperature : float
+        Sampling temperature (0.0-1.0, default: 0.7)
+    max_tokens : int
+        Maximum tokens in response (default: 4096)
     **kwargs
         Additional arguments for AgentConfig
         
@@ -1018,6 +1027,9 @@ def create_agent(
         provider=provider,
         api_key=api_key,
         model=model,
+        api_base=api_base,
+        temperature=temperature,
+        max_tokens=max_tokens,
     )
     
     # Parse execution mode if provided as string

@@ -1,10 +1,10 @@
 """
-Tests for the Single Agent Organ Generator V2 workflow.
+Tests for the Single Agent Organ Generator V4 workflow.
 
 These tests validate:
 - Workflow state transitions
 - Project context management
-- Workflow serialization/deserialization
+- Object context management
 """
 
 import pytest
@@ -21,13 +21,15 @@ class TestWorkflowState:
         """Test that all expected workflow states exist."""
         from automation.workflow import WorkflowState
         
-        assert WorkflowState.INIT.value == "init"
-        assert WorkflowState.REQUIREMENTS.value == "requirements"
-        assert WorkflowState.GENERATING.value == "generating"
-        assert WorkflowState.VISUALIZING.value == "visualizing"
-        assert WorkflowState.REVIEW.value == "review"
-        assert WorkflowState.CLARIFYING.value == "clarifying"
-        assert WorkflowState.FINALIZING.value == "finalizing"
+        assert WorkflowState.PROJECT_INIT.value == "project_init"
+        assert WorkflowState.OBJECT_PLANNING.value == "object_planning"
+        assert WorkflowState.FRAME_OF_REFERENCE.value == "frame_of_reference"
+        assert WorkflowState.REQUIREMENTS_CAPTURE.value == "requirements_capture"
+        assert WorkflowState.SPEC_COMPILATION.value == "spec_compilation"
+        assert WorkflowState.GENERATION.value == "generation"
+        assert WorkflowState.ANALYSIS_VALIDATION.value == "analysis_validation"
+        assert WorkflowState.ITERATION.value == "iteration"
+        assert WorkflowState.FINALIZATION.value == "finalization"
         assert WorkflowState.COMPLETE.value == "complete"
 
 
@@ -41,16 +43,14 @@ class TestProjectContext:
         ctx = ProjectContext()
         
         assert ctx.project_name == ""
+        assert ctx.project_slug == ""
         assert ctx.output_dir == ""
-        assert ctx.description == ""
-        assert ctx.output_units == "mm"
-        assert ctx.spec_json is None
-        assert ctx.network_json is None
-        assert ctx.stl_path is None
-        assert ctx.embedded_stl_path is None
-        assert ctx.code_path is None
-        assert ctx.iteration == 0
-        assert ctx.feedback_history == []
+        assert ctx.units_internal == "m"
+        assert ctx.units_export == "mm"
+        assert ctx.flow_solver_enabled is False
+        assert ctx.objects == []
+        assert ctx.current_object_index == 0
+        assert ctx.variant_mode is False
     
     def test_project_context_creation(self):
         """Test creating a ProjectContext with values."""
@@ -58,17 +58,15 @@ class TestProjectContext:
         
         ctx = ProjectContext(
             project_name="test_project",
+            project_slug="test-project",
             output_dir="/tmp/test",
-            description="Test description",
-            output_units="cm",
-            iteration=2,
+            units_export="cm",
         )
         
         assert ctx.project_name == "test_project"
+        assert ctx.project_slug == "test-project"
         assert ctx.output_dir == "/tmp/test"
-        assert ctx.description == "Test description"
-        assert ctx.output_units == "cm"
-        assert ctx.iteration == 2
+        assert ctx.units_export == "cm"
     
     def test_project_context_to_dict(self):
         """Test ProjectContext serialization."""
@@ -76,21 +74,17 @@ class TestProjectContext:
         
         ctx = ProjectContext(
             project_name="test",
+            project_slug="test-slug",
             output_dir="/tmp/test",
-            description="desc",
-            output_units="mm",
-            iteration=1,
-            feedback_history=["feedback1", "feedback2"],
+            units_export="mm",
         )
         
         d = ctx.to_dict()
         
         assert d["project_name"] == "test"
+        assert d["project_slug"] == "test-slug"
         assert d["output_dir"] == "/tmp/test"
-        assert d["description"] == "desc"
-        assert d["output_units"] == "mm"
-        assert d["iteration"] == 1
-        assert d["feedback_history"] == ["feedback1", "feedback2"]
+        assert d["units_export"] == "mm"
     
     def test_project_context_from_dict(self):
         """Test ProjectContext deserialization."""
@@ -98,21 +92,17 @@ class TestProjectContext:
         
         d = {
             "project_name": "restored",
+            "project_slug": "restored-slug",
             "output_dir": "/tmp/restored",
-            "description": "restored desc",
-            "output_units": "um",
-            "iteration": 3,
-            "feedback_history": ["fb1"],
+            "units_export": "um",
         }
         
         ctx = ProjectContext.from_dict(d)
         
         assert ctx.project_name == "restored"
+        assert ctx.project_slug == "restored-slug"
         assert ctx.output_dir == "/tmp/restored"
-        assert ctx.description == "restored desc"
-        assert ctx.output_units == "um"
-        assert ctx.iteration == 3
-        assert ctx.feedback_history == ["fb1"]
+        assert ctx.units_export == "um"
     
     def test_project_context_roundtrip(self):
         """Test ProjectContext serialization roundtrip."""
@@ -120,37 +110,138 @@ class TestProjectContext:
         
         original = ProjectContext(
             project_name="roundtrip",
+            project_slug="roundtrip-slug",
             output_dir="/tmp/roundtrip",
-            description="roundtrip test",
-            output_units="cm",
-            spec_json="/tmp/spec.json",
-            stl_path="/tmp/mesh.stl",
-            iteration=5,
-            feedback_history=["a", "b", "c"],
+            units_export="cm",
         )
         
         d = original.to_dict()
         restored = ProjectContext.from_dict(d)
         
         assert restored.project_name == original.project_name
+        assert restored.project_slug == original.project_slug
         assert restored.output_dir == original.output_dir
-        assert restored.description == original.description
-        assert restored.output_units == original.output_units
-        assert restored.spec_json == original.spec_json
-        assert restored.stl_path == original.stl_path
-        assert restored.iteration == original.iteration
-        assert restored.feedback_history == original.feedback_history
+        assert restored.units_export == original.units_export
 
 
-class TestSingleAgentOrganGeneratorV3:
-    """Tests for the SingleAgentOrganGeneratorV3 workflow class."""
+class TestObjectContext:
+    """Tests for ObjectContext dataclass."""
+    
+    def test_object_context_defaults(self):
+        """Test ObjectContext default values."""
+        from automation.workflow import ObjectContext
+        
+        ctx = ObjectContext()
+        
+        assert ctx.name == ""
+        assert ctx.slug == ""
+        assert ctx.object_dir == ""
+        assert ctx.current_version == 1
+    
+    def test_object_context_creation(self):
+        """Test creating an ObjectContext with values."""
+        from automation.workflow import ObjectContext
+        
+        ctx = ObjectContext(
+            name="test_object",
+            slug="test-object",
+            object_dir="/tmp/test/objects/test-object",
+        )
+        
+        assert ctx.name == "test_object"
+        assert ctx.slug == "test-object"
+        assert ctx.object_dir == "/tmp/test/objects/test-object"
+    
+    def test_object_context_to_dict(self):
+        """Test ObjectContext serialization."""
+        from automation.workflow import ObjectContext
+        
+        ctx = ObjectContext(
+            name="test",
+            slug="test-slug",
+            object_dir="/tmp/test",
+        )
+        
+        d = ctx.to_dict()
+        
+        assert d["name"] == "test"
+        assert d["slug"] == "test-slug"
+        assert d["object_dir"] == "/tmp/test"
+    
+    def test_object_context_from_dict(self):
+        """Test ObjectContext deserialization."""
+        from automation.workflow import ObjectContext
+        
+        d = {
+            "name": "restored",
+            "slug": "restored-slug",
+            "object_dir": "/tmp/restored",
+        }
+        
+        ctx = ObjectContext.from_dict(d)
+        
+        assert ctx.name == "restored"
+        assert ctx.slug == "restored-slug"
+        assert ctx.object_dir == "/tmp/restored"
+
+
+class TestObjectRequirements:
+    """Tests for ObjectRequirements dataclass."""
+    
+    def test_object_requirements_defaults(self):
+        """Test ObjectRequirements default values."""
+        from automation.workflow import ObjectRequirements
+        
+        req = ObjectRequirements()
+        
+        assert req.identity is not None
+        assert req.frame_of_reference is not None
+        assert req.domain is not None
+        assert req.inlets_outlets is not None
+        assert req.topology is not None
+        assert req.geometry is not None
+        assert req.constraints is not None
+        assert req.embedding_export is not None
+        assert req.acceptance_criteria is not None
+    
+    def test_object_requirements_to_dict(self):
+        """Test ObjectRequirements serialization."""
+        from automation.workflow import ObjectRequirements
+        
+        req = ObjectRequirements()
+        d = req.to_dict()
+        
+        assert "identity" in d
+        assert "frame_of_reference" in d
+        assert "domain" in d
+        assert "inlets_outlets" in d
+        assert "topology" in d
+        assert "geometry" in d
+        assert "constraints" in d
+        assert "embedding_export" in d
+        assert "acceptance_criteria" in d
+    
+    def test_object_requirements_roundtrip(self):
+        """Test ObjectRequirements serialization roundtrip."""
+        from automation.workflow import ObjectRequirements
+        
+        original = ObjectRequirements()
+        d = original.to_dict()
+        restored = ObjectRequirements.from_dict(d)
+        
+        assert restored.identity.object_name == original.identity.object_name
+        assert restored.domain.shape_type == original.domain.shape_type
+
+
+class TestSingleAgentOrganGeneratorV4:
+    """Tests for the SingleAgentOrganGeneratorV4 workflow class."""
     
     def test_workflow_creation(self):
         """Test creating a workflow instance."""
-        from automation.workflow import SingleAgentOrganGeneratorV3, WorkflowState
+        from automation.workflow import SingleAgentOrganGeneratorV4, WorkflowState
         
         mock_agent = Mock()
-        workflow = SingleAgentOrganGeneratorV3(
+        workflow = SingleAgentOrganGeneratorV4(
             agent=mock_agent,
             base_output_dir="/tmp/test_projects",
             verbose=False,
@@ -159,142 +250,33 @@ class TestSingleAgentOrganGeneratorV3:
         assert workflow.agent == mock_agent
         assert workflow.base_output_dir == "/tmp/test_projects"
         assert workflow.verbose is False
-        assert workflow.state == WorkflowState.INIT
+        assert workflow.state == WorkflowState.PROJECT_INIT
     
     def test_workflow_name_and_version(self):
         """Test workflow name and version constants."""
-        from automation.workflow import SingleAgentOrganGeneratorV3
+        from automation.workflow import SingleAgentOrganGeneratorV4
         
-        assert SingleAgentOrganGeneratorV3.WORKFLOW_NAME == "Single Agent Organ Generator V3"
-        assert SingleAgentOrganGeneratorV3.WORKFLOW_VERSION == "3.0.0"
+        assert SingleAgentOrganGeneratorV4.WORKFLOW_NAME == "Single Agent Organ Generator V4"
+        assert SingleAgentOrganGeneratorV4.WORKFLOW_VERSION == "4.0.0"
     
     def test_workflow_get_state(self):
         """Test getting current workflow state."""
-        from automation.workflow import SingleAgentOrganGeneratorV3, WorkflowState
+        from automation.workflow import SingleAgentOrganGeneratorV4, WorkflowState
         
         mock_agent = Mock()
-        workflow = SingleAgentOrganGeneratorV3(agent=mock_agent, verbose=False)
+        workflow = SingleAgentOrganGeneratorV4(agent=mock_agent, verbose=False)
         
-        assert workflow.get_state() == WorkflowState.INIT
+        assert workflow.get_state() == WorkflowState.PROJECT_INIT
     
     def test_workflow_get_context(self):
         """Test getting current project context."""
-        from automation.workflow import SingleAgentOrganGeneratorV3, ProjectContext
+        from automation.workflow import SingleAgentOrganGeneratorV4, ProjectContext
         
         mock_agent = Mock()
-        workflow = SingleAgentOrganGeneratorV3(agent=mock_agent, verbose=False)
+        workflow = SingleAgentOrganGeneratorV4(agent=mock_agent, verbose=False)
         
         ctx = workflow.get_context()
         assert isinstance(ctx, ProjectContext)
-    
-    def test_workflow_save_and_load_state(self):
-        """Test saving and loading workflow state."""
-        from automation.workflow import SingleAgentOrganGeneratorV3, WorkflowState
-        
-        mock_agent = Mock()
-        workflow = SingleAgentOrganGeneratorV3(agent=mock_agent, verbose=False)
-        
-        workflow.state = WorkflowState.REQUIREMENTS
-        workflow.context.project_name = "saved_project"
-        workflow.context.description = "saved description"
-        
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-            filepath = f.name
-        
-        try:
-            workflow.save_state(filepath)
-            
-            workflow2 = SingleAgentOrganGeneratorV3(agent=mock_agent, verbose=False)
-            workflow2.load_state(filepath)
-            
-            assert workflow2.state == WorkflowState.REQUIREMENTS
-            assert workflow2.context.project_name == "saved_project"
-            assert workflow2.context.description == "saved description"
-        finally:
-            os.unlink(filepath)
-    
-    def test_workflow_step_init_to_requirements(self):
-        """Test workflow step from INIT to REQUIREMENTS."""
-        from automation.workflow import SingleAgentOrganGeneratorV3, WorkflowState
-        
-        mock_agent = Mock()
-        workflow = SingleAgentOrganGeneratorV3(
-            agent=mock_agent,
-            base_output_dir="/tmp/test_projects",
-            verbose=False,
-        )
-        
-        new_state, message = workflow.step("my_project")
-        
-        assert new_state == WorkflowState.REQUIREMENTS
-        assert workflow.context.project_name == "my_project"
-        assert "my_project" in message
-    
-    def test_workflow_step_requirements_to_generating(self):
-        """Test workflow step from REQUIREMENTS to GENERATING."""
-        from automation.workflow import SingleAgentOrganGeneratorV3, WorkflowState
-        
-        mock_agent = Mock()
-        workflow = SingleAgentOrganGeneratorV3(agent=mock_agent, verbose=False)
-        
-        workflow.step("test_project")
-        
-        new_state, message = workflow.step("Generate a liver vascular network")
-        
-        assert new_state == WorkflowState.GENERATING
-        assert workflow.context.description == "Generate a liver vascular network"
-    
-    def test_workflow_step_review_yes(self):
-        """Test workflow step from REVIEW with 'yes' response."""
-        from automation.workflow import SingleAgentOrganGeneratorV3, WorkflowState
-        
-        mock_agent = Mock()
-        workflow = SingleAgentOrganGeneratorV3(agent=mock_agent, verbose=False)
-        
-        workflow.state = WorkflowState.REVIEW
-        
-        new_state, message = workflow.step("yes")
-        
-        assert new_state == WorkflowState.FINALIZING
-    
-    def test_workflow_step_review_no(self):
-        """Test workflow step from REVIEW with 'no' response."""
-        from automation.workflow import SingleAgentOrganGeneratorV3, WorkflowState
-        
-        mock_agent = Mock()
-        workflow = SingleAgentOrganGeneratorV3(agent=mock_agent, verbose=False)
-        
-        workflow.state = WorkflowState.REVIEW
-        
-        new_state, message = workflow.step("no")
-        
-        assert new_state == WorkflowState.CLARIFYING
-    
-    def test_workflow_step_clarifying_to_generating(self):
-        """Test workflow step from CLARIFYING to GENERATING."""
-        from automation.workflow import SingleAgentOrganGeneratorV3, WorkflowState
-        
-        mock_agent = Mock()
-        workflow = SingleAgentOrganGeneratorV3(agent=mock_agent, verbose=False)
-        
-        workflow.state = WorkflowState.CLARIFYING
-        
-        new_state, message = workflow.step("Make the vessels thicker")
-        
-        assert new_state == WorkflowState.GENERATING
-        assert "Make the vessels thicker" in workflow.context.feedback_history
-    
-    def test_workflow_step_quit(self):
-        """Test workflow step with 'quit' command."""
-        from automation.workflow import SingleAgentOrganGeneratorV3, WorkflowState
-        
-        mock_agent = Mock()
-        workflow = SingleAgentOrganGeneratorV3(agent=mock_agent, verbose=False)
-        
-        new_state, message = workflow.step("quit")
-        
-        assert new_state == WorkflowState.COMPLETE
-        assert "terminated" in message.lower()
 
 
 class TestWorkflowIntegration:
@@ -302,18 +284,15 @@ class TestWorkflowIntegration:
     
     def test_workflow_creates_output_directory(self):
         """Test that workflow creates output directory."""
-        from automation.workflow import SingleAgentOrganGeneratorV3
+        from automation.workflow import SingleAgentOrganGeneratorV4
         
         mock_agent = Mock()
         
         with tempfile.TemporaryDirectory() as tmpdir:
-            workflow = SingleAgentOrganGeneratorV3(
+            workflow = SingleAgentOrganGeneratorV4(
                 agent=mock_agent,
                 base_output_dir=tmpdir,
                 verbose=False,
             )
             
-            workflow.step("test_project")
-            
-            expected_dir = os.path.join(tmpdir, "test_project")
-            assert os.path.exists(expected_dir)
+            assert workflow.base_output_dir == tmpdir

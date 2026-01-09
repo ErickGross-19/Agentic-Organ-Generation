@@ -186,7 +186,16 @@ class STLViewer(ttk.Frame):
             return False
         
         try:
-            self._mesh = trimesh.load(file_path)
+            loaded = trimesh.load(file_path)
+            
+            if isinstance(loaded, trimesh.Scene):
+                if len(loaded.geometry) == 0:
+                    messagebox.showerror("Error", "STL file contains no geometry")
+                    return False
+                self._mesh = loaded.dump(concatenate=True)
+            else:
+                self._mesh = loaded
+            
             self._file_path = file_path
             
             self._update_display()

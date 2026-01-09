@@ -436,6 +436,9 @@ class MainWindow:
             provider=self._agent_config.provider,
             api_key=self._agent_config.api_key,
             model=self._agent_config.model,
+            api_base=self._agent_config.api_base,
+            temperature=self._agent_config.temperature,
+            max_tokens=self._agent_config.max_tokens,
         ):
             return
         
@@ -554,7 +557,7 @@ class MainWindow:
             prefix += f"{msg_type}: "
         
         self.chat_text.insert("end", prefix, msg_type)
-        self.chat_text.insert("end", content + "\n")
+        self.chat_text.insert("end", content + "\n", msg_type)
         self.chat_text.see("end")
         self.chat_text.config(state="disabled")
     
@@ -641,9 +644,10 @@ class MainWindow:
     
     def _show_about(self):
         """Show about dialog."""
+        from gui import __version__
         messagebox.showinfo(
             "About Organ Generator",
-            "Organ Generator v1.0\n\n"
+            f"Organ Generator v{__version__}\n\n"
             "A GUI for the Agentic Organ Generation system.\n\n"
             "Provides workflow selection, agent configuration,\n"
             "and 3D STL visualization.\n\n"
