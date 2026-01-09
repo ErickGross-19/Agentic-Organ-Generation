@@ -2000,6 +2000,7 @@ class IntentParser:
     
     NUMERIC_PATTERNS = {
         "box_size": r"box\s+(\d+(?:\.\d+)?)\s*(?:x|by)\s*(\d+(?:\.\d+)?)\s*(?:x|by)\s*(\d+(?:\.\d+)?)\s*(cm|mm|m)?",
+        "dim_triplet": r"(\d+(?:\.\d+)?)\s*(?:x|by)\s*(\d+(?:\.\d+)?)\s*(?:x|by)\s*(\d+(?:\.\d+)?)\s*(cm|mm|m)?",
         "diameter": r"(?:diameter|channel)\s*(?:of\s+)?(\d+(?:\.\d+)?)\s*(mm|cm|um)?",
         "radius": r"radius\s*(?:of\s+)?(\d+(?:\.\d+)?)\s*(mm|cm|um)?",
         "count": r"(\d+)\s*(?:inlets?|outlets?|terminals?|branches?)",
@@ -2276,14 +2277,36 @@ class RuleEngine:
                     ))
         
         if parser.has_implicit_io() and not req.inlets_outlets.inlets:
+            topology_kind = req.topology.topology_kind or "tree"
+            
             result.ambiguity_flags.append(RuleFlag(
-                rule_id="B3_implicit_io",
+                rule_id="B3_implicit_io_inlets",
                 family="B",
-                field="inlets_outlets",
-                message="Perfusion/flow mentioned but I/O geometry not specified",
+                field="inlets_outlets.inlets",
+                message="Perfusion/flow mentioned but inlet count not specified",
                 severity="required",
                 rework_cost="high"
             ))
+            
+            if topology_kind in ("path", "backbone", "loop") and not req.inlets_outlets.outlets:
+                result.ambiguity_flags.append(RuleFlag(
+                    rule_id="B3_implicit_io_outlets",
+                    family="B",
+                    field="inlets_outlets.outlets",
+                    message=f"Perfusion/flow mentioned but outlet count not specified ({topology_kind.upper()} requires outlets)",
+                    severity="required",
+                    rework_cost="high"
+                ))
+            
+            if not req.inlets_outlets.placement_rule:
+                result.ambiguity_flags.append(RuleFlag(
+                    rule_id="B3_implicit_io_placement",
+                    family="B",
+                    field="inlets_outlets.placement_rule",
+                    message="Perfusion/flow mentioned but inlet placement not specified",
+                    severity="required",
+                    rework_cost="high"
+                ))
         
         if parser.has_symmetry_ambiguity():
             result.ambiguity_flags.append(RuleFlag(
@@ -2354,11 +2377,33 @@ class RuleEngine:
         req: ObjectRequirements,
         result: RuleEvaluationResult
     ) -> None:
-        """Propose defaults for missing fields."""
+        """
+        Propose defaults for missing fields.
+        
+        TOPOLOGY-AWARE: Only proposes defaults that are relevant for the current topology.
+        - target_terminals: only for TREE/MULTI_TREE (not PATH/BACKBONE/LOOP)
+        - voxel_pitch: only if embedding is enabled or in finalization stage
+        """
+        topology_kind = req.topology.topology_kind or "tree"
         
         missing_field_names = {f.field for f in result.missing_fields}
         
+        fields_to_skip_by_topology = set()
+        if topology_kind in ("path", "backbone", "loop"):
+            fields_to_skip_by_topology.add("topology.target_terminals")
+        
+        embedding_enabled = (
+            req.embedding_export.voxel_pitch_m is not None or
+            req.embedding_export.output_void or
+            req.embedding_export.output_shell
+        )
+        if not embedding_enabled:
+            fields_to_skip_by_topology.add("embedding_export.voxel_pitch_m")
+        
         for field_path, (default_val, reason) in self.DEFAULT_VALUES.items():
+            if field_path in fields_to_skip_by_topology:
+                continue
+            
             if field_path in missing_field_names or self._field_is_empty(req, field_path):
                 result.proposed_defaults.append(ProposedDefault(
                     field=field_path,
@@ -2447,6 +2492,12 @@ class QuestionPlanner:
                 ))
                 seen_fields.add(flag.field)
         
+        METERS_TO_MM_FIELDS = {
+            "embedding_export.voxel_pitch_m",
+            "constraints.min_radius_m",
+            "constraints.min_clearance_m",
+        }
+        
         for proposed in eval_result.proposed_defaults:
             if proposed.field in seen_fields:
                 continue
@@ -2455,10 +2506,18 @@ class QuestionPlanner:
             
             if proposed.field in self.FIELD_TO_QUESTION:
                 q_key, q_text, q_default = self.FIELD_TO_QUESTION[proposed.field]
+                
+                display_value = q_default
+                if proposed.value is not None:
+                    if proposed.field in METERS_TO_MM_FIELDS:
+                        display_value = str(proposed.value * 1000)
+                    else:
+                        display_value = str(proposed.value)
+                
                 questions.append(PlannedQuestion(
                     field=proposed.field,
                     question_text=q_text,
-                    default_value=str(proposed.value) if proposed.value is not None else q_default,
+                    default_value=display_value,
                     rework_cost="low",
                     reason=proposed.reason
                 ))
@@ -2880,6 +2939,15 @@ def run_rule_based_capture(
                 collected_answers["domain_size"] = f"{size[0]}x{size[1]}x{size[2]} {unit}"
             except (ValueError, IndexError):
                 pass
+        elif field_name == "dim_triplet" and values and "domain_size" not in collected_answers:
+            try:
+                size = (float(values[0]), float(values[1]), float(values[2]))
+                unit = values[3] if len(values) > 3 and values[3] else "mm"
+                scale = {"mm": 0.001, "cm": 0.01, "m": 1.0}.get(unit, 0.001)
+                requirements.domain.size_m = tuple(s * scale for s in size)
+                collected_answers["domain_size"] = f"{size[0]}x{size[1]}x{size[2]} {unit}"
+            except (ValueError, IndexError):
+                pass
         elif field_name == "diameter" and values:
             try:
                 val = float(values[0])
@@ -2959,8 +3027,9 @@ def run_rule_based_capture(
             max_validation_attempts = 3
             question_answered = False
             topology_changed = False
+            validation_attempt = 0
             
-            for attempt in range(max_validation_attempts):
+            while validation_attempt < max_validation_attempts:
                 raw_answer = input(f"  {q.question_text}{default_str}: ").strip()
                 
                 response_type, extracted_value = _classify_response(raw_answer, q.field)
@@ -3025,9 +3094,10 @@ def run_rule_based_capture(
                     question_answered = True
                     break
                 else:
+                    validation_attempt += 1
                     print(f"  [Error] {error_msg}")
-                    if attempt < max_validation_attempts - 1:
-                        print(f"  Please try again ({max_validation_attempts - attempt - 1} attempts remaining).")
+                    if validation_attempt < max_validation_attempts:
+                        print(f"  Please try again ({max_validation_attempts - validation_attempt} attempts remaining).")
                     else:
                         print(f"  Using default value: {q.default_value}")
                         raw_answer = q.default_value if q.default_value else raw_answer
@@ -3051,7 +3121,7 @@ def run_rule_based_capture(
                 _apply_default_to_requirements(requirements, prop)
                 collected_answers[prop.field] = prop.value
     
-    topology_kind = requirements.topology.kind or detect_topology_kind(intent)
+    topology_kind = requirements.topology.topology_kind or detect_topology_kind(intent)
     is_valid, issues = validate_pre_generation(requirements, topology_kind)
     
     if not is_valid:
