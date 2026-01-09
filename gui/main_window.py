@@ -498,19 +498,32 @@ class MainWindow:
     
     def _send_input(self):
         """Send user input to workflow."""
-        text = self.input_var.get().strip()
-        if not text:
-            return
-        
-        # Check if workflow is running
-        if not self.workflow_manager.is_running:
-            self._append_chat("system", "Please start a workflow first (File > New Workflow or Ctrl+N)")
-            return
-        
         try:
+            # Use entry.get() directly as primary method (more reliable than StringVar)
+            # Fall back to StringVar if entry.get() fails
+            try:
+                text = self.input_entry.get().strip()
+            except Exception:
+                text = self.input_var.get().strip()
+            
+            # Provide feedback even if text is empty (never fail silently)
+            if not text:
+                self._append_chat("system", "Please enter some text to send.")
+                return
+            
+            # Check if workflow is running
+            if not self.workflow_manager.is_running:
+                self._append_chat("system", "Please start a workflow first (File > New Workflow or Ctrl+N)")
+                return
+            
+            # Send the input
             self._append_chat("user", text)
             self.workflow_manager.send_input(text)
+            
+            # Clear the input field using both methods for reliability
             self.input_var.set("")
+            self.input_entry.delete(0, "end")
+            
         except Exception as e:
             self._append_chat("error", f"Failed to send input: {e}")
     
