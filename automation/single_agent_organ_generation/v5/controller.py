@@ -13,9 +13,9 @@ No state machine - progress is measured by goal satisfaction.
 """
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
-from enum import Enum
 
 from .world_model import WorldModel, FactProvenance, TraceEvent
 from .goals import GoalTracker, GoalStatus
@@ -23,19 +23,39 @@ from .policies import SafeFixPolicy, ApprovalPolicy, CapabilitySelectionPolicy
 from .plan_synthesizer import PlanSynthesizer
 from .io.base_io import BaseIOAdapter
 
+from ...contextual_dialogue import ContextualDialogue, DialogueIntent
+
 logger = logging.getLogger(__name__)
 
 
-class ControllerState(Enum):
-    """High-level controller state (not a state machine - just for status reporting)."""
-    IDLE = "idle"
-    PROCESSING = "processing"
-    WAITING_FOR_INPUT = "waiting_for_input"
-    WAITING_FOR_APPROVAL = "waiting_for_approval"
-    RUNNING_GENERATION = "running_generation"
-    RUNNING_POSTPROCESS = "running_postprocess"
-    COMPLETED = "completed"
-    ERROR = "error"
+@dataclass
+class ControllerStatus:
+    """
+    Derived controller status - computed from world model state, not actively set.
+    
+    This replaces the ControllerState enum to avoid state-machine-like behavior.
+    The status is always computed from the current state of the world model.
+    """
+    phase: str
+    is_waiting_for_user: bool = False
+    is_waiting_for_approval: bool = False
+    is_running_tool: bool = False
+    is_complete: bool = False
+    has_error: bool = False
+    error_message: Optional[str] = None
+    current_tool: Optional[str] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "phase": self.phase,
+            "is_waiting_for_user": self.is_waiting_for_user,
+            "is_waiting_for_approval": self.is_waiting_for_approval,
+            "is_running_tool": self.is_running_tool,
+            "is_complete": self.is_complete,
+            "has_error": self.has_error,
+            "error_message": self.error_message,
+            "current_tool": self.current_tool,
+        }
 
 
 @dataclass
@@ -92,13 +112,15 @@ class SingleAgentOrganGeneratorV5:
         self.generator = generator
         self.validator = validator
         
-        self.state = ControllerState.IDLE
         self._iteration_count = 0
         self._safe_fixes_this_run = 0
         self._safe_fix_applied_this_iteration = False
         self._last_action: Optional[str] = None
         self._pending_user_message: Optional[str] = None
         self._stop_requested = False
+        self._is_running = False
+        self._current_tool: Optional[str] = None
+        self._error_message: Optional[str] = None
         
         self._capabilities: Dict[str, Callable[[], bool]] = {
             "ingest_user_event": self._cap_ingest_user_event,
@@ -135,10 +157,11 @@ class SingleAgentOrganGeneratorV5:
         bool
             True if completed successfully, False otherwise
         """
-        self.state = ControllerState.PROCESSING
+        self._is_running = True
         self._iteration_count = 0
         self._safe_fixes_this_run = 0
         self._stop_requested = False
+        self._error_message = None
         
         if initial_message:
             self._pending_user_message = initial_message
@@ -156,19 +179,20 @@ class SingleAgentOrganGeneratorV5:
                 
                 if self._iteration_count > self.config.max_iterations:
                     self.io.say_error("Maximum iterations reached")
-                    self.state = ControllerState.ERROR
+                    self._error_message = "Maximum iterations reached"
+                    self._is_running = False
                     return False
                 
                 available = self._get_available_capabilities()
                 
                 if not available:
                     if self.goal_tracker.is_complete():
-                        self.state = ControllerState.COMPLETED
                         self._emit_trace("controller_completed", "All goals satisfied")
+                        self._is_running = False
                         return True
                     else:
-                        self.state = ControllerState.WAITING_FOR_INPUT
                         self._emit_trace("waiting_for_input", "Waiting for user input")
+                        self._is_running = False
                         return True
                 
                 capability = self.capability_policy.select_capability(
@@ -184,20 +208,24 @@ class SingleAgentOrganGeneratorV5:
                 
                 self._emit_trace(f"capability_selected", f"Selected: {capability}")
                 
+                self._current_tool = capability
                 success = self._execute_capability(capability)
+                self._current_tool = None
                 self._last_action = capability
                 
                 if not success:
                     logger.warning(f"Capability {capability} returned False")
             
+            self._is_running = False
             return self.goal_tracker.is_complete()
             
         except KeyboardInterrupt:
-            self.state = ControllerState.IDLE
+            self._is_running = False
             self._emit_trace("controller_interrupted", "Controller interrupted by user")
             return False
         except Exception as e:
-            self.state = ControllerState.ERROR
+            self._is_running = False
+            self._error_message = str(e)
             self._emit_trace("controller_error", f"Error: {str(e)}")
             logger.exception("Controller error")
             raise
@@ -217,7 +245,8 @@ class SingleAgentOrganGeneratorV5:
             "content": message,
         })
         
-        if self.state == ControllerState.WAITING_FOR_INPUT:
+        status = self._compute_status()
+        if status.is_waiting_for_user and not self._is_running:
             self.run()
     
     def stop(self) -> None:
@@ -230,8 +259,9 @@ class SingleAgentOrganGeneratorV5:
     
     def get_status(self) -> Dict[str, Any]:
         """Get the current controller status."""
+        status = self._compute_status()
         return {
-            "state": self.state.value,
+            "status": status.to_dict(),
             "iteration_count": self._iteration_count,
             "safe_fixes_this_run": self._safe_fixes_this_run,
             "goal_progress": self.goal_tracker.get_progress_summary(),
@@ -239,6 +269,64 @@ class SingleAgentOrganGeneratorV5:
             "generation_approved": self.world_model.is_approved("generation"),
             "postprocess_approved": self.world_model.is_approved("postprocess"),
         }
+    
+    def _compute_status(self) -> ControllerStatus:
+        """
+        Compute the current controller status from world model state.
+        
+        This is the key architectural change from V4: status is derived,
+        not actively set. The status reflects the current state of the
+        world model and goal tracker.
+        """
+        if self._error_message:
+            return ControllerStatus(
+                phase="error",
+                has_error=True,
+                error_message=self._error_message,
+            )
+        
+        if self.goal_tracker.is_complete():
+            return ControllerStatus(
+                phase="complete",
+                is_complete=True,
+            )
+        
+        if self._current_tool:
+            return ControllerStatus(
+                phase="running_tool",
+                is_running_tool=True,
+                current_tool=self._current_tool,
+            )
+        
+        gen_approval = self.world_model.get_approval("generation")
+        post_approval = self.world_model.get_approval("postprocess")
+        
+        if gen_approval and not gen_approval.approved:
+            return ControllerStatus(
+                phase="waiting_for_generation_approval",
+                is_waiting_for_approval=True,
+            )
+        
+        if post_approval and not post_approval.approved:
+            return ControllerStatus(
+                phase="waiting_for_postprocess_approval",
+                is_waiting_for_approval=True,
+            )
+        
+        if self.world_model.open_questions and not self._pending_user_message:
+            return ControllerStatus(
+                phase="waiting_for_user_input",
+                is_waiting_for_user=True,
+            )
+        
+        if self._is_running:
+            return ControllerStatus(
+                phase="processing",
+            )
+        
+        return ControllerStatus(
+            phase="idle",
+        )
     
     def _should_stop(self) -> bool:
         """Check if the controller should stop."""
@@ -356,8 +444,23 @@ class SingleAgentOrganGeneratorV5:
         if intent.get("type") == "undo":
             return self._cap_undo()
         
+        if intent.get("type") == "undo_to_entry":
+            entry_id = intent.get("entry_id")
+            return self._cap_undo_to_entry(entry_id)
+        
+        if intent.get("type") == "show_changes":
+            return self._cap_show_changes()
+        
         if intent.get("type") == "show_status":
             return self._cap_summarize_living_spec()
+        
+        if intent.get("type") == "select_plan":
+            plan_id = intent.get("plan_id")
+            return self._cap_select_plan_by_id(plan_id)
+        
+        if intent.get("type") == "revisit_question":
+            topic = intent.get("topic")
+            return self._cap_revisit_question(topic)
         
         if intent.get("patches"):
             self.world_model._pending_patches = intent["patches"]
@@ -369,14 +472,44 @@ class SingleAgentOrganGeneratorV5:
         return True
     
     def _parse_user_intent(self, message: str) -> Dict[str, Any]:
-        """Parse user message into structured intent."""
+        """
+        Parse user message into structured intent using contextual dialogue infrastructure.
+        
+        This method handles:
+        - Corrections ("No, I meant +x max face", "Actually, change the inlet")
+        - References ("use the earlier plan", "the second option")
+        - Multi-field updates in one sentence
+        - Navigation commands ("go back to the ports question", "revisit domain")
+        - Plan selection ("plan 2", "use recommended plan", "switch to plan B")
+        - Undo/backtracking ("undo", "undo to entry", "show changes")
+        """
         message_lower = message.lower().strip()
         
-        if message_lower in ("undo", "undo last", "revert", "go back"):
+        if message_lower in ("undo", "undo last", "revert"):
             return {"type": "undo"}
+        
+        undo_to_match = re.match(r"undo\s+to\s+(?:entry\s+)?(\w+)", message_lower)
+        if undo_to_match:
+            return {"type": "undo_to_entry", "entry_id": undo_to_match.group(1)}
+        
+        if message_lower in ("show changes", "show recent changes", "what changed"):
+            return {"type": "show_changes"}
         
         if message_lower in ("status", "where are we", "show status", "what's missing"):
             return {"type": "show_status"}
+        
+        plan_match = re.match(r"(?:use\s+)?(?:plan\s+)?(\d+|[a-c]|recommended)", message_lower)
+        if plan_match or "switch to plan" in message_lower or "use plan" in message_lower:
+            plan_id = plan_match.group(1) if plan_match else None
+            if not plan_id:
+                plan_search = re.search(r"plan\s+(\d+|[a-c])", message_lower)
+                plan_id = plan_search.group(1) if plan_search else "recommended"
+            return {"type": "select_plan", "plan_id": plan_id}
+        
+        revisit_match = re.search(r"(?:revisit|go\s+back\s+to|change)\s+(?:the\s+)?(\w+)(?:\s+question)?", message_lower)
+        if revisit_match:
+            topic = revisit_match.group(1)
+            return {"type": "revisit_question", "topic": topic}
         
         if message_lower.startswith("yes") or message_lower == "y":
             return {"type": "confirm", "value": True}
@@ -384,9 +517,18 @@ class SingleAgentOrganGeneratorV5:
         if message_lower.startswith("no") or message_lower == "n":
             return {"type": "confirm", "value": False}
         
-        patches = {}
+        dialogue = ContextualDialogue()
+        intent = dialogue.classify_intent(message)
+        extracted = dialogue.extract_values_from_text(message)
         
-        if "domain" in message_lower:
+        patches = {}
+        questions_answered = {}
+        
+        is_correction = intent == DialogueIntent.CORRECTION or "actually" in message_lower or "i meant" in message_lower
+        
+        if "domain_type" in extracted:
+            patches["domain.type"] = extracted["domain_type"]
+        elif "domain" in message_lower:
             if "box" in message_lower:
                 patches["domain.type"] = "box"
             elif "ellipsoid" in message_lower:
@@ -394,29 +536,75 @@ class SingleAgentOrganGeneratorV5:
             elif "cylinder" in message_lower:
                 patches["domain.type"] = "cylinder"
         
-        if "inlet" in message_lower or "outlet" in message_lower:
-            for face in ["x_min", "x_max", "y_min", "y_max", "z_min", "z_max", "+x", "-x", "+y", "-y", "+z", "-z"]:
-                if face in message_lower:
-                    normalized_face = face.replace("+", "_max").replace("-", "_min")
-                    if not normalized_face.endswith("_min") and not normalized_face.endswith("_max"):
-                        normalized_face = face
-                    if "inlet" in message_lower:
-                        patches["inlet.face"] = normalized_face
-                    if "outlet" in message_lower:
-                        patches["outlet.face"] = normalized_face
+        if "topology_kind" in extracted:
+            patches["topology.kind"] = extracted["topology_kind"]
+        elif any(t in message_lower for t in ["tree", "path", "backbone", "loop"]):
+            if "tree" in message_lower:
+                patches["topology.kind"] = "tree"
+            elif "path" in message_lower:
+                patches["topology.kind"] = "path"
+            elif "backbone" in message_lower:
+                patches["topology.kind"] = "backbone"
+            elif "loop" in message_lower:
+                patches["topology.kind"] = "loop"
         
-        if "tree" in message_lower:
-            patches["topology.kind"] = "tree"
-        elif "path" in message_lower:
-            patches["topology.kind"] = "path"
-        elif "backbone" in message_lower:
-            patches["topology.kind"] = "backbone"
-        elif "loop" in message_lower:
-            patches["topology.kind"] = "loop"
+        if "inlet_face" in extracted:
+            patches["inlet.face"] = extracted["inlet_face"]
+        if "outlet_face" in extracted:
+            patches["outlet.face"] = extracted["outlet_face"]
+        
+        if "inlet" in message_lower or "outlet" in message_lower:
+            face_patterns = {
+                "x_min": [r"\bleft\b", r"\bx[\s_-]?min\b", r"\b-x\b", r"\bx\s*min\b"],
+                "x_max": [r"\bright\b", r"\bx[\s_-]?max\b", r"\b\+x\b", r"\bx\s*max\b"],
+                "y_min": [r"\bfront\b", r"\by[\s_-]?min\b", r"\b-y\b", r"\by\s*min\b"],
+                "y_max": [r"\bback\b", r"\by[\s_-]?max\b", r"\b\+y\b", r"\by\s*max\b"],
+                "z_min": [r"\bbottom\b", r"\bz[\s_-]?min\b", r"\b-z\b", r"\bz\s*min\b"],
+                "z_max": [r"\btop\b", r"\bz[\s_-]?max\b", r"\b\+z\b", r"\bz\s*max\b"],
+            }
+            for face, patterns in face_patterns.items():
+                for pattern in patterns:
+                    if re.search(pattern, message_lower):
+                        if "inlet" in message_lower and "inlet.face" not in patches:
+                            patches["inlet.face"] = face
+                        if "outlet" in message_lower and "outlet.face" not in patches:
+                            patches["outlet.face"] = face
+                        break
+        
+        size_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:x|by|,)\s*(\d+(?:\.\d+)?)\s*(?:x|by|,)\s*(\d+(?:\.\d+)?)\s*(mm|cm|m)?", message_lower)
+        if size_match:
+            x, y, z = float(size_match.group(1)), float(size_match.group(2)), float(size_match.group(3))
+            unit = size_match.group(4) or "mm"
+            if unit == "mm":
+                x, y, z = x / 1000, y / 1000, z / 1000
+            elif unit == "cm":
+                x, y, z = x / 100, y / 100, z / 100
+            patches["domain.size_m"] = (x, y, z)
+        
+        terminal_match = re.search(r"(\d+)\s*terminals?", message_lower)
+        if terminal_match:
+            patches["topology.target_terminals"] = int(terminal_match.group(1))
+        
+        if self.world_model.open_questions:
+            for q_id, question in self.world_model.open_questions.items():
+                field = question.field
+                if field in patches:
+                    questions_answered[q_id] = patches[field]
+        
+        intent_type = "specification" if patches else "freeform"
+        if is_correction:
+            intent_type = "correction"
+        elif intent == DialogueIntent.META_QUESTION:
+            intent_type = "meta_question"
+        elif intent == DialogueIntent.UNCERTAINTY:
+            intent_type = "uncertainty"
         
         return {
-            "type": "specification" if patches else "freeform",
+            "type": intent_type,
             "patches": patches,
+            "questions_answered": questions_answered,
+            "is_correction": is_correction,
+            "dialogue_intent": intent.value if intent else None,
             "raw_message": message,
         }
     
@@ -678,7 +866,6 @@ class SingleAgentOrganGeneratorV5:
         )
         
         self._emit_trace("generation_approval_requested", "Requesting generation approval")
-        self.state = ControllerState.WAITING_FOR_APPROVAL
         
         approved = self.io.ask_confirm(
             "Ready to run generation. Proceed?",
@@ -705,7 +892,6 @@ class SingleAgentOrganGeneratorV5:
         if not self.world_model.is_approved("generation"):
             return False
         
-        self.state = ControllerState.RUNNING_GENERATION
         self._emit_trace("generation_started", "Generation started")
         self.io.say_assistant("Running generation now...")
         
@@ -744,8 +930,6 @@ class SingleAgentOrganGeneratorV5:
             self._emit_trace("generation_failed", f"Generation failed: {str(e)}")
             self.io.say_error(f"Generation failed: {str(e)}")
             return False
-        finally:
-            self.state = ControllerState.PROCESSING
     
     def _cap_request_postprocess_approval(self) -> bool:
         """Capability 11: Request postprocess approval."""
@@ -779,7 +963,6 @@ class SingleAgentOrganGeneratorV5:
         )
         
         self._emit_trace("postprocess_approval_requested", "Requesting postprocess approval")
-        self.state = ControllerState.WAITING_FOR_APPROVAL
         
         approved = self.io.ask_confirm(
             f"Next is embedding + repair + STL export. Estimated {runtime_estimate}. Proceed?",
@@ -807,7 +990,6 @@ class SingleAgentOrganGeneratorV5:
         if not self.world_model.is_approved("postprocess"):
             return False
         
-        self.state = ControllerState.RUNNING_POSTPROCESS
         self._emit_trace("postprocess_started", "Postprocess started")
         self.io.say_assistant("Running postprocess...")
         
@@ -842,8 +1024,6 @@ class SingleAgentOrganGeneratorV5:
             self._emit_trace("postprocess_failed", f"Postprocess failed: {str(e)}")
             self.io.say_error(f"Postprocess failed: {str(e)}")
             return False
-        finally:
-            self.state = ControllerState.PROCESSING
     
     def _cap_validate_artifacts(self) -> bool:
         """Capability 13: Validate artifacts."""
@@ -1007,6 +1187,136 @@ class SingleAgentOrganGeneratorV5:
         else:
             self.io.say_error("Failed to undo.")
             return False
+    
+    def _cap_undo_to_entry(self, entry_id: str) -> bool:
+        """Undo to a specific history entry."""
+        if not entry_id:
+            self.io.say_warning("No entry ID specified for undo.")
+            return False
+        
+        if not self.world_model.history:
+            self.io.say_warning("No history to undo to.")
+            return False
+        
+        target_index = None
+        for i, entry in enumerate(self.world_model.history):
+            if entry.entry_id == entry_id or str(i) == entry_id:
+                target_index = i
+                break
+        
+        if target_index is None:
+            self.io.say_warning(f"Entry '{entry_id}' not found in history.")
+            return False
+        
+        undo_count = len(self.world_model.history) - target_index
+        for _ in range(undo_count):
+            self.world_model.undo_last()
+        
+        self._emit_trace("reverted_to_entry", f"Reverted to entry {entry_id}")
+        self.io.say_assistant(f"Reverted to entry {entry_id}. Undid {undo_count} change(s).")
+        return True
+    
+    def _cap_show_changes(self) -> bool:
+        """Show recent changes from history."""
+        if not self.world_model.history:
+            self.io.say_assistant("No changes recorded yet.")
+            return True
+        
+        recent = self.world_model.history[-10:]
+        
+        lines = ["Recent changes:"]
+        for i, entry in enumerate(recent):
+            entry_num = len(self.world_model.history) - len(recent) + i
+            lines.append(f"  [{entry_num}] {entry.entry_id}: {entry.description}")
+        
+        lines.append("\nUse 'undo to entry <id>' to revert to a specific point.")
+        
+        self.io.say_assistant("\n".join(lines))
+        self._emit_trace("show_changes", f"Displayed {len(recent)} recent changes")
+        return True
+    
+    def _cap_select_plan_by_id(self, plan_id: str) -> bool:
+        """Select a plan by ID or name."""
+        if not plan_id:
+            self.io.say_warning("No plan ID specified.")
+            return False
+        
+        if not self.world_model.plans:
+            self.io.say_warning("No plans available. Run plan synthesis first.")
+            return False
+        
+        plan_id_lower = plan_id.lower()
+        
+        if plan_id_lower == "recommended":
+            for plan in self.world_model.plans.values():
+                if plan.recommended:
+                    self.world_model.select_plan(plan.plan_id)
+                    self.plan_synthesizer.apply_plan_patches(plan)
+                    self._emit_trace("plan_selected", f"Selected recommended plan: {plan.name}")
+                    self.io.say_assistant(f"Selected recommended plan: {plan.name}")
+                    return True
+            self.io.say_warning("No recommended plan found.")
+            return False
+        
+        for pid, plan in self.world_model.plans.items():
+            if pid == plan_id or pid.endswith(f"_{plan_id}") or plan_id in pid:
+                self.world_model.select_plan(pid)
+                self.plan_synthesizer.apply_plan_patches(plan)
+                self._emit_trace("plan_selected", f"Selected plan: {plan.name}")
+                self.io.say_assistant(f"Selected plan: {plan.name}")
+                return True
+        
+        plan_list = list(self.world_model.plans.values())
+        try:
+            idx = int(plan_id) - 1
+            if 0 <= idx < len(plan_list):
+                plan = plan_list[idx]
+                self.world_model.select_plan(plan.plan_id)
+                self.plan_synthesizer.apply_plan_patches(plan)
+                self._emit_trace("plan_selected", f"Selected plan {idx + 1}: {plan.name}")
+                self.io.say_assistant(f"Selected plan {idx + 1}: {plan.name}")
+                return True
+        except ValueError:
+            pass
+        
+        self.io.say_warning(f"Plan '{plan_id}' not found.")
+        return False
+    
+    def _cap_revisit_question(self, topic: str) -> bool:
+        """Revisit a question or decision point by topic."""
+        if not topic:
+            self.io.say_warning("No topic specified to revisit.")
+            return False
+        
+        topic_lower = topic.lower()
+        
+        topic_to_fields = {
+            "domain": ["domain.type", "domain.size_m", "domain.shape"],
+            "inlet": ["inlet.face", "inlet.position", "inlet.radius"],
+            "outlet": ["outlet.face", "outlet.position", "outlet.radius"],
+            "ports": ["inlet.face", "outlet.face", "inlet.position", "outlet.position"],
+            "topology": ["topology.kind", "topology.target_terminals"],
+            "terminals": ["topology.target_terminals", "terminal.strategy"],
+            "plan": ["_selected_plan_id"],
+        }
+        
+        fields_to_clear = topic_to_fields.get(topic_lower, [topic_lower])
+        
+        cleared_count = 0
+        for field in fields_to_clear:
+            if field in self.world_model.facts:
+                del self.world_model._facts[field]
+                cleared_count += 1
+        
+        if cleared_count > 0:
+            self.world_model._invalidate_approvals()
+            
+            self._emit_trace("revisit_question", f"Cleared {cleared_count} field(s) for topic: {topic}")
+            self.io.say_assistant(f"Cleared {topic} settings. I'll ask about this again.")
+            return True
+        else:
+            self.io.say_assistant(f"No settings found for topic '{topic}'. What would you like to change?")
+            return True
     
     def _cap_package_outputs(self) -> bool:
         """Capability 17: Package outputs."""

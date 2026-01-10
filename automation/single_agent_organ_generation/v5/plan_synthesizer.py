@@ -61,10 +61,136 @@ class PlanSynthesizer:
     - Detects what dimensions/topology/constraints imply
     - Generates plans that differ on real levers
     - Recommends one plan and explains why
+    - Computes runtime estimates from world model facts
     """
     
     def __init__(self, world_model: "WorldModel"):
         self.world_model = world_model
+    
+    def compute_runtime_estimate(
+        self,
+        topology_kind: str,
+        complexity_tier: str = "medium",
+        target_terminals: Optional[int] = None,
+    ) -> str:
+        """
+        Compute runtime estimate based on world model facts.
+        
+        Parameters
+        ----------
+        topology_kind : str
+            The topology type (path, tree, backbone, loop)
+        complexity_tier : str
+            Complexity tier: "low", "medium", "high"
+        target_terminals : int, optional
+            Number of target terminals (for tree topology)
+            
+        Returns
+        -------
+        str
+            Human-readable runtime estimate with range
+        """
+        domain_size = self.world_model.get_fact_value("domain.size_m", (0.02, 0.06, 0.03))
+        if isinstance(domain_size, (list, tuple)) and len(domain_size) == 3:
+            domain_volume = domain_size[0] * domain_size[1] * domain_size[2]
+        else:
+            domain_volume = 0.02 * 0.06 * 0.03
+        
+        voxel_pitch = self.world_model.get_fact_value("embedding.voxel_pitch", 3e-4)
+        
+        if target_terminals is None:
+            target_terminals = self.world_model.get_fact_value("topology.target_terminals", 50)
+        
+        base_time_seconds = {
+            "path": 10,
+            "backbone": 25,
+            "tree": 60,
+            "loop": 15,
+        }.get(topology_kind, 30)
+        
+        complexity_multiplier = {
+            "low": 0.5,
+            "medium": 1.0,
+            "high": 2.0,
+        }.get(complexity_tier, 1.0)
+        
+        volume_factor = (domain_volume / (0.02 * 0.06 * 0.03)) ** 0.5
+        
+        resolution_factor = (3e-4 / max(voxel_pitch, 1e-5)) ** 1.5
+        
+        terminal_factor = 1.0
+        if topology_kind == "tree" and target_terminals:
+            terminal_factor = (target_terminals / 50) ** 0.7
+        
+        estimated_seconds = (
+            base_time_seconds 
+            * complexity_multiplier 
+            * volume_factor 
+            * resolution_factor 
+            * terminal_factor
+        )
+        
+        min_seconds = estimated_seconds * 0.7
+        max_seconds = estimated_seconds * 1.5
+        
+        def format_time(seconds: float) -> str:
+            if seconds < 60:
+                return f"{int(seconds)} seconds"
+            elif seconds < 3600:
+                minutes = seconds / 60
+                if minutes < 2:
+                    return f"{minutes:.1f} minute"
+                return f"{minutes:.0f} minutes"
+            else:
+                hours = seconds / 3600
+                return f"{hours:.1f} hours"
+        
+        return f"{format_time(min_seconds)} - {format_time(max_seconds)}"
+    
+    def compute_output_estimate(self, topology_kind: str) -> Dict[str, Any]:
+        """
+        Compute expected outputs based on world model facts.
+        
+        Returns
+        -------
+        dict
+            Expected outputs including file types and sizes
+        """
+        domain_size = self.world_model.get_fact_value("domain.size_m", (0.02, 0.06, 0.03))
+        if isinstance(domain_size, (list, tuple)) and len(domain_size) == 3:
+            domain_volume = domain_size[0] * domain_size[1] * domain_size[2]
+        else:
+            domain_volume = 0.02 * 0.06 * 0.03
+        
+        voxel_pitch = self.world_model.get_fact_value("embedding.voxel_pitch", 3e-4)
+        target_terminals = self.world_model.get_fact_value("topology.target_terminals", 50)
+        
+        base_vertices = {
+            "path": 1000,
+            "backbone": 5000,
+            "tree": 20000,
+            "loop": 3000,
+        }.get(topology_kind, 10000)
+        
+        terminal_factor = (target_terminals / 50) if topology_kind == "tree" else 1.0
+        estimated_vertices = int(base_vertices * terminal_factor)
+        
+        estimated_stl_size_mb = estimated_vertices * 0.0001
+        
+        voxel_count = domain_volume / (voxel_pitch ** 3)
+        estimated_voxel_size_mb = voxel_count * 1e-6
+        
+        return {
+            "files": [
+                "network.json (tree structure)",
+                "network.stl (mesh geometry)",
+                "embedded.stl (voxelized mesh)",
+                "manifest.json (metadata)",
+            ],
+            "estimated_vertices": estimated_vertices,
+            "estimated_stl_size_mb": f"{estimated_stl_size_mb:.1f} MB",
+            "estimated_voxel_count": f"{voxel_count:.0e}",
+        }
     
     def synthesize_plans(self) -> List["Plan"]:
         """
@@ -102,6 +228,10 @@ class PlanSynthesizer:
         
         plans = []
         
+        straight_runtime = self.compute_runtime_estimate("path", "low")
+        curved_runtime = self.compute_runtime_estimate("path", "medium")
+        serpentine_runtime = self.compute_runtime_estimate("path", "medium")
+        
         plans.append(Plan(
             plan_id="path_straight",
             name="Straight Channel",
@@ -112,7 +242,7 @@ class PlanSynthesizer:
                 "colonization.step_size": 0.001,
             },
             risks=["May not utilize full domain volume"],
-            cost_estimate="Low complexity, ~10 seconds",
+            cost_estimate=f"Low complexity, {straight_runtime}",
             what_needed_from_user=[],
             patch_set={"routing.strategy": "straight"},
             recommended=True,
@@ -128,7 +258,7 @@ class PlanSynthesizer:
                 "geometry.bend_radius": min(domain_size) * 0.3,
             },
             risks=["Requires sufficient domain depth for curves"],
-            cost_estimate="Low complexity, ~15 seconds",
+            cost_estimate=f"Low complexity, {curved_runtime}",
             what_needed_from_user=["Preferred bend radius if different from default"],
             patch_set={"routing.strategy": "curved"},
             recommended=False,
@@ -144,7 +274,7 @@ class PlanSynthesizer:
                 "geometry.num_turns": 3,
             },
             risks=["Higher pressure drop", "More complex manufacturing"],
-            cost_estimate="Medium complexity, ~20 seconds",
+            cost_estimate=f"Medium complexity, {serpentine_runtime}",
             what_needed_from_user=["Number of turns if different from default"],
             patch_set={"routing.strategy": "serpentine"},
             recommended=False,
@@ -164,6 +294,10 @@ class PlanSynthesizer:
         
         longest_axis = ["x", "y", "z"][domain_size.index(max(domain_size))]
         
+        ladder_runtime = self.compute_runtime_estimate("backbone", "medium")
+        u_shape_runtime = self.compute_runtime_estimate("backbone", "medium")
+        separate_runtime = self.compute_runtime_estimate("backbone", "low")
+        
         plans.append(Plan(
             plan_id="backbone_ladder",
             name="Ladder Configuration",
@@ -175,7 +309,7 @@ class PlanSynthesizer:
                 "backbone.leg_count": 4,
             },
             risks=["Requires uniform leg spacing"],
-            cost_estimate="Medium complexity, ~30 seconds",
+            cost_estimate=f"Medium complexity, {ladder_runtime}",
             what_needed_from_user=["Number of legs if different from 4"],
             patch_set={
                 "backbone.axis": longest_axis,
@@ -195,7 +329,7 @@ class PlanSynthesizer:
                 "backbone.leg_count": 4,
             },
             risks=["Higher pressure drop at turns"],
-            cost_estimate="Medium complexity, ~30 seconds",
+            cost_estimate=f"Medium complexity, {u_shape_runtime}",
             what_needed_from_user=["Number of legs if different from 4"],
             patch_set={
                 "backbone.axis": longest_axis,
@@ -216,7 +350,7 @@ class PlanSynthesizer:
                 "backbone.port_style": "individual",
             },
             risks=["Requires multiple inlet/outlet ports"],
-            cost_estimate="Medium complexity, ~25 seconds",
+            cost_estimate=f"Low complexity, {separate_runtime}",
             what_needed_from_user=["Number of legs", "Port configuration"],
             patch_set={
                 "backbone.axis": longest_axis,
@@ -242,6 +376,10 @@ class PlanSynthesizer:
         
         inlet_radius = self.world_model.get_fact_value("inlet.radius", 0.002)
         
+        balanced_runtime = self.compute_runtime_estimate("tree", "medium", suggested_terminals)
+        dense_runtime = self.compute_runtime_estimate("tree", "high", int(suggested_terminals * 1.5))
+        sparse_runtime = self.compute_runtime_estimate("tree", "low", int(suggested_terminals * 0.6))
+        
         plans.append(Plan(
             plan_id="tree_balanced",
             name="Balanced Tree",
@@ -259,7 +397,7 @@ class PlanSynthesizer:
                 "terminal.strategy": "space_filling",
             },
             risks=["May not reach corners of non-convex domains"],
-            cost_estimate="Medium complexity, ~2-5 minutes",
+            cost_estimate=f"Medium complexity, {balanced_runtime}",
             what_needed_from_user=[],
             patch_set={
                 "colonization.influence_radius": 0.015,
@@ -290,7 +428,7 @@ class PlanSynthesizer:
                 "May have thin branches near print limit",
                 "Higher mesh complexity",
             ],
-            cost_estimate="High complexity, ~5-10 minutes",
+            cost_estimate=f"High complexity, {dense_runtime}",
             what_needed_from_user=["Confirm acceptable generation time"],
             patch_set={
                 "colonization.influence_radius": 0.01,
@@ -317,7 +455,7 @@ class PlanSynthesizer:
                 "terminal.strategy": "sparse",
             },
             risks=["Lower coverage", "May leave uncovered regions"],
-            cost_estimate="Low complexity, ~1-2 minutes",
+            cost_estimate=f"Low complexity, {sparse_runtime}",
             what_needed_from_user=[],
             patch_set={
                 "colonization.influence_radius": 0.02,
@@ -339,6 +477,10 @@ class PlanSynthesizer:
         
         plans = []
         
+        single_runtime = self.compute_runtime_estimate("loop", "low")
+        mesh_runtime = self.compute_runtime_estimate("loop", "high")
+        spiral_runtime = self.compute_runtime_estimate("loop", "medium")
+        
         plans.append(Plan(
             plan_id="loop_single",
             name="Single Loop",
@@ -349,7 +491,7 @@ class PlanSynthesizer:
                 "loop.count": 1,
             },
             risks=["Limited coverage area"],
-            cost_estimate="Low complexity, ~15 seconds",
+            cost_estimate=f"Low complexity, {single_runtime}",
             what_needed_from_user=[],
             patch_set={"loop.style": "single_loop"},
             recommended=True,
@@ -365,7 +507,7 @@ class PlanSynthesizer:
                 "loop.grid_size": (3, 3),
             },
             risks=["Complex manufacturing", "Many junction points"],
-            cost_estimate="Medium complexity, ~1-2 minutes",
+            cost_estimate=f"High complexity, {mesh_runtime}",
             what_needed_from_user=["Grid dimensions if different from 3x3"],
             patch_set={"loop.style": "mesh"},
             recommended=False,
@@ -381,7 +523,7 @@ class PlanSynthesizer:
                 "loop.turns": 3,
             },
             risks=["Pressure drop increases with turns"],
-            cost_estimate="Medium complexity, ~30 seconds",
+            cost_estimate=f"Medium complexity, {spiral_runtime}",
             what_needed_from_user=["Number of spiral turns"],
             patch_set={"loop.style": "spiral"},
             recommended=False,
