@@ -62,19 +62,24 @@ class Goal:
 
 
 def check_spec_minimum_complete(world_model: "WorldModel") -> bool:
-    """Check if the minimum viable spec is complete."""
+    """
+    Check if the minimum viable spec is complete.
+    
+    Uses inlet.face/outlet.face instead of inlet.position/outlet.position
+    because positions are derived from faces during compile.
+    """
     required_fields = [
         "domain.type",
         "domain.size",
         "topology.kind",
-        "inlet.position",
+        "inlet.face",
         "inlet.radius",
     ]
     
     topology_kind = world_model.get_fact_value("topology.kind", "tree")
     
     if topology_kind in ("path", "backbone", "loop"):
-        required_fields.extend(["outlet.position", "outlet.radius"])
+        required_fields.extend(["outlet.face", "outlet.radius"])
     
     for field in required_fields:
         if not world_model.has_fact(field):
