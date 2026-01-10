@@ -6,7 +6,7 @@ Provides workflow selection, agent configuration, and STL visualization.
 
 Main Components:
     - MainWindow: Primary application window with three-panel layout
-    - WorkflowManager: Orchestrates Single Agent and MOGS workflows
+    - WorkflowManager: Orchestrates Single Agent workflows
     - STLViewer: 3D visualization of generated STL files
     - SecureConfig: Encrypted API key storage
 
