@@ -292,8 +292,6 @@ class SingleAgentOrganGeneratorV5:
             )
         
         if self._current_tool:
-            is_generation = self._current_tool == "run_generation"
-            is_postprocess = self._current_tool == "run_postprocess"
             return ControllerStatus(
                 phase="running_tool",
                 is_running_tool=True,
