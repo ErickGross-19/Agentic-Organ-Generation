@@ -281,7 +281,7 @@ class WorkflowManager:
             self._set_status(WorkflowStatus.INITIALIZING, "Starting workflow...")
             
             if self._config.workflow_type == WorkflowType.SINGLE_AGENT:
-                self._run_single_agent_workflow()
+                self._run_single_agent_workflow_v5()
             else:
                 raise ValueError(f"Unknown workflow type: {self._config.workflow_type}")
             

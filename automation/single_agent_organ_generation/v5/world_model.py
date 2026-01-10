@@ -71,6 +71,17 @@ class OpenQuestion:
     default_value: Optional[Any] = None
     priority: int = 0
     asked_at: Optional[str] = None
+    acceptable_answers: Optional[List[str]] = None
+    
+    @property
+    def question(self) -> str:
+        """Alias for question_text for controller compatibility."""
+        return self.question_text
+    
+    @property
+    def why(self) -> str:
+        """Alias for why_it_matters for controller compatibility."""
+        return self.why_it_matters
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -82,6 +93,7 @@ class OpenQuestion:
             "default_value": self.default_value,
             "priority": self.priority,
             "asked_at": self.asked_at,
+            "acceptable_answers": self.acceptable_answers,
         }
 
 
@@ -262,6 +274,34 @@ class WorldModel:
         self._last_user_intent: Optional[str] = None
         self._last_user_request_type: Optional[str] = None
         self._entry_counter: int = 0
+        self._pending_patches: Dict[str, Any] = {}
+    
+    @property
+    def facts(self) -> Dict[str, Fact]:
+        """Read-only access to facts dictionary."""
+        return self._facts
+    
+    @property
+    def open_questions(self) -> Dict[str, "OpenQuestion"]:
+        """Read-only access to open questions dictionary."""
+        return self._open_questions
+    
+    @property
+    def plans(self) -> Dict[str, Plan]:
+        """Read-only access to plans dictionary."""
+        return self._plans
+    
+    @property
+    def history(self) -> List[HistoryEntry]:
+        """Read-only access to history list."""
+        return self._history
+    
+    @property
+    def selected_plan(self) -> Optional[Plan]:
+        """Get the currently selected plan."""
+        if self._selected_plan_id and self._selected_plan_id in self._plans:
+            return self._plans[self._selected_plan_id]
+        return None
     
     def _generate_entry_id(self) -> str:
         """Generate a unique entry ID."""
@@ -388,6 +428,53 @@ class WorldModel:
         """Get the highest priority open question."""
         questions = self.get_open_questions()
         return questions[0] if questions else None
+    
+    def answer_question(self, question_id: str, answer: Any) -> bool:
+        """
+        Answer an open question.
+        
+        This method:
+        1. Sets the relevant fact with USER provenance
+        2. Removes the open question
+        3. Records a decision point
+        4. Invalidates approvals if geometry-relevant
+        
+        Parameters
+        ----------
+        question_id : str
+            The ID of the question to answer
+        answer : Any
+            The user's answer
+            
+        Returns
+        -------
+        bool
+            True if the question was found and answered
+        """
+        question = self._open_questions.get(question_id)
+        if not question:
+            return False
+        
+        self.set_fact(
+            field=question.field,
+            value=answer,
+            provenance=FactProvenance.USER,
+            reason=f"User answered question: {question.question_text}",
+        )
+        
+        decision = DecisionPoint(
+            decision_id=self._generate_entry_id(),
+            question_id=question_id,
+            what_it_resolved=question.field,
+            chosen_answer=answer,
+            alternatives=question.options or [],
+            dependencies=[question.field],
+        )
+        self.record_decision(decision)
+        
+        self.remove_open_question(question_id)
+        
+        return True
     
     def record_decision(self, decision: DecisionPoint) -> None:
         """Record a decision point."""

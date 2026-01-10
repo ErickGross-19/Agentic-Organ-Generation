@@ -6004,14 +6004,15 @@ def run_single_agent_workflow(
         **kwargs,
     )
     
-    workflow = SingleAgentOrganGeneratorV3(
-        agent=agent,
-        base_output_dir=base_output_dir,
+    io_adapter = CLIIOAdapter()
+    workflow = SingleAgentOrganGeneratorV5(
+        io_adapter=io_adapter,
     )
     
-    return workflow.run()
+    workflow.run()
+    return None
 
 
-SingleAgentOrganGeneratorV1 = SingleAgentOrganGeneratorV4
-SingleAgentOrganGeneratorV2 = SingleAgentOrganGeneratorV4
-SingleAgentOrganGeneratorV3 = SingleAgentOrganGeneratorV4
+SingleAgentOrganGeneratorV1 = SingleAgentOrganGeneratorV5
+SingleAgentOrganGeneratorV2 = SingleAgentOrganGeneratorV5
+SingleAgentOrganGeneratorV3 = SingleAgentOrganGeneratorV5

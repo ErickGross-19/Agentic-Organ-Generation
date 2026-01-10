@@ -19,7 +19,7 @@ from .task_templates import (
     validate_structure_prompt,
     iterate_design_prompt,
 )
-from .workflow import SingleAgentOrganGeneratorV3
+from .single_agent_organ_generation.v5 import SingleAgentOrganGeneratorV5, CLIIOAdapter
 from .execution_modes import ExecutionMode, parse_execution_mode, DEFAULT_EXECUTION_MODE
 from .llm_healthcheck import (
     assert_llm_ready,
@@ -325,22 +325,16 @@ def run_interactive(agent: AgentRunner, args):
 
 
 def run_workflow(agent: AgentRunner, args):
-    """Run the Single Agent Organ Generator V3 workflow."""
-    execution_mode = parse_execution_mode(args.execution_mode)
+    """Run the Single Agent Organ Generator V5 workflow."""
+    io_adapter = CLIIOAdapter()
     
-    workflow = SingleAgentOrganGeneratorV3(
-        agent=agent,
-        base_output_dir=args.output_dir,
-        verbose=args.verbose,
-        execution_mode=execution_mode,
-        timeout_seconds=args.timeout_seconds,
+    workflow = SingleAgentOrganGeneratorV5(
+        io_adapter=io_adapter,
     )
     
-    context = workflow.run()
+    workflow.run()
     
     print(f"\nWorkflow completed!")
-    print(f"Project: {context.project_name}")
-    print(f"Output directory: {context.output_dir}")
 
 
 if __name__ == "__main__":
