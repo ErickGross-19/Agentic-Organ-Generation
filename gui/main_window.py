@@ -82,22 +82,6 @@ class WorkflowSelectionDialog(tk.Toplevel):
             foreground="gray",
         ).pack(anchor="w", padx=20)
         
-        mogs_frame = ttk.Frame(main_frame)
-        mogs_frame.pack(fill="x", pady=5)
-        
-        ttk.Radiobutton(
-            mogs_frame,
-            text="MOGS (Multi-Agent System)",
-            variable=self.workflow_var,
-            value="mogs",
-        ).pack(anchor="w")
-        
-        ttk.Label(
-            mogs_frame,
-            text="Three-agent workflow with approval gates.\nBest for complex, validated designs.",
-            foreground="gray",
-        ).pack(anchor="w", padx=20)
-        
         button_frame = ttk.Frame(main_frame)
         button_frame.pack(fill="x", pady=(30, 0))
         
@@ -370,8 +354,6 @@ class MainWindow:
         
         if workflow_type == WorkflowType.SINGLE_AGENT:
             self.workflow_label.config(text="Single Agent Organ Generator")
-        elif workflow_type == WorkflowType.MOGS:
-            self.workflow_label.config(text="MOGS (Multi-Agent System)")
         
         self.start_btn.config(state="normal")
         self._append_chat("system", f"Selected workflow: {workflow_type.value}")

@@ -214,41 +214,6 @@ from .streamlined_workflow import (
     run_streamlined_workflow,
 )
 
-# MOGS - MultiAgentOrgan Generation System
-from .mogs import (
-    # Runner
-    MOGSRunner,
-    create_mogs_runner,
-    WorkflowState as MOGSWorkflowState,
-    WorkflowContext,
-    WorkflowResult,
-    # Folder management
-    FolderManager,
-    create_new_object,
-    load_object,
-    # Object registry
-    ObjectRegistry,
-    ObjectRegistryEntry,
-    # Agents
-    ConceptSpecAgent,
-    CodingBuildAgent,
-    ValidationQAAgent,
-    # Gates
-    GateManager,
-    ApprovalChoice,
-    GateContext,
-    GateResult,
-    # Retention
-    RetentionManager,
-    # Safety
-    SafetyManager,
-    SafetyConfig,
-    # Models
-    ObjectManifest,
-    SpecVersion,
-    ValidationReport,
-)
-
 __all__ = [
     # Core agent components
     "AgentRunner",
@@ -375,30 +340,6 @@ __all__ = [
     "validate_field_patch",
     "validate_custom_field",
     "suggest_patch_fixes",
-    # MOGS - MultiAgentOrgan Generation System
-    "MOGSRunner",
-    "create_mogs_runner",
-    "MOGSWorkflowState",
-    "WorkflowContext",
-    "WorkflowResult",
-    "FolderManager",
-    "create_new_object",
-    "load_object",
-    "ObjectRegistry",
-    "ObjectRegistryEntry",
-    "ConceptSpecAgent",
-    "CodingBuildAgent",
-    "ValidationQAAgent",
-    "GateManager",
-    "ApprovalChoice",
-    "GateContext",
-    "GateResult",
-    "RetentionManager",
-    "SafetyManager",
-    "SafetyConfig",
-    "ObjectManifest",
-    "SpecVersion",
-    "ValidationReport",
     # Streamlined Workflow Components (V5)
     "ContextualDialogue",
     "DialogueContext",

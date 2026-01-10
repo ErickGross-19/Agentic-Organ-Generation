@@ -6,7 +6,7 @@ A graphical user interface for the Agentic Organ Generation system. Provides wor
 
 The GUI wraps the existing command-line workflows with a professional interface:
 
-**Workflow Selection** - Choose between Single Agent Organ Generator V4 (interactive, topology-first questioning) or MOGS (Multi-Agent System with approval gates).
+**Workflow Selection** - Single Agent Organ Generator V4 with interactive, topology-first questioning.
 
 **Agent Configuration** - Configure LLM providers including OpenAI, Anthropic, Google Gemini, Mistral, xAI (Grok), Groq, and local OpenAI-compatible endpoints. API keys are stored securely with machine-specific encryption.
 
@@ -52,7 +52,7 @@ python main.py --cli      # Run CLI mode instead of GUI
 ### Quick Start
 
 1. Launch the GUI with `python main.py`
-2. Click "Select Workflow" to choose between Single Agent or MOGS
+2. Click "Select Workflow" to start the Single Agent workflow
 3. Click "Agent Config" to configure your LLM provider and API key
 4. Click "Start" to begin the workflow
 5. Interact with the workflow through the chat panel
@@ -74,8 +74,7 @@ The primary application window with:
 Orchestrates workflow execution with:
 - Thread-safe message passing between workflow and GUI
 - User input handling via queue-based communication
-- Support for both SingleAgentOrganGeneratorV4 and MOGS workflows
-- MOGS approval gate handling
+- Support for SingleAgentOrganGeneratorV4 workflow
 
 ### STLViewer (`stl_viewer.py`)
 

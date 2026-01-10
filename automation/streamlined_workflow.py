@@ -200,7 +200,7 @@ class StreamlinedWorkflow:
         )
     
     def _print_header(self) -> None:
-        """Print workflow header."""
+        """Print workflow header with rules and available commands."""
         self._print("")
         self._print("=" * 60)
         self._print(f"  {self.WORKFLOW_NAME} v{self.WORKFLOW_VERSION}")
@@ -208,6 +208,24 @@ class StreamlinedWorkflow:
         self._print("")
         self._print("This workflow uses a streamlined, conversation-driven approach")
         self._print("to generate 3D vascular structures.")
+        self._print("")
+        self._print("WORKFLOW RULES:")
+        self._print("-" * 40)
+        self._print("1. Describe what you want to create in natural language")
+        self._print("2. Answer questions to refine your specification")
+        self._print("3. You can update your description at any time")
+        self._print("4. Address warnings and ambiguities before generation")
+        self._print("5. Type 'default' to accept default values for any field")
+        self._print("6. Type 'confirm' when ready to proceed with generation")
+        self._print("")
+        self._print("AVAILABLE COMMANDS:")
+        self._print("-" * 40)
+        self._print("  'update description' - Provide a new description and re-assess")
+        self._print("  'address warnings'   - View and resolve current warnings")
+        self._print("  'address ambiguities'- View and clarify ambiguities")
+        self._print("  'default'            - Use default value for current field")
+        self._print("  'help'               - Show detailed help information")
+        self._print("  'cancel'             - Cancel the current workflow")
         self._print("")
     
     def _run_initializing(self) -> None:

@@ -167,7 +167,7 @@ python main.py
 python -m gui
 ```
 
-The GUI features workflow selection (Single Agent or MOGS), agent configuration with secure API key storage, a three-panel layout (chat, output, STL viewer), and real-time 3D mesh visualization. For detailed GUI documentation, see [gui/README.md](gui/README.md).
+The GUI features agent configuration with secure API key storage, a three-panel layout (chat, output, STL viewer), and real-time 3D mesh visualization. For detailed GUI documentation, see [gui/README.md](gui/README.md).
 
 ### Command-Line Interface
 

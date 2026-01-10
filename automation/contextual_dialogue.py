@@ -45,6 +45,10 @@ class DialogueIntent(Enum):
     UNCERTAINTY = "uncertainty"
     TOPIC_CHANGE = "topic_change"
     CANCEL = "cancel"
+    UPDATE_DESCRIPTION = "update_description"
+    ADDRESS_WARNINGS = "address_warnings"
+    ADDRESS_AMBIGUITIES = "address_ambiguities"
+    USE_DEFAULT = "use_default"
 
 
 @dataclass
@@ -185,6 +189,37 @@ class ContextualDialogue:
             DialogueIntent.CANCEL: [
                 r"^\s*(cancel|quit|exit|stop|abort)\s*$",
                 r"\bcancel\s+(this|the)\s+(workflow|process|session)\b",
+            ],
+            DialogueIntent.UPDATE_DESCRIPTION: [
+                r"^\s*update\s+description\s*$",
+                r"^\s*new\s+description\s*$",
+                r"\bupdate\s+(my\s+)?description\b",
+                r"\bnew\s+description\b",
+                r"\bchange\s+(my\s+)?description\b",
+                r"\brevise\s+(my\s+)?description\b",
+            ],
+            DialogueIntent.ADDRESS_WARNINGS: [
+                r"^\s*address\s+warnings?\s*$",
+                r"^\s*show\s+warnings?\s*$",
+                r"\baddress\s+(the\s+)?warnings?\b",
+                r"\bshow\s+(me\s+)?(the\s+)?warnings?\b",
+                r"\bfix\s+(the\s+)?warnings?\b",
+                r"\bresolve\s+(the\s+)?warnings?\b",
+            ],
+            DialogueIntent.ADDRESS_AMBIGUITIES: [
+                r"^\s*address\s+ambiguit(y|ies)\s*$",
+                r"^\s*show\s+ambiguit(y|ies)\s*$",
+                r"\baddress\s+(the\s+)?ambiguit(y|ies)\b",
+                r"\bshow\s+(me\s+)?(the\s+)?ambiguit(y|ies)\b",
+                r"\bfix\s+(the\s+)?ambiguit(y|ies)\b",
+                r"\bresolve\s+(the\s+)?ambiguit(y|ies)\b",
+                r"\bclarify\s+(the\s+)?ambiguit(y|ies)\b",
+            ],
+            DialogueIntent.USE_DEFAULT: [
+                r"^\s*default\s*$",
+                r"^\s*use\s+default\s*$",
+                r"^\s*use\s+the\s+default\s*$",
+                r"\buse\s+(the\s+)?default\s+(value|setting)?\b",
             ],
         }
     
@@ -335,6 +370,18 @@ class ContextualDialogue:
         if intent == DialogueIntent.TOPIC_CHANGE:
             return self._handle_topic_change(user_input, extracted)
         
+        if intent == DialogueIntent.UPDATE_DESCRIPTION:
+            return self._handle_update_description(user_input)
+        
+        if intent == DialogueIntent.ADDRESS_WARNINGS:
+            return self._handle_address_warnings()
+        
+        if intent == DialogueIntent.ADDRESS_AMBIGUITIES:
+            return self._handle_address_ambiguities()
+        
+        if intent == DialogueIntent.USE_DEFAULT:
+            return self._handle_use_default()
+        
         # Default: process as information provision
         return self._handle_information(user_input, extracted)
     
@@ -459,6 +506,295 @@ class ContextualDialogue:
             spec_updates=extracted,
         )
     
+    def _handle_update_description(self, user_input: str) -> DialogueResponse:
+        """Handle request to update the description and re-assess warnings/ambiguities."""
+        self._print("\n--- Update Description ---")
+        self._print("Please provide your updated description:")
+        
+        new_description = self._input("New description: ").strip()
+        
+        if not new_description:
+            return DialogueResponse(
+                message="No description provided. Your current description remains unchanged.",
+                intent=DialogueIntent.UPDATE_DESCRIPTION,
+            )
+        
+        old_description = self._build_summary_from_context()
+        extracted = self.extract_values_from_text(new_description)
+        for field, value in extracted.items():
+            self.context.update_spec_value(field, value, "user_update")
+        
+        self.context.add_turn("user", f"[Updated description]: {new_description}", DialogueIntent.UPDATE_DESCRIPTION, extracted)
+        
+        self._reassess_warnings_and_ambiguities(new_description, old_description)
+        
+        warnings_count = len(self.context.risks)
+        ambiguities_count = len(self.context.ambiguities)
+        
+        message = f"Description updated! I've re-assessed your requirements.\n"
+        message += f"  - Warnings: {warnings_count}\n"
+        message += f"  - Ambiguities: {ambiguities_count}\n"
+        
+        if warnings_count > 0 or ambiguities_count > 0:
+            message += "\nYou can type 'address warnings' or 'address ambiguities' to resolve them."
+        
+        return DialogueResponse(
+            message=message,
+            intent=DialogueIntent.UPDATE_DESCRIPTION,
+            spec_updates=extracted,
+        )
+    
+    def _reassess_warnings_and_ambiguities(self, new_description: str, old_description: str) -> None:
+        """Re-assess warnings and ambiguities based on new description."""
+        from .agent_dialogue import Ambiguity, Risk
+        
+        text_lower = new_description.lower()
+        spec = self.context.get_spec_summary()
+        
+        self.context.risks = []
+        self.context.ambiguities = []
+        
+        if "small" in text_lower and spec.get("target_terminals", 0) > 50:
+            self.context.risks.append(Risk(
+                description="High terminal count may not fit in a 'small' domain",
+                severity="medium",
+                mitigation="Consider reducing terminal count or increasing domain size",
+            ))
+        
+        if spec.get("min_radius") and spec.get("inlet_radius"):
+            min_r = spec.get("min_radius", 0)
+            inlet_r = spec.get("inlet_radius", 0)
+            if isinstance(min_r, (int, float)) and isinstance(inlet_r, (int, float)):
+                if min_r > inlet_r * 0.5:
+                    self.context.risks.append(Risk(
+                        description="Minimum radius is large relative to inlet radius",
+                        severity="low",
+                        mitigation="This may limit branching depth",
+                    ))
+        
+        if "many" in text_lower or "lots" in text_lower or "several" in text_lower:
+            self.context.ambiguities.append(Ambiguity(
+                description="Vague quantity specified",
+                options=["10", "50", "100", "500"],
+                impact="Affects complexity and generation time",
+            ))
+        
+        if not spec.get("topology_kind"):
+            self.context.ambiguities.append(Ambiguity(
+                description="Topology type not specified",
+                options=["path", "tree", "backbone", "loop", "multi_tree"],
+                impact="Determines the overall structure of the network",
+            ))
+        
+        if not spec.get("domain_size"):
+            self.context.ambiguities.append(Ambiguity(
+                description="Domain size not specified",
+                options=["10x10x10mm", "20x20x20mm", "50x50x50mm"],
+                impact="Determines the physical size of the generated structure",
+            ))
+    
+    def _handle_address_warnings(self) -> DialogueResponse:
+        """Handle request to address warnings."""
+        if not self.context.risks:
+            return DialogueResponse(
+                message="No warnings to address. Your specification looks good!",
+                intent=DialogueIntent.ADDRESS_WARNINGS,
+            )
+        
+        self._print("\n--- Current Warnings ---")
+        for i, risk in enumerate(self.context.risks, 1):
+            self._print(f"\n{i}. {risk.description}")
+            self._print(f"   Severity: {risk.severity}")
+            self._print(f"   Suggested mitigation: {risk.mitigation}")
+        
+        self._print("\nWould you like to address any of these warnings?")
+        self._print("Enter the warning number to address, 'all' to address all, or 'skip' to continue:")
+        
+        response = self._input("Your choice: ").strip().lower()
+        
+        if response == "skip":
+            return DialogueResponse(
+                message="Okay, continuing with current warnings noted.",
+                intent=DialogueIntent.ADDRESS_WARNINGS,
+            )
+        
+        addressed_warnings = []
+        
+        if response == "all":
+            for i, risk in enumerate(self.context.risks, 1):
+                self._print(f"\nAddressing warning {i}: {risk.description}")
+                self._print(f"Suggested: {risk.mitigation}")
+                user_action = self._input("Your action (or 'accept' to use suggestion, 'skip' to ignore): ").strip()
+                
+                if user_action.lower() != "skip":
+                    addressed_warnings.append(i - 1)
+                    if user_action.lower() != "accept":
+                        extracted = self.extract_values_from_text(user_action)
+                        for field, value in extracted.items():
+                            self.context.update_spec_value(field, value, "warning_resolution")
+        elif response.isdigit():
+            idx = int(response) - 1
+            if 0 <= idx < len(self.context.risks):
+                risk = self.context.risks[idx]
+                self._print(f"\nAddressing: {risk.description}")
+                self._print(f"Suggested: {risk.mitigation}")
+                user_action = self._input("Your action (or 'accept' to use suggestion): ").strip()
+                
+                addressed_warnings.append(idx)
+                if user_action.lower() != "accept":
+                    extracted = self.extract_values_from_text(user_action)
+                    for field, value in extracted.items():
+                        self.context.update_spec_value(field, value, "warning_resolution")
+        
+        for idx in sorted(addressed_warnings, reverse=True):
+            if 0 <= idx < len(self.context.risks):
+                self.context.risks.pop(idx)
+        
+        remaining = len(self.context.risks)
+        message = f"Addressed {len(addressed_warnings)} warning(s). {remaining} warning(s) remaining."
+        
+        return DialogueResponse(
+            message=message,
+            intent=DialogueIntent.ADDRESS_WARNINGS,
+        )
+    
+    def _handle_address_ambiguities(self) -> DialogueResponse:
+        """Handle request to address ambiguities."""
+        if not self.context.ambiguities:
+            return DialogueResponse(
+                message="No ambiguities to address. Your specification is clear!",
+                intent=DialogueIntent.ADDRESS_AMBIGUITIES,
+            )
+        
+        self._print("\n--- Current Ambiguities ---")
+        for i, ambiguity in enumerate(self.context.ambiguities, 1):
+            self._print(f"\n{i}. {ambiguity.description}")
+            self._print(f"   Options: {', '.join(ambiguity.options)}")
+            self._print(f"   Impact: {ambiguity.impact}")
+        
+        self._print("\nWould you like to clarify any of these?")
+        self._print("Enter the ambiguity number to clarify, 'all' to clarify all, or 'skip' to continue:")
+        
+        response = self._input("Your choice: ").strip().lower()
+        
+        if response == "skip":
+            return DialogueResponse(
+                message="Okay, continuing with current ambiguities. Defaults will be used where needed.",
+                intent=DialogueIntent.ADDRESS_AMBIGUITIES,
+            )
+        
+        addressed_ambiguities = []
+        
+        if response == "all":
+            for i, ambiguity in enumerate(self.context.ambiguities, 1):
+                self._print(f"\nClarifying: {ambiguity.description}")
+                self._print(f"Options: {', '.join(ambiguity.options)}")
+                user_choice = self._input("Your choice (or 'default' to use first option): ").strip()
+                
+                addressed_ambiguities.append(i - 1)
+                if user_choice.lower() == "default":
+                    user_choice = ambiguity.options[0] if ambiguity.options else ""
+                
+                extracted = self.extract_values_from_text(user_choice)
+                for field, value in extracted.items():
+                    self.context.update_spec_value(field, value, "ambiguity_resolution")
+                
+                if not extracted and user_choice:
+                    field_name = ambiguity.description.lower().replace(" ", "_").replace("not_specified", "").strip("_")
+                    if "topology" in field_name:
+                        self.context.update_spec_value("topology_kind", user_choice, "ambiguity_resolution")
+                    elif "domain" in field_name or "size" in field_name:
+                        self.context.update_spec_value("domain_size", user_choice, "ambiguity_resolution")
+                    elif "quantity" in field_name or "terminal" in field_name:
+                        try:
+                            self.context.update_spec_value("target_terminals", int(user_choice), "ambiguity_resolution")
+                        except ValueError:
+                            pass
+        elif response.isdigit():
+            idx = int(response) - 1
+            if 0 <= idx < len(self.context.ambiguities):
+                ambiguity = self.context.ambiguities[idx]
+                self._print(f"\nClarifying: {ambiguity.description}")
+                self._print(f"Options: {', '.join(ambiguity.options)}")
+                user_choice = self._input("Your choice (or 'default' to use first option): ").strip()
+                
+                addressed_ambiguities.append(idx)
+                if user_choice.lower() == "default":
+                    user_choice = ambiguity.options[0] if ambiguity.options else ""
+                
+                extracted = self.extract_values_from_text(user_choice)
+                for field, value in extracted.items():
+                    self.context.update_spec_value(field, value, "ambiguity_resolution")
+        
+        for idx in sorted(addressed_ambiguities, reverse=True):
+            if 0 <= idx < len(self.context.ambiguities):
+                self.context.ambiguities.pop(idx)
+        
+        remaining = len(self.context.ambiguities)
+        message = f"Clarified {len(addressed_ambiguities)} ambiguity(ies). {remaining} ambiguity(ies) remaining."
+        
+        return DialogueResponse(
+            message=message,
+            intent=DialogueIntent.ADDRESS_AMBIGUITIES,
+        )
+    
+    def _handle_use_default(self) -> DialogueResponse:
+        """Handle request to use default value for current field."""
+        current_topic = self.context.current_topic
+        
+        defaults = {
+            "domain": {
+                "domain_type": "box",
+                "domain_size": (0.02, 0.02, 0.02),
+            },
+            "ports": {
+                "inlet_face": "z_max",
+                "outlet_face": "z_min",
+                "inlet_radius": 0.002,
+                "outlet_radius": 0.001,
+            },
+            "topology": {
+                "topology_kind": "tree",
+                "target_terminals": 20,
+            },
+            "constraints": {
+                "min_radius": 0.0001,
+                "clearance": 0.0002,
+            },
+            "general": {
+                "domain_type": "box",
+                "domain_size": (0.02, 0.02, 0.02),
+                "topology_kind": "tree",
+                "target_terminals": 20,
+            },
+        }
+        
+        topic_defaults = defaults.get(current_topic, defaults["general"])
+        
+        applied_defaults = []
+        for field, value in topic_defaults.items():
+            if field not in self.context.spec_values or not self.context.spec_values[field].get("confirmed"):
+                self.context.update_spec_value(field, value, "default")
+                self.context.spec_values[field]["confirmed"] = True
+                applied_defaults.append(f"{field}={value}")
+        
+        if applied_defaults:
+            message = f"Applied defaults for {current_topic}: {', '.join(applied_defaults)}"
+        else:
+            message = f"All {current_topic} values are already set. No defaults applied."
+        
+        missing = self._get_missing_fields()
+        if missing:
+            message += f"\n\nStill needed: {', '.join(missing[:3])}"
+        else:
+            message += "\n\nAll required fields are now set. Ready to proceed?"
+        
+        return DialogueResponse(
+            message=message,
+            intent=DialogueIntent.USE_DEFAULT,
+            is_ready_to_proceed=not bool(missing),
+        )
+    
     def _handle_information(self, user_input: str, extracted: Dict[str, Any]) -> DialogueResponse:
         """Handle general information provision."""
         # Update spec with extracted values
@@ -549,6 +885,14 @@ class ContextualDialogue:
 3. You can ask me questions at any time (e.g., "what are the defaults?", "why are you asking this?")
 4. Say "change" or "actually" to correct any previous answers
 5. Say "confirm" when you're happy with the specification
+
+Available Commands:
+  - 'update description' - Provide a new/updated description and re-assess warnings/ambiguities
+  - 'address warnings' - View and resolve current warnings
+  - 'address ambiguities' - View and clarify current ambiguities
+  - 'default' - Use the default value for the current field/topic
+  - 'help' - Show this help message
+  - 'cancel' - Cancel the current workflow
 
 Current status: """ + self._get_status_summary()
     
@@ -667,7 +1011,41 @@ Current status: """ + self._get_status_summary()
         
         return " | ".join(lines)
     
-    def run_dialogue_loop(self, initial_prompt: str = "") -> Dict[str, Any]:
+    def _print_workflow_rules(self) -> None:
+        """Print workflow rules and available commands at the start of the dialogue."""
+        self._print("=" * 60)
+        self._print("       ORGAN GENERATOR WORKFLOW - RULES & COMMANDS")
+        self._print("=" * 60)
+        self._print("")
+        self._print("WORKFLOW RULES:")
+        self._print("-" * 40)
+        self._print("1. Describe what you want to create in natural language")
+        self._print("2. Answer questions to refine your specification")
+        self._print("3. You can update your description at any time")
+        self._print("4. Address warnings and ambiguities before generation")
+        self._print("5. Type 'default' to accept default values for any field")
+        self._print("6. Type 'confirm' when ready to proceed with generation")
+        self._print("")
+        self._print("AVAILABLE COMMANDS:")
+        self._print("-" * 40)
+        self._print("  'update description' - Provide a new description and re-assess")
+        self._print("  'address warnings'   - View and resolve current warnings")
+        self._print("  'address ambiguities'- View and clarify ambiguities")
+        self._print("  'default'            - Use default value for current field")
+        self._print("  'help'               - Show detailed help information")
+        self._print("  'cancel'             - Cancel the current workflow")
+        self._print("")
+        self._print("TIPS:")
+        self._print("-" * 40)
+        self._print("- Be specific about dimensions (e.g., '20x60x30mm')")
+        self._print("- Specify topology type (path, tree, backbone, loop, multi_tree)")
+        self._print("- Mention inlet/outlet positions (top, bottom, left, right)")
+        self._print("- Include target terminal count for tree structures")
+        self._print("")
+        self._print("=" * 60)
+        self._print("")
+    
+    def run_dialogue_loop(self, initial_prompt: str = "", show_rules: bool = True) -> Dict[str, Any]:
         """
         Run an interactive dialogue loop until ready to proceed.
         
@@ -675,12 +1053,17 @@ Current status: """ + self._get_status_summary()
         ----------
         initial_prompt : str
             Optional initial prompt to display
+        show_rules : bool
+            Whether to show workflow rules at the start (default: True)
             
         Returns
         -------
         Dict[str, Any]
             The final spec values collected from the dialogue
         """
+        if show_rules:
+            self._print_workflow_rules()
+        
         if initial_prompt:
             self._print(initial_prompt)
         else:

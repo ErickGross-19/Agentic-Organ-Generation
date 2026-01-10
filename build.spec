@@ -59,7 +59,6 @@ hiddenimports = [
     'automation.workflow',
     'automation.agent_runner',
     'automation.llm_client',
-    'automation.mogs',
     'generation',
     'generation.api',
     'generation.core',

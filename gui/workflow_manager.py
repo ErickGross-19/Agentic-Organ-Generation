@@ -1,7 +1,7 @@
 """
 Workflow Manager
 
-Manages the execution of Single Agent and MOGS workflows.
+Manages the execution of Single Agent workflows.
 Provides a unified interface for workflow control and status monitoring.
 """
 
@@ -39,7 +39,6 @@ class OutputCapture(io.StringIO):
 class WorkflowType(Enum):
     """Available workflow types."""
     SINGLE_AGENT = "single_agent"
-    MOGS = "mogs"
 
 
 class WorkflowStatus(Enum):
@@ -277,8 +276,6 @@ class WorkflowManager:
             
             if self._config.workflow_type == WorkflowType.SINGLE_AGENT:
                 self._run_single_agent_workflow()
-            elif self._config.workflow_type == WorkflowType.MOGS:
-                self._run_mogs_workflow()
             else:
                 raise ValueError(f"Unknown workflow type: {self._config.workflow_type}")
             
@@ -379,154 +376,6 @@ class WorkflowManager:
         except Exception as e:
             self._set_status(WorkflowStatus.FAILED, str(e))
             self._send_message("error", f"Single Agent workflow failed: {e}")
-    
-    def _run_mogs_workflow(self):
-        """Run MOGS (Multi-Agent Organ Generation System) workflow."""
-        try:
-            from automation.mogs import MOGSRunner, create_mogs_runner
-            from automation.mogs.gates import GateContext, GateResult, ApprovalChoice
-            
-            self._send_message("system", "Starting MOGS workflow...")
-            self._set_status(WorkflowStatus.RUNNING, "Running MOGS workflow")
-            
-            os.makedirs(self._config.output_dir, exist_ok=True)
-            
-            def approval_callback(context: GateContext) -> GateResult:
-                """Handle approval gates via GUI."""
-                gate_info = {
-                    "gate_type": context.gate_type.value if hasattr(context.gate_type, "value") else str(context.gate_type),
-                    "spec_version": context.spec_version,
-                    "summary": getattr(context, "summary", ""),
-                    "artifacts": getattr(context, "artifacts", {}),
-                }
-                
-                self._send_message("approval_gate", f"Approval required: {gate_info['gate_type']}", gate_info)
-                self._set_status(WorkflowStatus.WAITING_INPUT, f"Waiting for approval: {gate_info['gate_type']}")
-                
-                while not self._stop_event.is_set():
-                    try:
-                        response = self._input_queue.get(timeout=0.5)
-                        self._set_status(WorkflowStatus.RUNNING, "Processing approval")
-                        
-                        response_lower = response.lower().strip()
-                        if response_lower in ("approve", "yes", "y", "ok", "approved"):
-                            return GateResult(
-                                gate_type=context.gate_type,
-                                spec_version=context.spec_version,
-                                choice=ApprovalChoice.APPROVE,
-                                comments="Approved via GUI",
-                            )
-                        elif response_lower.startswith("refine") or response_lower.startswith("revise"):
-                            refinement_notes = response
-                            if ":" in response:
-                                refinement_notes = response.split(":", 1)[1].strip()
-                            elif " " in response:
-                                refinement_notes = response.split(" ", 1)[1].strip()
-                            return GateResult(
-                                gate_type=context.gate_type,
-                                spec_version=context.spec_version,
-                                choice=ApprovalChoice.REFINE,
-                                refinement_notes=refinement_notes or response,
-                            )
-                        elif response_lower in ("reject", "no", "n", "rejected"):
-                            return GateResult(
-                                gate_type=context.gate_type,
-                                spec_version=context.spec_version,
-                                choice=ApprovalChoice.REJECT,
-                                comments="Rejected via GUI",
-                            )
-                        else:
-                            return GateResult(
-                                gate_type=context.gate_type,
-                                spec_version=context.spec_version,
-                                choice=ApprovalChoice.REFINE,
-                                refinement_notes=response,
-                            )
-                    except queue.Empty:
-                        continue
-                
-                raise KeyboardInterrupt("Workflow cancelled")
-            
-            if self._config.auto_approve:
-                approval_cb = None
-            else:
-                approval_cb = approval_callback
-            
-            runner = MOGSRunner(
-                objects_base_dir=self._config.output_dir,
-                llm_client=self._llm_client,
-                approval_callback=approval_cb,
-                auto_approve=self._config.auto_approve,
-            )
-            
-            self._current_workflow = runner
-            
-            self._send_message("prompt", "Enter object name for MOGS workflow:")
-            self._set_status(WorkflowStatus.WAITING_INPUT, "Waiting for object name")
-            
-            object_name = None
-            while not self._stop_event.is_set():
-                try:
-                    object_name = self._input_queue.get(timeout=0.5)
-                    break
-                except queue.Empty:
-                    continue
-            
-            if object_name is None:
-                raise KeyboardInterrupt("Workflow cancelled")
-            
-            self._set_status(WorkflowStatus.RUNNING, "Creating MOGS object")
-            folder_manager = runner.create_object(object_name)
-            object_uuid = folder_manager.object_uuid
-            
-            self._send_message("system", f"Created object: {object_name} ({object_uuid})")
-            
-            self._send_message("prompt", "Describe the organ structure you want to generate:")
-            self._set_status(WorkflowStatus.WAITING_INPUT, "Waiting for requirements")
-            
-            user_description = None
-            while not self._stop_event.is_set():
-                try:
-                    user_description = self._input_queue.get(timeout=0.5)
-                    break
-                except queue.Empty:
-                    continue
-            
-            if user_description is None:
-                raise KeyboardInterrupt("Workflow cancelled")
-            
-            self._set_status(WorkflowStatus.RUNNING, "Running MOGS workflow")
-            
-            requirements = {
-                "description": user_description,
-                "user_intent": user_description,
-            }
-            
-            result = runner.run_workflow(
-                object_uuid=object_uuid,
-                requirements=requirements,
-                user_description=user_description,
-            )
-            
-            if result.success:
-                self._artifacts = result.final_outputs
-                
-                for key, path in result.final_outputs.items():
-                    if path.endswith(".stl"):
-                        self._send_output("stl_file", path)
-                
-                self._set_status(WorkflowStatus.COMPLETED, "MOGS workflow completed successfully")
-                self._send_message("success", f"MOGS workflow completed! {result.message}")
-            else:
-                self._set_status(WorkflowStatus.FAILED, result.message)
-                self._send_message("error", f"MOGS workflow failed: {result.message}")
-            
-        except KeyboardInterrupt:
-            self._set_status(WorkflowStatus.CANCELLED, "Workflow cancelled by user")
-            self._send_message("system", "Workflow cancelled")
-        except Exception as e:
-            self._set_status(WorkflowStatus.FAILED, str(e))
-            self._send_message("error", f"MOGS workflow failed: {e}")
     
     def send_input(self, text: str):
         """
