@@ -1,61 +1,86 @@
 """
-Single Agent Organ Generator Workflow
+Single Agent Organ Generator V4 Workflow
 
 # =============================================================================
-# VERSION FLAG: V5 - Goal-Driven Conversational Controller
+# VERSION FLAG: V4 - Topology-First Deterministic Questioning
 # =============================================================================
-# This is V5 of the Single Agent Organ Generator workflow.
-# V5 replaces the V4 state-machine approach with a goal-driven architecture.
+# This is V4 of the Single Agent Organ Generator workflow.
+# If you are seeing issues, verify you are running this version by checking
+# for this comment block. V4 introduces:
 #
-# V5 Key Features:
-# 1. Goal-driven architecture: Progress measured by goal satisfaction
-# 2. World Model: Single source of truth with facts, provenance, and undo stack
-# 3. Approval gates: Always asks before generation and postprocess
-# 4. Safe fixes: One-at-a-time with before/after narration
-# 5. Interrupts/backtracking/undo: First-class support
-# 6. Object-specific plans: Not templated A/B/C
-# 7. IO adapters: Unified interface for CLI and GUI
+# 1. Two-layer architecture: Minimal Viable Spec (MVS) + Adaptive Modules
+# 2. Topology-first gating: PATH vs TREE vs BACKBONE as FIRST question
+# 3. Domain: explicit first, defaults only as fallback
+# 4. Ports: first-class and topology-dependent requirements
+# 5. Topology-specific "ready to generate" thresholds
+# 6. Routing/backbone questions: only when triggered by intent
+# 7. Embedding & voxel pitch: conditional, derived, and budgeted
+# 8. Interaction rules: reactive (meta questions, corrections, validation)
+# 9. Schema fill strategy: deterministic first, LLM second
+# 10. Consistency & safety checks before generation
 #
-# To use V5 (recommended):
-#     from automation.workflow import SingleAgentOrganGeneratorV5
-#     from automation.single_agent_organ_generation.v5 import CLIIOAdapter
-#     
-#     io_adapter = CLIIOAdapter()
-#     workflow = SingleAgentOrganGeneratorV5(io_adapter)
-#     workflow.run()
+# Key changes from V3:
+# - PATH topology can include branching (defined as channel first)
+# - PATH requires outlet port (mandatory)
+# - TREE uses terminal strategy (not outlet ports by default)
+# - Pre-generation validation ensures MVS completeness
+# - Never declares "ready" until compile+artifact checks pass
 #
-# V4 is still available for backward compatibility but is deprecated:
-#     from automation.workflow import SingleAgentOrganGeneratorV4
-#
-# To verify you're running V5, check WORKFLOW_VERSION = "5.0.0"
+# To verify you're running V4, check WORKFLOW_VERSION = "4.0.0"
 # =============================================================================
 
-This module provides the Single Agent Organ Generator workflow for organ structure
-generation using LLM agents.
+This module implements the "Single Agent Organ Generator V4" workflow - a stateful,
+interactive workflow for organ structure generation using LLM agents.
 
-V5 (Current - Goal-Driven Controller):
-- Goal-driven architecture replaces state machine
-- World model as single source of truth
-- Approval gates for generation and postprocess
-- Safe fixes applied one at a time
-- Full undo/backtracking support
-- Object-specific plan synthesis
+V4 introduces topology-first deterministic questioning with the following improvements:
 
-V4 (Legacy - Topology-First Deterministic Questioning):
-- Two-layer architecture: Minimal Viable Spec (MVS) + Adaptive Modules
-- Topology-first gating: PATH vs TREE vs BACKBONE
-- Pre-generation validation ensures MVS completeness
-- Available via SingleAgentOrganGeneratorV4 for backward compatibility
+Two-Layer Architecture:
+- Layer A (MVS): Minimal Viable Spec - topology-dependent required fields
+- Layer B: Adaptive Modules - only activate when intent requires them
 
-Usage (V5 - Recommended):
-    from automation.workflow import SingleAgentOrganGeneratorV5
-    from automation.single_agent_organ_generation.v5 import CLIIOAdapter
-    
-    io_adapter = CLIIOAdapter()
-    workflow = SingleAgentOrganGeneratorV5(io_adapter)
-    workflow.run("Generate a vascular tree for a liver scaffold")
+Topology-First Flow:
+- Step 0: Confirm topology kind (FIRST question, gates all others)
+- Step 1: Domain dimensions (explicit first, defaults fallback)
+- Step 2: Ports (topology-dependent: PATH requires outlet, TREE uses terminals)
+- Step 3: Branching (for PATH, asked AFTER topology confirmed)
+- Step 4: Routing (PATH only, if not straight)
+- Step 5: Embedding (conditional, with print-resolution proxy)
 
-Usage (V4 - Legacy):
+Topology-Specific Ready Thresholds:
+- PATH ready: domain + inlet + outlet + routing
+- TREE ready: domain + inlet + terminal strategy + min radius
+- BACKBONE ready: domain + leg config + ports
+
+Interaction Rules:
+- Every question accepts: direct answer, meta question, correction, uncertainty
+- Invalid answers: show expected format, re-ask immediately
+- Pre-generation validation: verify MVS, run spec compilation, check feasibility
+
+V3 introduced topology-aware questioning with backbone support.
+V2 introduced the "Interpret -> Plan -> Ask" agent pattern.
+
+The workflow follows these steps:
+0. PROJECT_INIT: Ask user for project name and global defaults
+1. OBJECT_PLANNING: Ask how many objects and create object folders
+2. FRAME_OF_REFERENCE: Establish coordinate conventions per object
+3. REQUIREMENTS_CAPTURE: Topology-first requirements gathering
+4. SPEC_COMPILATION: Deterministic spec compilation with validation
+5. GENERATION: Execute generation within object folder
+6. ANALYSIS_VALIDATION: Analyze and validate generated structure
+7. ITERATION: Accept user critique and iterate
+8. FINALIZATION: Embed and produce final outputs
+9. COMPLETE: Close project
+
+Key Features:
+- Topology-first gating prevents irrelevant questions
+- Minimal Viable Spec ensures generation readiness
+- Deterministic spec fill (parsing + rules), LLM only for ambiguity
+- Pre-generation validation catches issues early
+- Per-object folder structure with versioned artifacts
+- Reactive interaction (meta questions, corrections, uncertainty)
+- Never loops silently - shows specific missing/invalid fields
+
+Usage:
     from automation.workflow import SingleAgentOrganGeneratorV4
     from automation.agent_runner import create_agent
     
@@ -71,26 +96,6 @@ from pathlib import Path
 import json
 import time
 import os
-
-from .single_agent_organ_generation.v5 import (
-    SingleAgentOrganGeneratorV5,
-    ControllerConfig,
-    ControllerState,
-    WorldModel,
-    Fact,
-    FactProvenance,
-    GoalTracker,
-    GoalStatus,
-    GOAL_DEFINITIONS,
-    SafeFixPolicy,
-    ApprovalPolicy,
-    CLIIOAdapter,
-    GUIIOAdapter,
-    BaseIOAdapter,
-    PlanSynthesizer,
-)
-
-WORKFLOW_VERSION = "5.0.0"
 
 from .agent_runner import AgentRunner, TaskResult, TaskStatus
 from .execution_modes import (
