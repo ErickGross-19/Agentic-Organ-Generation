@@ -3,6 +3,12 @@ Workflow Manager
 
 Manages the execution of Single Agent workflows.
 Provides a unified interface for workflow control and status monitoring.
+
+V5 Update:
+- Added support for V5 goal-driven controller
+- Uses IO adapters instead of input() monkeypatching
+- Supports modal approvals for generation and postprocess
+- Shows trace timeline for workflow progress
 """
 
 import io
@@ -402,3 +408,239 @@ class WorkflowManager:
     def get_conversation_history(self) -> List[Dict[str, str]]:
         """Get conversation history."""
         return self._conversation_history.copy()
+    
+    def _run_single_agent_workflow_v5(self, initial_message: Optional[str] = None):
+        """
+        Run Single Agent Organ Generator V5 workflow.
+        
+        V5 uses IO adapters instead of input() monkeypatching, providing:
+        - Modal approvals for generation and postprocess
+        - Trace timeline for workflow progress
+        - Clean separation between controller and UI
+        
+        Parameters
+        ----------
+        initial_message : str, optional
+            Initial user message to start the workflow
+        """
+        try:
+            from automation.workflow import (
+                SingleAgentOrganGeneratorV5,
+                ControllerConfig,
+                GUIIOAdapter,
+            )
+            from automation.single_agent_organ_generation.v5.io.base_io import (
+                IOMessageKind,
+                TraceEvent,
+            )
+            
+            self._send_message("system", "Starting Single Agent Organ Generator V5...")
+            self._set_status(WorkflowStatus.RUNNING, "Running V5 workflow")
+            
+            os.makedirs(self._config.output_dir, exist_ok=True)
+            
+            def on_message(message: str, kind: IOMessageKind, payload: Optional[Dict] = None):
+                msg_type = "assistant"
+                if kind == IOMessageKind.ERROR:
+                    msg_type = "error"
+                elif kind == IOMessageKind.WARNING:
+                    msg_type = "warning"
+                elif kind == IOMessageKind.SUCCESS:
+                    msg_type = "success"
+                elif kind == IOMessageKind.SYSTEM:
+                    msg_type = "system"
+                elif kind == IOMessageKind.TRACE:
+                    msg_type = "trace"
+                
+                self._send_message(msg_type, message, payload)
+            
+            def on_approval(approval_data: Dict[str, Any]) -> bool:
+                self._send_message("approval_request", approval_data.get("prompt", "Approve?"), approval_data)
+                self._set_status(WorkflowStatus.WAITING_INPUT, "Waiting for approval")
+                
+                while not self._stop_event.is_set():
+                    try:
+                        response = self._input_queue.get(timeout=0.5)
+                        self._set_status(WorkflowStatus.RUNNING, "Processing approval")
+                        return response.lower() in ("y", "yes", "true", "1", "approve")
+                    except queue.Empty:
+                        continue
+                
+                raise KeyboardInterrupt("Workflow cancelled")
+            
+            def on_text_input(prompt: str, suggestions: Optional[List[str]], default: Optional[str]) -> str:
+                self._send_message("prompt", prompt, {"suggestions": suggestions, "default": default})
+                self._set_status(WorkflowStatus.WAITING_INPUT, "Waiting for user input")
+                
+                while not self._stop_event.is_set():
+                    try:
+                        response = self._input_queue.get(timeout=0.5)
+                        self._set_status(WorkflowStatus.RUNNING, "Processing input")
+                        if not response and default:
+                            return default
+                        return response
+                    except queue.Empty:
+                        continue
+                
+                raise KeyboardInterrupt("Workflow cancelled")
+            
+            def on_trace(event: TraceEvent):
+                self._send_message("trace", event.message, {
+                    "event_type": event.event_type,
+                    "data": event.data,
+                })
+            
+            def on_spec_display(spec_summary: Dict[str, Any]):
+                self._send_message("spec_update", "Living spec updated", spec_summary)
+            
+            def on_plans_display(plans: List[Dict[str, Any]], recommended_id: Optional[str]):
+                self._send_message("plans", "Plans proposed", {
+                    "plans": plans,
+                    "recommended_id": recommended_id,
+                })
+            
+            def on_plan_selection(plans: List[Dict[str, Any]]) -> Optional[str]:
+                self._send_message("plan_selection", "Select a plan", {"plans": plans})
+                self._set_status(WorkflowStatus.WAITING_INPUT, "Waiting for plan selection")
+                
+                while not self._stop_event.is_set():
+                    try:
+                        response = self._input_queue.get(timeout=0.5)
+                        self._set_status(WorkflowStatus.RUNNING, "Processing selection")
+                        if not response:
+                            return None
+                        return response
+                    except queue.Empty:
+                        continue
+                
+                raise KeyboardInterrupt("Workflow cancelled")
+            
+            def on_safe_fix(field: str, before: Any, after: Any, reason: str):
+                self._send_message("safe_fix", f"Applied safe fix: {field}", {
+                    "field": field,
+                    "before": before,
+                    "after": after,
+                    "reason": reason,
+                })
+            
+            def on_generation_ready(runtime: str, outputs: List[str], assumptions: List[str], risks: List[str]):
+                self._send_message("generation_ready", "Ready to generate", {
+                    "runtime_estimate": runtime,
+                    "expected_outputs": outputs,
+                    "assumptions": assumptions,
+                    "risk_flags": risks,
+                })
+            
+            def on_postprocess_ready(voxel_pitch: float, settings: Dict, steps: List[str], runtime: str, outputs: List[str]):
+                self._send_message("postprocess_ready", "Ready to postprocess", {
+                    "voxel_pitch": voxel_pitch,
+                    "embedding_settings": settings,
+                    "repair_steps": steps,
+                    "runtime_estimate": runtime,
+                    "expected_outputs": outputs,
+                })
+            
+            def on_stl_viewer(stl_path: str):
+                self._send_message("stl_ready", f"STL file ready: {stl_path}", {"stl_path": stl_path})
+                self._send_output("stl_file", stl_path)
+            
+            io_adapter = GUIIOAdapter(
+                message_callback=on_message,
+                approval_callback=on_approval,
+                text_input_callback=on_text_input,
+                trace_callback=on_trace,
+                spec_display_callback=on_spec_display,
+                plans_display_callback=on_plans_display,
+                plan_selection_callback=on_plan_selection,
+                safe_fix_callback=on_safe_fix,
+                generation_ready_callback=on_generation_ready,
+                postprocess_ready_callback=on_postprocess_ready,
+                stl_viewer_callback=on_stl_viewer,
+            )
+            
+            config = ControllerConfig(
+                verbose=self._config.verbose,
+                auto_select_plan_if_confident=not self._config.auto_approve,
+            )
+            
+            workflow = SingleAgentOrganGeneratorV5(
+                io_adapter=io_adapter,
+                config=config,
+            )
+            
+            self._current_workflow = workflow
+            
+            success = workflow.run(initial_message=initial_message)
+            
+            if success:
+                status = workflow.get_status()
+                self._artifacts = {
+                    "spec_hash": status.get("spec_hash", ""),
+                    "output_dir": self._config.output_dir,
+                }
+                
+                self._set_status(WorkflowStatus.COMPLETED, "V5 workflow completed successfully")
+                self._send_message("success", f"V5 workflow completed! Output: {self._config.output_dir}")
+            else:
+                self._set_status(WorkflowStatus.WAITING_INPUT, "Workflow paused - waiting for input")
+            
+        except KeyboardInterrupt:
+            self._set_status(WorkflowStatus.CANCELLED, "Workflow cancelled by user")
+            self._send_message("system", "Workflow cancelled")
+        except Exception as e:
+            self._set_status(WorkflowStatus.FAILED, str(e))
+            self._send_message("error", f"V5 workflow failed: {e}")
+    
+    def start_workflow_v5(self, config: WorkflowConfig, initial_message: Optional[str] = None) -> bool:
+        """
+        Start a V5 workflow execution.
+        
+        Parameters
+        ----------
+        config : WorkflowConfig
+            Workflow configuration
+        initial_message : str, optional
+            Initial user message to start the workflow
+            
+        Returns
+        -------
+        bool
+            True if workflow started successfully
+        """
+        if self.is_running:
+            self._send_message("error", "A workflow is already running")
+            return False
+        
+        self._config = config
+        self._stop_event.clear()
+        self._artifacts.clear()
+        self._conversation_history.clear()
+        
+        while not self._input_queue.empty():
+            try:
+                self._input_queue.get_nowait()
+            except queue.Empty:
+                break
+        
+        self._workflow_thread = threading.Thread(
+            target=lambda: self._run_single_agent_workflow_v5(initial_message),
+            daemon=True,
+        )
+        self._workflow_thread.start()
+        
+        return True
+    
+    def send_approval(self, approved: bool):
+        """
+        Send approval response to the running V5 workflow.
+        
+        Parameters
+        ----------
+        approved : bool
+            Whether the user approved the action
+        """
+        self._input_queue.put("yes" if approved else "no")
+        self._conversation_history.append({
+            "role": "user",
+            "content": f"Approval: {'Yes' if approved else 'No'}",
+        })
