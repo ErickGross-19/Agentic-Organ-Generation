@@ -309,16 +309,9 @@ class WorkflowManager:
             
             os.makedirs(self._config.output_dir, exist_ok=True)
             
-            workflow = SingleAgentOrganGeneratorV4(
-                agent=self._agent,
-                base_output_dir=self._config.output_dir,
-                verbose=self._config.verbose,
-                execution_mode=execution_mode,
-                timeout_seconds=self._config.timeout_seconds,
-            )
-            
-            self._current_workflow = workflow
-            
+            # IMPORTANT: Apply monkeypatch BEFORE creating workflow object
+            # The workflow's ReactivePromptSession captures the reference to input()
+            # at construction time, so we must patch it first.
             original_input = __builtins__["input"] if isinstance(__builtins__, dict) else __builtins__.input
             
             def gui_input(prompt=""):
@@ -341,7 +334,19 @@ class WorkflowManager:
                 import builtins
                 builtins.input = gui_input
             
+            # Use try/finally to ensure we always restore the original input function
             try:
+                # Now create the workflow - it will capture the patched input function
+                workflow = SingleAgentOrganGeneratorV4(
+                    agent=self._agent,
+                    base_output_dir=self._config.output_dir,
+                    verbose=self._config.verbose,
+                    execution_mode=execution_mode,
+                    timeout_seconds=self._config.timeout_seconds,
+                )
+                
+                self._current_workflow = workflow
+                
                 context = workflow.run()
                 
                 self._artifacts = {
@@ -361,6 +366,7 @@ class WorkflowManager:
                 self._send_message("success", f"Workflow completed! Output: {context.output_dir}")
                 
             finally:
+                # Always restore the original input function
                 if isinstance(__builtins__, dict):
                     __builtins__["input"] = original_input
                 else:
