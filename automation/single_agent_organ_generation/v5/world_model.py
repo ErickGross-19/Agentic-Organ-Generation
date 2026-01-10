@@ -522,13 +522,74 @@ class WorldModel:
         """Get an approval by type."""
         return self._approvals.get(approval_type)
     
-    def add_artifact(self, artifact: Artifact) -> None:
-        """Add an artifact."""
-        self._artifacts[artifact.artifact_type] = artifact
+    def add_artifact(
+        self,
+        artifact_or_type: "Artifact | str",
+        path_or_data: "str | Dict[str, Any] | None" = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        Add an artifact.
+        
+        Can be called in two ways:
+        1. add_artifact(artifact: Artifact) - pass a pre-constructed Artifact
+        2. add_artifact(artifact_type: str, path_or_data, metadata=None) - convenience form
+        
+        Parameters
+        ----------
+        artifact_or_type : Artifact or str
+            Either an Artifact object or the artifact type string
+        path_or_data : str or dict, optional
+            Path string or data dict (for convenience form)
+        metadata : dict, optional
+            Additional metadata (for convenience form)
+        """
+        if isinstance(artifact_or_type, Artifact):
+            self._artifacts[artifact_or_type.artifact_type] = artifact_or_type
+        else:
+            artifact_type = artifact_or_type
+            if isinstance(path_or_data, dict):
+                artifact = Artifact(
+                    artifact_type=artifact_type,
+                    path="",
+                    metadata={"data": path_or_data, **(metadata or {})},
+                )
+            else:
+                artifact = Artifact(
+                    artifact_type=artifact_type,
+                    path=path_or_data or "",
+                    metadata=metadata or {},
+                )
+            self._artifacts[artifact_type] = artifact
     
-    def get_artifact(self, artifact_type: str) -> Optional[Artifact]:
-        """Get an artifact by type."""
-        return self._artifacts.get(artifact_type)
+    def get_artifact(self, artifact_type: str) -> Optional[Any]:
+        """
+        Get an artifact by type.
+        
+        Returns the artifact data directly if it was stored as data,
+        or the path if it was stored as a path, or the Artifact object
+        if neither is available.
+        
+        Parameters
+        ----------
+        artifact_type : str
+            The type of artifact to retrieve
+            
+        Returns
+        -------
+        Any
+            The artifact data, path, or Artifact object
+        """
+        artifact = self._artifacts.get(artifact_type)
+        if artifact is None:
+            return None
+        
+        if "data" in artifact.metadata:
+            return artifact.metadata["data"]
+        elif artifact.path:
+            return artifact.path
+        else:
+            return artifact
     
     def get_all_artifacts(self) -> Dict[str, Artifact]:
         """Get all artifacts."""

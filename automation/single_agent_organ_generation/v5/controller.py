@@ -17,7 +17,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
-from .world_model import WorldModel, FactProvenance, TraceEvent
+from .world_model import WorldModel, FactProvenance, TraceEvent, Artifact
 from .goals import GoalTracker, GoalStatus
 from .policies import SafeFixPolicy, ApprovalPolicy, CapabilitySelectionPolicy
 from .plan_synthesizer import PlanSynthesizer
@@ -390,7 +390,7 @@ class SingleAgentOrganGeneratorV5:
             if self.goal_tracker.get_status("validation_passed") != GoalStatus.SATISFIED:
                 available.append("validate_artifacts")
         
-        if self.world_model.get_fact_value("_validation_failed", False):
+        if self.world_model.get_fact_value("validation_failed", False):
             if self._safe_fixes_this_run < self.config.max_safe_fixes_per_run:
                 if not self._safe_fix_applied_this_iteration:
                     available.append("apply_one_safe_fix")
@@ -418,7 +418,7 @@ class SingleAgentOrganGeneratorV5:
             message=message,
             data=data,
         )
-        self.world_model.add_trace_event(event)
+        self.world_model.add_trace_event(event.event_type, event.message, event.data)
         self.io.emit_trace(event)
     
     def _cap_ingest_user_event(self) -> bool:
@@ -579,7 +579,7 @@ class SingleAgentOrganGeneratorV5:
                 x, y, z = x / 1000, y / 1000, z / 1000
             elif unit == "cm":
                 x, y, z = x / 100, y / 100, z / 100
-            patches["domain.size_m"] = (x, y, z)
+            patches["domain.size"] = (x, y, z)
         
         terminal_match = re.search(r"(\d+)\s*terminals?", message_lower)
         if terminal_match:
@@ -739,7 +739,7 @@ class SingleAgentOrganGeneratorV5:
                 "_spec_compiled",
                 True,
                 FactProvenance.SYSTEM,
-                "Spec compilation successful",
+                reason="Spec compilation successful",
             )
             
             self._emit_trace("spec_compiled", "Spec compiled successfully")
@@ -750,7 +750,7 @@ class SingleAgentOrganGeneratorV5:
                 "_spec_compiled",
                 False,
                 FactProvenance.SYSTEM,
-                f"Compilation failed: {str(e)}",
+                reason=f"Compilation failed: {str(e)}",
             )
             self._emit_trace("spec_compile_failed", f"Compilation failed: {str(e)}")
             self.io.say_error(f"Spec compilation failed: {str(e)}")
@@ -758,22 +758,46 @@ class SingleAgentOrganGeneratorV5:
     
     def _default_compile_spec(self) -> Dict[str, Any]:
         """Default spec compilation when no compiler is provided."""
+        domain_size = self.world_model.get_fact_value("domain.size", (0.02, 0.06, 0.03))
+        inlet_face = self.world_model.get_fact_value("inlet.face", "z_min")
+        outlet_face = self.world_model.get_fact_value("outlet.face", "z_max")
+        inlet_radius = self.world_model.get_fact_value("inlet.radius", 0.002)
+        outlet_radius = self.world_model.get_fact_value("outlet.radius", 0.001)
+        
+        inlet_position = self._derive_position_from_face(inlet_face, domain_size)
+        outlet_position = self._derive_position_from_face(outlet_face, domain_size)
+        
+        self.world_model.set_fact(
+            "inlet.position",
+            inlet_position,
+            FactProvenance.INFERRED,
+            reason=f"Derived from inlet.face={inlet_face} and domain.size",
+        )
+        self.world_model.set_fact(
+            "outlet.position",
+            outlet_position,
+            FactProvenance.INFERRED,
+            reason=f"Derived from outlet.face={outlet_face} and domain.size",
+        )
+        
         compiled = {
             "domain": {
                 "type": self.world_model.get_fact_value("domain.type", "box"),
-                "size": self.world_model.get_fact_value("domain.size", (0.02, 0.06, 0.03)),
+                "size": domain_size,
             },
             "topology": {
                 "kind": self.world_model.get_fact_value("topology.kind", "tree"),
                 "target_terminals": self.world_model.get_fact_value("topology.target_terminals", 50),
             },
             "inlet": {
-                "face": self.world_model.get_fact_value("inlet.face", "z_min"),
-                "radius": self.world_model.get_fact_value("inlet.radius", 0.002),
+                "face": inlet_face,
+                "position": inlet_position,
+                "radius": inlet_radius,
             },
             "outlet": {
-                "face": self.world_model.get_fact_value("outlet.face", "z_max"),
-                "radius": self.world_model.get_fact_value("outlet.radius", 0.001),
+                "face": outlet_face,
+                "position": outlet_position,
+                "radius": outlet_radius,
             },
             "colonization": {
                 "influence_radius": self.world_model.get_fact_value("colonization.influence_radius", 0.015),
@@ -789,6 +813,38 @@ class SingleAgentOrganGeneratorV5:
         }
         
         return compiled
+    
+    def _derive_position_from_face(self, face: str, domain_size: tuple) -> tuple:
+        """
+        Derive a position from a face name and domain size.
+        
+        The position is centered on the specified face.
+        
+        Parameters
+        ----------
+        face : str
+            Face name (x_min, x_max, y_min, y_max, z_min, z_max)
+        domain_size : tuple
+            Domain size (width, depth, height) in meters
+            
+        Returns
+        -------
+        tuple
+            (x, y, z) position in meters
+        """
+        w, d, h = domain_size
+        center_x, center_y, center_z = w / 2, d / 2, h / 2
+        
+        face_positions = {
+            "x_min": (0, center_y, center_z),
+            "x_max": (w, center_y, center_z),
+            "y_min": (center_x, 0, center_z),
+            "y_max": (center_x, d, center_z),
+            "z_min": (center_x, center_y, 0),
+            "z_max": (center_x, center_y, h),
+        }
+        
+        return face_positions.get(face, (center_x, center_y, 0))
     
     def _cap_pregen_verify(self) -> bool:
         """Capability 8: Pre-generation verify."""
@@ -806,17 +862,12 @@ class SingleAgentOrganGeneratorV5:
         if any(d < 0.005 for d in domain_size):
             issues.append("domain dimension too small")
         
-        inlet_face = compiled_spec.get("inlet", {}).get("face", "")
-        outlet_face = compiled_spec.get("outlet", {}).get("face", "")
-        if inlet_face == outlet_face:
-            issues.append("inlet and outlet on same face")
-        
         if issues:
             self.world_model.set_fact(
                 "pregen_verified",
                 False,
                 FactProvenance.SYSTEM,
-                f"Verification failed: {', '.join(issues)}",
+                reason=f"Verification failed: {', '.join(issues)}",
             )
             self.world_model.set_fact("validation_failed", True, FactProvenance.SYSTEM)
             self.world_model.set_fact("validation_issues", issues, FactProvenance.SYSTEM)
@@ -829,7 +880,7 @@ class SingleAgentOrganGeneratorV5:
             "pregen_verified",
             True,
             FactProvenance.SYSTEM,
-            "Pre-generation verification passed",
+            reason="Pre-generation verification passed",
         )
         
         self._emit_trace("pregen_verified", "Pre-generation verification passed")
@@ -915,7 +966,7 @@ class SingleAgentOrganGeneratorV5:
                 "generation_done",
                 True,
                 FactProvenance.SYSTEM,
-                "Generation completed successfully",
+                reason="Generation completed successfully",
             )
             
             self._emit_trace("generation_finished", "Generation completed")
@@ -928,7 +979,7 @@ class SingleAgentOrganGeneratorV5:
                 "generation_done",
                 False,
                 FactProvenance.SYSTEM,
-                f"Generation failed: {str(e)}",
+                reason=f"Generation failed: {str(e)}",
             )
             self._emit_trace("generation_failed", f"Generation failed: {str(e)}")
             self.io.say_error(f"Generation failed: {str(e)}")
@@ -1008,7 +1059,7 @@ class SingleAgentOrganGeneratorV5:
                 "postprocess_done",
                 True,
                 FactProvenance.SYSTEM,
-                "Postprocess completed successfully",
+                reason="Postprocess completed successfully",
             )
             
             self._emit_trace("postprocess_finished", "Postprocess completed")
@@ -1023,7 +1074,7 @@ class SingleAgentOrganGeneratorV5:
                 "postprocess_done",
                 False,
                 FactProvenance.SYSTEM,
-                f"Postprocess failed: {str(e)}",
+                reason=f"Postprocess failed: {str(e)}",
             )
             self._emit_trace("postprocess_failed", f"Postprocess failed: {str(e)}")
             self.io.say_error(f"Postprocess failed: {str(e)}")
@@ -1048,7 +1099,7 @@ class SingleAgentOrganGeneratorV5:
                 "validation_passed",
                 False,
                 FactProvenance.SYSTEM,
-                f"Validation failed: {', '.join(issues)}",
+                reason=f"Validation failed: {', '.join(issues)}",
             )
             
             self._emit_trace("validation_failed", f"Validation failed: {issues}")
@@ -1060,7 +1111,7 @@ class SingleAgentOrganGeneratorV5:
             "validation_passed",
             True,
             FactProvenance.SYSTEM,
-            "Validation passed",
+            reason="Validation passed",
         )
         
         self._emit_trace("validation_passed", "Validation passed")
@@ -1098,7 +1149,7 @@ class SingleAgentOrganGeneratorV5:
             safest.field,
             new_value,
             FactProvenance.SAFE_FIX,
-            safest.reason,
+            reason=safest.reason,
         )
         
         self.io.show_safe_fix(
@@ -1166,7 +1217,7 @@ class SingleAgentOrganGeneratorV5:
                     selected.field,
                     selected.proposed_value,
                     FactProvenance.USER,
-                    f"User selected fix: {selected.reason}",
+                    reason=f"User selected fix: {selected.reason}",
                 )
                 self._emit_trace("non_safe_fix_applied", f"User selected fix: {selected.fix_id}")
                 return True
@@ -1295,7 +1346,7 @@ class SingleAgentOrganGeneratorV5:
         topic_lower = topic.lower()
         
         topic_to_fields = {
-            "domain": ["domain.type", "domain.size_m", "domain.shape"],
+            "domain": ["domain.type", "domain.size", "domain.shape"],
             "inlet": ["inlet.face", "inlet.position", "inlet.radius"],
             "outlet": ["outlet.face", "outlet.position", "outlet.radius"],
             "ports": ["inlet.face", "outlet.face", "inlet.position", "outlet.position"],
@@ -1346,7 +1397,7 @@ class SingleAgentOrganGeneratorV5:
             "outputs_packaged",
             True,
             FactProvenance.SYSTEM,
-            "Outputs packaged successfully",
+            reason="Outputs packaged successfully",
         )
         
         self._emit_trace("outputs_packaged", "Outputs packaged")

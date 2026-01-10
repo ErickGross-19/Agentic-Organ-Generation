@@ -117,6 +117,7 @@ class WorkflowManager:
         self._status = WorkflowStatus.IDLE
         self._workflow_thread: Optional[threading.Thread] = None
         self._input_queue: queue.Queue = queue.Queue()
+        self._approval_queue: queue.Queue = queue.Queue()
         self._stop_event = threading.Event()
         self._current_workflow = None
         self._config: Optional[WorkflowConfig] = None
@@ -460,9 +461,9 @@ class WorkflowManager:
                 
                 while not self._stop_event.is_set():
                     try:
-                        response = self._input_queue.get(timeout=0.5)
+                        approved = self._approval_queue.get(timeout=0.5)
                         self._set_status(WorkflowStatus.RUNNING, "Processing approval")
-                        return response.lower() in ("y", "yes", "true", "1", "approve")
+                        return approved
                     except queue.Empty:
                         continue
                 
@@ -634,12 +635,15 @@ class WorkflowManager:
         """
         Send approval response to the running V5 workflow.
         
+        Uses a dedicated approval queue to ensure modal-safe behavior,
+        separate from the text input queue.
+        
         Parameters
         ----------
         approved : bool
             Whether the user approved the action
         """
-        self._input_queue.put("yes" if approved else "no")
+        self._approval_queue.put(approved)
         self._conversation_history.append({
             "role": "user",
             "content": f"Approval: {'Yes' if approved else 'No'}",

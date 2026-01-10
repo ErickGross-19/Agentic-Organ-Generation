@@ -90,7 +90,7 @@ class PlanSynthesizer:
         str
             Human-readable runtime estimate with range
         """
-        domain_size = self.world_model.get_fact_value("domain.size_m", (0.02, 0.06, 0.03))
+        domain_size = self.world_model.get_fact_value("domain.size", (0.02, 0.06, 0.03))
         if isinstance(domain_size, (list, tuple)) and len(domain_size) == 3:
             domain_volume = domain_size[0] * domain_size[1] * domain_size[2]
         else:
@@ -156,7 +156,7 @@ class PlanSynthesizer:
         dict
             Expected outputs including file types and sizes
         """
-        domain_size = self.world_model.get_fact_value("domain.size_m", (0.02, 0.06, 0.03))
+        domain_size = self.world_model.get_fact_value("domain.size", (0.02, 0.06, 0.03))
         if isinstance(domain_size, (list, tuple)) and len(domain_size) == 3:
             domain_volume = domain_size[0] * domain_size[1] * domain_size[2]
         else:
