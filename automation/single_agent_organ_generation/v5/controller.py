@@ -813,20 +813,20 @@ class SingleAgentOrganGeneratorV5:
         
         if issues:
             self.world_model.set_fact(
-                "_pregen_verified",
+                "pregen_verified",
                 False,
                 FactProvenance.SYSTEM,
                 f"Verification failed: {', '.join(issues)}",
             )
-            self.world_model.set_fact("_validation_failed", True, FactProvenance.SYSTEM)
-            self.world_model.set_fact("_validation_issues", issues, FactProvenance.SYSTEM)
+            self.world_model.set_fact("validation_failed", True, FactProvenance.SYSTEM)
+            self.world_model.set_fact("validation_issues", issues, FactProvenance.SYSTEM)
             
             self._emit_trace("pregen_failed", f"Pre-gen verification failed: {issues}")
             self.io.say_warning(f"Pre-generation verification failed: {', '.join(issues)}")
             return False
         
         self.world_model.set_fact(
-            "_pregen_verified",
+            "pregen_verified",
             True,
             FactProvenance.SYSTEM,
             "Pre-generation verification passed",
@@ -901,6 +901,7 @@ class SingleAgentOrganGeneratorV5:
                 result = self.generator.generate(compiled_spec)
                 
                 self.world_model.add_artifact("generation_result", result)
+                self.world_model.add_artifact("generated_network", result)
                 if result.get("mesh_path"):
                     self.world_model.add_artifact("mesh_path", result["mesh_path"])
             else:
@@ -908,8 +909,10 @@ class SingleAgentOrganGeneratorV5:
                 self.world_model.add_artifact("generation_result", result)
                 self.world_model.add_artifact("mesh_path", result["mesh_path"])
             
+            self.world_model.add_artifact("generated_network", result)
+            
             self.world_model.set_fact(
-                "_generation_done",
+                "generation_done",
                 True,
                 FactProvenance.SYSTEM,
                 "Generation completed successfully",
@@ -922,7 +925,7 @@ class SingleAgentOrganGeneratorV5:
             
         except Exception as e:
             self.world_model.set_fact(
-                "_generation_done",
+                "generation_done",
                 False,
                 FactProvenance.SYSTEM,
                 f"Generation failed: {str(e)}",
@@ -999,9 +1002,10 @@ class SingleAgentOrganGeneratorV5:
             result = {"status": "completed", "output_path": "/tmp/final_output.stl"}
             self.world_model.add_artifact("postprocess_result", result)
             self.world_model.add_artifact("final_mesh_path", result["output_path"])
+            self.world_model.add_artifact("postprocessed_mesh", result)
             
             self.world_model.set_fact(
-                "_postprocess_done",
+                "postprocess_done",
                 True,
                 FactProvenance.SYSTEM,
                 "Postprocess completed successfully",
@@ -1016,7 +1020,7 @@ class SingleAgentOrganGeneratorV5:
             
         except Exception as e:
             self.world_model.set_fact(
-                "_postprocess_done",
+                "postprocess_done",
                 False,
                 FactProvenance.SYSTEM,
                 f"Postprocess failed: {str(e)}",
@@ -1038,10 +1042,10 @@ class SingleAgentOrganGeneratorV5:
                 issues = validation_result.get("issues", [])
         
         if issues:
-            self.world_model.set_fact("_validation_failed", True, FactProvenance.SYSTEM)
-            self.world_model.set_fact("_validation_issues", issues, FactProvenance.SYSTEM)
+            self.world_model.set_fact("validation_failed", True, FactProvenance.SYSTEM)
+            self.world_model.set_fact("validation_issues", issues, FactProvenance.SYSTEM)
             self.world_model.set_fact(
-                "_validation_passed",
+                "validation_passed",
                 False,
                 FactProvenance.SYSTEM,
                 f"Validation failed: {', '.join(issues)}",
@@ -1051,9 +1055,9 @@ class SingleAgentOrganGeneratorV5:
             self.io.say_warning(f"Validation failed: {', '.join(issues)}")
             return False
         
-        self.world_model.set_fact("_validation_failed", False, FactProvenance.SYSTEM)
+        self.world_model.set_fact("validation_failed", False, FactProvenance.SYSTEM)
         self.world_model.set_fact(
-            "_validation_passed",
+            "validation_passed",
             True,
             FactProvenance.SYSTEM,
             "Validation passed",
@@ -1069,7 +1073,7 @@ class SingleAgentOrganGeneratorV5:
         if self._safe_fix_applied_this_iteration:
             return False
         
-        issues = self.world_model.get_fact_value("_validation_issues", [])
+        issues = self.world_model.get_fact_value("validation_issues", [])
         if not issues:
             return False
         
@@ -1113,7 +1117,7 @@ class SingleAgentOrganGeneratorV5:
         self._safe_fix_applied_this_iteration = True
         self._safe_fixes_this_run += 1
         
-        self.world_model.set_fact("_validation_failed", False, FactProvenance.SYSTEM)
+        self.world_model.set_fact("validation_failed", False, FactProvenance.SYSTEM)
         
         self.io.say_assistant(f"Applied safe fix: {safest.reason}. Re-validating now.")
         
@@ -1121,7 +1125,7 @@ class SingleAgentOrganGeneratorV5:
     
     def _cap_ask_for_non_safe_fix_choice(self) -> bool:
         """Capability 15: Ask for non-safe fix choice."""
-        issues = self.world_model.get_fact_value("_validation_issues", [])
+        issues = self.world_model.get_fact_value("validation_issues", [])
         if not issues:
             return False
         
@@ -1336,9 +1340,10 @@ class SingleAgentOrganGeneratorV5:
         }
         
         self.world_model.add_artifact("manifest", manifest)
+        self.world_model.add_artifact("output_package", manifest)
         
         self.world_model.set_fact(
-            "_outputs_packaged",
+            "outputs_packaged",
             True,
             FactProvenance.SYSTEM,
             "Outputs packaged successfully",

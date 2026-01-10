@@ -75,7 +75,7 @@ import os
 from .single_agent_organ_generation.v5 import (
     SingleAgentOrganGeneratorV5,
     ControllerConfig,
-    ControllerState,
+    ControllerStatus,
     WorldModel,
     Fact,
     FactProvenance,
