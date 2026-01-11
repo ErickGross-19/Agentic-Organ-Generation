@@ -495,6 +495,7 @@ class CapabilitySelectionPolicy:
         "generate_missing_field_questions": 82,  # Higher than propose_tailored_plans to ask questions first
         "ask_best_next_question": 80,
         "propose_tailored_plans": 75,
+        "offer_plan_refresh": 72,  # Between propose and select - offer refresh before selection
         "select_plan": 70,
         "compile_spec": 65,
         "pregen_verify": 60,

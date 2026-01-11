@@ -80,6 +80,11 @@ class ControllerConfig:
     verbose: bool = True
     llm_first_mode: bool = False  # Enable LLM-first agentic mode
     output_dir: Optional[str] = None  # Output directory for workspace
+    # Verbosity level for conversational feedback:
+    # "quiet" - minimal output, no readbacks
+    # "normal" - readbacks after big answers (domain, topology, inlet/outlet)
+    # "chatty" - readbacks after every answer
+    verbosity: str = "normal"
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -89,6 +94,7 @@ class ControllerConfig:
             "verbose": self.verbose,
             "llm_first_mode": self.llm_first_mode,
             "output_dir": self.output_dir,
+            "verbosity": self.verbosity,
         }
 
 
@@ -190,6 +196,8 @@ class SingleAgentOrganGeneratorV5:
             "package_outputs": self._cap_package_outputs,
             # Project initialization (mode-independent)
             "ask_project_name": self._cap_ask_project_name,
+            # Plan refresh offer (when spec changes but not major fields)
+            "offer_plan_refresh": self._cap_offer_plan_refresh,
             # LLM-first mode capabilities
             "llm_ask_project_name": self._cap_llm_ask_project_name,
             "llm_decide_next": self._cap_llm_decide_next,
@@ -203,6 +211,9 @@ class SingleAgentOrganGeneratorV5:
         self._last_summarize_hash: Optional[str] = None
         self._last_plan_proposal_hash: Optional[str] = None  # Track when plans were last proposed
         self._denied_approval_hashes: Dict[str, str] = {}
+        
+        # Track major field values at last plan proposal to detect major changes
+        self._last_plan_major_fields: Dict[str, Any] = {}
         
         # LLM-first mode: Track workspace hash to prevent re-running identical code
         self._last_verified_workspace_hash: Optional[str] = None
@@ -574,9 +585,11 @@ class SingleAgentOrganGeneratorV5:
                 available.append("generate_missing_field_questions")
             
             # Only propose plans if:
-            # 1. No plans exist yet, OR
-            # 2. Spec changed since last proposal (allows re-proposing after spec changes)
-            # This prevents infinite loop of re-proposing the same plans
+            # 1. No plans exist yet (auto-propose ONCE)
+            # 2. User explicitly requested re-proposal, OR
+            # 3. A "major" field changed (topology.kind, domain.type)
+            # 
+            # This prevents the infinite plan loop where every answer triggers re-proposal.
             # 
             # Additionally, gate plan proposal to only be available after minimum intent:
             # - domain type must be set, OR
@@ -593,14 +606,31 @@ class SingleAgentOrganGeneratorV5:
             
             if not self.world_model.selected_plan and has_minimum_intent:
                 if not self.world_model.plans:
-                    # No plans yet - propose some
+                    # No plans yet - propose some (auto-propose ONCE)
                     available.append("propose_tailored_plans")
                 else:
                     # Plans exist but none selected
-                    if self._last_plan_proposal_hash != current_spec_hash:
-                        # Spec changed - allow re-proposal
+                    # Check if a major field changed since last proposal
+                    major_field_changed = self._check_major_field_changed()
+                    user_requested_refresh = self.world_model.get_fact_value("_user_requested_plan_refresh", False)
+                    
+                    if major_field_changed or user_requested_refresh:
+                        # Major change or user request - allow re-proposal
                         available.append("propose_tailored_plans")
-                    # Allow plan selection when plans exist but none selected
+                        # Clear the user request flag after allowing re-proposal
+                        if user_requested_refresh:
+                            self.world_model.set_fact(
+                                "_user_requested_plan_refresh",
+                                False,
+                                FactProvenance.SYSTEM,
+                                reason="Plan refresh request consumed",
+                                record_history=False,
+                            )
+                    elif self._last_plan_proposal_hash != current_spec_hash:
+                        # Spec changed but not a major field - offer to refresh
+                        available.append("offer_plan_refresh")
+                    
+                    # Always allow plan selection when plans exist but none selected
                     available.append("select_plan")
         
         if spec_complete:
@@ -672,6 +702,31 @@ class SingleAgentOrganGeneratorV5:
             if safe_candidates:
                 return True
         return False
+    
+    def _check_major_field_changed(self) -> bool:
+        """
+        Check if a major field has changed since the last plan proposal.
+        
+        Major fields are: topology.kind, domain.type
+        These fields fundamentally change what plans make sense.
+        """
+        major_fields = ["topology.kind", "domain.type"]
+        
+        for field in major_fields:
+            current_value = self.world_model.get_fact_value(field)
+            last_value = self._last_plan_major_fields.get(field)
+            
+            if current_value != last_value:
+                return True
+        
+        return False
+    
+    def _save_major_field_values(self) -> None:
+        """Save current major field values for later comparison."""
+        major_fields = ["topology.kind", "domain.type"]
+        
+        for field in major_fields:
+            self._last_plan_major_fields[field] = self.world_model.get_fact_value(field)
     
     def _execute_capability(self, capability: str) -> bool:
         """Execute a capability by name."""
@@ -1077,8 +1132,38 @@ class SingleAgentOrganGeneratorV5:
         
         # Track when plans were proposed to prevent infinite re-proposal loop
         self._last_plan_proposal_hash = self.world_model.compute_spec_hash()
+        # Save major field values for detecting major changes later
+        self._save_major_field_values()
         
         self._emit_trace("plans_proposed", f"Proposed {len(plans)} plans")
+        
+        return True
+    
+    def _cap_offer_plan_refresh(self) -> bool:
+        """
+        Offer to refresh plan recommendations when spec changed but not a major field.
+        
+        Instead of automatically re-proposing plans on every spec change (which causes
+        an infinite loop), this capability offers the user the option to refresh plans.
+        """
+        response = self.io.ask_confirm(
+            "Your answers have changed the spec. Would you like me to refresh the plan recommendations?"
+        )
+        
+        if response:
+            # Set flag to allow re-proposal on next iteration
+            self.world_model.set_fact(
+                "_user_requested_plan_refresh",
+                True,
+                FactProvenance.SYSTEM,
+                reason="User requested plan refresh",
+                record_history=False,
+            )
+            self._emit_trace("plan_refresh_requested", "User requested plan refresh")
+        else:
+            # User declined - update the hash so we don't keep asking
+            self._last_plan_proposal_hash = self.world_model.compute_spec_hash()
+            self._emit_trace("plan_refresh_declined", "User declined plan refresh")
         
         return True
     
@@ -1173,9 +1258,88 @@ class SingleAgentOrganGeneratorV5:
         
         self.world_model.answer_question(best_question.question_id, parsed_value)
         
+        # Provide conversational readback based on verbosity setting
+        self._maybe_readback(best_question.field, parsed_value)
+        
         self._emit_trace("question_asked", f"Asked: {best_question.field}")
         
         return True
+    
+    def _maybe_readback(self, field: str, value: Any) -> None:
+        """
+        Provide a conversational readback after accepting an answer.
+        
+        Based on verbosity setting:
+        - "quiet": no readbacks
+        - "normal": readbacks only for "big" fields (domain, topology, inlet/outlet)
+        - "chatty": readbacks for every answer
+        """
+        if self.config.verbosity == "quiet":
+            return
+        
+        # Define "big" fields that get readbacks in normal mode
+        big_fields = {
+            "domain.type", "domain.size",
+            "topology.kind",
+            "inlet.face", "inlet.radius",
+            "outlet.face", "outlet.radius",
+        }
+        
+        if self.config.verbosity == "normal" and field not in big_fields:
+            return
+        
+        # Generate a conversational readback
+        readback = self._generate_readback(field, value)
+        if readback:
+            self.io.say_assistant(readback)
+    
+    def _generate_readback(self, field: str, value: Any) -> Optional[str]:
+        """Generate a conversational readback for a field value."""
+        # Casual acknowledgment phrases
+        acks = ["Got it", "Cool", "Okay", "Perfect", "Great"]
+        import random
+        ack = random.choice(acks)
+        
+        if field == "domain.type":
+            return f"{ack} — {value} domain."
+        
+        if field == "domain.size":
+            if isinstance(value, (list, tuple)) and len(value) == 3:
+                return f"{ack} — {value[0]}×{value[1]}×{value[2]} mm."
+            return f"{ack} — domain size: {value}."
+        
+        if field == "topology.kind":
+            return f"{ack} — {value} topology."
+        
+        if field == "inlet.face":
+            face_names = {
+                "x_min": "left", "x_max": "right",
+                "y_min": "front", "y_max": "back",
+                "z_min": "bottom", "z_max": "top",
+            }
+            friendly = face_names.get(value, value)
+            return f"{ack}. Inlet on {value} ({friendly} face)."
+        
+        if field == "inlet.radius":
+            return f"{ack} — inlet radius: {value} mm."
+        
+        if field == "outlet.face":
+            face_names = {
+                "x_min": "left", "x_max": "right",
+                "y_min": "front", "y_max": "back",
+                "z_min": "bottom", "z_max": "top",
+            }
+            friendly = face_names.get(value, value)
+            return f"{ack}. Outlet on {value} ({friendly} face)."
+        
+        if field == "outlet.radius":
+            return f"{ack} — outlet radius: {value} mm."
+        
+        # Generic readback for chatty mode
+        if self.config.verbosity == "chatty":
+            return f"{ack} — {field}: {value}."
+        
+        return None
     
     def _validate_option_response(
         self, response: str, options: List[str], field: str
@@ -1357,20 +1521,17 @@ class SingleAgentOrganGeneratorV5:
         """Capability 6b: Generate open questions for missing required fields."""
         from .world_model import OpenQuestion
         
+        # Always ask for outlet regardless of topology - most biomedical use cases
+        # need flow-through (perfusion), and being explicit about outlet is better UX
         required_fields = [
             ("domain.type", "What type of domain shape?", "Determines the bounding geometry", ["box", "ellipsoid", "cylinder"]),
             ("domain.size", "What are the domain dimensions (width x depth x height in mm)?", "Defines the physical size of the organ scaffold", None),
             ("topology.kind", "What vascular topology?", "Determines branching pattern", ["tree", "path", "backbone", "loop"]),
             ("inlet.face", "Which face should the inlet be on?", "Determines where blood enters", ["x_min", "x_max", "y_min", "y_max", "z_min", "z_max"]),
             ("inlet.radius", "What inlet radius (in mm)?", "Determines the main vessel diameter", None),
+            ("outlet.face", "Which face should the outlet be on?", "Determines where blood exits", ["x_min", "x_max", "y_min", "y_max", "z_min", "z_max"]),
+            ("outlet.radius", "What outlet radius (in mm)?", "Determines the exit vessel diameter", None),
         ]
-        
-        topology_kind = self.world_model.get_fact_value("topology.kind", "tree")
-        if topology_kind in ("path", "backbone", "loop"):
-            required_fields.extend([
-                ("outlet.face", "Which face should the outlet be on?", "Determines where blood exits", ["x_min", "x_max", "y_min", "y_max", "z_min", "z_max"]),
-                ("outlet.radius", "What outlet radius (in mm)?", "Determines the exit vessel diameter", None),
-            ])
         
         questions_added = 0
         for field, question_text, why, options in required_fields:
