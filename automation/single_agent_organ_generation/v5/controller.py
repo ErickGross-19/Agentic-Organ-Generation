@@ -130,6 +130,7 @@ class SingleAgentOrganGeneratorV5:
             "propose_tailored_plans": self._cap_propose_tailored_plans,
             "select_plan": self._cap_select_plan,
             "ask_best_next_question": self._cap_ask_best_next_question,
+            "generate_missing_field_questions": self._cap_generate_missing_field_questions,
             "compile_spec": self._cap_compile_spec,
             "pregen_verify": self._cap_pregen_verify,
             "request_generation_approval": self._cap_request_generation_approval,
@@ -142,6 +143,10 @@ class SingleAgentOrganGeneratorV5:
             "undo": self._cap_undo,
             "package_outputs": self._cap_package_outputs,
         }
+        
+        self._last_spec_hash: Optional[str] = None
+        self._last_summarize_hash: Optional[str] = None
+        self._denied_approval_hashes: Dict[str, str] = {}
     
     def run(self, initial_message: Optional[str] = None) -> bool:
         """
@@ -350,13 +355,19 @@ class SingleAgentOrganGeneratorV5:
         if self.world_model.history:
             available.append("undo")
         
-        available.append("summarize_living_spec")
+        current_spec_hash = self.world_model.compute_spec_hash()
+        
+        if self._last_summarize_hash != current_spec_hash:
+            available.append("summarize_living_spec")
         
         spec_complete = self.goal_tracker.get_status("spec_minimum_complete") == GoalStatus.SATISFIED
         
         if not spec_complete:
             if self.world_model.open_questions:
                 available.append("ask_best_next_question")
+            else:
+                available.append("generate_missing_field_questions")
+            
             if not self.world_model.selected_plan:
                 available.append("propose_tailored_plans")
             if self.world_model.plans and not self.world_model.selected_plan:
@@ -373,28 +384,40 @@ class SingleAgentOrganGeneratorV5:
         
         pregen_verified = self.goal_tracker.get_status("pregen_verified") == GoalStatus.SATISFIED
         if pregen_verified:
+            gen_denied_hash = self._denied_approval_hashes.get("generation")
             if not self.world_model.is_approved("generation"):
-                available.append("request_generation_approval")
+                if gen_denied_hash != current_spec_hash:
+                    available.append("request_generation_approval")
             elif self.goal_tracker.get_status("generation_done") != GoalStatus.SATISFIED:
                 available.append("run_generation")
         
         generation_done = self.goal_tracker.get_status("generation_done") == GoalStatus.SATISFIED
         if generation_done:
+            post_denied_hash = self._denied_approval_hashes.get("postprocess")
             if not self.world_model.is_approved("postprocess"):
-                available.append("request_postprocess_approval")
+                if post_denied_hash != current_spec_hash:
+                    available.append("request_postprocess_approval")
             elif self.goal_tracker.get_status("postprocess_done") != GoalStatus.SATISFIED:
                 available.append("run_postprocess")
         
         postprocess_done = self.goal_tracker.get_status("postprocess_done") == GoalStatus.SATISFIED
-        if postprocess_done or generation_done:
+        
+        validation_failed = self.world_model.get_fact_value("validation_failed", False)
+        
+        if validation_failed:
+            has_safe_fixes = (
+                self._safe_fixes_this_run < self.config.max_safe_fixes_per_run
+                and not self._safe_fix_applied_this_iteration
+                and self._has_available_safe_fixes()
+            )
+            
+            if has_safe_fixes:
+                available.append("apply_one_safe_fix")
+            else:
+                available.append("ask_for_non_safe_fix_choice")
+        elif postprocess_done or generation_done:
             if self.goal_tracker.get_status("validation_passed") != GoalStatus.SATISFIED:
                 available.append("validate_artifacts")
-        
-        if self.world_model.get_fact_value("validation_failed", False):
-            if self._safe_fixes_this_run < self.config.max_safe_fixes_per_run:
-                if not self._safe_fix_applied_this_iteration:
-                    available.append("apply_one_safe_fix")
-            available.append("ask_for_non_safe_fix_choice")
         
         validation_passed = self.goal_tracker.get_status("validation_passed") == GoalStatus.SATISFIED
         if validation_passed and postprocess_done:
@@ -402,6 +425,23 @@ class SingleAgentOrganGeneratorV5:
                 available.append("package_outputs")
         
         return available
+    
+    def _has_available_safe_fixes(self) -> bool:
+        """Check if there are any safe fixes available."""
+        issues = self.world_model.get_fact_value("validation_issues", [])
+        if not issues:
+            return False
+        
+        for issue in issues:
+            candidates = self.safe_fix_policy.generate_fix_candidates(
+                failure_type=issue.split()[0] if issue else "unknown",
+                failure_details={"issue": issue},
+                world_model=self.world_model,
+            )
+            safe_candidates = [c for c in candidates if c.safety.value == "safe"]
+            if safe_candidates:
+                return True
+        return False
     
     def _execute_capability(self, capability: str) -> bool:
         """Execute a capability by name."""
@@ -641,6 +681,7 @@ class SingleAgentOrganGeneratorV5:
         """Capability 3: Summarize living spec."""
         summary = self.world_model.get_living_spec_summary()
         self.io.show_living_spec(summary)
+        self._last_summarize_hash = self.world_model.compute_spec_hash()
         self._emit_trace("living_spec_updated", "Living spec summary generated")
         return True
     
@@ -724,6 +765,53 @@ class SingleAgentOrganGeneratorV5:
         self._emit_trace("question_asked", f"Asked: {best_question.field}")
         
         return True
+    
+    def _cap_generate_missing_field_questions(self) -> bool:
+        """Capability 6b: Generate open questions for missing required fields."""
+        from .world_model import OpenQuestion
+        
+        required_fields = [
+            ("domain.type", "What type of domain shape?", "Determines the bounding geometry", ["box", "ellipsoid", "cylinder"]),
+            ("domain.size", "What are the domain dimensions (width x depth x height in mm)?", "Defines the physical size of the organ scaffold", None),
+            ("topology.kind", "What vascular topology?", "Determines branching pattern", ["tree", "path", "backbone", "loop"]),
+            ("inlet.face", "Which face should the inlet be on?", "Determines where blood enters", ["x_min", "x_max", "y_min", "y_max", "z_min", "z_max"]),
+            ("inlet.radius", "What inlet radius (in mm)?", "Determines the main vessel diameter", None),
+        ]
+        
+        topology_kind = self.world_model.get_fact_value("topology.kind", "tree")
+        if topology_kind in ("path", "backbone", "loop"):
+            required_fields.extend([
+                ("outlet.face", "Which face should the outlet be on?", "Determines where blood exits", ["x_min", "x_max", "y_min", "y_max", "z_min", "z_max"]),
+                ("outlet.radius", "What outlet radius (in mm)?", "Determines the exit vessel diameter", None),
+            ])
+        
+        questions_added = 0
+        for field, question_text, why, options in required_fields:
+            if not self.world_model.has_fact(field):
+                existing_q = None
+                for q in self.world_model.open_questions.values():
+                    if q.field == field:
+                        existing_q = q
+                        break
+                
+                if not existing_q:
+                    question = OpenQuestion(
+                        question_id=f"missing_{field.replace('.', '_')}",
+                        field=field,
+                        question_text=question_text,
+                        why_it_matters=why,
+                        options=options,
+                        priority=100 - questions_added,
+                    )
+                    self.world_model.add_open_question(question)
+                    questions_added += 1
+        
+        if questions_added > 0:
+            self._emit_trace("questions_generated", f"Generated {questions_added} questions for missing fields")
+            self.io.say_assistant(f"I need {questions_added} more piece(s) of information to proceed.")
+            return True
+        
+        return False
     
     def _cap_compile_spec(self) -> bool:
         """Capability 7: Compile spec."""
@@ -930,10 +1018,12 @@ class SingleAgentOrganGeneratorV5:
         
         if approved:
             self.world_model.set_approval("generation", approved=True)
+            self._denied_approval_hashes.pop("generation", None)
             self._emit_trace("generation_approved", "Generation approved by user")
             self.io.say_assistant("Generation approved. Starting now.")
             return True
         else:
+            self._denied_approval_hashes["generation"] = self.world_model.compute_spec_hash()
             self._emit_trace("generation_denied", "Generation denied by user")
             self.io.say_assistant("Generation not approved. Let me know what you'd like to change.")
             return False
@@ -1031,10 +1121,12 @@ class SingleAgentOrganGeneratorV5:
         
         if approved:
             self.world_model.set_approval("postprocess", approved=True)
+            self._denied_approval_hashes.pop("postprocess", None)
             self._emit_trace("postprocess_approved", "Postprocess approved by user")
             self.io.say_assistant("Postprocess approved. Starting now.")
             return True
         else:
+            self._denied_approval_hashes["postprocess"] = self.world_model.compute_spec_hash()
             self._emit_trace("postprocess_denied", "Postprocess denied by user")
             self.io.say_assistant("Postprocess not approved. Let me know what you'd like to change.")
             return False
