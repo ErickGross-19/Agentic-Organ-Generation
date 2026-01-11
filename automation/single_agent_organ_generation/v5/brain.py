@@ -76,14 +76,12 @@ def _apply_unified_diff(original: str, patch: str) -> str:
         match = hunk_pattern.match(line)
         if match:
             old_start = int(match.group(1))
-            old_count = int(match.group(2)) if match.group(2) else 1
             
             i += 1
             
             hunk_removes = []
             hunk_adds = []
-            context_before = []
-            context_after = []
+            context_before_count = 0
             in_changes = False
             
             while i < len(patch_lines):
@@ -99,11 +97,8 @@ def _apply_unified_diff(original: str, patch: str) -> str:
                     in_changes = True
                     hunk_adds.append(hunk_line[1:])
                 elif hunk_line.startswith(' ') or hunk_line == '\n':
-                    content = hunk_line[1:] if hunk_line.startswith(' ') else hunk_line
                     if not in_changes:
-                        context_before.append(content)
-                    else:
-                        context_after.append(content)
+                        context_before_count += 1
                 elif hunk_line.startswith('\\'):
                     i += 1
                     continue
@@ -112,7 +107,7 @@ def _apply_unified_diff(original: str, patch: str) -> str:
                 
                 i += 1
             
-            apply_at = old_start - 1 + offset
+            apply_at = old_start - 1 + context_before_count + offset
             
             if apply_at < 0:
                 apply_at = 0
