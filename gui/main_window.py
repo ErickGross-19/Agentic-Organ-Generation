@@ -465,6 +465,7 @@ class MainWindow:
             execution_mode="review_then_run",
             timeout_seconds=300.0,
             verbose=True,
+            llm_first_mode=True,  # Default to LLM-first mode in GUI
         )
         
         if self.workflow_manager.start_workflow(config):

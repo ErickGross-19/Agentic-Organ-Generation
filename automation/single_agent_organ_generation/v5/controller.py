@@ -205,6 +205,7 @@ class SingleAgentOrganGeneratorV5:
         
         self._last_spec_hash: Optional[str] = None
         self._last_summarize_hash: Optional[str] = None
+        self._last_plan_proposal_hash: Optional[str] = None  # Track when plans were last proposed
         self._denied_approval_hashes: Dict[str, str] = {}
     
     def run(self, initial_message: Optional[str] = None) -> RunResult:
@@ -442,9 +443,18 @@ class SingleAgentOrganGeneratorV5:
             else:
                 available.append("generate_missing_field_questions")
             
+            # Only propose plans if:
+            # 1. No plans exist yet, OR
+            # 2. Spec changed since last proposal (allows re-proposing after spec changes)
+            # This prevents infinite loop of re-proposing the same plans
             if not self.world_model.selected_plan:
-                available.append("propose_tailored_plans")
-            if self.world_model.plans and not self.world_model.selected_plan:
+                if not self.world_model.plans:
+                    # No plans yet - propose some
+                    available.append("propose_tailored_plans")
+                elif self._last_plan_proposal_hash != current_spec_hash:
+                    # Plans exist but spec changed - allow re-proposal
+                    available.append("propose_tailored_plans")
+                # Always allow plan selection when plans exist but none selected
                 available.append("select_plan")
         
         if spec_complete:
@@ -918,6 +928,9 @@ class SingleAgentOrganGeneratorV5:
         if recommended:
             rationale = self.plan_synthesizer.generate_recommendation_rationale(recommended)
             self.io.say_assistant(rationale)
+        
+        # Track when plans were proposed to prevent infinite re-proposal loop
+        self._last_plan_proposal_hash = self.world_model.compute_spec_hash()
         
         self._emit_trace("plans_proposed", f"Proposed {len(plans)} plans")
         
