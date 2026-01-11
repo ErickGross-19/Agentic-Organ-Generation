@@ -451,11 +451,13 @@ class ApprovalPolicy:
     Approval is always required for:
     - Generation (any script execution producing geometry)
     - Postprocess (embedding/voxelization/repair/export)
+    - LLM execution (running master script in LLM-first mode)
     """
     
     APPROVAL_REQUIRED_ACTIONS = {
         "run_generation",
         "run_postprocess",
+        "llm_run_master_script",  # LLM-first mode execution
     }
     
     def requires_approval(self, action: str) -> bool:
@@ -468,6 +470,8 @@ class ApprovalPolicy:
             return "generation"
         elif action == "run_postprocess":
             return "postprocess"
+        elif action == "llm_run_master_script":
+            return "llm_execution"
         return None
 
 
@@ -501,6 +505,12 @@ class CapabilitySelectionPolicy:
         "ask_for_non_safe_fix_choice": 25,
         "package_outputs": 20,
         "summarize_living_spec": 15,
+        # LLM-first mode capabilities
+        "llm_decide_next": 100,
+        "llm_apply_workspace_update": 95,
+        "llm_request_execution": 90,
+        "llm_run_master_script": 85,
+        "llm_verify_artifacts": 80,
     }
     
     def select_capability(
@@ -570,6 +580,12 @@ class CapabilitySelectionPolicy:
             "postprocess_done": ["run_postprocess"],
             "validation_passed": ["validate_artifacts", "apply_one_safe_fix"],
             "outputs_packaged": ["package_outputs"],
+            # LLM-first mode goals
+            "llm_spec_ready": ["llm_decide_next", "llm_apply_workspace_update"],
+            "llm_workspace_ready": ["llm_decide_next", "llm_apply_workspace_update"],
+            "llm_execution_approved": ["llm_request_execution"],
+            "llm_generation_verified": ["llm_run_master_script", "llm_verify_artifacts"],
+            "llm_complete": ["llm_decide_next"],
         }
         
         return goal_to_capabilities.get(goal_id, [])
