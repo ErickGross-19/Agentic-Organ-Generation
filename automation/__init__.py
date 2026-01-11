@@ -87,6 +87,9 @@ from .subprocess_runner import (
     DEFAULT_TIMEOUT_SECONDS,
 )
 from .single_agent_organ_generation.v5.controller import RunResult as ControllerRunResult
+# Also export RunResult as the controller's enum (the expected type for workflow.run())
+# This replaces the old subprocess_runner.RunResult export to fix the import collision
+RunResult = ControllerRunResult
 from .artifact_verifier import (
     verify_artifacts,
     verify_generation_stage,
@@ -263,6 +266,7 @@ __all__ = [
     "DEFAULT_TIMEOUT_SECONDS",
     # Controller RunResult (V5)
     "ControllerRunResult",
+    "RunResult",  # Alias for ControllerRunResult - the expected type for workflow.run()
     # Artifact verifier
     "verify_artifacts",
     "verify_generation_stage",
