@@ -472,6 +472,10 @@ class MainWindow:
             self.stop_btn.config(state="normal")
             # Send button is always enabled - _send_input handles the no-workflow case
             self.progress.start()
+            # P3: Enable workspace-related buttons when workflow starts
+            self.view_script_btn.config(state="normal")
+            self.run_history_btn.config(state="normal")
+            self.verification_btn.config(state="normal")
     
     def _validate_agent_config(self) -> tuple:
         """Validate agent configuration."""
@@ -503,6 +507,10 @@ class MainWindow:
         self.start_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
         # Send button stays enabled - _send_input handles the no-workflow case
+        # P3: Disable workspace-related buttons when workflow stops
+        self.view_script_btn.config(state="disabled")
+        self.run_history_btn.config(state="disabled")
+        self.verification_btn.config(state="disabled")
         self.progress.stop()
     
     def _send_input(self):
