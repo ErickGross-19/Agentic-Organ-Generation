@@ -1934,11 +1934,8 @@ class SingleAgentOrganGeneratorV5:
             elif reg_update.action == "remove":
                 self.workspace.remove_tool(reg_update.name)
         
-        # Export spec from world model to workspace
-        if self.world_model.facts:
-            self.workspace.export_spec_from_world_model(self.world_model)
-        
-        # P2 #17: Apply fact_updates from directive
+        # P2 #17: Apply fact_updates from directive FIRST (before exporting spec)
+        # This ensures spec.json reflects the latest LLM updates
         if self._last_directive.fact_updates:
             for fact_update in self._last_directive.fact_updates:
                 if fact_update.op == "set":
@@ -1953,6 +1950,10 @@ class SingleAgentOrganGeneratorV5:
                     if fact_update.path in self.world_model.facts:
                         del self.world_model._facts[fact_update.path]
             self._emit_trace("fact_updates_applied", f"Applied {len(self._last_directive.fact_updates)} fact updates")
+        
+        # Export spec from world model to workspace AFTER applying fact_updates
+        if self.world_model.facts:
+            self.workspace.export_spec_from_world_model(self.world_model)
         
         # P2 #18: Apply plan_board_update from directive
         if self._last_directive.plan_board_update:
@@ -1999,11 +2000,38 @@ class SingleAgentOrganGeneratorV5:
         LLM-first capability: Request approval to execute the master script.
         
         This is the ONLY approval gate in LLM-first mode.
+        
+        Can be triggered by:
+        1. Directive with request_execution=True
+        2. Fallback: master exists + no pending questions + no recent run
         """
-        if not self.workspace or not self._last_directive:
+        if not self.workspace:
             return False
         
-        if not self._last_directive.request_execution:
+        # Check if this is a directive-triggered request
+        directive_requests_execution = (
+            self._last_directive and 
+            self._last_directive.request_execution
+        )
+        
+        # Check if this is a fallback request (master exists, no questions, no recent run)
+        fallback_should_execute = False
+        if not directive_requests_execution:
+            import os
+            master_exists = (
+                self.workspace.master_script_path and 
+                os.path.exists(self.workspace.master_script_path)
+            )
+            has_pending_questions = (
+                self._last_directive and 
+                self._last_directive.questions and 
+                len(self._last_directive.questions) > 0
+            )
+            has_recent_run = self.world_model.get_artifact("last_run_dir") is not None
+            
+            fallback_should_execute = master_exists and not has_pending_questions and not has_recent_run
+        
+        if not directive_requests_execution and not fallback_should_execute:
             return False
         
         # Check if master script exists
@@ -2021,22 +2049,34 @@ class SingleAgentOrganGeneratorV5:
         from ...script_writer import scan_for_suspicious_patterns
         warnings = scan_for_suspicious_patterns(master_script)
         
+        # Get next run version for exact output paths
+        next_version = self.workspace.peek_next_run_version()
+        version_str = f"{next_version:03d}"
+        
         # Build approval details
         details = {
             "master_script_lines": summary.master_script_lines,
             "master_script_hash": summary.master_script_hash,
             "tool_count": summary.tool_count,
             "run_count": summary.run_count,
+            "target_version": next_version,
         }
         
         risk_flags = warnings if warnings else []
+        
+        # Show exact required output paths with version numbers
+        expected_outputs = [
+            f"04_outputs/network_v{version_str}.json",
+            f"05_mesh/mesh_network_v{version_str}.stl",
+            "ARTIFACTS_JSON footer",
+        ]
         
         approved = self.io.ask_confirm(
             "Execute master script now?",
             details=details,
             modal=True,
             runtime_estimate="1-5 minutes",
-            expected_outputs=["Network JSON", "STL mesh", "Artifacts JSON"],
+            expected_outputs=expected_outputs,
             risk_flags=risk_flags,
         )
         
@@ -2114,14 +2154,19 @@ class SingleAgentOrganGeneratorV5:
         run_version = self.workspace.get_next_run_version()
         run_dir = self.workspace.create_run_directory(run_version)
         
-        # Run the script
+        # P4 #32: Get sandbox execution environment
+        exec_env = self.workspace.get_execution_environment()
+        exec_config = self.workspace.get_execution_config()
+        
+        # Run the script with sandbox environment
         from ...subprocess_runner import run_script
         
         result = run_script(
             script_path=master_script_path,
             object_dir=run_dir,
             version=run_version,
-            timeout_seconds=600,  # 10 minute timeout
+            timeout_seconds=exec_config.get("timeout_seconds", 600),
+            extra_env=exec_env,
         )
         
         # Store result

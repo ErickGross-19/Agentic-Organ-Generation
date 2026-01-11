@@ -116,10 +116,10 @@ class RunRecord:
     timestamp: str
     status: str  # "success", "failed", "timeout"
     elapsed_seconds: float
-    stdout_path: str
-    stderr_path: str
-    artifacts_json_path: Optional[str]
-    verification_passed: bool
+    stdout_path: Optional[str] = None  # Made Optional to allow None during creation
+    stderr_path: Optional[str] = None  # Made Optional to allow None during creation
+    artifacts_json_path: Optional[str] = None
+    verification_passed: Optional[bool] = None  # Made Optional - set after verification
     error_message: Optional[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
@@ -344,6 +344,16 @@ class WorkspaceManager:
         
         self._run_counter = 0
         self._tool_registry: List[ToolRegistryEntry] = []
+    
+    @property
+    def workspace_path(self) -> Path:
+        """Property for workspace path as Path object (alias for workspace_dir)."""
+        return Path(self.workspace_dir)
+    
+    @property
+    def runs_path(self) -> Path:
+        """Property for runs path as Path object (alias for runs_dir)."""
+        return Path(self.runs_dir)
     
     def initialize(self) -> None:
         """
@@ -668,6 +678,19 @@ class WorkspaceManager:
         
         return self.write_spec(spec_data)
     
+    def peek_next_run_version(self) -> int:
+        """
+        Peek at the next run version number without incrementing.
+        
+        Use this for prompt injection to tell the LLM what version to target.
+        
+        Returns
+        -------
+        int
+            The next version number (does NOT increment counter)
+        """
+        return self._run_counter + 1
+    
     def get_next_run_version(self) -> int:
         """
         Get the next run version number.
@@ -816,10 +839,17 @@ class WorkspaceManager:
         tool_names = [t.name for t in self._tool_registry if t.origin == "generated"]
         
         # P1 #9: Get file info for each generated tool
+        # Derive filename from module (e.g., "tools.my_tool" -> "my_tool.py")
         tool_files = []
         for tool in self._tool_registry:
             if tool.origin == "generated":
-                tool_path = os.path.join(self.tools_dir, f"{tool.name}.py")
+                # Extract filename from module path (tools.foo_bar -> foo_bar.py)
+                if tool.module.startswith("tools."):
+                    module_name = tool.module.split(".")[-1]
+                    tool_path = os.path.join(self.tools_dir, f"{module_name}.py")
+                else:
+                    # Fallback to tool name if module doesn't follow tools.* pattern
+                    tool_path = os.path.join(self.tools_dir, f"{tool.name}.py")
                 tool_files.append(self._get_file_info(tool_path))
         
         last_record = self.get_last_run_record()

@@ -678,9 +678,10 @@ class Brain:
         ObservationPacket
             The observation packet for the LLM
         """
-        # P0 #2: Get artifact requirements for current version
-        spec_data = workspace.read_spec()
-        run_version = spec_data.get("run_version", 1)
+        # P0 #2: Get artifact requirements for next version
+        # Use peek_next_run_version() to get the version the LLM should target
+        # without incrementing the counter (that happens when run actually starts)
+        run_version = workspace.peek_next_run_version()
         artifact_requirements = ArtifactRequirements.for_generation(run_version)
         
         return ObservationPacket(
@@ -762,13 +763,15 @@ class Brain:
             if ws.get('last_run_status'):
                 ws_lines.append(f"- Last run status: {ws.get('last_run_status')}")
             # P1 #9: Include file hashes and modified times
-            if ws.get('files'):
+            # WorkspaceSummary.to_dict() outputs 'tool_files' with keys 'path', 'hash', 'modified_time'
+            if ws.get('tool_files'):
                 ws_lines.append("")
                 ws_lines.append("**File details:**")
-                for file_info in ws.get('files', []):
-                    name = file_info.get('name', 'unknown')
+                for file_info in ws.get('tool_files', []):
+                    path = file_info.get('path', 'unknown')
+                    name = path.split('/')[-1] if '/' in path else path
                     hash_val = file_info.get('hash', 'N/A')[:8] if file_info.get('hash') else 'N/A'
-                    modified = file_info.get('modified', 'N/A')
+                    modified = file_info.get('modified_time', 'N/A')
                     ws_lines.append(f"- {name}: hash={hash_val}... modified={modified}")
             sections.append('\n'.join(ws_lines))
         
