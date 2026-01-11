@@ -18,9 +18,13 @@ DEFAULT_TIMEOUT_SECONDS = 300  # 5 minutes
 
 
 @dataclass
-class RunResult:
+class ScriptRunResult:
     """
     Result of running a script via subprocess.
+    
+    Note: This class was renamed from RunResult to ScriptRunResult in V5 to avoid
+    collision with the controller's RunResult enum (COMPLETED/WAITING/FAILED).
+    The old name is still available as an alias for backward compatibility.
     
     Attributes
     ----------
@@ -52,6 +56,10 @@ class RunResult:
     timed_out: bool = False
     error: Optional[str] = None
     last_lines: List[str] = field(default_factory=list)
+
+
+# Backward compatibility alias
+RunResult = ScriptRunResult
 
 
 def build_environment(

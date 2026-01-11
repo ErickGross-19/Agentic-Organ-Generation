@@ -510,8 +510,136 @@ class MainWindow:
             self._append_chat("error", f"Failed to send input: {e}")
     
     def _on_workflow_message(self, message: WorkflowMessage):
-        """Handle message from workflow."""
-        self.root.after(0, lambda: self._append_chat(message.type, message.content))
+        """
+        Handle message from workflow.
+        
+        V5 workflows emit structured messages with payloads that require
+        special handling:
+        - approval_request: Show modal approval dialog
+        - plan_selection: Show plan selection dialog
+        - generation_ready: Show generation approval card
+        - postprocess_ready: Show postprocess approval card
+        - spec_update: Update living spec display (if panel exists)
+        - plans: Display proposed plans
+        - safe_fix: Show safe fix notification
+        """
+        def handle_message():
+            msg_type = message.type
+            content = message.content
+            data = message.data
+            
+            if msg_type == "approval_request" and data:
+                self._show_approval_dialog(content, data)
+            elif msg_type == "plan_selection" and data:
+                self._show_plan_selection_dialog(data.get("plans", []))
+            elif msg_type == "generation_ready" and data:
+                self._show_generation_ready_card(data)
+            elif msg_type == "postprocess_ready" and data:
+                self._show_postprocess_ready_card(data)
+            elif msg_type == "spec_update" and data:
+                self._update_spec_display(data)
+            elif msg_type == "plans" and data:
+                self._display_plans(data.get("plans", []), data.get("recommended_id"))
+            elif msg_type == "safe_fix" and data:
+                self._show_safe_fix_notification(data)
+            else:
+                self._append_chat(msg_type, content)
+        
+        self.root.after(0, handle_message)
+    
+    def _show_approval_dialog(self, prompt: str, data: dict):
+        """Show modal approval dialog for V5 workflows."""
+        result = messagebox.askyesno(
+            "Approval Required",
+            prompt,
+            icon="question"
+        )
+        self.workflow_manager.send_approval(result)
+        self._append_chat("system", f"Approval: {'Approved' if result else 'Rejected'}")
+    
+    def _show_plan_selection_dialog(self, plans: list):
+        """Show plan selection dialog for V5 workflows."""
+        if not plans:
+            self.workflow_manager.send_input("")
+            return
+        
+        plan_descriptions = []
+        for i, plan in enumerate(plans):
+            plan_id = plan.get("id", f"plan_{i}")
+            name = plan.get("name", f"Plan {i+1}")
+            desc = plan.get("description", "")
+            plan_descriptions.append(f"{plan_id}: {name}\n  {desc}")
+        
+        dialog_text = "Select a plan:\n\n" + "\n\n".join(plan_descriptions)
+        dialog_text += "\n\nEnter plan ID (or leave empty for recommended):"
+        
+        from tkinter import simpledialog
+        selected = simpledialog.askstring("Plan Selection", dialog_text, parent=self.root)
+        
+        self.workflow_manager.send_input(selected or "")
+        self._append_chat("system", f"Selected plan: {selected or '(recommended)'}")
+    
+    def _show_generation_ready_card(self, data: dict):
+        """Show generation ready notification with approval."""
+        runtime = data.get("runtime_estimate", "unknown")
+        outputs = data.get("expected_outputs", [])
+        assumptions = data.get("assumptions", [])
+        risks = data.get("risk_flags", [])
+        
+        info_text = f"Ready to generate\n\nEstimated runtime: {runtime}"
+        if outputs:
+            info_text += f"\n\nExpected outputs:\n- " + "\n- ".join(outputs)
+        if assumptions:
+            info_text += f"\n\nAssumptions:\n- " + "\n- ".join(assumptions)
+        if risks:
+            info_text += f"\n\nRisk flags:\n- " + "\n- ".join(risks)
+        
+        self._append_chat("generation_ready", info_text)
+    
+    def _show_postprocess_ready_card(self, data: dict):
+        """Show postprocess ready notification."""
+        runtime = data.get("runtime_estimate", "unknown")
+        outputs = data.get("expected_outputs", [])
+        steps = data.get("repair_steps", [])
+        
+        info_text = f"Ready to postprocess\n\nEstimated runtime: {runtime}"
+        if steps:
+            info_text += f"\n\nRepair steps:\n- " + "\n- ".join(steps)
+        if outputs:
+            info_text += f"\n\nExpected outputs:\n- " + "\n- ".join(outputs)
+        
+        self._append_chat("postprocess_ready", info_text)
+    
+    def _update_spec_display(self, spec_data: dict):
+        """Update living spec display panel (if exists)."""
+        spec_text = "Living Spec:\n"
+        for key, value in spec_data.items():
+            spec_text += f"  {key}: {value}\n"
+        self._append_chat("spec", spec_text)
+    
+    def _display_plans(self, plans: list, recommended_id: str):
+        """Display proposed plans in chat."""
+        plans_text = "Proposed Plans:\n"
+        for plan in plans:
+            plan_id = plan.get("id", "")
+            name = plan.get("name", "")
+            is_recommended = " (RECOMMENDED)" if plan_id == recommended_id else ""
+            plans_text += f"\n  [{plan_id}] {name}{is_recommended}"
+            if plan.get("description"):
+                plans_text += f"\n      {plan.get('description')}"
+        self._append_chat("plans", plans_text)
+    
+    def _show_safe_fix_notification(self, data: dict):
+        """Show safe fix notification."""
+        field = data.get("field", "")
+        before = data.get("before", "")
+        after = data.get("after", "")
+        reason = data.get("reason", "")
+        
+        fix_text = f"Safe fix applied: {field}\n  {before} -> {after}"
+        if reason:
+            fix_text += f"\n  Reason: {reason}"
+        self._append_chat("safe_fix", fix_text)
     
     def _on_status_change(self, status: WorkflowStatus, message: str):
         """Handle workflow status change."""

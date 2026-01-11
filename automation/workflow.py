@@ -6002,9 +6002,9 @@ def run_single_agent_workflow(
     model: Optional[str] = None,
     base_output_dir: str = "./outputs",
     **kwargs,
-) -> ProjectContext:
+) -> "RunResult":
     """
-    Convenience function to run the Single Agent Organ Generator V2 workflow.
+    Convenience function to run the Single Agent Organ Generator V5 workflow.
     
     Parameters
     ----------
@@ -6021,10 +6021,12 @@ def run_single_agent_workflow(
         
     Returns
     -------
-    ProjectContext
-        Final project context with all generated artifacts
+    RunResult
+        Result of the workflow run (COMPLETED, WAITING, or FAILED).
+        Use workflow.get_status() to retrieve outputs and artifacts.
     """
     from .agent_runner import create_agent
+    from .single_agent_organ_generation.v5.controller import RunResult
     
     agent = create_agent(
         provider=provider,
@@ -6038,8 +6040,8 @@ def run_single_agent_workflow(
         io_adapter=io_adapter,
     )
     
-    workflow.run()
-    return None
+    result = workflow.run()
+    return result
 
 
 SingleAgentOrganGeneratorV1 = SingleAgentOrganGeneratorV5

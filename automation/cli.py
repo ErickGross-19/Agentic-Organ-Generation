@@ -326,15 +326,22 @@ def run_interactive(agent: AgentRunner, args):
 
 def run_workflow(agent: AgentRunner, args):
     """Run the Single Agent Organ Generator V5 workflow."""
+    from .single_agent_organ_generation.v5.controller import RunResult
+    
     io_adapter = CLIIOAdapter()
     
     workflow = SingleAgentOrganGeneratorV5(
         io_adapter=io_adapter,
     )
     
-    workflow.run()
+    result = workflow.run()
     
-    print(f"\nWorkflow completed!")
+    if result == RunResult.COMPLETED:
+        print(f"\nWorkflow completed successfully!")
+    elif result == RunResult.WAITING:
+        print(f"\nWorkflow paused - waiting for input. Run again to continue.")
+    else:
+        print(f"\nWorkflow failed.")
 
 
 if __name__ == "__main__":
