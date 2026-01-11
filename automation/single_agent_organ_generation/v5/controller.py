@@ -616,16 +616,8 @@ class SingleAgentOrganGeneratorV5:
                     
                     if major_field_changed or user_requested_refresh:
                         # Major change or user request - allow re-proposal
+                        # Note: the flag is cleared in _cap_propose_tailored_plans() after execution
                         available.append("propose_tailored_plans")
-                        # Clear the user request flag after allowing re-proposal
-                        if user_requested_refresh:
-                            self.world_model.set_fact(
-                                "_user_requested_plan_refresh",
-                                False,
-                                FactProvenance.SYSTEM,
-                                reason="Plan refresh request consumed",
-                                record_history=False,
-                            )
                     elif self._last_plan_proposal_hash != current_spec_hash:
                         # Spec changed but not a major field - offer to refresh
                         available.append("offer_plan_refresh")
@@ -1134,6 +1126,15 @@ class SingleAgentOrganGeneratorV5:
         self._last_plan_proposal_hash = self.world_model.compute_spec_hash()
         # Save major field values for detecting major changes later
         self._save_major_field_values()
+        # Clear the user request flag if it was set (consumed by this proposal)
+        if self.world_model.get_fact_value("_user_requested_plan_refresh", False):
+            self.world_model.set_fact(
+                "_user_requested_plan_refresh",
+                False,
+                FactProvenance.SYSTEM,
+                reason="Plan refresh request consumed",
+                record_history=False,
+            )
         
         self._emit_trace("plans_proposed", f"Proposed {len(plans)} plans")
         
@@ -1321,7 +1322,9 @@ class SingleAgentOrganGeneratorV5:
             return f"{ack}. Inlet on {value} ({friendly} face)."
         
         if field == "inlet.radius":
-            return f"{ack} — inlet radius: {value} mm."
+            # Value is stored in meters, convert back to mm for display
+            display_value = value * 1000 if isinstance(value, (int, float)) else value
+            return f"{ack} — inlet radius: {display_value} mm."
         
         if field == "outlet.face":
             face_names = {
@@ -1333,7 +1336,9 @@ class SingleAgentOrganGeneratorV5:
             return f"{ack}. Outlet on {value} ({friendly} face)."
         
         if field == "outlet.radius":
-            return f"{ack} — outlet radius: {value} mm."
+            # Value is stored in meters, convert back to mm for display
+            display_value = value * 1000 if isinstance(value, (int, float)) else value
+            return f"{ack} — outlet radius: {display_value} mm."
         
         # Generic readback for chatty mode
         if self.config.verbosity == "chatty":
