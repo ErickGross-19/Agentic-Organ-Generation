@@ -1259,12 +1259,104 @@ class SingleAgentOrganGeneratorV5:
         
         self.world_model.answer_question(best_question.question_id, parsed_value)
         
+        # If this was the project description, parse it to extract intent
+        if best_question.field == "project.description":
+            self._parse_project_description(parsed_value)
+        
         # Provide conversational readback based on verbosity setting
         self._maybe_readback(best_question.field, parsed_value)
         
         self._emit_trace("question_asked", f"Asked: {best_question.field}")
         
         return True
+    
+    def _parse_project_description(self, description: str) -> None:
+        """
+        Parse project description to extract intent and guide project creation.
+        
+        Looks for:
+        - Organ types (liver, kidney, heart, etc.) -> suggests topology
+        - Size mentions (e.g., "2x3x6 mm") -> stored for reference
+        - Use cases (perfusion, tissue engineering) -> stored for context
+        - Specific constraints mentioned
+        
+        Extracted intent is stored in project.intent and used to provide
+        topology suggestions when topology.kind hasn't been set yet.
+        """
+        description_lower = description.lower()
+        extracted_intent = {}
+        
+        # Detect organ types and suggest appropriate topology
+        # Use word boundary matching to avoid false positives (e.g., "heartfelt" matching "heart")
+        organ_topology_map = {
+            "liver": "dual_trees",
+            "kidney": "dual_trees", 
+            "heart": "tree",
+            "lung": "dual_trees",
+            "pancreas": "tree",
+            "spleen": "tree",
+            "muscle": "tree",
+            "skin": "tree",
+            "bone": "tree",
+        }
+        
+        detected_organ = None
+        for organ, suggested_topology in organ_topology_map.items():
+            # Use word boundary regex to avoid false positives
+            if re.search(rf"\b{organ}\b", description_lower):
+                detected_organ = organ
+                extracted_intent["detected_organ"] = organ
+                extracted_intent["suggested_topology"] = suggested_topology
+                break
+        
+        # Detect size mentions (e.g., "2x3x6 mm", "20mm x 30mm x 40mm")
+        size_match = re.search(
+            r"(\d+(?:\.\d+)?)\s*(um|mm|cm|m)?\s*(?:x|by|×)\s*"
+            r"(\d+(?:\.\d+)?)\s*(um|mm|cm|m)?\s*(?:x|by|×)\s*"
+            r"(\d+(?:\.\d+)?)\s*(um|mm|cm|m)?",
+            description_lower
+        )
+        if size_match:
+            extracted_intent["detected_size"] = size_match.group(0)
+        
+        # Detect use cases
+        use_cases = []
+        if any(term in description_lower for term in ["perfusion", "perfuse", "flow"]):
+            use_cases.append("perfusion")
+        if any(term in description_lower for term in ["tissue engineering", "tissue-engineering", "scaffold"]):
+            use_cases.append("tissue_engineering")
+        if any(term in description_lower for term in ["3d print", "3d-print", "printing", "bioprint"]):
+            use_cases.append("3d_printing")
+        if any(term in description_lower for term in ["implant", "transplant"]):
+            use_cases.append("implantation")
+        if use_cases:
+            extracted_intent["use_cases"] = use_cases
+        
+        # Store the extracted intent in the world model
+        if extracted_intent:
+            self.world_model.set_fact(
+                "project.intent",
+                extracted_intent,
+                FactProvenance.SYSTEM,
+                reason="Extracted from project description",
+            )
+            
+            # Provide feedback about what was understood
+            feedback_parts = []
+            if detected_organ:
+                feedback_parts.append(f"building a {detected_organ} scaffold")
+                # If topology wasn't set yet, suggest it
+                if not self.world_model.has_fact("topology.kind"):
+                    suggested = extracted_intent.get("suggested_topology")
+                    if suggested:
+                        feedback_parts.append(f"I'd suggest {suggested} topology for {detected_organ}")
+            if use_cases:
+                feedback_parts.append(f"intended for {', '.join(use_cases).replace('_', ' ')}")
+            
+            if feedback_parts:
+                self.io.say_assistant(f"I understand you're {'. '.join(feedback_parts)}.")
+            
+            self._emit_trace("project_intent_extracted", f"Extracted intent: {extracted_intent}")
     
     def _maybe_readback(self, field: str, value: Any) -> None:
         """
@@ -1281,7 +1373,7 @@ class SingleAgentOrganGeneratorV5:
         # Define "big" fields that get readbacks in normal mode
         big_fields = {
             "domain.type", "domain.size",
-            "topology.kind",
+            "topology.kind", "project.description",
             "inlet.face", "inlet.radius",
             "outlet.face", "outlet.radius",
         }
@@ -1412,7 +1504,7 @@ class SingleAgentOrganGeneratorV5:
     def _get_options_help_text(self, field: str, options: List[str]) -> str:
         """Get brief help text for options."""
         if field == "topology.kind":
-            return "Options: tree (branching), path (single channel), backbone (main trunk with branches), loop (circular)"
+            return "Options: tree (branching), dual_trees (arterial + venous), path (single channel), backbone (main trunk with branches), loop (circular)"
         if field == "domain.type":
             return "Options: box (rectangular), ellipsoid (oval), cylinder (tubular)"
         return f"Options: {', '.join(options)}"
@@ -1424,6 +1516,8 @@ class SingleAgentOrganGeneratorV5:
                 "Here are the available vascular topology types:\n"
                 "- **tree**: A branching structure like arteries, with one inlet splitting into many terminals. "
                 "Best for distributing flow throughout a volume.\n"
+                "- **dual_trees**: Two interleaved vascular trees (arterial + venous) that meet in a capillary bed. "
+                "Best for organs like liver that need both supply and drainage.\n"
                 "- **path**: A single channel from inlet to outlet. Simple conduit for direct flow.\n"
                 "- **backbone**: A main trunk with side branches. Good for elongated organs.\n"
                 "- **loop**: A circular network that returns to the start. Useful for recirculating systems.\n\n"
@@ -1531,7 +1625,8 @@ class SingleAgentOrganGeneratorV5:
         required_fields = [
             ("domain.type", "What type of domain shape?", "Determines the bounding geometry", ["box", "ellipsoid", "cylinder"]),
             ("domain.size", "What are the domain dimensions (width x depth x height in mm)?", "Defines the physical size of the organ scaffold", None),
-            ("topology.kind", "What vascular topology?", "Determines branching pattern", ["tree", "path", "backbone", "loop"]),
+            ("project.description", "Describe your project in a few sentences. What organ or structure are you building? What's the intended use?", "Helps me understand your goals and suggest appropriate parameters", None),
+            ("topology.kind", "What vascular topology?", "Determines branching pattern", ["tree", "dual_trees", "path", "backbone", "loop"]),
             ("inlet.face", "Which face should the inlet be on?", "Determines where blood enters", ["x_min", "x_max", "y_min", "y_max", "z_min", "z_max"]),
             ("inlet.radius", "What inlet radius (in mm)?", "Determines the main vessel diameter", None),
             ("outlet.face", "Which face should the outlet be on?", "Determines where blood exits", ["x_min", "x_max", "y_min", "y_max", "z_min", "z_max"]),
