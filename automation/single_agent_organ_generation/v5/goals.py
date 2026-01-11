@@ -134,6 +134,65 @@ def check_outputs_packaged(world_model: "WorldModel") -> bool:
     return artifact is not None
 
 
+# LLM-First Mode Goal Checks
+
+def check_llm_spec_ready(world_model: "WorldModel") -> bool:
+    """
+    Check if spec.json exists and has minimal required keys.
+    Used in LLM-first mode where the workspace manages the spec.
+    """
+    workspace_path = world_model.get_artifact("workspace_path")
+    if not workspace_path:
+        return False
+    
+    import os
+    import json
+    spec_path = os.path.join(workspace_path, "spec.json")
+    if not os.path.exists(spec_path):
+        return False
+    
+    try:
+        with open(spec_path, 'r') as f:
+            spec = json.load(f)
+        return "facts" in spec
+    except (json.JSONDecodeError, IOError):
+        return False
+
+
+def check_llm_workspace_ready(world_model: "WorldModel") -> bool:
+    """
+    Check if master.py exists in the workspace.
+    Used in LLM-first mode.
+    """
+    master_script_path = world_model.get_artifact("master_script_path")
+    if not master_script_path:
+        return False
+    
+    import os
+    return os.path.exists(master_script_path)
+
+
+def check_llm_execution_approved(world_model: "WorldModel") -> bool:
+    """Check if LLM execution is approved."""
+    return world_model.is_approved("llm_execution")
+
+
+def check_llm_generation_verified(world_model: "WorldModel") -> bool:
+    """
+    Check if generation has been verified in LLM-first mode.
+    """
+    report = world_model.get_artifact("last_verification_report")
+    if not report:
+        return False
+    return report.get("success", False)
+
+
+def check_llm_complete(world_model: "WorldModel") -> bool:
+    """Check if LLM decided generation is complete."""
+    fact = world_model.get_fact("llm_complete")
+    return fact is not None and fact.value is True
+
+
 GOAL_DEFINITIONS: Dict[str, Goal] = {
     "spec_minimum_complete": Goal(
         goal_id="spec_minimum_complete",
@@ -210,6 +269,49 @@ GOAL_DEFINITIONS: Dict[str, Goal] = {
         preconditions=["validation_passed"],
         check_satisfied=check_outputs_packaged,
         priority=20,
+    ),
+    # LLM-First Mode Goals
+    "llm_spec_ready": Goal(
+        goal_id="llm_spec_ready",
+        name="LLM Spec Ready",
+        description="spec.json exists and has minimal required keys",
+        preconditions=[],
+        check_satisfied=check_llm_spec_ready,
+        priority=100,
+    ),
+    "llm_workspace_ready": Goal(
+        goal_id="llm_workspace_ready",
+        name="LLM Workspace Ready",
+        description="master.py exists in the workspace",
+        preconditions=["llm_spec_ready"],
+        check_satisfied=check_llm_workspace_ready,
+        priority=90,
+    ),
+    "llm_execution_approved": Goal(
+        goal_id="llm_execution_approved",
+        name="LLM Execution Approved",
+        description="User has approved execution of master script",
+        preconditions=["llm_workspace_ready"],
+        check_satisfied=check_llm_execution_approved,
+        priority=80,
+        requires_approval=True,
+        approval_type="llm_execution",
+    ),
+    "llm_generation_verified": Goal(
+        goal_id="llm_generation_verified",
+        name="LLM Generation Verified",
+        description="Generation has been verified by artifact verifier",
+        preconditions=["llm_execution_approved"],
+        check_satisfied=check_llm_generation_verified,
+        priority=70,
+    ),
+    "llm_complete": Goal(
+        goal_id="llm_complete",
+        name="LLM Complete",
+        description="LLM decided generation is complete",
+        preconditions=["llm_generation_verified"],
+        check_satisfied=check_llm_complete,
+        priority=10,
     ),
 }
 

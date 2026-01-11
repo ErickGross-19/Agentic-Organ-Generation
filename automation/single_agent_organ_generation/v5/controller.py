@@ -16,15 +16,20 @@ import logging
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union, TYPE_CHECKING
 
 from .world_model import WorldModel, FactProvenance, TraceEvent, Artifact
 from .goals import GoalTracker, GoalStatus
 from .policies import SafeFixPolicy, ApprovalPolicy, CapabilitySelectionPolicy
 from .plan_synthesizer import PlanSynthesizer
 from .io.base_io import BaseIOAdapter
+from .workspace import WorkspaceManager, ToolRegistryEntry, RunRecord
+from .brain import Brain, Directive, ObservationPacket, create_initial_master_script
 
 from ...contextual_dialogue import ContextualDialogue, DialogueIntent
+
+if TYPE_CHECKING:
+    from ...llm_client import LLMClient
 
 
 class RunResult(Enum):
@@ -73,6 +78,8 @@ class ControllerConfig:
     max_safe_fixes_per_run: int = 10
     auto_select_plan_if_confident: bool = True
     verbose: bool = True
+    llm_first_mode: bool = False  # Enable LLM-first agentic mode
+    output_dir: Optional[str] = None  # Output directory for workspace
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -80,6 +87,8 @@ class ControllerConfig:
             "max_safe_fixes_per_run": self.max_safe_fixes_per_run,
             "auto_select_plan_if_confident": self.auto_select_plan_if_confident,
             "verbose": self.verbose,
+            "llm_first_mode": self.llm_first_mode,
+            "output_dir": self.output_dir,
         }
 
 
@@ -104,6 +113,7 @@ class SingleAgentOrganGeneratorV5:
         spec_compiler: Optional[Any] = None,
         generator: Optional[Any] = None,
         validator: Optional[Any] = None,
+        llm_client: Optional["LLMClient"] = None,
     ):
         self.io = io_adapter
         self.config = config or ControllerConfig()
@@ -119,6 +129,21 @@ class SingleAgentOrganGeneratorV5:
         self.spec_compiler = spec_compiler
         self.generator = generator
         self.validator = validator
+        
+        # LLM-first mode components
+        self.llm_client = llm_client
+        self.workspace: Optional[WorkspaceManager] = None
+        self.brain: Optional[Brain] = None
+        self._last_directive: Optional[Directive] = None
+        self._last_run_result: Optional[Dict[str, Any]] = None
+        self._last_verification_report: Optional[Dict[str, Any]] = None
+        
+        # Initialize workspace and brain if in LLM-first mode
+        if self.config.llm_first_mode and self.config.output_dir:
+            self.workspace = WorkspaceManager(self.config.output_dir)
+            self.workspace.initialize()
+            if self.llm_client:
+                self.brain = Brain(self.llm_client)
         
         self._iteration_count = 0
         self._safe_fixes_this_run = 0
@@ -150,6 +175,12 @@ class SingleAgentOrganGeneratorV5:
             "ask_for_non_safe_fix_choice": self._cap_ask_for_non_safe_fix_choice,
             "undo": self._cap_undo,
             "package_outputs": self._cap_package_outputs,
+            # LLM-first mode capabilities
+            "llm_decide_next": self._cap_llm_decide_next,
+            "llm_apply_workspace_update": self._cap_llm_apply_workspace_update,
+            "llm_request_execution": self._cap_llm_request_execution,
+            "llm_run_master_script": self._cap_llm_run_master_script,
+            "llm_verify_artifacts": self._cap_llm_verify_artifacts,
         }
         
         self._last_spec_hash: Optional[str] = None
@@ -348,10 +379,18 @@ class SingleAgentOrganGeneratorV5:
             return True
         if self.goal_tracker.is_complete():
             return True
+        # In LLM-first mode, check if LLM decided to stop
+        if self.config.llm_first_mode:
+            if self.world_model.get_fact_value("llm_complete", False):
+                return True
         return False
     
     def _get_available_capabilities(self) -> List[str]:
         """Get list of capabilities that can currently be executed."""
+        # Use LLM-first capability selection if in that mode
+        if self.config.llm_first_mode and self.brain and self.workspace:
+            return self._get_available_capabilities_llm_first()
+        
         available = []
         
         if self._pending_user_message:
@@ -1730,3 +1769,394 @@ class SingleAgentOrganGeneratorV5:
         self.io.say_success(f"Outputs packaged! Final mesh: {final_mesh}")
         
         return True
+    
+    # =========================================================================
+    # LLM-First Mode Capabilities
+    # =========================================================================
+    
+    def _cap_llm_decide_next(self) -> bool:
+        """
+        LLM-first capability: Ask the LLM brain what to do next.
+        
+        This is the core decision-making capability that replaces the
+        deterministic capability selection in LLM-first mode.
+        """
+        if not self.brain or not self.workspace:
+            return False
+        
+        # Build observation packet
+        goal_progress = self.goal_tracker.get_progress_summary()
+        observation = self.brain.build_observation_packet(
+            user_message=self._pending_user_message,
+            world_model=self.world_model,
+            workspace=self.workspace,
+            goal_progress=goal_progress,
+            last_run_result=self._last_run_result,
+            verification_report=self._last_verification_report,
+        )
+        
+        # Clear pending message after using it
+        self._pending_user_message = None
+        
+        # Get directive from brain
+        self._emit_trace("llm_deciding", "Asking LLM for next action")
+        directive = self.brain.decide_next(observation)
+        self._last_directive = directive
+        
+        # Store directive in world model for traceability
+        self.world_model.add_artifact("last_llm_directive", directive.to_dict())
+        
+        # Show assistant message to user
+        if directive.assistant_message:
+            self.io.say_assistant(directive.assistant_message)
+        
+        # Handle questions
+        if directive.questions:
+            for question in directive.questions:
+                answer = self.io.ask_text(
+                    question.prompt,
+                    suggestions=question.options,
+                    default=question.default,
+                )
+                # Store answer in world model
+                self.world_model.set_fact(
+                    f"llm_question.{question.id}",
+                    answer,
+                    FactProvenance.USER,
+                    reason=f"User answered: {question.prompt}",
+                )
+            return True
+        
+        # Handle stop
+        if directive.stop:
+            self.world_model.set_fact(
+                "llm_complete",
+                True,
+                FactProvenance.SYSTEM,
+                reason="LLM decided generation is complete",
+            )
+            self._emit_trace("llm_complete", "LLM decided generation is complete")
+            return True
+        
+        return True
+    
+    def _cap_llm_apply_workspace_update(self) -> bool:
+        """
+        LLM-first capability: Apply workspace updates from the last directive.
+        
+        This writes files to the workspace without requiring approval
+        (approval is only for execution).
+        """
+        if not self.workspace or not self._last_directive:
+            return False
+        
+        update = self._last_directive.workspace_update
+        if not update:
+            return False
+        
+        self._emit_trace("llm_workspace_update", "Applying workspace updates")
+        
+        files_written = []
+        
+        for file_update in update.files:
+            path = file_update.path
+            content = file_update.content
+            
+            if path == "master.py":
+                # Write master script with snapshot
+                written_path = self.workspace.write_master_script(content, snapshot=True)
+                files_written.append(written_path)
+                self.world_model.add_artifact("master_script_path", written_path)
+            elif path.startswith("tools/"):
+                # Write tool module
+                tool_name = path.replace("tools/", "").replace(".py", "")
+                written_path = self.workspace.write_tool_module(tool_name, content)
+                files_written.append(written_path)
+            else:
+                # Write other file to workspace
+                import os
+                full_path = os.path.join(self.workspace.workspace_path, path)
+                os.makedirs(os.path.dirname(full_path), exist_ok=True)
+                with open(full_path, 'w') as f:
+                    f.write(content)
+                files_written.append(full_path)
+        
+        # Apply registry updates
+        for reg_update in update.registry_updates:
+            if reg_update.action == "add":
+                entry = ToolRegistryEntry(
+                    name=reg_update.name,
+                    origin="generated",
+                    module=reg_update.module or f"tools.{reg_update.name}",
+                    entrypoints=reg_update.entrypoints or [],
+                    description=reg_update.description or "",
+                )
+                self.workspace.add_tool(entry)
+            elif reg_update.action == "remove":
+                self.workspace.remove_tool(reg_update.name)
+        
+        # Export spec from world model to workspace
+        if self.world_model.facts:
+            self.workspace.export_spec_from_world_model(self.world_model)
+        
+        self.world_model.add_artifact("workspace_files_written", files_written)
+        self._emit_trace("llm_workspace_updated", f"Wrote {len(files_written)} files")
+        
+        if files_written:
+            self.io.say_assistant(f"Updated workspace: {', '.join([f.split('/')[-1] for f in files_written])}")
+        
+        return True
+    
+    def _cap_llm_request_execution(self) -> bool:
+        """
+        LLM-first capability: Request approval to execute the master script.
+        
+        This is the ONLY approval gate in LLM-first mode.
+        """
+        if not self.workspace or not self._last_directive:
+            return False
+        
+        if not self._last_directive.request_execution:
+            return False
+        
+        # Check if master script exists
+        master_script = self.workspace.read_master_script()
+        if not master_script:
+            self.io.say_error("No master script to execute")
+            return False
+        
+        self._emit_trace("llm_execution_requested", "Requesting execution approval")
+        
+        # Get workspace summary for approval details
+        summary = self.workspace.get_summary()
+        
+        # Scan for suspicious patterns
+        from ...script_writer import scan_for_suspicious_patterns
+        warnings = scan_for_suspicious_patterns(master_script)
+        
+        # Build approval details
+        details = {
+            "master_script_lines": summary.master_script_lines,
+            "master_script_hash": summary.master_script_hash,
+            "tool_count": summary.tool_count,
+            "run_count": summary.run_count,
+        }
+        
+        risk_flags = warnings if warnings else []
+        
+        approved = self.io.ask_confirm(
+            "Execute master script now?",
+            details=details,
+            modal=True,
+            runtime_estimate="1-5 minutes",
+            expected_outputs=["Network JSON", "STL mesh", "Artifacts JSON"],
+            risk_flags=risk_flags,
+        )
+        
+        if approved:
+            self.world_model.set_approval("llm_execution", approved=True)
+            self._emit_trace("llm_execution_approved", "Execution approved")
+            self.io.say_assistant("Execution approved. Running master script...")
+            return True
+        else:
+            self.world_model.set_approval("llm_execution", approved=False)
+            self._emit_trace("llm_execution_denied", "Execution denied")
+            self.io.say_assistant("Execution not approved. What would you like to change?")
+            return False
+    
+    def _cap_llm_run_master_script(self) -> bool:
+        """
+        LLM-first capability: Run the master script via subprocess.
+        """
+        if not self.workspace:
+            return False
+        
+        if not self.world_model.is_approved("llm_execution"):
+            return False
+        
+        master_script_path = self.workspace.master_script_path
+        if not master_script_path:
+            return False
+        
+        import os
+        if not os.path.exists(master_script_path):
+            self.io.say_error("Master script not found")
+            return False
+        
+        self._emit_trace("llm_execution_started", "Running master script")
+        self.io.say_assistant("Running master script...")
+        
+        # Create run directory
+        run_version = self.workspace.get_next_run_version()
+        run_dir = self.workspace.create_run_directory(run_version)
+        
+        # Run the script
+        from ...subprocess_runner import run_script
+        
+        result = run_script(
+            script_path=master_script_path,
+            object_dir=run_dir,
+            version=run_version,
+            timeout_seconds=600,  # 10 minute timeout
+        )
+        
+        # Store result
+        self._last_run_result = {
+            "success": result.success,
+            "exit_code": result.exit_code,
+            "elapsed_seconds": result.elapsed_seconds,
+            "timed_out": result.timed_out,
+            "error": result.error,
+            "last_lines": result.last_lines,
+        }
+        
+        # Save run record
+        import os
+        run_record = RunRecord(
+            version=run_version,
+            timestamp=os.path.basename(run_dir),
+            status="success" if result.success else "failed",
+            elapsed_seconds=result.elapsed_seconds,
+            stdout_path=result.log_path,
+            stderr_path=None,
+            artifacts_json_path=None,
+            verification_passed=None,
+            error_message=result.error,
+        )
+        self.workspace.save_run_record(run_record)
+        
+        # Store in world model
+        self.world_model.add_artifact("last_run_result", self._last_run_result)
+        self.world_model.add_artifact("last_run_dir", run_dir)
+        
+        # Clear execution approval for next run
+        self.world_model.set_approval("llm_execution", approved=False)
+        
+        if result.success:
+            self._emit_trace("llm_execution_finished", "Master script completed successfully")
+            self.io.say_success("Master script completed successfully!")
+            return True
+        else:
+            self._emit_trace("llm_execution_failed", f"Master script failed: {result.error}")
+            self.io.say_error(f"Master script failed: {result.error}")
+            return True  # Return True to continue the loop (LLM will handle the failure)
+    
+    def _cap_llm_verify_artifacts(self) -> bool:
+        """
+        LLM-first capability: Verify artifacts after script execution.
+        """
+        if not self.workspace:
+            return False
+        
+        last_run_dir = self.world_model.get_artifact("last_run_dir")
+        if not last_run_dir:
+            return False
+        
+        self._emit_trace("llm_verification_started", "Verifying artifacts")
+        self.io.say_assistant("Verifying generated artifacts...")
+        
+        # Use artifact verifier
+        from ...artifact_verifier import verify_generation_stage
+        
+        # Get spec path
+        spec_path = self.workspace.spec_path
+        
+        # Get last run result for script output
+        # Note: last_lines is a List[str], so we need to join it
+        last_lines = self._last_run_result.get("last_lines", []) if self._last_run_result else []
+        script_output = "\n".join(last_lines) if isinstance(last_lines, list) else str(last_lines)
+        
+        # Get run version from last run record
+        last_run = self.workspace.get_last_run_record()
+        run_version = last_run.version if last_run else 1
+        
+        result = verify_generation_stage(
+            object_dir=last_run_dir,
+            version=run_version,
+            script_output=script_output,
+            spec_path=spec_path,
+        )
+        
+        # Store verification report
+        self._last_verification_report = {
+            "success": result.success,
+            "required_passed": result.required_passed,
+            "required_total": result.required_total,
+            "optional_passed": result.optional_passed,
+            "optional_total": result.optional_total,
+            "errors": result.errors,
+            "warnings": result.warnings,
+        }
+        
+        self.world_model.add_artifact("last_verification_report", self._last_verification_report)
+        
+        # Update run record with verification result
+        if last_run:
+            last_run.verification_passed = result.success
+            self.workspace.save_run_record(last_run)
+        
+        if result.success:
+            self._emit_trace("llm_verification_passed", "Verification passed")
+            self.io.say_success(f"Verification passed! {result.required_passed}/{result.required_total} required checks passed.")
+            
+            # Set generation done fact
+            self.world_model.set_fact(
+                "generation_done",
+                True,
+                FactProvenance.SYSTEM,
+                reason="Generation verified successfully",
+            )
+            
+            # Store mesh path if available
+            # Note: artifacts_json is an ArtifactsJson dataclass, not a dict
+            if result.artifacts_json:
+                for f in result.artifacts_json.files:
+                    if f.endswith(".stl"):
+                        self.world_model.add_artifact("mesh_path", f)
+                        break
+            
+            return True
+        else:
+            self._emit_trace("llm_verification_failed", f"Verification failed: {result.errors}")
+            self.io.say_error(f"Verification failed: {', '.join(result.errors)}")
+            return True  # Return True to continue the loop (LLM will handle the failure)
+    
+    def _get_available_capabilities_llm_first(self) -> List[str]:
+        """
+        Get available capabilities in LLM-first mode.
+        
+        In LLM-first mode, the capability selection is simpler:
+        1. If there's a pending directive with workspace_update, apply it
+        2. If there's a pending directive with request_execution, request approval
+        3. If execution is approved, run the script
+        4. If there's a run result, verify artifacts
+        5. Otherwise, ask the LLM what to do next
+        """
+        available = []
+        
+        # Check if we need to apply workspace updates
+        if self._last_directive and self._last_directive.workspace_update:
+            if self._last_directive.workspace_update.files or self._last_directive.workspace_update.registry_updates:
+                available.append("llm_apply_workspace_update")
+                return available
+        
+        # Check if we need to request execution
+        if self._last_directive and self._last_directive.request_execution:
+            if not self.world_model.is_approved("llm_execution"):
+                available.append("llm_request_execution")
+                return available
+        
+        # Check if execution is approved
+        if self.world_model.is_approved("llm_execution"):
+            available.append("llm_run_master_script")
+            return available
+        
+        # Check if we need to verify artifacts
+        last_run_dir = self.world_model.get_artifact("last_run_dir")
+        if last_run_dir and not self._last_verification_report:
+            available.append("llm_verify_artifacts")
+            return available
+        
+        # Default: ask LLM what to do next
+        available.append("llm_decide_next")
+        return available
