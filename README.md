@@ -118,7 +118,64 @@ result = runner.run_task(
 
 ### Interactive Workflow
 
-The Single Agent Organ Generator V3 provides a guided, interactive workflow for organ structure generation. It features an adaptive rule engine that intelligently determines which questions to ask based on the user's input, along with an agent dialogue system that follows an Interpret → Plan → Ask pattern:
+The repository provides two workflow implementations for interactive organ structure generation:
+
+#### V5 Goal-Driven Controller (Recommended)
+
+The Single Agent Organ Generator V5 is a goal-driven controller that feels like a confident engineer. It replaces the state-machine approach with a goal-driven architecture:
+
+```python
+from automation.single_agent_organ_generation.v5 import (
+    SingleAgentOrganGeneratorV5,
+    ControllerConfig,
+    CLIIOAdapter,
+)
+
+# Initialize the V5 controller
+io_adapter = CLIIOAdapter()
+config = ControllerConfig(
+    max_iterations=1000,
+    max_safe_fixes_per_run=10,
+    auto_select_plan_if_confident=True,
+    verbose=True,
+)
+
+controller = SingleAgentOrganGeneratorV5(
+    io_adapter=io_adapter,
+    config=config,
+)
+
+# Run the workflow
+controller.run()
+```
+
+V5 features include:
+
+| Feature | Description |
+|---------|-------------|
+| **Goal-Driven Progress** | Progress measured by goal satisfaction, not state transitions |
+| **WorldModel** | Single source of truth for facts, approvals, artifacts, and history |
+| **Intelligent Questioning** | Automatically generates questions for missing required fields |
+| **Safe Fix Policy** | Applies safe fixes one at a time with user confirmation for non-safe changes |
+| **Approval Tracking** | Always asks before generation and postprocess; tracks denied approvals |
+| **Interrupt Support** | Supports undo, backtracking, and revisiting previous decisions |
+| **Spam Prevention** | Only summarizes spec when meaningful changes occur |
+
+V5 goals progress through the following sequence:
+
+1. **spec_minimum_complete**: All required fields for the chosen topology are filled
+2. **spec_compiled**: Design spec has been compiled to executable form
+3. **pregen_verified**: Feasibility and schema checks passed
+4. **generation_approved**: User has approved generation
+5. **generation_done**: Vascular network has been generated
+6. **postprocess_approved**: User has approved postprocessing
+7. **postprocess_done**: Embedding/voxelization/repair/export complete
+8. **validation_passed**: All validation checks passed
+9. **outputs_packaged**: Final deliverables are packaged
+
+#### V3 Legacy Workflow
+
+The Single Agent Organ Generator V3 provides a state-machine-based workflow with an adaptive rule engine:
 
 ```python
 from automation.workflow import run_single_agent_workflow
@@ -131,7 +188,7 @@ context = run_single_agent_workflow(
 )
 ```
 
-The workflow progresses through the following stages:
+The V3 workflow progresses through the following stages:
 
 1. **Project Initialization**: Configure project name and output directory
 2. **Object Planning**: Define the number and types of structures to generate
@@ -218,6 +275,14 @@ Agentic-Organ-Generation/
 │   ├── agent_runner.py         # Agent orchestration
 │   ├── task_templates/         # Pre-built prompts
 │   ├── cli.py                  # Command-line interface
+│   ├── single_agent_organ_generation/
+│   │   └── v5/                 # V5 Goal-Driven Controller
+│   │       ├── controller.py   # Main agent loop
+│   │       ├── world_model.py  # Single source of truth
+│   │       ├── goals.py        # Goal definitions and tracking
+│   │       ├── policies.py     # Safe fix and approval policies
+│   │       ├── plan_synthesizer.py  # Object-specific plan generation
+│   │       └── io/             # IO adapters (CLI, GUI)
 │   └── README.md               # Detailed documentation
 │
 ├── gui/                        # Part D: Graphical User Interface
@@ -426,15 +491,15 @@ These constraints are validated during post-embedding checks to ensure the gener
 
 The `examples/` directory contains working demonstrations of the system's capabilities:
 
-### Single Agent Organ Generator V3 Notebook
+### Single Agent Organ Generator Notebooks
 
 `examples/single_agent_organgenerator_v2.ipynb` provides an interactive tutorial covering:
 
 | Topic | Description |
 |-------|-------------|
-| Quick Start | Launch the workflow with `run_single_agent_workflow()` |
-| Workflow Control | Fine-grained control via `SingleAgentOrganGeneratorV3` class |
-| State Transitions | Programmatic progression using the `step()` method |
+| Quick Start | Launch the workflow with V5 goal-driven controller or V3 state machine |
+| V5 Controller | Goal-driven workflow with WorldModel, capabilities, and policies |
+| V3 Workflow | State-machine-based workflow with adaptive rule engine |
 | Persistence | Save and restore workflow state across sessions |
 | Visualization | Render and inspect generated STL meshes |
 | Provider Configuration | Configure different LLM providers |
