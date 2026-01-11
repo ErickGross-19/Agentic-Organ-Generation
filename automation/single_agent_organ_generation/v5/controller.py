@@ -433,8 +433,13 @@ class SingleAgentOrganGeneratorV5:
             return False
         
         for issue in issues:
-            candidates = self.safe_fix_policy.get_safe_fix_candidates(issue, self.world_model)
-            if candidates:
+            candidates = self.safe_fix_policy.generate_fix_candidates(
+                failure_type=issue.split()[0] if issue else "unknown",
+                failure_details={"issue": issue},
+                world_model=self.world_model,
+            )
+            safe_candidates = [c for c in candidates if c.safety.value == "safe"]
+            if safe_candidates:
                 return True
         return False
     
