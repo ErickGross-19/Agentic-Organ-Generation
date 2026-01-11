@@ -451,11 +451,13 @@ class SingleAgentOrganGeneratorV5:
                 if not self.world_model.plans:
                     # No plans yet - propose some
                     available.append("propose_tailored_plans")
-                elif self._last_plan_proposal_hash != current_spec_hash:
-                    # Plans exist but spec changed - allow re-proposal
-                    available.append("propose_tailored_plans")
-                # Always allow plan selection when plans exist but none selected
-                available.append("select_plan")
+                else:
+                    # Plans exist but none selected
+                    if self._last_plan_proposal_hash != current_spec_hash:
+                        # Spec changed - allow re-proposal
+                        available.append("propose_tailored_plans")
+                    # Allow plan selection when plans exist but none selected
+                    available.append("select_plan")
         
         if spec_complete:
             if self.goal_tracker.get_status("spec_compiled") != GoalStatus.SATISFIED:
