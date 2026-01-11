@@ -246,8 +246,9 @@ class FrameOfReferenceSection:
 class DomainSection:
     """Section 3: Domain specification.
     
-    V3 Note: The field is named `type` but a `shape` property alias is provided
-    for backward compatibility with code that expects `domain.shape`.
+    V3 Note: The field is named `type` but `shape` and `shape_type` property aliases
+    are provided for backward compatibility with code that expects `domain.shape`
+    or `domain.shape_type`.
     """
     type: str = "box"
     size_m: Tuple[float, float, float] = (0.02, 0.06, 0.03)
@@ -266,6 +267,20 @@ class DomainSection:
     @shape.setter
     def shape(self, value: str) -> None:
         """Setter for shape alias."""
+        object.__setattr__(self, 'type', value)
+    
+    @property
+    def shape_type(self) -> str:
+        """Alias for `type` field for backward compatibility.
+        
+        Some code paths use `domain.shape_type` instead of `domain.type`.
+        This property provides backward compatibility.
+        """
+        return self.type
+    
+    @shape_type.setter
+    def shape_type(self, value: str) -> None:
+        """Setter for shape_type alias."""
         object.__setattr__(self, 'type', value)
     
     def to_dict(self) -> Dict[str, Any]:
@@ -657,6 +672,20 @@ class ObjectContext:
     version: int = 1
     requirements: Optional[ObjectRequirements] = None
     raw_intent: str = ""
+    
+    @property
+    def current_version(self) -> int:
+        """Alias for `version` field for backward compatibility.
+        
+        Some code paths use `current_version` instead of `version`.
+        This property provides backward compatibility.
+        """
+        return self.version
+    
+    @current_version.setter
+    def current_version(self, value: int) -> None:
+        """Setter for current_version alias."""
+        object.__setattr__(self, 'version', value)
     
     spec_path: Optional[str] = None
     code_path: Optional[str] = None

@@ -15,9 +15,17 @@ No state machine - progress is measured by goal satisfaction.
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional
+from enum import Enum
+from typing import Any, Callable, Dict, List, Optional, Union
 
 from .world_model import WorldModel, FactProvenance, TraceEvent, Artifact
+
+
+class RunResult(Enum):
+    """Result of a run() call - distinguishes completion from waiting."""
+    COMPLETED = "completed"
+    WAITING = "waiting"
+    FAILED = "failed"
 from .goals import GoalTracker, GoalStatus
 from .policies import SafeFixPolicy, ApprovalPolicy, CapabilitySelectionPolicy
 from .plan_synthesizer import PlanSynthesizer
@@ -148,7 +156,7 @@ class SingleAgentOrganGeneratorV5:
         self._last_summarize_hash: Optional[str] = None
         self._denied_approval_hashes: Dict[str, str] = {}
     
-    def run(self, initial_message: Optional[str] = None) -> bool:
+    def run(self, initial_message: Optional[str] = None) -> RunResult:
         """
         Run the agent loop until completion or interruption.
         
@@ -159,8 +167,9 @@ class SingleAgentOrganGeneratorV5:
             
         Returns
         -------
-        bool
-            True if completed successfully, False otherwise
+        RunResult
+            COMPLETED if all goals satisfied, WAITING if paused for user input,
+            FAILED if max iterations reached or error occurred
         """
         self._is_running = True
         self._iteration_count = 0
@@ -186,7 +195,7 @@ class SingleAgentOrganGeneratorV5:
                     self.io.say_error("Maximum iterations reached")
                     self._error_message = "Maximum iterations reached"
                     self._is_running = False
-                    return False
+                    return RunResult.FAILED
                 
                 available = self._get_available_capabilities()
                 
@@ -194,11 +203,11 @@ class SingleAgentOrganGeneratorV5:
                     if self.goal_tracker.is_complete():
                         self._emit_trace("controller_completed", "All goals satisfied")
                         self._is_running = False
-                        return True
+                        return RunResult.COMPLETED
                     else:
                         self._emit_trace("waiting_for_input", "Waiting for user input")
                         self._is_running = False
-                        return True
+                        return RunResult.WAITING
                 
                 capability = self.capability_policy.select_capability(
                     available,
@@ -222,12 +231,12 @@ class SingleAgentOrganGeneratorV5:
                     logger.warning(f"Capability {capability} returned False")
             
             self._is_running = False
-            return self.goal_tracker.is_complete()
+            return RunResult.COMPLETED if self.goal_tracker.is_complete() else RunResult.WAITING
             
         except KeyboardInterrupt:
             self._is_running = False
             self._emit_trace("controller_interrupted", "Controller interrupted by user")
-            return False
+            return RunResult.FAILED
         except Exception as e:
             self._is_running = False
             self._error_message = str(e)
@@ -625,6 +634,56 @@ class SingleAgentOrganGeneratorV5:
         if terminal_match:
             patches["topology.target_terminals"] = int(terminal_match.group(1))
         
+        if "inlet_radius" in extracted:
+            radius_val = extracted["inlet_radius"]
+            if isinstance(radius_val, (int, float)):
+                patches["inlet.radius"] = radius_val / 1000 if radius_val > 0.1 else radius_val
+            else:
+                radius_match = re.search(r"(\d+(?:\.\d+)?)", str(radius_val))
+                if radius_match:
+                    val = float(radius_match.group(1))
+                    patches["inlet.radius"] = val / 1000 if val > 0.1 else val
+        
+        if "outlet_radius" in extracted:
+            radius_val = extracted["outlet_radius"]
+            if isinstance(radius_val, (int, float)):
+                patches["outlet.radius"] = radius_val / 1000 if radius_val > 0.1 else radius_val
+            else:
+                radius_match = re.search(r"(\d+(?:\.\d+)?)", str(radius_val))
+                if radius_match:
+                    val = float(radius_match.group(1))
+                    patches["outlet.radius"] = val / 1000 if val > 0.1 else val
+        
+        if "min_radius" in extracted:
+            radius_val = extracted["min_radius"]
+            if isinstance(radius_val, (int, float)):
+                patches["colonization.min_radius"] = radius_val / 1000 if radius_val > 0.1 else radius_val
+            else:
+                radius_match = re.search(r"(\d+(?:\.\d+)?)", str(radius_val))
+                if radius_match:
+                    val = float(radius_match.group(1))
+                    patches["colonization.min_radius"] = val / 1000 if val > 0.1 else val
+        
+        radius_pattern = re.search(r"(\d+(?:\.\d+)?)\s*(?:mm)?\s*(?:inlet|input)\s*radius", message_lower)
+        if radius_pattern and "inlet.radius" not in patches:
+            val = float(radius_pattern.group(1))
+            patches["inlet.radius"] = val / 1000 if val > 0.1 else val
+        
+        radius_pattern = re.search(r"inlet\s*radius\s*(?:of\s*)?(\d+(?:\.\d+)?)\s*(?:mm)?", message_lower)
+        if radius_pattern and "inlet.radius" not in patches:
+            val = float(radius_pattern.group(1))
+            patches["inlet.radius"] = val / 1000 if val > 0.1 else val
+        
+        radius_pattern = re.search(r"(\d+(?:\.\d+)?)\s*(?:mm)?\s*(?:outlet|output)\s*radius", message_lower)
+        if radius_pattern and "outlet.radius" not in patches:
+            val = float(radius_pattern.group(1))
+            patches["outlet.radius"] = val / 1000 if val > 0.1 else val
+        
+        radius_pattern = re.search(r"outlet\s*radius\s*(?:of\s*)?(\d+(?:\.\d+)?)\s*(?:mm)?", message_lower)
+        if radius_pattern and "outlet.radius" not in patches:
+            val = float(radius_pattern.group(1))
+            patches["outlet.radius"] = val / 1000 if val > 0.1 else val
+        
         if self.world_model.open_questions:
             for q_id, question in self.world_model.open_questions.items():
                 field = question.field
@@ -757,14 +816,74 @@ class SingleAgentOrganGeneratorV5:
         
         response = self.io.ask_text(
             prompt,
-            suggestions=best_question.acceptable_answers,
+            suggestions=best_question.options,
         )
         
-        self.world_model.answer_question(best_question.question_id, response)
+        parsed_value = self._parse_question_answer(best_question.field, response)
+        
+        self.world_model.answer_question(best_question.question_id, parsed_value)
         
         self._emit_trace("question_asked", f"Asked: {best_question.field}")
         
         return True
+    
+    def _parse_question_answer(self, field: str, response: str) -> Any:
+        """
+        Parse a question answer with field-aware type conversion.
+        
+        Converts raw string responses to appropriate types:
+        - domain.size: "20x60x30" -> (0.02, 0.06, 0.03) tuple in meters
+        - *.radius: "2" or "2mm" -> 0.002 float in meters
+        - *.face: normalizes to canonical face names
+        - domain.type, topology.kind: returns as-is (string)
+        """
+        response = response.strip()
+        
+        if field == "domain.size":
+            size_match = re.search(
+                r"(\d+(?:\.\d+)?)\s*(?:x|by|,)\s*(\d+(?:\.\d+)?)\s*(?:x|by|,)\s*(\d+(?:\.\d+)?)\s*(mm|cm|m)?",
+                response.lower()
+            )
+            if size_match:
+                x, y, z = float(size_match.group(1)), float(size_match.group(2)), float(size_match.group(3))
+                unit = size_match.group(4) or "mm"
+                if unit == "mm":
+                    x, y, z = x / 1000, y / 1000, z / 1000
+                elif unit == "cm":
+                    x, y, z = x / 100, y / 100, z / 100
+                return (x, y, z)
+            return response
+        
+        if field.endswith(".radius"):
+            radius_match = re.search(r"(\d+(?:\.\d+)?)\s*(mm|cm|m)?", response.lower())
+            if radius_match:
+                value = float(radius_match.group(1))
+                unit = radius_match.group(2) or "mm"
+                if unit == "mm":
+                    value = value / 1000
+                elif unit == "cm":
+                    value = value / 100
+                return value
+            return response
+        
+        if field.endswith(".face"):
+            face_map = {
+                "left": "x_min", "x min": "x_min", "-x": "x_min", "xmin": "x_min",
+                "right": "x_max", "x max": "x_max", "+x": "x_max", "xmax": "x_max",
+                "front": "y_min", "y min": "y_min", "-y": "y_min", "ymin": "y_min",
+                "back": "y_max", "y max": "y_max", "+y": "y_max", "ymax": "y_max",
+                "bottom": "z_min", "z min": "z_min", "-z": "z_min", "zmin": "z_min",
+                "top": "z_max", "z max": "z_max", "+z": "z_max", "zmax": "z_max",
+            }
+            response_lower = response.lower().replace("_", " ").replace("-", " ")
+            for key, canonical in face_map.items():
+                if key in response_lower:
+                    return canonical
+            if response.lower() in ["x_min", "x_max", "y_min", "y_max", "z_min", "z_max"]:
+                return response.lower()
+            return response
+        
+        return response
     
     def _cap_generate_missing_field_questions(self) -> bool:
         """Capability 6b: Generate open questions for missing required fields."""
