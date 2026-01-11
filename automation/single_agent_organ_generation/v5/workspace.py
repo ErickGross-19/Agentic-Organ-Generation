@@ -1095,32 +1095,30 @@ class WorkspaceManager:
         P4 #32: Get restricted execution environment for sandbox.
         
         Returns environment variables for sandboxed execution.
+        
+        Note: PYTHONPATH is NOT set here because subprocess_runner.build_environment()
+        already sets it to include the repo root (needed for `import generation.*`).
+        Setting it here would overwrite that value and break imports.
+        
+        Note: OUTPUT_DIR is NOT set here to avoid confusion with ORGAN_AGENT_OUTPUT_DIR
+        which is set by subprocess_runner to the specific run directory.
         """
         import os as os_module
         
-        # Start with minimal environment
+        # Provide workspace path for scripts that need to find spec.json/registry
+        # PYTHONPATH is handled by subprocess_runner.build_environment() to include repo root
         env = {
             "PATH": os_module.environ.get("PATH", "/usr/bin:/bin"),
             "HOME": os_module.environ.get("HOME", "/tmp"),
-            "PYTHONPATH": str(self.workspace_path),
             "WORKSPACE_PATH": str(self.workspace_path),
-            "OUTPUT_DIR": str(self.runs_path),
         }
         
         # Add Python-related vars
         if "VIRTUAL_ENV" in os_module.environ:
             env["VIRTUAL_ENV"] = os_module.environ["VIRTUAL_ENV"]
         
-        # Restrict certain vars
-        restricted_vars = [
-            "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
-            "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-            "DATABASE_URL", "REDIS_URL",
-        ]
-        
-        for var in restricted_vars:
-            if var in env:
-                del env[var]
+        # Note: We don't restrict vars here since subprocess_runner starts from os.environ.copy()
+        # and we're just adding extra vars, not replacing the whole environment
         
         return env
     
