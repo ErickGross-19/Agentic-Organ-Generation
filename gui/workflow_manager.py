@@ -82,6 +82,7 @@ class WorkflowConfig:
     timeout_seconds: float = 300.0
     verbose: bool = True
     auto_approve: bool = False
+    llm_first_mode: bool = False  # Enable LLM-first agentic mode for V5
 
 
 class WorkflowManager:
@@ -642,11 +643,15 @@ class WorkflowManager:
             config = ControllerConfig(
                 verbose=self._config.verbose,
                 auto_select_plan_if_confident=not self._config.auto_approve,
+                llm_first_mode=self._config.llm_first_mode,
+                output_dir=self._config.output_dir,
             )
             
+            # Pass LLM client to V5 controller for LLM-first mode
             workflow = SingleAgentOrganGeneratorV5(
                 io_adapter=io_adapter,
                 config=config,
+                llm_client=self._llm_client if self._config.llm_first_mode else None,
             )
             
             self._current_workflow = workflow
