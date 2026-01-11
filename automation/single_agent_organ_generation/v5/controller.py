@@ -2112,7 +2112,22 @@ class SingleAgentOrganGeneratorV5:
             self.world_model.set_approval("llm_execution", approved=False)
             self._emit_trace("llm_execution_denied", "Execution denied")
             self.io.say_assistant("Execution not approved. What would you like to change?")
-            return False
+            
+            # Add an open question to pause and wait for user input
+            # This prevents the controller from spamming approval requests
+            from .world_model import OpenQuestion
+            question = OpenQuestion(
+                question_id="execution_denied_feedback",
+                field="execution_feedback",
+                question_text="What changes would you like to make before execution?",
+                why_it_matters="User denied execution approval and needs to provide feedback",
+                priority=100,  # High priority to ensure it's addressed first
+            )
+            self.world_model.add_open_question(question)
+            
+            # Return True because the capability completed its job (asked and got an answer)
+            # The open question will cause _get_available_capabilities_llm_first() to pause
+            return True
     
     def _cap_llm_run_master_script(self) -> bool:
         """
@@ -2318,14 +2333,32 @@ class SingleAgentOrganGeneratorV5:
         Get available capabilities in LLM-first mode.
         
         In LLM-first mode, the capability selection is simpler:
-        1. If there's a pending directive with workspace_update, apply it
-        2. If there's a pending directive with request_execution, request approval
-        3. If execution is approved, run the script
-        4. If there's a run result, verify artifacts
-        5. Fallback: if master exists + no pending questions + no recent run → suggest execution
-        6. Otherwise, ask the LLM what to do next
+        1. If there are open questions and no pending user message, pause (return [])
+        2. If there's a pending directive with workspace_update, apply it
+        3. If there's a pending directive with request_execution, request approval
+        4. If execution is approved, run the script
+        5. If there's a run result, verify artifacts
+        6. Fallback: if master exists + no pending questions + no recent run → suggest execution
+        7. Otherwise, ask the LLM what to do next
         """
         available = []
+        
+        # Check if we have open questions that need user input
+        # This handles execution denial pause - when user denies, we add an open question
+        # and wait for their feedback before continuing
+        open_questions = self.world_model.get_open_questions()
+        if open_questions and not self._pending_user_message:
+            # Pause and wait for user input - return empty list
+            # The run() loop will return WAITING when no capabilities are available
+            return []
+        
+        # If user provided a message, clear the execution denial question
+        # so we can proceed with their feedback
+        if self._pending_user_message and open_questions:
+            for q in open_questions:
+                if q.question_id == "execution_denied_feedback":
+                    self.world_model.remove_open_question(q.question_id)
+                    break
         
         # Check if we need to apply workspace updates
         if self._last_directive and self._last_directive.workspace_update:
