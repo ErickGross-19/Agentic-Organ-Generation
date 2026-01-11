@@ -1276,14 +1276,18 @@ class SingleAgentOrganGeneratorV5:
         
         Looks for:
         - Organ types (liver, kidney, heart, etc.) -> suggests topology
-        - Size mentions (e.g., "2x3x6 mm") -> pre-fills domain.size
+        - Size mentions (e.g., "2x3x6 mm") -> stored for reference
         - Use cases (perfusion, tissue engineering) -> stored for context
         - Specific constraints mentioned
+        
+        Extracted intent is stored in project.intent and used to provide
+        topology suggestions when topology.kind hasn't been set yet.
         """
         description_lower = description.lower()
         extracted_intent = {}
         
         # Detect organ types and suggest appropriate topology
+        # Use word boundary matching to avoid false positives (e.g., "heartfelt" matching "heart")
         organ_topology_map = {
             "liver": "dual_trees",
             "kidney": "dual_trees", 
@@ -1298,7 +1302,8 @@ class SingleAgentOrganGeneratorV5:
         
         detected_organ = None
         for organ, suggested_topology in organ_topology_map.items():
-            if organ in description_lower:
+            # Use word boundary regex to avoid false positives
+            if re.search(rf"\b{organ}\b", description_lower):
                 detected_organ = organ
                 extracted_intent["detected_organ"] = organ
                 extracted_intent["suggested_topology"] = suggested_topology
@@ -1620,8 +1625,8 @@ class SingleAgentOrganGeneratorV5:
         required_fields = [
             ("domain.type", "What type of domain shape?", "Determines the bounding geometry", ["box", "ellipsoid", "cylinder"]),
             ("domain.size", "What are the domain dimensions (width x depth x height in mm)?", "Defines the physical size of the organ scaffold", None),
-            ("topology.kind", "What vascular topology?", "Determines branching pattern", ["tree", "dual_trees", "path", "backbone", "loop"]),
             ("project.description", "Describe your project in a few sentences. What organ or structure are you building? What's the intended use?", "Helps me understand your goals and suggest appropriate parameters", None),
+            ("topology.kind", "What vascular topology?", "Determines branching pattern", ["tree", "dual_trees", "path", "backbone", "loop"]),
             ("inlet.face", "Which face should the inlet be on?", "Determines where blood enters", ["x_min", "x_max", "y_min", "y_max", "z_min", "z_max"]),
             ("inlet.radius", "What inlet radius (in mm)?", "Determines the main vessel diameter", None),
             ("outlet.face", "Which face should the outlet be on?", "Determines where blood exits", ["x_min", "x_max", "y_min", "y_max", "z_min", "z_max"]),
