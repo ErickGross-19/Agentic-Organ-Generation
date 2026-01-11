@@ -169,6 +169,60 @@ class Directive:
 
 
 @dataclass
+class GoalSatisfaction:
+    """
+    P2 #22: Goal satisfaction signals for the LLM.
+    
+    Soft signals that help the LLM understand what's missing.
+    """
+    has_domain: bool = False
+    has_inlet: bool = False
+    has_outlet: bool = False
+    has_topology: bool = False
+    has_master_script: bool = False
+    has_successful_run: bool = False
+    has_verified_mesh: bool = False
+    missing_requirements: List[str] = field(default_factory=list)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "has_domain": self.has_domain,
+            "has_inlet": self.has_inlet,
+            "has_outlet": self.has_outlet,
+            "has_topology": self.has_topology,
+            "has_master_script": self.has_master_script,
+            "has_successful_run": self.has_successful_run,
+            "has_verified_mesh": self.has_verified_mesh,
+            "missing_requirements": self.missing_requirements,
+        }
+
+
+@dataclass
+class ErrorPacket:
+    """
+    P2 #23: Structured error-to-fix packet for the LLM.
+    
+    When a run fails, provides structured information to help the LLM fix it.
+    """
+    error_type: str  # "syntax", "import", "runtime", "verification", "timeout"
+    error_message: str
+    stderr_tail: List[str] = field(default_factory=list)
+    verification_errors: List[str] = field(default_factory=list)
+    mesh_stats: Optional[Dict[str, Any]] = None
+    suggested_fix: Optional[str] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "error_type": self.error_type,
+            "error_message": self.error_message,
+            "stderr_tail": self.stderr_tail,
+            "verification_errors": self.verification_errors,
+            "mesh_stats": self.mesh_stats,
+            "suggested_fix": self.suggested_fix,
+        }
+
+
+@dataclass
 class ObservationPacket:
     """
     The observation packet sent to the LLM for decision-making.
@@ -184,6 +238,10 @@ class ObservationPacket:
     verification_report: Optional[Dict[str, Any]] = None
     goal_progress: Dict[str, Any] = field(default_factory=dict)
     conversation_history: List[Dict[str, str]] = field(default_factory=list)
+    # P2 #22: Goal satisfaction signals
+    goal_satisfaction: Optional[GoalSatisfaction] = None
+    # P2 #23: Error-to-fix packet
+    error_packet: Optional[ErrorPacket] = None
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -196,6 +254,8 @@ class ObservationPacket:
             "verification_report": self.verification_report,
             "goal_progress": self.goal_progress,
             "conversation_history": self.conversation_history,
+            "goal_satisfaction": self.goal_satisfaction.to_dict() if self.goal_satisfaction else None,
+            "error_packet": self.error_packet.to_dict() if self.error_packet else None,
         }
 
 
@@ -252,27 +312,64 @@ You MUST respond with a JSON object containing:
 ## Master Script Contract
 
 The master script must:
-1. Load spec.json for parameters
-2. Use tools from the registry
-3. Write outputs to OUTPUT_DIR (from environment)
-4. Print ARTIFACTS_JSON footer with created files and metrics
+1. Compute WORKSPACE_DIR from __file__ (the script's location)
+2. Load spec.json and tool_registry.json from WORKSPACE_DIR
+3. Write outputs to OUTPUT_DIR (from environment variable ORGAN_AGENT_OUTPUT_DIR)
+4. Create REQUIRED output files with EXACT paths (verifier checks these):
+   - `04_outputs/network_v{VERSION:03d}.json` - Network data
+   - `05_mesh/mesh_network_v{VERSION:03d}.stl` - STL mesh
+5. Print ARTIFACTS_JSON footer with created files and metrics
+
+CRITICAL: The verifier checks for EXACT file paths. Use the version number from spec.json.
 
 Example structure:
 ```python
 import os
+import sys
 import json
 
+# CRITICAL: Compute workspace dir from script location, NOT cwd
+WORKSPACE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.environ.get('ORGAN_AGENT_OUTPUT_DIR', os.getcwd())
 
+# Add workspace/tools to path for generated tools
+sys.path.insert(0, os.path.join(WORKSPACE_DIR, 'tools'))
+
 def load_spec():
-    with open(os.path.join(OUTPUT_DIR, '..', 'agent_workspace', 'spec.json')) as f:
+    spec_path = os.path.join(WORKSPACE_DIR, 'spec.json')
+    with open(spec_path) as f:
+        return json.load(f)
+
+def load_registry():
+    registry_path = os.path.join(WORKSPACE_DIR, 'tool_registry.json')
+    with open(registry_path) as f:
         return json.load(f)
 
 def main():
     spec = load_spec()
-    # ... generation logic using tools ...
-    # ... write outputs ...
-    print(f'ARTIFACTS_JSON: {json.dumps({"files": [...], "metrics": {...}, "status": "success"})}')
+    version = spec.get('run_version', 1)
+    v_str = f'v{version:03d}'
+    
+    # Create required output directories
+    os.makedirs(os.path.join(OUTPUT_DIR, '04_outputs'), exist_ok=True)
+    os.makedirs(os.path.join(OUTPUT_DIR, '05_mesh'), exist_ok=True)
+    
+    # ... generation logic using tools from generation.ops and generation.core ...
+    
+    # REQUIRED output files (verifier checks these exact paths!)
+    network_path = os.path.join(OUTPUT_DIR, '04_outputs', f'network_{v_str}.json')
+    mesh_path = os.path.join(OUTPUT_DIR, '05_mesh', f'mesh_network_{v_str}.stl')
+    
+    # ... save network to network_path ...
+    # ... export mesh to mesh_path ...
+    
+    # Print ARTIFACTS_JSON footer (verifier parses this)
+    artifacts = {
+        "files": [network_path, mesh_path],
+        "metrics": {"node_count": 0, "segment_count": 0},
+        "status": "success"
+    }
+    print(f'ARTIFACTS_JSON: {json.dumps(artifacts)}')
 
 if __name__ == "__main__":
     main()
@@ -483,6 +580,10 @@ Remember:
         """
         Parse the LLM response into a Directive.
         
+        Uses fenced-json parsing (```json ... ```) as the primary method.
+        This is more robust than regex matching braces, which breaks on
+        code strings containing braces.
+        
         Parameters
         ----------
         response_text : str
@@ -493,32 +594,53 @@ Remember:
         Directive
             The parsed directive
         """
-        # Try to extract JSON from the response
+        import re
+        
+        # Method 1: Try to parse the entire response as JSON (clean output)
         try:
-            # First, try to parse the entire response as JSON
-            data = json.loads(response_text)
+            data = json.loads(response_text.strip())
             return Directive.from_dict(data)
         except json.JSONDecodeError:
             pass
         
-        # Try to find JSON block in markdown
-        import re
+        # Method 2: Find fenced JSON block (```json ... ``` or ``` ... ```)
+        # This is the recommended format and most reliable
         json_match = re.search(r'```(?:json)?\s*\n(.*?)\n```', response_text, re.DOTALL)
         if json_match:
             try:
                 data = json.loads(json_match.group(1))
                 return Directive.from_dict(data)
-            except json.JSONDecodeError:
-                pass
+            except json.JSONDecodeError as e:
+                logger.warning(f"Found fenced block but failed to parse: {e}")
         
-        # Try to find JSON object anywhere in the response
-        json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', response_text, re.DOTALL)
-        if json_match:
-            try:
-                data = json.loads(json_match.group(0))
-                return Directive.from_dict(data)
-            except json.JSONDecodeError:
-                pass
+        # Method 3: Find JSON starting with { and ending with } at line boundaries
+        # More robust than regex matching nested braces
+        lines = response_text.split('\n')
+        json_start = None
+        brace_count = 0
+        json_lines = []
+        
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if json_start is None and stripped.startswith('{'):
+                json_start = i
+                brace_count = 0
+            
+            if json_start is not None:
+                json_lines.append(line)
+                brace_count += stripped.count('{') - stripped.count('}')
+                
+                if brace_count == 0 and stripped.endswith('}'):
+                    # Found complete JSON object
+                    try:
+                        json_text = '\n'.join(json_lines)
+                        data = json.loads(json_text)
+                        return Directive.from_dict(data)
+                    except json.JSONDecodeError:
+                        # Reset and continue looking
+                        json_start = None
+                        json_lines = []
+                        brace_count = 0
         
         # Fallback: treat the entire response as the assistant message
         logger.warning("Could not parse LLM response as JSON, using as plain message")

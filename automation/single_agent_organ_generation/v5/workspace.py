@@ -54,19 +54,41 @@ class ToolRegistryEntry:
 
 
 @dataclass
+class FileInfo:
+    """P1 #9: File info with hash and modified time."""
+    path: str
+    exists: bool
+    hash: Optional[str]  # SHA256 first 16 chars
+    modified_time: Optional[str]  # ISO format
+    size_bytes: Optional[int]
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "path": self.path,
+            "exists": self.exists,
+            "hash": self.hash,
+            "modified_time": self.modified_time,
+            "size_bytes": self.size_bytes,
+        }
+
+
+@dataclass
 class WorkspaceSummary:
     """Summary of the workspace state for LLM context."""
     workspace_path: str
     master_script_exists: bool
     master_script_hash: Optional[str]
     master_script_lines: int
+    master_script_modified: Optional[str]  # P1 #9: modified time
     tool_count: int
     tool_names: List[str]
+    tool_files: List[FileInfo]  # P1 #9: file info for each tool
     run_count: int
     last_run_version: Optional[int]
     last_run_status: Optional[str]
     spec_exists: bool
     spec_keys: List[str]
+    spec_hash: Optional[str]  # P1 #9: spec hash
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -74,13 +96,16 @@ class WorkspaceSummary:
             "master_script_exists": self.master_script_exists,
             "master_script_hash": self.master_script_hash,
             "master_script_lines": self.master_script_lines,
+            "master_script_modified": self.master_script_modified,
             "tool_count": self.tool_count,
             "tool_names": self.tool_names,
+            "tool_files": [f.to_dict() for f in self.tool_files],
             "run_count": self.run_count,
             "last_run_version": self.last_run_version,
             "last_run_status": self.last_run_status,
             "spec_exists": self.spec_exists,
             "spec_keys": self.spec_keys,
+            "spec_hash": self.spec_hash,
         }
 
 
@@ -126,36 +151,85 @@ class RunRecord:
 
 
 # Default repo tools that are always available
+# NOTE: These must match actual module paths and entrypoints in the codebase!
+# Validated against generation/ops/__init__.py and generation/core/__init__.py
 DEFAULT_REPO_TOOLS: List[ToolRegistryEntry] = [
     ToolRegistryEntry(
-        name="space_colonization",
+        name="ops",
         origin="repo",
-        module="generation.ops.space_colonization",
-        entrypoints=["grow_network", "SpaceColonizationParams"],
-        description="Space colonization algorithm for vascular network generation",
+        module="generation.ops",
+        entrypoints=[
+            "create_network", "add_inlet", "add_outlet",  # from build.py
+            "space_colonization_step", "SpaceColonizationParams",  # from space_colonization.py
+            "grow_branch", "grow_to_point", "bifurcate",  # from growth.py
+            "embed_tree_as_negative_space",  # from embedding.py
+        ],
+        description="Core operations for building and modifying vascular networks",
     ),
     ToolRegistryEntry(
-        name="network_io",
+        name="core",
         origin="repo",
-        module="generation.ops.network_io",
-        entrypoints=["save_network_json", "load_network_json", "network_to_stl"],
-        description="Network I/O operations for saving/loading networks and exporting to STL",
+        module="generation.core",
+        entrypoints=[
+            "Point3D", "Direction3D", "TubeGeometry",  # from types.py
+            "Node", "VesselSegment", "VascularNetwork",  # from network.py
+            "DomainSpec", "EllipsoidDomain", "BoxDomain", "MeshDomain",  # from domain.py
+            "OperationResult", "Delta",  # from result.py
+        ],
+        description="Core data structures: network, domain, types",
     ),
     ToolRegistryEntry(
-        name="domain",
+        name="adapters",
         origin="repo",
-        module="generation.domain",
-        entrypoints=["BoxDomain", "CylinderDomain", "SphereDomain"],
-        description="Domain geometry definitions (box, cylinder, sphere)",
-    ),
-    ToolRegistryEntry(
-        name="validity",
-        origin="repo",
-        module="validity",
-        entrypoints=["validate_network", "check_connectivity", "check_radii"],
-        description="Network validation utilities",
+        module="generation.adapters",
+        entrypoints=["mesh_adapter", "networkx_adapter", "report_adapter"],
+        description="Adapters for mesh export, NetworkX conversion, and reporting",
     ),
 ]
+
+
+def validate_tool_registry(tools: List[ToolRegistryEntry]) -> List[ToolRegistryEntry]:
+    """
+    Validate tool registry entries by attempting to import modules.
+    
+    Returns only the tools whose modules can be successfully imported.
+    Invalid entries are logged as warnings.
+    """
+    import importlib
+    import logging
+    
+    logger = logging.getLogger(__name__)
+    valid_tools = []
+    
+    for tool in tools:
+        try:
+            module = importlib.import_module(tool.module)
+            # Check that at least one entrypoint exists
+            found_entrypoints = []
+            for ep in tool.entrypoints:
+                if hasattr(module, ep):
+                    found_entrypoints.append(ep)
+            
+            if found_entrypoints:
+                # Update tool with only valid entrypoints
+                validated_tool = ToolRegistryEntry(
+                    name=tool.name,
+                    origin=tool.origin,
+                    module=tool.module,
+                    entrypoints=found_entrypoints,
+                    description=tool.description,
+                    created_in_version=tool.created_in_version,
+                )
+                valid_tools.append(validated_tool)
+                if len(found_entrypoints) < len(tool.entrypoints):
+                    missing = set(tool.entrypoints) - set(found_entrypoints)
+                    logger.warning(f"Tool '{tool.name}': some entrypoints not found: {missing}")
+            else:
+                logger.warning(f"Tool '{tool.name}': no valid entrypoints found in module '{tool.module}'")
+        except ImportError as e:
+            logger.warning(f"Tool '{tool.name}': failed to import module '{tool.module}': {e}")
+    
+    return valid_tools
 
 
 class WorkspaceManager:
@@ -210,10 +284,13 @@ class WorkspaceManager:
         
         # Initialize tool registry with default repo tools if it doesn't exist
         if not os.path.exists(self.registry_path):
-            self._tool_registry = list(DEFAULT_REPO_TOOLS)
+            # Validate default tools at startup to catch any module path issues
+            self._tool_registry = validate_tool_registry(DEFAULT_REPO_TOOLS)
             self._save_registry()
         else:
             self._load_registry()
+            # Re-validate loaded tools to ensure they still work
+            self._tool_registry = validate_tool_registry(self._tool_registry)
         
         # Determine run counter from existing runs
         self._run_counter = self._get_max_run_version()
@@ -357,9 +434,75 @@ class WorkspaceManager:
         shutil.copy2(self.master_script_path, snapshot_path)
         return snapshot_path
     
+    def validate_path_in_workspace(self, path: str) -> bool:
+        """
+        P1 #10: Validate that a path is within the workspace directory.
+        
+        Prevents writes that escape the workspace (e.g., using ../).
+        
+        Parameters
+        ----------
+        path : str
+            Path to validate
+            
+        Returns
+        -------
+        bool
+            True if path is within workspace, False otherwise
+        """
+        # Resolve to absolute path
+        abs_path = os.path.abspath(path)
+        workspace_abs = os.path.abspath(self.workspace_dir)
+        
+        # Check if path is within workspace
+        return abs_path.startswith(workspace_abs + os.sep) or abs_path == workspace_abs
+    
+    def write_file_safe(self, relative_path: str, content: str) -> str:
+        """
+        P1 #10: Write a file safely, ensuring it's within the workspace.
+        
+        Parameters
+        ----------
+        relative_path : str
+            Path relative to workspace (e.g., "master.py", "tools/helper.py")
+        content : str
+            File content to write
+            
+        Returns
+        -------
+        str
+            Absolute path to the written file
+            
+        Raises
+        ------
+        ValueError
+            If path would escape the workspace
+        """
+        # Compute absolute path
+        if os.path.isabs(relative_path):
+            abs_path = relative_path
+        else:
+            abs_path = os.path.join(self.workspace_dir, relative_path)
+        
+        # Validate path is within workspace
+        if not self.validate_path_in_workspace(abs_path):
+            raise ValueError(f"Path '{relative_path}' escapes workspace directory")
+        
+        # Ensure parent directory exists
+        parent_dir = os.path.dirname(abs_path)
+        os.makedirs(parent_dir, exist_ok=True)
+        
+        # Write file
+        with open(abs_path, 'w') as f:
+            f.write(content)
+        
+        return abs_path
+    
     def write_tool_module(self, name: str, content: str) -> str:
         """
         Write a tool module to the tools directory.
+        
+        P1 #10: Uses safe write to prevent path escapes.
         
         Parameters
         ----------
@@ -372,11 +515,18 @@ class WorkspaceManager:
         -------
         str
             Path to the written tool module
+            
+        Raises
+        ------
+        ValueError
+            If name contains path separators or escapes
         """
+        # Validate name doesn't contain path separators
+        if os.sep in name or '/' in name or '..' in name:
+            raise ValueError(f"Tool name '{name}' contains invalid characters")
+        
         tool_path = os.path.join(self.tools_dir, f"{name}.py")
-        with open(tool_path, 'w') as f:
-            f.write(content)
-        return tool_path
+        return self.write_file_safe(tool_path, content)
     
     def read_spec(self) -> Optional[Dict[str, Any]]:
         """
@@ -528,9 +678,46 @@ class WorkspaceManager:
             return None
         return hashlib.sha256(content.encode()).hexdigest()[:16]
     
+    def _get_file_info(self, path: str) -> FileInfo:
+        """
+        P1 #9: Get file info with hash and modified time.
+        
+        Parameters
+        ----------
+        path : str
+            Path to the file
+            
+        Returns
+        -------
+        FileInfo
+            File information
+        """
+        if not os.path.exists(path):
+            return FileInfo(
+                path=path,
+                exists=False,
+                hash=None,
+                modified_time=None,
+                size_bytes=None,
+            )
+        
+        stat = os.stat(path)
+        with open(path, 'rb') as f:
+            file_hash = hashlib.sha256(f.read()).hexdigest()[:16]
+        
+        return FileInfo(
+            path=path,
+            exists=True,
+            hash=file_hash,
+            modified_time=datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            size_bytes=stat.st_size,
+        )
+    
     def get_summary(self) -> WorkspaceSummary:
         """
         Get a summary of the workspace state.
+        
+        P1 #9: Includes file hashes and modified times.
         
         Returns
         -------
@@ -541,49 +728,109 @@ class WorkspaceManager:
         master_exists = master_content is not None
         master_lines = len(master_content.split('\n')) if master_content else 0
         
+        # P1 #9: Get master script modified time
+        master_modified = None
+        if os.path.exists(self.master_script_path):
+            stat = os.stat(self.master_script_path)
+            master_modified = datetime.fromtimestamp(stat.st_mtime).isoformat()
+        
         tool_names = [t.name for t in self._tool_registry if t.origin == "generated"]
+        
+        # P1 #9: Get file info for each generated tool
+        tool_files = []
+        for tool in self._tool_registry:
+            if tool.origin == "generated":
+                tool_path = os.path.join(self.tools_dir, f"{tool.name}.py")
+                tool_files.append(self._get_file_info(tool_path))
         
         last_record = self.get_last_run_record()
         
         spec_data = self.read_spec()
         spec_keys = list(spec_data.get("facts", {}).keys()) if spec_data else []
         
+        # P1 #9: Compute spec hash
+        spec_hash = None
+        if os.path.exists(self.spec_path):
+            with open(self.spec_path, 'rb') as f:
+                spec_hash = hashlib.sha256(f.read()).hexdigest()[:16]
+        
         return WorkspaceSummary(
             workspace_path=self.workspace_dir,
             master_script_exists=master_exists,
             master_script_hash=self.compute_master_script_hash(),
             master_script_lines=master_lines,
+            master_script_modified=master_modified,
             tool_count=len([t for t in self._tool_registry if t.origin == "generated"]),
             tool_names=tool_names,
+            tool_files=tool_files,
             run_count=self._run_counter,
             last_run_version=last_record.version if last_record else None,
             last_run_status=last_record.status if last_record else None,
             spec_exists=spec_data is not None,
             spec_keys=spec_keys,
+            spec_hash=spec_hash,
         )
     
-    def get_master_script_for_prompt(self, max_lines: int = 200) -> str:
+    def get_master_script_for_prompt(self, max_lines: int = 500) -> str:
         """
         Get the master script content formatted for LLM prompt.
+        
+        P1 #8: Include full master script context (increased from 200 to 500 lines).
+        For very long scripts, provides a digest with function signatures.
         
         Parameters
         ----------
         max_lines : int
-            Maximum number of lines to include (default: 200)
+            Maximum number of lines to include (default: 500)
             
         Returns
         -------
         str
-            The master script content, possibly truncated
+            The master script content, possibly with digest for long scripts
         """
         content = self.read_master_script()
         if content is None:
             return "[No master script exists yet]"
         
         lines = content.split('\n')
-        if len(lines) > max_lines:
-            return '\n'.join(lines[:max_lines]) + f"\n... ({len(lines) - max_lines} more lines)"
-        return content
+        total_lines = len(lines)
+        
+        # If script fits within limit, return full content
+        if total_lines <= max_lines:
+            return content
+        
+        # For long scripts, provide a digest with function signatures + critical sections
+        import re
+        
+        # Extract function/class definitions
+        definitions = []
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith('def ') or stripped.startswith('class ') or stripped.startswith('async def '):
+                # Include the definition line and docstring if present
+                def_lines = [f"L{i+1}: {line}"]
+                # Check for docstring
+                if i + 1 < total_lines:
+                    next_line = lines[i + 1].strip()
+                    if next_line.startswith('"""') or next_line.startswith("'''"):
+                        def_lines.append(f"L{i+2}: {lines[i + 1]}")
+                definitions.append('\n'.join(def_lines))
+        
+        # Build digest
+        digest_parts = [
+            f"[Master script: {total_lines} lines total]",
+            "",
+            "=== IMPORTS AND SETUP (first 50 lines) ===",
+            '\n'.join(lines[:50]),
+            "",
+            "=== FUNCTION/CLASS DEFINITIONS ===",
+            '\n'.join(definitions) if definitions else "(no functions/classes found)",
+            "",
+            "=== MAIN SECTION (last 100 lines) ===",
+            '\n'.join(lines[-100:]),
+        ]
+        
+        return '\n'.join(digest_parts)
     
     def get_tool_registry_for_prompt(self) -> str:
         """
@@ -601,3 +848,87 @@ class WorkspaceManager:
             lines.append(f"    Module: {tool.module}")
             lines.append(f"    Entrypoints: {', '.join(tool.entrypoints)}")
         return '\n'.join(lines)
+    
+    def validate_master_script(self) -> Dict[str, Any]:
+        """
+        P1 #13: Validate master script before execution.
+        
+        Performs:
+        - Syntax check (py_compile)
+        - Import smoke test (can imports be resolved?)
+        
+        Returns
+        -------
+        dict
+            Validation result with keys:
+            - valid: bool
+            - syntax_ok: bool
+            - syntax_error: str or None
+            - import_warnings: List[str]
+        """
+        import subprocess
+        import sys
+        
+        result = {
+            "valid": True,
+            "syntax_ok": True,
+            "syntax_error": None,
+            "import_warnings": [],
+        }
+        
+        if not os.path.exists(self.master_script_path):
+            result["valid"] = False
+            result["syntax_ok"] = False
+            result["syntax_error"] = "Master script does not exist"
+            return result
+        
+        # Syntax check using py_compile
+        try:
+            compile_result = subprocess.run(
+                [sys.executable, "-m", "py_compile", self.master_script_path],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if compile_result.returncode != 0:
+                result["valid"] = False
+                result["syntax_ok"] = False
+                result["syntax_error"] = compile_result.stderr.strip()
+                return result
+        except subprocess.TimeoutExpired:
+            result["valid"] = False
+            result["syntax_ok"] = False
+            result["syntax_error"] = "Syntax check timed out"
+            return result
+        except Exception as e:
+            result["valid"] = False
+            result["syntax_ok"] = False
+            result["syntax_error"] = str(e)
+            return result
+        
+        # Import smoke test - check if imports can be resolved
+        content = self.read_master_script()
+        if content:
+            import re
+            import_lines = re.findall(r'^(?:from|import)\s+([^\s]+)', content, re.MULTILINE)
+            
+            for module_name in import_lines:
+                # Extract base module name
+                base_module = module_name.split('.')[0]
+                
+                # Skip standard library and common modules
+                if base_module in ('os', 'sys', 'json', 'math', 'datetime', 'typing', 're', 'pathlib'):
+                    continue
+                
+                # Try to import
+                try:
+                    import importlib
+                    importlib.import_module(base_module)
+                except ImportError as e:
+                    result["import_warnings"].append(f"Cannot import '{module_name}': {e}")
+        
+        # If there are import warnings, mark as potentially invalid but don't fail
+        if result["import_warnings"]:
+            result["valid"] = True  # Still valid, just warnings
+        
+        return result
