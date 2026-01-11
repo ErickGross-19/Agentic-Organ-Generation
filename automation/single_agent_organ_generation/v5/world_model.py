@@ -780,12 +780,47 @@ class WorldModel:
         """Get all plans."""
         return self._plans.copy()
     
-    def select_plan(self, plan_id: str) -> bool:
-        """Select a plan."""
-        if plan_id in self._plans:
-            self._selected_plan_id = plan_id
-            return True
-        return False
+    def select_plan(self, plan_id: str, record_history: bool = True) -> bool:
+        """
+        Select a plan with proper history tracking.
+        
+        This allows plan selection to be undone, preventing the "undo storm"
+        behavior where undo can't revert plan selection but can revert the
+        facts that came from the plan, leaving the controller in an
+        inconsistent state.
+        
+        Parameters
+        ----------
+        plan_id : str
+            The ID of the plan to select
+        record_history : bool
+            Whether to record this in history (default: True)
+            
+        Returns
+        -------
+        bool
+            True if plan was selected, False if plan_id not found
+        """
+        if plan_id not in self._plans:
+            return False
+        
+        old_plan_id = self._selected_plan_id
+        
+        if record_history:
+            patch = {"action": "select_plan", "new_plan_id": plan_id}
+            inverse_patch = {"action": "select_plan", "old_plan_id": old_plan_id}
+            
+            entry = HistoryEntry(
+                entry_id=self._generate_entry_id(),
+                action="select_plan",
+                description=f"Selected plan: {plan_id}" + (f" (was: {old_plan_id})" if old_plan_id else ""),
+                patch=patch,
+                inverse_patch=inverse_patch,
+            )
+            self._history.append(entry)
+        
+        self._selected_plan_id = plan_id
+        return True
     
     def get_selected_plan(self) -> Optional[Plan]:
         """Get the selected plan."""
@@ -828,9 +863,11 @@ class WorldModel:
     def undo_last(self) -> Optional[HistoryEntry]:
         """Undo the last change.
         
-        Handles both fact modifications and fact creations:
+        Handles fact modifications, fact creations, and plan selections:
         - For set_fact: restores the previous value
         - For create_fact: deletes the fact entirely
+        - For delete_fact: recreates the deleted fact
+        - For select_plan: restores the previous plan selection (or clears it)
         
         Also invalidates approvals if the undone change was geometry-relevant.
         """
@@ -862,6 +899,12 @@ class WorldModel:
                     value=old_value,
                     provenance=old_provenance,
                 )
+        elif entry.action == "select_plan":
+            # Restore previous plan selection (may be None if no plan was selected before)
+            old_plan_id = entry.inverse_patch.get("old_plan_id")
+            self._selected_plan_id = old_plan_id
+            # Plan selection changes should invalidate approvals
+            self._invalidate_approvals()
         
         if field and self._is_geometry_relevant(field):
             self._invalidate_approvals()
