@@ -1074,7 +1074,7 @@ class WorkspaceManager:
                 for match in matches:
                     if isinstance(match, str) and match:
                         # Check if path is absolute and outside workspace
-                        if match.startswith('/') and not match.startswith(self.workspace_path):
+                        if match.startswith('/') and not match.startswith(str(self.workspace_path)):
                             result["write_warnings"].append(
                                 f"Write to path outside workspace: '{match}'"
                             )
