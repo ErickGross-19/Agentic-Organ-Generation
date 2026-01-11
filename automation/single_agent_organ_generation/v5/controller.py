@@ -2104,8 +2104,8 @@ class SingleAgentOrganGeneratorV5:
         # Check if output_dir is set, if not ask for it
         if not self.config.output_dir:
             output_dir = self.io.ask_text(
-                "Where would you like to save project outputs?",
-                placeholder="e.g., ./output or /path/to/outputs",
+                "Where would you like to save project outputs? (e.g., ./output or /path/to/outputs)",
+                default="./output",
             )
             if output_dir:
                 self.config.output_dir = output_dir
@@ -2116,7 +2116,6 @@ class SingleAgentOrganGeneratorV5:
         # Ask for project name
         project_name = self.io.ask_text(
             "What would you like to name this project? (This will be the folder name)",
-            placeholder="e.g., kidney_vasculature_001",
         )
         
         if not project_name:
