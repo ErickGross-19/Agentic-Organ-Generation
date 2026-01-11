@@ -19,6 +19,12 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Union
 
 from .world_model import WorldModel, FactProvenance, TraceEvent, Artifact
+from .goals import GoalTracker, GoalStatus
+from .policies import SafeFixPolicy, ApprovalPolicy, CapabilitySelectionPolicy
+from .plan_synthesizer import PlanSynthesizer
+from .io.base_io import BaseIOAdapter
+
+from ...contextual_dialogue import ContextualDialogue, DialogueIntent
 
 
 class RunResult(Enum):
@@ -26,12 +32,6 @@ class RunResult(Enum):
     COMPLETED = "completed"
     WAITING = "waiting"
     FAILED = "failed"
-from .goals import GoalTracker, GoalStatus
-from .policies import SafeFixPolicy, ApprovalPolicy, CapabilitySelectionPolicy
-from .plan_synthesizer import PlanSynthesizer
-from .io.base_io import BaseIOAdapter
-
-from ...contextual_dialogue import ContextualDialogue, DialogueIntent
 
 logger = logging.getLogger(__name__)
 
