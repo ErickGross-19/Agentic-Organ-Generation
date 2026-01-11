@@ -1181,10 +1181,10 @@ def main():
     # TODO: Implement generation logic using tools from registry
     # Example:
     # from generation.ops.space_colonization import space_colonization_step
-    # from generation.core.domain import create_box_domain
+    # from generation.core.domain import BoxDomain
     # from generation.core.network import VascularNetwork
     # 
-    # domain = create_box_domain(size=domain_size)
+    # domain = BoxDomain(size=domain_size)
     # network = VascularNetwork()
     # # ... use space_colonization_step to grow the network ...
     

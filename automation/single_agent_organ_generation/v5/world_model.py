@@ -852,6 +852,16 @@ class WorldModel:
         elif entry.action == "create_fact":
             if entry.inverse_patch.get("action") == "delete" and field in self._facts:
                 del self._facts[field]
+        elif entry.action == "delete_fact":
+            # P0 #4: Handle undoing fact deletions - recreate the fact
+            old_value = entry.inverse_patch.get("old_value")
+            old_provenance = FactProvenance(entry.inverse_patch.get("old_provenance", "inferred"))
+            if field and old_value is not None:
+                self._facts[field] = Fact(
+                    field=field,
+                    value=old_value,
+                    provenance=old_provenance,
+                )
         
         if field and self._is_geometry_relevant(field):
             self._invalidate_approvals()
