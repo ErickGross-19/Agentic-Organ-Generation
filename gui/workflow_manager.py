@@ -389,11 +389,14 @@ class WorkflowManager:
         Send user input to the running workflow.
         
         For V5 workflows, this method routes messages appropriately:
-        - If the workflow is actively waiting on a prompt (RUNNING status with
-          a blocking callback), the message goes to the input queue.
-        - If the workflow is paused (WAITING_INPUT status), the message is
-          routed directly to process_user_message() and then the workflow
-          run loop is restarted to continue processing.
+        - If the workflow thread is alive and waiting on a queue (blocking callback),
+          the message goes to the input queue.
+        - If the workflow thread has ended (controller returned WAITING), the message
+          is routed to process_user_message() and the workflow run loop is restarted.
+        
+        The key distinction is whether the workflow thread is still alive:
+        - Thread alive + WAITING_INPUT = blocked on queue.get() → put in queue
+        - Thread dead + WAITING_INPUT = controller paused → process_user_message + restart
         
         Parameters
         ----------
@@ -402,12 +405,19 @@ class WorkflowManager:
         """
         self._conversation_history.append({"role": "user", "content": text})
         
+        # Check if this is a V5 workflow that has truly paused (thread ended, controller
+        # returned WAITING) vs just waiting on the input queue (thread alive, blocked on
+        # queue.get()). Only call process_user_message() if the thread has ended.
         if (self._current_workflow is not None and 
             hasattr(self._current_workflow, 'process_user_message') and
-            self._status == WorkflowStatus.WAITING_INPUT):
+            self._status == WorkflowStatus.WAITING_INPUT and
+            self._workflow_thread is not None and
+            not self._workflow_thread.is_alive()):
+            # Controller has paused (run() returned WAITING) - process message and restart
             self._current_workflow.process_user_message(text)
             self._resume_v5_workflow()
         else:
+            # Thread is alive and waiting on queue, or not a V5 workflow
             self._input_queue.put(text)
     
     def _resume_v5_workflow(self):
