@@ -2062,7 +2062,9 @@ class SingleAgentOrganGeneratorV5:
         spec_path = self.workspace.spec_path
         
         # Get last run result for script output
-        script_output = self._last_run_result.get("last_lines", "") if self._last_run_result else ""
+        # Note: last_lines is a List[str], so we need to join it
+        last_lines = self._last_run_result.get("last_lines", []) if self._last_run_result else []
+        script_output = "\n".join(last_lines) if isinstance(last_lines, list) else str(last_lines)
         
         # Get run version from last run record
         last_run = self.workspace.get_last_run_record()
@@ -2106,9 +2108,9 @@ class SingleAgentOrganGeneratorV5:
             )
             
             # Store mesh path if available
+            # Note: artifacts_json is an ArtifactsJson dataclass, not a dict
             if result.artifacts_json:
-                files = result.artifacts_json.get("files", [])
-                for f in files:
+                for f in result.artifacts_json.files:
                     if f.endswith(".stl"):
                         self.world_model.add_artifact("mesh_path", f)
                         break
