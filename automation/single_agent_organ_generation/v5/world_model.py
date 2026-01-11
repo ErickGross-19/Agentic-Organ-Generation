@@ -392,6 +392,64 @@ class WorldModel:
         """Check if a fact exists."""
         return field in self._facts
     
+    def delete_fact(
+        self,
+        field: str,
+        provenance: FactProvenance,
+        reason: Optional[str] = None,
+        record_history: bool = True,
+    ) -> bool:
+        """
+        Delete a fact from the world model with proper history tracking.
+        
+        P0 #4: This method ensures fact deletions are recorded in history
+        so they can be undone properly.
+        
+        Parameters
+        ----------
+        field : str
+            The field name to delete
+        provenance : FactProvenance
+            Who is deleting this fact
+        reason : str, optional
+            Reason for deletion
+        record_history : bool
+            Whether to record this in history (default: True)
+            
+        Returns
+        -------
+        bool
+            True if fact was deleted, False if it didn't exist
+        """
+        if field not in self._facts:
+            return False
+        
+        old_fact = self._facts[field]
+        
+        if record_history:
+            patch = {"field": field, "action": "delete"}
+            inverse_patch = {
+                "field": field,
+                "old_value": old_fact.value,
+                "old_provenance": old_fact.provenance.value,
+            }
+            
+            entry = HistoryEntry(
+                entry_id=self._generate_entry_id(),
+                action="delete_fact",
+                description=f"Deleted {field} (was: {old_fact.value})" + (f" - {reason}" if reason else ""),
+                patch=patch,
+                inverse_patch=inverse_patch,
+            )
+            self._history.append(entry)
+        
+        del self._facts[field]
+        
+        if self._is_geometry_relevant(field):
+            self._invalidate_approvals()
+        
+        return True
+    
     def get_facts_by_provenance(self, provenance: FactProvenance) -> Dict[str, Fact]:
         """Get all facts with a specific provenance."""
         return {k: v for k, v in self._facts.items() if v.provenance == provenance}
@@ -794,6 +852,16 @@ class WorldModel:
         elif entry.action == "create_fact":
             if entry.inverse_patch.get("action") == "delete" and field in self._facts:
                 del self._facts[field]
+        elif entry.action == "delete_fact":
+            # P0 #4: Handle undoing fact deletions - recreate the fact
+            old_value = entry.inverse_patch.get("old_value")
+            old_provenance = FactProvenance(entry.inverse_patch.get("old_provenance", "inferred"))
+            if field and old_value is not None:
+                self._facts[field] = Fact(
+                    field=field,
+                    value=old_value,
+                    provenance=old_provenance,
+                )
         
         if field and self._is_geometry_relevant(field):
             self._invalidate_approvals()
