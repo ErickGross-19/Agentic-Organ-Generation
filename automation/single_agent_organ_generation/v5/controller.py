@@ -138,6 +138,18 @@ class SingleAgentOrganGeneratorV5:
         self._last_run_result: Optional[Dict[str, Any]] = None
         self._last_verification_report: Optional[Dict[str, Any]] = None
         
+        # P1 #16: Retry budgeting
+        self._retry_counts: Dict[str, int] = {
+            "execution": 0,  # Script execution retries
+            "verification": 0,  # Verification failure retries
+            "rewrite": 0,  # Master script rewrite attempts
+        }
+        self._max_retries: Dict[str, int] = {
+            "execution": 5,  # Max execution retries before asking user
+            "verification": 3,  # Max verification failure retries
+            "rewrite": 10,  # Max script rewrite attempts
+        }
+        
         # Initialize workspace and brain if in LLM-first mode
         if self.config.llm_first_mode and self.config.output_dir:
             self.workspace = WorkspaceManager(self.config.output_dir)
@@ -1967,6 +1979,9 @@ class SingleAgentOrganGeneratorV5:
     def _cap_llm_run_master_script(self) -> bool:
         """
         LLM-first capability: Run the master script via subprocess.
+        
+        P1 #13: Validates script before execution.
+        P1 #16: Tracks retry counts and asks user for help if exceeded.
         """
         if not self.workspace:
             return False
@@ -1982,6 +1997,30 @@ class SingleAgentOrganGeneratorV5:
         if not os.path.exists(master_script_path):
             self.io.say_error("Master script not found")
             return False
+        
+        # P1 #16: Check retry budget
+        if self._retry_counts["execution"] >= self._max_retries["execution"]:
+            self.io.say_error(
+                f"Execution retry limit ({self._max_retries['execution']}) reached. "
+                "Please review the master script and provide guidance."
+            )
+            self.world_model.set_approval("llm_execution", approved=False)
+            return False
+        
+        # P1 #13: Validate script before execution
+        validation = self.workspace.validate_master_script()
+        if not validation["valid"]:
+            self.io.say_error(f"Script validation failed: {validation['syntax_error']}")
+            self._retry_counts["rewrite"] += 1
+            self.world_model.set_approval("llm_execution", approved=False)
+            return False
+        
+        if validation["import_warnings"]:
+            warnings_str = "; ".join(validation["import_warnings"][:3])
+            self.io.say_assistant(f"Import warnings (may be OK): {warnings_str}")
+        
+        # Reset verification state for new run (P1 fix: avoid stale reports)
+        self._last_verification_report = None
         
         self._emit_trace("llm_execution_started", "Running master script")
         self.io.say_assistant("Running master script...")
@@ -2130,7 +2169,8 @@ class SingleAgentOrganGeneratorV5:
         2. If there's a pending directive with request_execution, request approval
         3. If execution is approved, run the script
         4. If there's a run result, verify artifacts
-        5. Otherwise, ask the LLM what to do next
+        5. Fallback: if master exists + no pending questions + no recent run → suggest execution
+        6. Otherwise, ask the LLM what to do next
         """
         available = []
         
@@ -2156,6 +2196,32 @@ class SingleAgentOrganGeneratorV5:
         if last_run_dir and not self._last_verification_report:
             available.append("llm_verify_artifacts")
             return available
+        
+        # P0 #6: Fallback policy - if master exists + no pending questions + no recent run
+        # → suggest execution to prevent stalling
+        if self.workspace and self.workspace.master_script_path:
+            import os
+            if os.path.exists(self.workspace.master_script_path):
+                has_pending_questions = (
+                    self._last_directive and 
+                    self._last_directive.questions and 
+                    len(self._last_directive.questions) > 0
+                )
+                has_recent_run = last_run_dir is not None
+                has_verification_failure = (
+                    self._last_verification_report and 
+                    not self._last_verification_report.get("success", False)
+                )
+                
+                # If master exists, no questions, no recent successful run → suggest execution
+                if not has_pending_questions and not has_recent_run:
+                    available.append("llm_request_execution")
+                    return available
+                
+                # If verification failed, let LLM decide how to fix
+                if has_verification_failure:
+                    available.append("llm_decide_next")
+                    return available
         
         # Default: ask LLM what to do next
         available.append("llm_decide_next")
