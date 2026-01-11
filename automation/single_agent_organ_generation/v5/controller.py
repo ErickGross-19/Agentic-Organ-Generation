@@ -620,69 +620,160 @@ class SingleAgentOrganGeneratorV5:
                             patches["outlet.face"] = face
                         break
         
-        size_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:x|by|,)\s*(\d+(?:\.\d+)?)\s*(?:x|by|,)\s*(\d+(?:\.\d+)?)\s*(mm|cm|m)?", message_lower)
-        if size_match:
-            x, y, z = float(size_match.group(1)), float(size_match.group(2)), float(size_match.group(3))
-            unit = size_match.group(4) or "mm"
-            if unit == "mm":
-                x, y, z = x / 1000, y / 1000, z / 1000
-            elif unit == "cm":
-                x, y, z = x / 100, y / 100, z / 100
+        # Domain size parsing - supports multiple formats:
+        # "20x60x30" (default mm), "20x60x30mm", "20mm x 60mm x 30mm", "2cm x 6cm x 3cm"
+        # First try format with unit after each dimension: "20mm x 60mm x 30mm"
+        size_match_per_dim = re.search(
+            r"(\d+(?:\.\d+)?)\s*(um|mm|cm|m)?\s*(?:x|by|,)\s*"
+            r"(\d+(?:\.\d+)?)\s*(um|mm|cm|m)?\s*(?:x|by|,)\s*"
+            r"(\d+(?:\.\d+)?)\s*(um|mm|cm|m)?",
+            message_lower
+        )
+        if size_match_per_dim:
+            x_val = float(size_match_per_dim.group(1))
+            x_unit = size_match_per_dim.group(2)
+            y_val = float(size_match_per_dim.group(3))
+            y_unit = size_match_per_dim.group(4)
+            z_val = float(size_match_per_dim.group(5))
+            z_unit = size_match_per_dim.group(6)
+            
+            # Determine the unit for each dimension
+            # If any dimension has a unit, use it; otherwise default to mm
+            # If only the last dimension has a unit, apply it to all
+            def get_effective_unit(dim_unit, last_unit):
+                if dim_unit:
+                    return dim_unit
+                elif last_unit:
+                    return last_unit
+                return "mm"
+            
+            last_unit = z_unit or y_unit or x_unit
+            x_unit_eff = get_effective_unit(x_unit, last_unit)
+            y_unit_eff = get_effective_unit(y_unit, last_unit)
+            z_unit_eff = get_effective_unit(z_unit, last_unit)
+            
+            def convert_to_meters(val, unit):
+                if unit == "um":
+                    return val / 1_000_000
+                elif unit == "mm":
+                    return val / 1000
+                elif unit == "cm":
+                    return val / 100
+                return val  # meters
+            
+            x = convert_to_meters(x_val, x_unit_eff)
+            y = convert_to_meters(y_val, y_unit_eff)
+            z = convert_to_meters(z_val, z_unit_eff)
             patches["domain.size"] = (x, y, z)
         
         terminal_match = re.search(r"(\d+)\s*terminals?", message_lower)
         if terminal_match:
             patches["topology.target_terminals"] = int(terminal_match.group(1))
         
+        # Helper function to parse radius with explicit unit handling
+        # If unit is present, always respect it. If absent, default to mm.
+        def parse_radius_to_meters(value_str: str) -> Optional[float]:
+            """Parse a radius value string to meters, respecting explicit units."""
+            radius_match = re.search(r"(\d+(?:\.\d+)?)\s*(um|mm|cm|m)?", str(value_str).lower())
+            if not radius_match:
+                return None
+            val = float(radius_match.group(1))
+            unit = radius_match.group(2)
+            # If unit is explicitly specified, always respect it
+            if unit == "um":
+                return val / 1_000_000  # micrometers to meters
+            elif unit == "mm":
+                return val / 1000  # millimeters to meters
+            elif unit == "cm":
+                return val / 100  # centimeters to meters
+            elif unit == "m":
+                return val  # already in meters
+            else:
+                # No unit specified - default to mm for vessel radii (most common)
+                return val / 1000
+        
         if "inlet_radius" in extracted:
             radius_val = extracted["inlet_radius"]
             if isinstance(radius_val, (int, float)):
-                patches["inlet.radius"] = radius_val / 1000 if radius_val > 0.1 else radius_val
+                # No unit info available, default to mm
+                patches["inlet.radius"] = radius_val / 1000
             else:
-                radius_match = re.search(r"(\d+(?:\.\d+)?)", str(radius_val))
-                if radius_match:
-                    val = float(radius_match.group(1))
-                    patches["inlet.radius"] = val / 1000 if val > 0.1 else val
+                parsed = parse_radius_to_meters(str(radius_val))
+                if parsed is not None:
+                    patches["inlet.radius"] = parsed
         
         if "outlet_radius" in extracted:
             radius_val = extracted["outlet_radius"]
             if isinstance(radius_val, (int, float)):
-                patches["outlet.radius"] = radius_val / 1000 if radius_val > 0.1 else radius_val
+                # No unit info available, default to mm
+                patches["outlet.radius"] = radius_val / 1000
             else:
-                radius_match = re.search(r"(\d+(?:\.\d+)?)", str(radius_val))
-                if radius_match:
-                    val = float(radius_match.group(1))
-                    patches["outlet.radius"] = val / 1000 if val > 0.1 else val
+                parsed = parse_radius_to_meters(str(radius_val))
+                if parsed is not None:
+                    patches["outlet.radius"] = parsed
         
         if "min_radius" in extracted:
             radius_val = extracted["min_radius"]
             if isinstance(radius_val, (int, float)):
-                patches["colonization.min_radius"] = radius_val / 1000 if radius_val > 0.1 else radius_val
+                # No unit info available, default to mm
+                patches["colonization.min_radius"] = radius_val / 1000
             else:
-                radius_match = re.search(r"(\d+(?:\.\d+)?)", str(radius_val))
-                if radius_match:
-                    val = float(radius_match.group(1))
-                    patches["colonization.min_radius"] = val / 1000 if val > 0.1 else val
+                parsed = parse_radius_to_meters(str(radius_val))
+                if parsed is not None:
+                    patches["colonization.min_radius"] = parsed
         
-        radius_pattern = re.search(r"(\d+(?:\.\d+)?)\s*(?:mm)?\s*(?:inlet|input)\s*radius", message_lower)
+        # Freeform radius patterns - capture value and optional unit
+        radius_pattern = re.search(r"(\d+(?:\.\d+)?)\s*(um|mm|cm|m)?\s*(?:inlet|input)\s*radius", message_lower)
         if radius_pattern and "inlet.radius" not in patches:
             val = float(radius_pattern.group(1))
-            patches["inlet.radius"] = val / 1000 if val > 0.1 else val
+            unit = radius_pattern.group(2) or "mm"  # default to mm
+            if unit == "um":
+                patches["inlet.radius"] = val / 1_000_000
+            elif unit == "mm":
+                patches["inlet.radius"] = val / 1000
+            elif unit == "cm":
+                patches["inlet.radius"] = val / 100
+            else:
+                patches["inlet.radius"] = val
         
-        radius_pattern = re.search(r"inlet\s*radius\s*(?:of\s*)?(\d+(?:\.\d+)?)\s*(?:mm)?", message_lower)
+        radius_pattern = re.search(r"inlet\s*radius\s*(?:of\s*)?(\d+(?:\.\d+)?)\s*(um|mm|cm|m)?", message_lower)
         if radius_pattern and "inlet.radius" not in patches:
             val = float(radius_pattern.group(1))
-            patches["inlet.radius"] = val / 1000 if val > 0.1 else val
+            unit = radius_pattern.group(2) or "mm"  # default to mm
+            if unit == "um":
+                patches["inlet.radius"] = val / 1_000_000
+            elif unit == "mm":
+                patches["inlet.radius"] = val / 1000
+            elif unit == "cm":
+                patches["inlet.radius"] = val / 100
+            else:
+                patches["inlet.radius"] = val
         
-        radius_pattern = re.search(r"(\d+(?:\.\d+)?)\s*(?:mm)?\s*(?:outlet|output)\s*radius", message_lower)
+        radius_pattern = re.search(r"(\d+(?:\.\d+)?)\s*(um|mm|cm|m)?\s*(?:outlet|output)\s*radius", message_lower)
         if radius_pattern and "outlet.radius" not in patches:
             val = float(radius_pattern.group(1))
-            patches["outlet.radius"] = val / 1000 if val > 0.1 else val
+            unit = radius_pattern.group(2) or "mm"  # default to mm
+            if unit == "um":
+                patches["outlet.radius"] = val / 1_000_000
+            elif unit == "mm":
+                patches["outlet.radius"] = val / 1000
+            elif unit == "cm":
+                patches["outlet.radius"] = val / 100
+            else:
+                patches["outlet.radius"] = val
         
-        radius_pattern = re.search(r"outlet\s*radius\s*(?:of\s*)?(\d+(?:\.\d+)?)\s*(?:mm)?", message_lower)
+        radius_pattern = re.search(r"outlet\s*radius\s*(?:of\s*)?(\d+(?:\.\d+)?)\s*(um|mm|cm|m)?", message_lower)
         if radius_pattern and "outlet.radius" not in patches:
             val = float(radius_pattern.group(1))
-            patches["outlet.radius"] = val / 1000 if val > 0.1 else val
+            unit = radius_pattern.group(2) or "mm"  # default to mm
+            if unit == "um":
+                patches["outlet.radius"] = val / 1_000_000
+            elif unit == "mm":
+                patches["outlet.radius"] = val / 1000
+            elif unit == "cm":
+                patches["outlet.radius"] = val / 100
+            else:
+                patches["outlet.radius"] = val
         
         if self.world_model.open_questions:
             for q_id, question in self.world_model.open_questions.items():
@@ -832,34 +923,59 @@ class SingleAgentOrganGeneratorV5:
         Parse a question answer with field-aware type conversion.
         
         Converts raw string responses to appropriate types:
-        - domain.size: "20x60x30" -> (0.02, 0.06, 0.03) tuple in meters
-        - *.radius: "2" or "2mm" -> 0.002 float in meters
+        - domain.size: "20x60x30", "20mm x 60mm x 30mm" -> (0.02, 0.06, 0.03) tuple in meters
+        - *.radius: "2", "2mm", "0.05mm" -> float in meters (respects explicit units)
         - *.face: normalizes to canonical face names
         - domain.type, topology.kind: returns as-is (string)
         """
         response = response.strip()
         
         if field == "domain.size":
+            # Support formats: "20x60x30", "20x60x30mm", "20mm x 60mm x 30mm", "2cm x 6cm x 3cm"
             size_match = re.search(
-                r"(\d+(?:\.\d+)?)\s*(?:x|by|,)\s*(\d+(?:\.\d+)?)\s*(?:x|by|,)\s*(\d+(?:\.\d+)?)\s*(mm|cm|m)?",
+                r"(\d+(?:\.\d+)?)\s*(um|mm|cm|m)?\s*(?:x|by|,)\s*"
+                r"(\d+(?:\.\d+)?)\s*(um|mm|cm|m)?\s*(?:x|by|,)\s*"
+                r"(\d+(?:\.\d+)?)\s*(um|mm|cm|m)?",
                 response.lower()
             )
             if size_match:
-                x, y, z = float(size_match.group(1)), float(size_match.group(2)), float(size_match.group(3))
-                unit = size_match.group(4) or "mm"
-                if unit == "mm":
-                    x, y, z = x / 1000, y / 1000, z / 1000
-                elif unit == "cm":
-                    x, y, z = x / 100, y / 100, z / 100
+                x_val = float(size_match.group(1))
+                x_unit = size_match.group(2)
+                y_val = float(size_match.group(3))
+                y_unit = size_match.group(4)
+                z_val = float(size_match.group(5))
+                z_unit = size_match.group(6)
+                
+                # If only the last dimension has a unit, apply it to all
+                last_unit = z_unit or y_unit or x_unit or "mm"
+                x_unit = x_unit or last_unit
+                y_unit = y_unit or last_unit
+                z_unit = z_unit or last_unit
+                
+                def convert_to_meters(val, unit):
+                    if unit == "um":
+                        return val / 1_000_000
+                    elif unit == "mm":
+                        return val / 1000
+                    elif unit == "cm":
+                        return val / 100
+                    return val  # meters
+                
+                x = convert_to_meters(x_val, x_unit)
+                y = convert_to_meters(y_val, y_unit)
+                z = convert_to_meters(z_val, z_unit)
                 return (x, y, z)
             return response
         
         if field.endswith(".radius"):
-            radius_match = re.search(r"(\d+(?:\.\d+)?)\s*(mm|cm|m)?", response.lower())
+            # Support explicit units: "2mm", "0.05mm", "2cm", "500um"
+            radius_match = re.search(r"(\d+(?:\.\d+)?)\s*(um|mm|cm|m)?", response.lower())
             if radius_match:
                 value = float(radius_match.group(1))
-                unit = radius_match.group(2) or "mm"
-                if unit == "mm":
+                unit = radius_match.group(2) or "mm"  # default to mm
+                if unit == "um":
+                    value = value / 1_000_000
+                elif unit == "mm":
                     value = value / 1000
                 elif unit == "cm":
                     value = value / 100
@@ -1165,9 +1281,8 @@ class SingleAgentOrganGeneratorV5:
                 if result.get("mesh_path"):
                     self.world_model.add_artifact("mesh_path", result["mesh_path"])
             else:
-                result = {"status": "simulated", "mesh_path": "/tmp/simulated_mesh.stl"}
+                result = {"status": "simulated"}
                 self.world_model.add_artifact("generation_result", result)
-                self.world_model.add_artifact("mesh_path", result["mesh_path"])
             
             self.world_model.add_artifact("generated_network", result)
             

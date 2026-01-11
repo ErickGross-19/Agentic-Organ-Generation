@@ -35,10 +35,14 @@ Example:
     ...     )
     ... )
     
-    >>> # Or use the workflow
-    >>> from automation import SingleAgentOrganGeneratorV3
-    >>> workflow = SingleAgentOrganGeneratorV3(runner)
-    >>> context = workflow.run()
+    >>> # Or use the V5 workflow (recommended)
+    >>> from automation import SingleAgentOrganGeneratorV5, ControllerRunResult
+    >>> from automation.single_agent_organ_generation.v5 import CLIIOAdapter
+    >>> io_adapter = CLIIOAdapter()
+    >>> workflow = SingleAgentOrganGeneratorV5(io_adapter)
+    >>> result = workflow.run()  # Returns ControllerRunResult (COMPLETED/WAITING/FAILED)
+    >>> if result == ControllerRunResult.COMPLETED:
+    ...     status = workflow.get_status()  # Get outputs via get_status()
 """
 
 from .agent_runner import AgentRunner, AgentConfig, TaskResult, create_agent
@@ -77,10 +81,12 @@ from .review_gate import (
 )
 from .subprocess_runner import (
     run_script,
-    RunResult,
+    ScriptRunResult,
+    RunResult as ScriptRunResult_Alias,  # Backward compatibility alias
     print_run_summary,
     DEFAULT_TIMEOUT_SECONDS,
 )
+from .single_agent_organ_generation.v5.controller import RunResult as ControllerRunResult
 from .artifact_verifier import (
     verify_artifacts,
     verify_generation_stage,
@@ -252,9 +258,11 @@ __all__ = [
     "auto_review",
     # Subprocess runner
     "run_script",
-    "RunResult",
+    "ScriptRunResult",
     "print_run_summary",
     "DEFAULT_TIMEOUT_SECONDS",
+    # Controller RunResult (V5)
+    "ControllerRunResult",
     # Artifact verifier
     "verify_artifacts",
     "verify_generation_stage",

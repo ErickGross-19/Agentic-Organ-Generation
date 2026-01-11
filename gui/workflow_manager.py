@@ -392,7 +392,8 @@ class WorkflowManager:
         - If the workflow is actively waiting on a prompt (RUNNING status with
           a blocking callback), the message goes to the input queue.
         - If the workflow is paused (WAITING_INPUT status), the message is
-          routed directly to process_user_message() to resume the workflow.
+          routed directly to process_user_message() and then the workflow
+          run loop is restarted to continue processing.
         
         Parameters
         ----------
@@ -405,8 +406,64 @@ class WorkflowManager:
             hasattr(self._current_workflow, 'process_user_message') and
             self._status == WorkflowStatus.WAITING_INPUT):
             self._current_workflow.process_user_message(text)
+            self._resume_v5_workflow()
         else:
             self._input_queue.put(text)
+    
+    def _resume_v5_workflow(self):
+        """
+        Resume a paused V5 workflow by restarting the run loop.
+        
+        This is called after process_user_message() has been invoked to
+        continue the workflow from where it left off.
+        """
+        if self._current_workflow is None:
+            return
+        
+        if not hasattr(self._current_workflow, 'run'):
+            return
+        
+        self._workflow_thread = threading.Thread(
+            target=self._continue_v5_workflow,
+            daemon=True,
+        )
+        self._workflow_thread.start()
+    
+    def _continue_v5_workflow(self):
+        """
+        Continue a V5 workflow after user input has been processed.
+        
+        This runs in a separate thread and calls workflow.run() to
+        continue from where the workflow left off.
+        """
+        try:
+            from automation.single_agent_organ_generation.v5.controller import RunResult
+            
+            self._set_status(WorkflowStatus.RUNNING, "Resuming V5 workflow")
+            
+            result = self._current_workflow.run()
+            
+            if result == RunResult.COMPLETED:
+                status = self._current_workflow.get_status()
+                self._artifacts = {
+                    "spec_hash": status.get("spec_hash", ""),
+                    "output_dir": self._config.output_dir,
+                }
+                
+                self._set_status(WorkflowStatus.COMPLETED, "V5 workflow completed successfully")
+                self._send_message("success", f"V5 workflow completed! Output: {self._config.output_dir}")
+            elif result == RunResult.WAITING:
+                self._set_status(WorkflowStatus.WAITING_INPUT, "Workflow paused - waiting for input")
+            else:
+                self._set_status(WorkflowStatus.FAILED, "V5 workflow failed")
+                self._send_message("error", "V5 workflow failed")
+                
+        except KeyboardInterrupt:
+            self._set_status(WorkflowStatus.CANCELLED, "Workflow cancelled by user")
+            self._send_message("system", "Workflow cancelled")
+        except Exception as e:
+            self._set_status(WorkflowStatus.FAILED, str(e))
+            self._send_message("error", f"V5 workflow failed: {e}")
     
     def stop_workflow(self):
         """Stop the currently running workflow."""
