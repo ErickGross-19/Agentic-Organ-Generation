@@ -151,19 +151,12 @@ class SingleAgentOrganGeneratorV5:
         }
         
         # Initialize workspace and brain if in LLM-first mode
+        # Note: Workspace is NOT initialized here - it will be created after asking for project name
+        # This allows per-project workspaces under <output_dir>/<project_slug>/agent_workspace
         if self.config.llm_first_mode and self.config.output_dir:
-            self.workspace = WorkspaceManager(self.config.output_dir)
-            self.workspace.initialize()
             if self.llm_client:
                 self.brain = Brain(self.llm_client)
-            
-            # P1 #6: Initialize workspace artifacts for LLM-first goal checks
-            # These artifacts are needed by check_llm_spec_ready() and check_llm_workspace_ready()
-            import os
-            self.world_model.add_artifact("workspace_path", str(self.workspace.workspace_path))
-            self.world_model.add_artifact("spec_path", str(self.workspace.spec_path))
-            if os.path.exists(self.workspace.master_script_path):
-                self.world_model.add_artifact("master_script_path", str(self.workspace.master_script_path))
+            # Workspace will be initialized in _cap_llm_ask_project_name after user provides project name
         
         self._iteration_count = 0
         self._safe_fixes_this_run = 0
@@ -196,6 +189,7 @@ class SingleAgentOrganGeneratorV5:
             "undo": self._cap_undo,
             "package_outputs": self._cap_package_outputs,
             # LLM-first mode capabilities
+            "llm_ask_project_name": self._cap_llm_ask_project_name,
             "llm_decide_next": self._cap_llm_decide_next,
             "llm_apply_workspace_update": self._cap_llm_apply_workspace_update,
             "llm_request_execution": self._cap_llm_request_execution,
@@ -207,6 +201,132 @@ class SingleAgentOrganGeneratorV5:
         self._last_summarize_hash: Optional[str] = None
         self._last_plan_proposal_hash: Optional[str] = None  # Track when plans were last proposed
         self._denied_approval_hashes: Dict[str, str] = {}
+        
+        # LLM-first mode: Track workspace hash to prevent re-running identical code
+        self._last_verified_workspace_hash: Optional[str] = None
+    
+    def _is_ready_to_execute(self) -> bool:
+        """
+        Check if the spec has minimum required fields for meaningful execution.
+        
+        This prevents the LLM from writing/executing placeholder scripts too early
+        before it has enough spec information to do real work.
+        
+        Required fields:
+        - domain type + size (at least one dimension)
+        - inlet location (face or point) + radius
+        - outlet location + radius
+        - target resolution (terminals, segment budget, or density level)
+        
+        Returns
+        -------
+        bool
+            True if spec has minimum required fields, False otherwise
+        """
+        # Check domain type
+        domain_type = self.world_model.get_fact_value("domain_type")
+        if not domain_type:
+            return False
+        
+        # Check domain size (at least one dimension)
+        has_size = any([
+            self.world_model.get_fact_value("domain_width"),
+            self.world_model.get_fact_value("domain_height"),
+            self.world_model.get_fact_value("domain_depth"),
+            self.world_model.get_fact_value("domain_radius"),
+            self.world_model.get_fact_value("domain_size"),
+        ])
+        if not has_size:
+            return False
+        
+        # Check inlet (face or point + radius)
+        has_inlet = (
+            self.world_model.get_fact_value("inlet_face") or
+            self.world_model.get_fact_value("inlet_position") or
+            self.world_model.get_fact_value("inlet_point")
+        )
+        inlet_radius = self.world_model.get_fact_value("inlet_radius")
+        if not has_inlet or not inlet_radius:
+            return False
+        
+        # Check outlet (face or point + radius)
+        has_outlet = (
+            self.world_model.get_fact_value("outlet_face") or
+            self.world_model.get_fact_value("outlet_position") or
+            self.world_model.get_fact_value("outlet_point")
+        )
+        outlet_radius = self.world_model.get_fact_value("outlet_radius")
+        if not has_outlet or not outlet_radius:
+            return False
+        
+        # Check target resolution (any of these is acceptable)
+        has_resolution = any([
+            self.world_model.get_fact_value("target_terminals"),
+            self.world_model.get_fact_value("segment_budget"),
+            self.world_model.get_fact_value("density_level"),
+            self.world_model.get_fact_value("resolution"),
+        ])
+        if not has_resolution:
+            return False
+        
+        return True
+    
+    def _get_missing_spec_fields(self) -> List[str]:
+        """
+        Get list of missing required spec fields for execution.
+        
+        Returns
+        -------
+        List[str]
+            List of missing field descriptions
+        """
+        missing = []
+        
+        if not self.world_model.get_fact_value("domain_type"):
+            missing.append("domain type (box, cylinder, sphere, etc.)")
+        
+        has_size = any([
+            self.world_model.get_fact_value("domain_width"),
+            self.world_model.get_fact_value("domain_height"),
+            self.world_model.get_fact_value("domain_depth"),
+            self.world_model.get_fact_value("domain_radius"),
+            self.world_model.get_fact_value("domain_size"),
+        ])
+        if not has_size:
+            missing.append("domain size/dimensions")
+        
+        has_inlet = (
+            self.world_model.get_fact_value("inlet_face") or
+            self.world_model.get_fact_value("inlet_position") or
+            self.world_model.get_fact_value("inlet_point")
+        )
+        if not has_inlet:
+            missing.append("inlet location (face or point)")
+        
+        if not self.world_model.get_fact_value("inlet_radius"):
+            missing.append("inlet radius")
+        
+        has_outlet = (
+            self.world_model.get_fact_value("outlet_face") or
+            self.world_model.get_fact_value("outlet_position") or
+            self.world_model.get_fact_value("outlet_point")
+        )
+        if not has_outlet:
+            missing.append("outlet location (face or point)")
+        
+        if not self.world_model.get_fact_value("outlet_radius"):
+            missing.append("outlet radius")
+        
+        has_resolution = any([
+            self.world_model.get_fact_value("target_terminals"),
+            self.world_model.get_fact_value("segment_budget"),
+            self.world_model.get_fact_value("density_level"),
+            self.world_model.get_fact_value("resolution"),
+        ])
+        if not has_resolution:
+            missing.append("target resolution (terminals, density level, or segment budget)")
+        
+        return missing
     
     def run(self, initial_message: Optional[str] = None) -> RunResult:
         """
@@ -1815,6 +1935,60 @@ class SingleAgentOrganGeneratorV5:
     # LLM-First Mode Capabilities
     # =========================================================================
     
+    def _cap_llm_ask_project_name(self) -> bool:
+        """
+        LLM-first capability: Ask for project folder name and initialize workspace.
+        
+        This is the first capability that runs in LLM-first mode. It asks the user
+        for a project folder name and creates a per-project workspace under:
+        <output_dir>/<project_slug>/agent_workspace
+        
+        This prevents workspace collisions when running multiple projects.
+        """
+        import os
+        import re
+        
+        self._emit_trace("llm_asking_project_name", "Asking for project folder name")
+        
+        # Ask for project name
+        project_name = self.io.ask_text(
+            "What would you like to name this project? (This will be the folder name)",
+            placeholder="e.g., kidney_vasculature_001",
+        )
+        
+        if not project_name:
+            project_name = f"project_{int(__import__('time').time())}"
+        
+        # Sanitize project name to create a valid folder slug
+        # Replace spaces and special chars with underscores, lowercase
+        project_slug = re.sub(r'[^a-zA-Z0-9_-]', '_', project_name.lower())
+        project_slug = re.sub(r'_+', '_', project_slug).strip('_')
+        
+        if not project_slug:
+            project_slug = f"project_{int(__import__('time').time())}"
+        
+        # Create project root directory
+        project_root = os.path.join(self.config.output_dir, project_slug)
+        workspace_dir = os.path.join(project_root, "agent_workspace")
+        
+        # Initialize workspace
+        self.workspace = WorkspaceManager(workspace_dir)
+        self.workspace.initialize()
+        
+        # Store project identity in world model
+        self.world_model.add_artifact("project_slug", project_slug)
+        self.world_model.add_artifact("project_root", project_root)
+        self.world_model.add_artifact("workspace_path", str(self.workspace.workspace_path))
+        self.world_model.add_artifact("spec_path", str(self.workspace.spec_path))
+        
+        if os.path.exists(self.workspace.master_script_path):
+            self.world_model.add_artifact("master_script_path", str(self.workspace.master_script_path))
+        
+        self._emit_trace("llm_project_initialized", f"Project initialized: {project_slug}")
+        self.io.say_assistant(f"Project workspace created: {workspace_dir}")
+        
+        return True
+    
     def _cap_llm_decide_next(self) -> bool:
         """
         LLM-first capability: Ask the LLM brain what to do next.
@@ -2041,10 +2215,27 @@ class SingleAgentOrganGeneratorV5:
         
         Can be triggered by:
         1. Directive with request_execution=True
-        2. Fallback: master exists + no pending questions + no recent run
+        2. Fallback: master exists + no pending questions + workspace changed
+        
+        Gated by:
+        - Spec must have minimum required fields (inlet/outlet + density)
         """
         if not self.workspace:
             return False
+        
+        # Check if spec has minimum required fields before allowing execution
+        # This prevents writing/executing placeholder scripts too early
+        if not self._is_ready_to_execute():
+            missing = self._get_missing_spec_fields()
+            self._emit_trace("llm_execution_blocked", f"Spec incomplete: {missing}")
+            self.io.say_assistant(
+                f"Cannot execute yet - missing required spec fields: {', '.join(missing)}. "
+                "Please collect this information first."
+            )
+            # Clear request_execution to prevent re-triggering
+            if self._last_directive:
+                self._last_directive.request_execution = False
+            return True  # Return True to continue the loop (LLM will collect missing info)
         
         # Check if this is a directive-triggered request
         directive_requests_execution = (
@@ -2052,7 +2243,7 @@ class SingleAgentOrganGeneratorV5:
             self._last_directive.request_execution
         )
         
-        # Check if this is a fallback request (master exists, no questions, no recent run)
+        # Check if this is a fallback request (master exists, no questions, workspace changed)
         fallback_should_execute = False
         if not directive_requests_execution:
             import os
@@ -2065,9 +2256,14 @@ class SingleAgentOrganGeneratorV5:
                 self._last_directive.questions and 
                 len(self._last_directive.questions) > 0
             )
-            has_recent_run = self.world_model.get_artifact("last_run_dir") is not None
+            # Use workspace hash instead of has_recent_run to detect if code changed
+            current_workspace_hash = self.workspace.compute_workspace_hash()
+            workspace_changed = (
+                current_workspace_hash is not None and
+                current_workspace_hash != self._last_verified_workspace_hash
+            )
             
-            fallback_should_execute = master_exists and not has_pending_questions and not has_recent_run
+            fallback_should_execute = master_exists and not has_pending_questions and workspace_changed
         
         if not directive_requests_execution and not fallback_should_execute:
             return False
@@ -2117,6 +2313,11 @@ class SingleAgentOrganGeneratorV5:
             expected_outputs=expected_outputs,
             risk_flags=risk_flags,
         )
+        
+        # Clear request_execution after acting on it to prevent infinite loop
+        # Without this, the controller keeps selecting llm_request_execution
+        if self._last_directive:
+            self._last_directive.request_execution = False
         
         if approved:
             self.world_model.set_approval("llm_execution", approved=True)
@@ -2337,6 +2538,11 @@ class SingleAgentOrganGeneratorV5:
                         self.world_model.add_artifact("mesh_path", f)
                         break
             
+            # Track workspace hash to prevent re-running identical code
+            # This prevents the infinite execution loop after successful verification
+            if self.workspace:
+                self._last_verified_workspace_hash = self.workspace.compute_workspace_hash()
+            
             return True
         else:
             self._emit_trace("llm_verification_failed", f"Verification failed: {result.errors}")
@@ -2348,15 +2554,23 @@ class SingleAgentOrganGeneratorV5:
         Get available capabilities in LLM-first mode.
         
         In LLM-first mode, the capability selection is simpler:
+        0. If project slug is missing, ask for it first (creates per-project workspace)
         1. If there are open questions and no pending user message, pause (return [])
         2. If there's a pending directive with workspace_update, apply it
         3. If there's a pending directive with request_execution, request approval
         4. If execution is approved, run the script
         5. If there's a run result, verify artifacts
-        6. Fallback: if master exists + no pending questions + no recent run → suggest execution
+        6. Fallback: if master exists + no pending questions + workspace changed → suggest execution
         7. Otherwise, ask the LLM what to do next
         """
         available = []
+        
+        # Step 0: Check if project slug is missing - ask for it first
+        # This creates a per-project workspace under <output_dir>/<project_slug>/agent_workspace
+        project_slug = self.world_model.get_artifact("project_slug")
+        if not project_slug or not self.workspace:
+            available.append("llm_ask_project_name")
+            return available
         
         # Check if we have open questions that need user input
         # This handles execution denial pause - when user denies, we add an open question
@@ -2398,7 +2612,7 @@ class SingleAgentOrganGeneratorV5:
             available.append("llm_verify_artifacts")
             return available
         
-        # P0 #6: Fallback policy - if master exists + no pending questions + no recent run
+        # P0 #6: Fallback policy - if master exists + no pending questions + workspace changed
         # → suggest execution to prevent stalling
         if self.workspace and self.workspace.master_script_path:
             import os
@@ -2408,14 +2622,23 @@ class SingleAgentOrganGeneratorV5:
                     self._last_directive.questions and 
                     len(self._last_directive.questions) > 0
                 )
-                has_recent_run = last_run_dir is not None
                 has_verification_failure = (
                     self._last_verification_report and 
                     not self._last_verification_report.get("success", False)
                 )
                 
-                # If master exists, no questions, no recent successful run → suggest execution
-                if not has_pending_questions and not has_recent_run:
+                # Check if workspace has changed since last verified run
+                # This prevents re-running identical code in an infinite loop
+                current_workspace_hash = self.workspace.compute_workspace_hash()
+                workspace_changed = (
+                    current_workspace_hash is not None and
+                    current_workspace_hash != self._last_verified_workspace_hash
+                )
+                
+                # If master exists, no questions, and workspace changed → suggest execution
+                # Note: We no longer use has_recent_run because that caused issues
+                # Instead we use workspace hash to detect if code actually changed
+                if not has_pending_questions and workspace_changed:
                     available.append("llm_request_execution")
                     return available
                 

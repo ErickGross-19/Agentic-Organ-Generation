@@ -780,6 +780,54 @@ class WorkspaceManager:
             return None
         return hashlib.sha256(content.encode()).hexdigest()[:16]
     
+    def compute_workspace_hash(self) -> Optional[str]:
+        """
+        Compute a hash of the entire workspace state (master script + tools + spec).
+        
+        This is used to detect if the workspace has changed since the last verified run,
+        preventing re-running identical code in an infinite loop.
+        
+        Returns
+        -------
+        str or None
+            SHA256 hash (first 16 chars), or None if workspace is empty
+        """
+        hash_parts = []
+        
+        # Include master script
+        master_content = self.read_master_script()
+        if master_content:
+            hash_parts.append(f"master:{master_content}")
+        
+        # Include spec
+        spec_data = self.read_spec()
+        if spec_data:
+            hash_parts.append(f"spec:{json.dumps(spec_data, sort_keys=True)}")
+        
+        # Include tool registry
+        registry = self.get_tool_registry()
+        if registry:
+            registry_str = json.dumps(
+                {k: v.to_dict() for k, v in sorted(registry.items())},
+                sort_keys=True
+            )
+            hash_parts.append(f"registry:{registry_str}")
+        
+        # Include tool files
+        tools_dir = os.path.join(self.workspace_dir, "tools")
+        if os.path.exists(tools_dir):
+            for filename in sorted(os.listdir(tools_dir)):
+                if filename.endswith(".py"):
+                    filepath = os.path.join(tools_dir, filename)
+                    with open(filepath, 'r') as f:
+                        hash_parts.append(f"tool:{filename}:{f.read()}")
+        
+        if not hash_parts:
+            return None
+        
+        combined = "\n".join(hash_parts)
+        return hashlib.sha256(combined.encode()).hexdigest()[:16]
+    
     def _get_file_info(self, path: str) -> FileInfo:
         """
         P1 #9: Get file info with hash and modified time.
