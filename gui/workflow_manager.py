@@ -388,13 +388,25 @@ class WorkflowManager:
         """
         Send user input to the running workflow.
         
+        For V5 workflows, this method routes messages appropriately:
+        - If the workflow is actively waiting on a prompt (RUNNING status with
+          a blocking callback), the message goes to the input queue.
+        - If the workflow is paused (WAITING_INPUT status), the message is
+          routed directly to process_user_message() to resume the workflow.
+        
         Parameters
         ----------
         text : str
             User input text
         """
-        self._input_queue.put(text)
         self._conversation_history.append({"role": "user", "content": text})
+        
+        if (self._current_workflow is not None and 
+            hasattr(self._current_workflow, 'process_user_message') and
+            self._status == WorkflowStatus.WAITING_INPUT):
+            self._current_workflow.process_user_message(text)
+        else:
+            self._input_queue.put(text)
     
     def stop_workflow(self):
         """Stop the currently running workflow."""
@@ -434,6 +446,7 @@ class WorkflowManager:
                 IOMessageKind,
                 TraceEvent,
             )
+            from automation.single_agent_organ_generation.v5.controller import RunResult
             
             self._send_message("system", "Starting Single Agent Organ Generator V5...")
             self._set_status(WorkflowStatus.RUNNING, "Running V5 workflow")
@@ -571,9 +584,9 @@ class WorkflowManager:
             
             self._current_workflow = workflow
             
-            success = workflow.run(initial_message=initial_message)
+            result = workflow.run(initial_message=initial_message)
             
-            if success:
+            if result == RunResult.COMPLETED:
                 status = workflow.get_status()
                 self._artifacts = {
                     "spec_hash": status.get("spec_hash", ""),
@@ -582,8 +595,11 @@ class WorkflowManager:
                 
                 self._set_status(WorkflowStatus.COMPLETED, "V5 workflow completed successfully")
                 self._send_message("success", f"V5 workflow completed! Output: {self._config.output_dir}")
-            else:
+            elif result == RunResult.WAITING:
                 self._set_status(WorkflowStatus.WAITING_INPUT, "Workflow paused - waiting for input")
+            else:
+                self._set_status(WorkflowStatus.FAILED, "V5 workflow failed")
+                self._send_message("error", "V5 workflow failed")
             
         except KeyboardInterrupt:
             self._set_status(WorkflowStatus.CANCELLED, "Workflow cancelled by user")

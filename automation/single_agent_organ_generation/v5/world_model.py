@@ -348,18 +348,31 @@ class WorldModel:
             reason=reason,
         )
         
-        if record_history and old_fact is not None:
-            patch = {"field": field, "new_value": value, "new_provenance": provenance.value}
-            inverse_patch = {"field": field, "old_value": old_fact.value, "old_provenance": old_fact.provenance.value}
-            
-            entry = HistoryEntry(
-                entry_id=self._generate_entry_id(),
-                action="set_fact",
-                description=f"Changed {field}: {old_fact.value} -> {value}",
-                patch=patch,
-                inverse_patch=inverse_patch,
-            )
-            self._history.append(entry)
+        if record_history:
+            if old_fact is not None:
+                patch = {"field": field, "new_value": value, "new_provenance": provenance.value}
+                inverse_patch = {"field": field, "old_value": old_fact.value, "old_provenance": old_fact.provenance.value}
+                
+                entry = HistoryEntry(
+                    entry_id=self._generate_entry_id(),
+                    action="set_fact",
+                    description=f"Changed {field}: {old_fact.value} -> {value}",
+                    patch=patch,
+                    inverse_patch=inverse_patch,
+                )
+                self._history.append(entry)
+            else:
+                patch = {"field": field, "new_value": value, "new_provenance": provenance.value}
+                inverse_patch = {"field": field, "action": "delete"}
+                
+                entry = HistoryEntry(
+                    entry_id=self._generate_entry_id(),
+                    action="create_fact",
+                    description=f"Created {field}: {value}",
+                    patch=patch,
+                    inverse_patch=inverse_patch,
+                )
+                self._history.append(entry)
         
         self._facts[field] = new_fact
         
@@ -403,9 +416,13 @@ class WorldModel:
         return any(field.startswith(prefix) for prefix in geometry_prefixes)
     
     def _invalidate_approvals(self) -> None:
-        """Invalidate all approvals due to spec change."""
-        for approval in self._approvals.values():
-            approval.approved = False
+        """Invalidate all approvals due to spec change.
+        
+        Clears all approvals rather than just marking them as False,
+        to avoid misleading status computations that treat existing
+        approvals with approved=False as "waiting for approval".
+        """
+        self._approvals.clear()
     
     def add_open_question(self, question: OpenQuestion) -> None:
         """Add an open question."""
@@ -653,14 +670,21 @@ class WorldModel:
         return self._last_user_intent, self._last_user_request_type
     
     def undo_last(self) -> Optional[HistoryEntry]:
-        """Undo the last change."""
+        """Undo the last change.
+        
+        Handles both fact modifications and fact creations:
+        - For set_fact: restores the previous value
+        - For create_fact: deletes the fact entirely
+        
+        Also invalidates approvals if the undone change was geometry-relevant.
+        """
         if not self._history:
             return None
         
         entry = self._history.pop()
+        field = entry.inverse_patch.get("field")
         
         if entry.action == "set_fact":
-            field = entry.inverse_patch["field"]
             old_value = entry.inverse_patch["old_value"]
             old_provenance = FactProvenance(entry.inverse_patch["old_provenance"])
             
@@ -669,6 +693,12 @@ class WorldModel:
                 value=old_value,
                 provenance=old_provenance,
             )
+        elif entry.action == "create_fact":
+            if entry.inverse_patch.get("action") == "delete" and field in self._facts:
+                del self._facts[field]
+        
+        if field and self._is_geometry_relevant(field):
+            self._invalidate_approvals()
         
         return entry
     

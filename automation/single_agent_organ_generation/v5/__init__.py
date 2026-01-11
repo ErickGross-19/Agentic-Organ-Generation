@@ -8,7 +8,7 @@ Goal-driven controller that feels like a confident engineer with:
 - Interrupts/backtracking/undo support
 """
 
-from .controller import SingleAgentOrganGeneratorV5, ControllerConfig, ControllerStatus
+from .controller import SingleAgentOrganGeneratorV5, ControllerConfig, ControllerStatus, RunResult
 from .world_model import (
     WorldModel,
     Fact,
@@ -42,6 +42,7 @@ __all__ = [
     "SingleAgentOrganGeneratorV5",
     "ControllerConfig",
     "ControllerStatus",
+    "RunResult",
     "WorldModel",
     "Fact",
     "FactProvenance",
