@@ -156,6 +156,14 @@ class SingleAgentOrganGeneratorV5:
             self.workspace.initialize()
             if self.llm_client:
                 self.brain = Brain(self.llm_client)
+            
+            # P1 #6: Initialize workspace artifacts for LLM-first goal checks
+            # These artifacts are needed by check_llm_spec_ready() and check_llm_workspace_ready()
+            import os
+            self.world_model.add_artifact("workspace_path", str(self.workspace.workspace_path))
+            self.world_model.add_artifact("spec_path", str(self.workspace.spec_path))
+            if os.path.exists(self.workspace.master_script_path):
+                self.world_model.add_artifact("master_script_path", str(self.workspace.master_script_path))
         
         self._iteration_count = 0
         self._safe_fixes_this_run = 0
@@ -274,6 +282,12 @@ class SingleAgentOrganGeneratorV5:
                     logger.warning(f"Capability {capability} returned False")
             
             self._is_running = False
+            # P0 #2: In LLM-first mode, check llm_complete fact instead of goal_tracker.is_complete()
+            # because goal_tracker requires ALL goals (classic + LLM-first) to be satisfied
+            if self.config.llm_first_mode:
+                if self.world_model.get_fact_value("llm_complete", False):
+                    return RunResult.COMPLETED
+                return RunResult.WAITING
             return RunResult.COMPLETED if self.goal_tracker.is_complete() else RunResult.WAITING
             
         except KeyboardInterrupt:
@@ -1947,8 +1961,12 @@ class SingleAgentOrganGeneratorV5:
                         reason="LLM fact update",
                     )
                 elif fact_update.op == "delete":
-                    if fact_update.path in self.world_model.facts:
-                        del self.world_model._facts[fact_update.path]
+                    # P0 #4: Use delete_fact() for proper history tracking
+                    self.world_model.delete_fact(
+                        fact_update.path,
+                        FactProvenance.INFERRED,
+                        reason="LLM fact deletion",
+                    )
             self._emit_trace("fact_updates_applied", f"Applied {len(self._last_directive.fact_updates)} fact updates")
         
         # Export spec from world model to workspace AFTER applying fact_updates
@@ -1992,6 +2010,11 @@ class SingleAgentOrganGeneratorV5:
         
         if files_written:
             self.io.say_assistant(f"Updated workspace: {', '.join([f.split('/')[-1] for f in files_written])}")
+        
+        # P0 #1: Clear workspace_update after applying to prevent infinite loop
+        # Without this, _get_available_capabilities_llm_first() keeps selecting
+        # llm_apply_workspace_update until max_iterations
+        self._last_directive.workspace_update = None
         
         return True
     

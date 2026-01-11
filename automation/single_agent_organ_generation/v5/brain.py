@@ -633,7 +633,7 @@ The master script must:
    - `05_mesh/mesh_network_v{VERSION:03d}.stl` - STL mesh
 5. Print ARTIFACTS_JSON footer with created files and metrics
 
-CRITICAL: The verifier checks for EXACT file paths. Use the version number from spec.json.
+CRITICAL: The verifier checks for EXACT file paths. Use the version provided in Required Artifacts (artifact_requirements.version in the observation packet).
 
 Example structure:
 ```python
@@ -1180,12 +1180,13 @@ def main():
     
     # TODO: Implement generation logic using tools from registry
     # Example:
-    # from generation.ops.space_colonization import grow_network, SpaceColonizationParams
-    # from generation.domain import BoxDomain
+    # from generation.ops.space_colonization import space_colonization_step
+    # from generation.core.domain import create_box_domain
+    # from generation.core.network import VascularNetwork
     # 
-    # domain = BoxDomain(size=domain_size)
-    # params = SpaceColonizationParams(...)
-    # network = grow_network(domain, params)
+    # domain = create_box_domain(size=domain_size)
+    # network = VascularNetwork()
+    # # ... use space_colonization_step to grow the network ...
     
     # Placeholder outputs
     created_files = []
