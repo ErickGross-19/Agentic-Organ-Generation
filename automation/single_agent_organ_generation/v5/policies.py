@@ -487,10 +487,12 @@ class CapabilitySelectionPolicy:
     """
     
     CAPABILITY_PRIORITIES = {
+        "ask_project_name": 105,  # Highest priority - runs first to establish output directory
         "ingest_user_event": 100,
         "interpret_user_turn": 95,
         "apply_patch": 90,
         "undo": 85,
+        "generate_missing_field_questions": 82,  # Higher than propose_tailored_plans to ask questions first
         "ask_best_next_question": 80,
         "propose_tailored_plans": 75,
         "select_plan": 70,

@@ -188,6 +188,8 @@ class SingleAgentOrganGeneratorV5:
             "ask_for_non_safe_fix_choice": self._cap_ask_for_non_safe_fix_choice,
             "undo": self._cap_undo,
             "package_outputs": self._cap_package_outputs,
+            # Project initialization (mode-independent)
+            "ask_project_name": self._cap_ask_project_name,
             # LLM-first mode capabilities
             "llm_ask_project_name": self._cap_llm_ask_project_name,
             "llm_decide_next": self._cap_llm_decide_next,
@@ -540,6 +542,14 @@ class SingleAgentOrganGeneratorV5:
         
         available = []
         
+        # Project initialization: Ask for project name if not yet initialized
+        # This runs at the very start to establish where outputs will be stored
+        project_initialized = self.world_model.get_fact_value("_project_initialized", False)
+        if not project_initialized:
+            available.append("ask_project_name")
+            # Return early - project init should happen before anything else
+            return available
+        
         if self._pending_user_message:
             available.append("ingest_user_event")
             available.append("interpret_user_turn")
@@ -567,7 +577,21 @@ class SingleAgentOrganGeneratorV5:
             # 1. No plans exist yet, OR
             # 2. Spec changed since last proposal (allows re-proposing after spec changes)
             # This prevents infinite loop of re-proposing the same plans
-            if not self.world_model.selected_plan:
+            # 
+            # Additionally, gate plan proposal to only be available after minimum intent:
+            # - domain type must be set, OR
+            # - topology kind must be set, OR
+            # - at least one question has been answered (first round of questions generated/answered)
+            has_minimum_intent = (
+                self.world_model.has_fact("domain.type") or
+                self.world_model.has_fact("domain_type") or
+                self.world_model.has_fact("topology.kind") or
+                self.world_model.has_fact("topology_kind") or
+                # Check if any questions have been answered (decisions recorded)
+                len(self.world_model._decisions) > 0
+            )
+            
+            if not self.world_model.selected_plan and has_minimum_intent:
                 if not self.world_model.plans:
                     # No plans yet - propose some
                     available.append("propose_tailored_plans")
@@ -1105,18 +1129,146 @@ class SingleAgentOrganGeneratorV5:
         if best_question.why:
             prompt += f"\n(This matters because: {best_question.why})"
         
+        # Add help text for options if available
+        if best_question.options:
+            options_help = self._get_options_help_text(best_question.field, best_question.options)
+            if options_help:
+                prompt += f"\n{options_help}"
+        
         response = self.io.ask_text(
             prompt,
             suggestions=best_question.options,
         )
         
-        parsed_value = self._parse_question_answer(best_question.field, response)
+        # Validate response against options if the question has options
+        if best_question.options:
+            validation_result = self._validate_option_response(
+                response, best_question.options, best_question.field
+            )
+            
+            if validation_result["is_clarification_request"]:
+                # User is asking for clarification - provide help and re-ask
+                help_text = self._get_detailed_options_help(best_question.field, best_question.options)
+                self.io.say_assistant(help_text)
+                self._emit_trace("clarification_provided", f"Provided help for: {best_question.field}")
+                # Don't close the question - it will be asked again on next iteration
+                return True
+            
+            if not validation_result["is_valid"]:
+                # Invalid choice - explain available options and re-ask
+                self.io.say_assistant(
+                    f"I didn't recognize that option. Please choose from: {', '.join(best_question.options)}"
+                )
+                self._emit_trace("invalid_option", f"Invalid response for: {best_question.field}")
+                # Don't close the question - it will be asked again on next iteration
+                return True
+            
+            # Use the normalized value if available
+            if validation_result["normalized_value"] is not None:
+                parsed_value = validation_result["normalized_value"]
+            else:
+                parsed_value = self._parse_question_answer(best_question.field, response)
+        else:
+            parsed_value = self._parse_question_answer(best_question.field, response)
         
         self.world_model.answer_question(best_question.question_id, parsed_value)
         
         self._emit_trace("question_asked", f"Asked: {best_question.field}")
         
         return True
+    
+    def _validate_option_response(
+        self, response: str, options: List[str], field: str
+    ) -> Dict[str, Any]:
+        """
+        Validate a user response against available options.
+        
+        Returns a dict with:
+        - is_valid: True if response matches an option
+        - is_clarification_request: True if response looks like a question/clarification request
+        - normalized_value: The matched option value (if valid)
+        """
+        response_lower = response.lower().strip()
+        
+        # Check if this looks like a clarification request
+        clarification_patterns = [
+            "what are", "what is", "what's", "which", "explain", "help",
+            "tell me", "describe", "difference", "mean", "?",
+            "options", "choices", "types", "kinds"
+        ]
+        if any(pattern in response_lower for pattern in clarification_patterns):
+            return {
+                "is_valid": False,
+                "is_clarification_request": True,
+                "normalized_value": None,
+            }
+        
+        # Normalize options for comparison
+        options_lower = [opt.lower() for opt in options]
+        
+        # Direct match
+        if response_lower in options_lower:
+            idx = options_lower.index(response_lower)
+            return {
+                "is_valid": True,
+                "is_clarification_request": False,
+                "normalized_value": options[idx],
+            }
+        
+        # Partial match (response contains option or option contains response)
+        for i, opt_lower in enumerate(options_lower):
+            if opt_lower in response_lower or response_lower in opt_lower:
+                return {
+                    "is_valid": True,
+                    "is_clarification_request": False,
+                    "normalized_value": options[i],
+                }
+        
+        # Field-specific matching (e.g., face names)
+        if field.endswith(".face"):
+            parsed = self._parse_question_answer(field, response)
+            if parsed in options or parsed in options_lower:
+                return {
+                    "is_valid": True,
+                    "is_clarification_request": False,
+                    "normalized_value": parsed,
+                }
+        
+        return {
+            "is_valid": False,
+            "is_clarification_request": False,
+            "normalized_value": None,
+        }
+    
+    def _get_options_help_text(self, field: str, options: List[str]) -> str:
+        """Get brief help text for options."""
+        if field == "topology.kind":
+            return "Options: tree (branching), path (single channel), backbone (main trunk with branches), loop (circular)"
+        if field == "domain.type":
+            return "Options: box (rectangular), ellipsoid (oval), cylinder (tubular)"
+        return f"Options: {', '.join(options)}"
+    
+    def _get_detailed_options_help(self, field: str, options: List[str]) -> str:
+        """Get detailed help text explaining each option."""
+        if field == "topology.kind":
+            return (
+                "Here are the available vascular topology types:\n"
+                "- **tree**: A branching structure like arteries, with one inlet splitting into many terminals. "
+                "Best for distributing flow throughout a volume.\n"
+                "- **path**: A single channel from inlet to outlet. Simple conduit for direct flow.\n"
+                "- **backbone**: A main trunk with side branches. Good for elongated organs.\n"
+                "- **loop**: A circular network that returns to the start. Useful for recirculating systems.\n\n"
+                "Which topology would you like to use?"
+            )
+        if field == "domain.type":
+            return (
+                "Here are the available domain shapes:\n"
+                "- **box**: A rectangular prism. Good for tissue slabs or cubic scaffolds.\n"
+                "- **ellipsoid**: An oval/egg shape. Good for organ-like geometries.\n"
+                "- **cylinder**: A tubular shape. Good for vessel segments or tubular organs.\n\n"
+                "Which shape would you like?"
+            )
+        return f"Please choose one of the following options: {', '.join(options)}"
     
     def _parse_question_answer(self, field: str, response: str) -> Any:
         """
@@ -1928,6 +2080,75 @@ class SingleAgentOrganGeneratorV5:
         
         self._emit_trace("outputs_packaged", "Outputs packaged")
         self.io.say_success(f"Outputs packaged! Final mesh: {final_mesh}")
+        
+        return True
+    
+    def _cap_ask_project_name(self) -> bool:
+        """
+        Mode-independent capability: Ask for project name and set up output directory.
+        
+        This runs at the start of a session (in both classic and LLM-first modes)
+        if no project folder has been set yet. It establishes where outputs will
+        be stored, preventing the issue where the controller doesn't ask where
+        to store objects.
+        
+        In GUI/CLI interactive mode, this asks for:
+        - Project name (becomes a subfolder under output_dir)
+        - Optionally confirms output directory if none is set
+        """
+        import os
+        import re
+        
+        self._emit_trace("asking_project_name", "Asking for project folder name")
+        
+        # Check if output_dir is set, if not ask for it
+        if not self.config.output_dir:
+            output_dir = self.io.ask_text(
+                "Where would you like to save project outputs?",
+                placeholder="e.g., ./output or /path/to/outputs",
+            )
+            if output_dir:
+                self.config.output_dir = output_dir
+            else:
+                # Default to current directory + output
+                self.config.output_dir = "./output"
+        
+        # Ask for project name
+        project_name = self.io.ask_text(
+            "What would you like to name this project? (This will be the folder name)",
+            placeholder="e.g., kidney_vasculature_001",
+        )
+        
+        if not project_name:
+            project_name = f"project_{int(__import__('time').time())}"
+        
+        # Sanitize project name to create a valid folder slug
+        # Replace spaces and special chars with underscores, lowercase
+        project_slug = re.sub(r'[^a-zA-Z0-9_-]', '_', project_name.lower())
+        project_slug = re.sub(r'_+', '_', project_slug).strip('_')
+        
+        if not project_slug:
+            project_slug = f"project_{int(__import__('time').time())}"
+        
+        # Create project root directory
+        project_root = os.path.join(self.config.output_dir, project_slug)
+        os.makedirs(project_root, exist_ok=True)
+        
+        # Store project identity in world model
+        self.world_model.add_artifact("project_slug", project_slug)
+        self.world_model.add_artifact("project_root", project_root)
+        
+        # Mark project as initialized
+        self.world_model.set_fact(
+            "_project_initialized",
+            True,
+            FactProvenance.SYSTEM,
+            reason=f"Project initialized: {project_slug}",
+            record_history=False,  # Don't record in undo history
+        )
+        
+        self._emit_trace("project_initialized", f"Project initialized: {project_slug}")
+        self.io.say_assistant(f"Project folder created: {project_root}")
         
         return True
     
