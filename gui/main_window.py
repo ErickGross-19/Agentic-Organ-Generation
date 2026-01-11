@@ -239,6 +239,33 @@ class MainWindow:
             command=self._show_agent_config,
         )
         self.config_btn.pack(side="right", padx=2)
+        
+        # P3 #26: View master script button
+        self.view_script_btn = ttk.Button(
+            toolbar,
+            text="View Script",
+            command=self._view_master_script,
+            state="disabled",
+        )
+        self.view_script_btn.pack(side="right", padx=2)
+        
+        # P3 #29: Run history selector
+        self.run_history_btn = ttk.Button(
+            toolbar,
+            text="Run History",
+            command=self._show_run_history,
+            state="disabled",
+        )
+        self.run_history_btn.pack(side="right", padx=2)
+        
+        # P3 #31: Verification report button
+        self.verification_btn = ttk.Button(
+            toolbar,
+            text="Verification",
+            command=self._show_verification_report,
+            state="disabled",
+        )
+        self.verification_btn.pack(side="right", padx=2)
     
     def _setup_main_panels(self):
         """Set up three-panel layout."""
@@ -445,6 +472,10 @@ class MainWindow:
             self.stop_btn.config(state="normal")
             # Send button is always enabled - _send_input handles the no-workflow case
             self.progress.start()
+            # P3: Enable workspace-related buttons when workflow starts
+            self.view_script_btn.config(state="normal")
+            self.run_history_btn.config(state="normal")
+            self.verification_btn.config(state="normal")
     
     def _validate_agent_config(self) -> tuple:
         """Validate agent configuration."""
@@ -476,6 +507,10 @@ class MainWindow:
         self.start_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
         # Send button stays enabled - _send_input handles the no-workflow case
+        # P3: Disable workspace-related buttons when workflow stops
+        self.view_script_btn.config(state="disabled")
+        self.run_history_btn.config(state="disabled")
+        self.verification_btn.config(state="disabled")
         self.progress.stop()
     
     def _send_input(self):
@@ -768,6 +803,226 @@ class MainWindow:
                 os.system(f'xdg-open "{output_dir}"')
         else:
             messagebox.showinfo("Info", "No output folder available")
+    
+    def _view_master_script(self):
+        """P3 #26: View master script in a read-only viewer."""
+        artifacts = self.workflow_manager.get_artifacts()
+        workspace_path = artifacts.get("workspace_path")
+        
+        if not workspace_path:
+            messagebox.showinfo("Info", "No workspace available")
+            return
+        
+        master_path = os.path.join(workspace_path, "master.py")
+        if not os.path.exists(master_path):
+            messagebox.showinfo("Info", "No master script found")
+            return
+        
+        try:
+            with open(master_path, 'r') as f:
+                script_content = f.read()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to read master script: {e}")
+            return
+        
+        viewer = tk.Toplevel(self.root)
+        viewer.title("Master Script Viewer")
+        viewer.geometry("800x600")
+        
+        text_widget = scrolledtext.ScrolledText(
+            viewer,
+            wrap="none",
+            font=("TkFixedFont", 10),
+        )
+        text_widget.pack(fill="both", expand=True, padx=5, pady=5)
+        text_widget.insert("1.0", script_content)
+        text_widget.config(state="disabled")
+    
+    def _show_run_history(self):
+        """P3 #29: Show run history selector."""
+        artifacts = self.workflow_manager.get_artifacts()
+        workspace_path = artifacts.get("workspace_path")
+        
+        if not workspace_path:
+            messagebox.showinfo("Info", "No workspace available")
+            return
+        
+        runs_dir = os.path.join(workspace_path, "runs")
+        if not os.path.exists(runs_dir):
+            messagebox.showinfo("Info", "No runs found")
+            return
+        
+        run_dirs = sorted([
+            d for d in os.listdir(runs_dir)
+            if os.path.isdir(os.path.join(runs_dir, d)) and d.startswith("run_")
+        ], reverse=True)
+        
+        if not run_dirs:
+            messagebox.showinfo("Info", "No runs found")
+            return
+        
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Run History")
+        dialog.geometry("400x300")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        ttk.Label(dialog, text="Select a run to inspect:", font=("TkDefaultFont", 12, "bold")).pack(pady=10)
+        
+        listbox = tk.Listbox(dialog, font=("TkFixedFont", 10))
+        listbox.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        for run_dir in run_dirs:
+            listbox.insert("end", run_dir)
+        
+        def on_select():
+            selection = listbox.curselection()
+            if not selection:
+                return
+            run_name = listbox.get(selection[0])
+            run_path = os.path.join(runs_dir, run_name)
+            dialog.destroy()
+            self._inspect_run(run_path)
+        
+        ttk.Button(dialog, text="Inspect", command=on_select).pack(pady=10)
+    
+    def _inspect_run(self, run_path: str):
+        """Inspect a specific run directory."""
+        inspector = tk.Toplevel(self.root)
+        inspector.title(f"Run Inspector: {os.path.basename(run_path)}")
+        inspector.geometry("600x400")
+        
+        files = os.listdir(run_path) if os.path.exists(run_path) else []
+        
+        ttk.Label(inspector, text=f"Run: {os.path.basename(run_path)}", font=("TkDefaultFont", 12, "bold")).pack(pady=10)
+        
+        files_frame = ttk.LabelFrame(inspector, text="Files")
+        files_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        listbox = tk.Listbox(files_frame, font=("TkFixedFont", 10))
+        listbox.pack(fill="both", expand=True, padx=5, pady=5)
+        
+        for f in sorted(files):
+            listbox.insert("end", f)
+        
+        def load_stl():
+            selection = listbox.curselection()
+            if not selection:
+                return
+            filename = listbox.get(selection[0])
+            if filename.endswith(".stl"):
+                stl_path = os.path.join(run_path, filename)
+                self.stl_viewer.load_stl(stl_path)
+                self._append_output(f"Loaded STL from run: {filename}")
+        
+        ttk.Button(inspector, text="Load STL", command=load_stl).pack(pady=10)
+    
+    def _show_verification_report(self):
+        """P3 #31: Show verification report in GUI."""
+        artifacts = self.workflow_manager.get_artifacts()
+        verification_report = artifacts.get("verification_report")
+        
+        if not verification_report:
+            messagebox.showinfo("Info", "No verification report available")
+            return
+        
+        report_window = tk.Toplevel(self.root)
+        report_window.title("Verification Report")
+        report_window.geometry("600x500")
+        
+        text_widget = scrolledtext.ScrolledText(
+            report_window,
+            wrap="word",
+            font=("TkFixedFont", 10),
+        )
+        text_widget.pack(fill="both", expand=True, padx=5, pady=5)
+        
+        report_text = "Verification Report\n" + "=" * 40 + "\n\n"
+        
+        if isinstance(verification_report, dict):
+            report_text += f"Status: {'PASSED' if verification_report.get('passed', False) else 'FAILED'}\n\n"
+            
+            if "required_files" in verification_report:
+                report_text += "Required Files:\n"
+                for f, status in verification_report["required_files"].items():
+                    report_text += f"  {f}: {'Found' if status else 'MISSING'}\n"
+                report_text += "\n"
+            
+            if "mesh_stats" in verification_report:
+                report_text += "Mesh Statistics:\n"
+                stats = verification_report["mesh_stats"]
+                report_text += f"  Vertices: {stats.get('vertices', 'N/A')}\n"
+                report_text += f"  Faces: {stats.get('faces', 'N/A')}\n"
+                report_text += f"  Watertight: {stats.get('watertight', 'N/A')}\n"
+                report_text += f"  Manifold: {stats.get('manifold', 'N/A')}\n"
+                report_text += "\n"
+            
+            if "bounds" in verification_report:
+                bounds = verification_report["bounds"]
+                report_text += f"Bounds: {bounds}\n\n"
+            
+            if "errors" in verification_report:
+                report_text += "Errors:\n"
+                for error in verification_report["errors"]:
+                    report_text += f"  - {error}\n"
+        else:
+            report_text += str(verification_report)
+        
+        text_widget.insert("1.0", report_text)
+        text_widget.config(state="disabled")
+    
+    def _show_workspace_update_summary(self, update_data: dict):
+        """P3 #25: Show workspace update summary in GUI."""
+        summary_text = "Workspace Update Summary\n" + "-" * 30 + "\n"
+        
+        if "files_updated" in update_data:
+            summary_text += "\nFiles Updated:\n"
+            for f in update_data["files_updated"]:
+                summary_text += f"  - {f}\n"
+        
+        if "registry_updated" in update_data and update_data["registry_updated"]:
+            summary_text += "\nTool Registry: Updated\n"
+        
+        if "spec_updated" in update_data and update_data["spec_updated"]:
+            summary_text += "\nSpec: Updated\n"
+        
+        self._append_chat("workspace_update", summary_text)
+    
+    def _show_diff_view(self, old_content: str, new_content: str, filename: str):
+        """P3 #27: Show diff view when master changes."""
+        import difflib
+        
+        diff_window = tk.Toplevel(self.root)
+        diff_window.title(f"Diff View: {filename}")
+        diff_window.geometry("800x600")
+        
+        text_widget = scrolledtext.ScrolledText(
+            diff_window,
+            wrap="none",
+            font=("TkFixedFont", 10),
+        )
+        text_widget.pack(fill="both", expand=True, padx=5, pady=5)
+        
+        text_widget.tag_configure("added", foreground="green")
+        text_widget.tag_configure("removed", foreground="red")
+        text_widget.tag_configure("header", foreground="blue")
+        
+        old_lines = old_content.splitlines(keepends=True)
+        new_lines = new_content.splitlines(keepends=True)
+        
+        diff = difflib.unified_diff(old_lines, new_lines, fromfile="old", tofile="new")
+        
+        for line in diff:
+            if line.startswith("+++") or line.startswith("---"):
+                text_widget.insert("end", line, "header")
+            elif line.startswith("+"):
+                text_widget.insert("end", line, "added")
+            elif line.startswith("-"):
+                text_widget.insert("end", line, "removed")
+            else:
+                text_widget.insert("end", line)
+        
+        text_widget.config(state="disabled")
     
     def _show_docs(self):
         """Show documentation."""

@@ -182,10 +182,89 @@ DEFAULT_REPO_TOOLS: List[ToolRegistryEntry] = [
         name="adapters",
         origin="repo",
         module="generation.adapters",
-        entrypoints=["mesh_adapter", "networkx_adapter", "report_adapter"],
+        entrypoints=[
+            "to_networkx_graph", "from_networkx_graph",  # from networkx_adapter.py
+            "to_trimesh", "to_hollow_tube_mesh", "export_hollow_tube_stl",  # from mesh_adapter.py
+            "make_full_report",  # from report_adapter.py
+        ],
         description="Adapters for mesh export, NetworkX conversion, and reporting",
     ),
+    ToolRegistryEntry(
+        name="collision",
+        origin="repo",
+        module="generation.ops",
+        entrypoints=["get_collisions", "avoid_collisions"],
+        description="Collision detection and avoidance for vascular networks",
+    ),
+    ToolRegistryEntry(
+        name="anastomosis",
+        origin="repo",
+        module="generation.ops",
+        entrypoints=["create_anastomosis", "check_tree_interactions"],
+        description="Anastomosis creation between vascular trees",
+    ),
+    ToolRegistryEntry(
+        name="pathfinding",
+        origin="repo",
+        module="generation.ops",
+        entrypoints=["grow_toward_targets", "CostWeights"],
+        description="Pathfinding and targeted growth operations",
+    ),
 ]
+
+
+# P1 #12: Tool discovery capability - scan packages for available functions
+def discover_tools_from_package(package_name: str) -> List[ToolRegistryEntry]:
+    """
+    Discover tools from a package by scanning its modules.
+    
+    Parameters
+    ----------
+    package_name : str
+        Name of the package to scan (e.g., "generation")
+        
+    Returns
+    -------
+    List[ToolRegistryEntry]
+        Discovered tool entries with functions, docstrings, and signatures
+    """
+    import importlib
+    import inspect
+    import logging
+    
+    logger = logging.getLogger(__name__)
+    discovered = []
+    
+    try:
+        package = importlib.import_module(package_name)
+        package_path = getattr(package, '__path__', None)
+        
+        if not package_path:
+            return discovered
+        
+        # Get all exported names from __all__ if available
+        all_names = getattr(package, '__all__', [])
+        
+        if all_names:
+            # Collect functions and classes from __all__
+            entrypoints = []
+            for name in all_names:
+                obj = getattr(package, name, None)
+                if obj and (inspect.isfunction(obj) or inspect.isclass(obj)):
+                    entrypoints.append(name)
+            
+            if entrypoints:
+                discovered.append(ToolRegistryEntry(
+                    name=package_name.split('.')[-1],
+                    origin="discovered",
+                    module=package_name,
+                    entrypoints=entrypoints,
+                    description=f"Auto-discovered from {package_name}",
+                ))
+    except ImportError as e:
+        logger.warning(f"Failed to discover tools from {package_name}: {e}")
+    
+    return discovered
 
 
 def validate_tool_registry(tools: List[ToolRegistryEntry]) -> List[ToolRegistryEntry]:
@@ -852,10 +931,14 @@ class WorkspaceManager:
     def validate_master_script(self) -> Dict[str, Any]:
         """
         P1 #13: Validate master script before execution.
+        P4 #33: Add dangerous import warnings.
+        P4 #34: Add output dir only enforcement for writes.
         
         Performs:
         - Syntax check (py_compile)
         - Import smoke test (can imports be resolved?)
+        - Dangerous import detection (P4 #33)
+        - Write path analysis (P4 #34)
         
         Returns
         -------
@@ -865,6 +948,8 @@ class WorkspaceManager:
             - syntax_ok: bool
             - syntax_error: str or None
             - import_warnings: List[str]
+            - dangerous_imports: List[str] (P4 #33)
+            - write_warnings: List[str] (P4 #34)
         """
         import subprocess
         import sys
@@ -874,6 +959,8 @@ class WorkspaceManager:
             "syntax_ok": True,
             "syntax_error": None,
             "import_warnings": [],
+            "dangerous_imports": [],
+            "write_warnings": [],
         }
         
         if not os.path.exists(self.master_script_path):
@@ -906,10 +993,12 @@ class WorkspaceManager:
             result["syntax_error"] = str(e)
             return result
         
-        # Import smoke test - check if imports can be resolved
+        # Read content for further analysis
         content = self.read_master_script()
         if content:
             import re
+            
+            # Import smoke test - check if imports can be resolved
             import_lines = re.findall(r'^(?:from|import)\s+([^\s]+)', content, re.MULTILINE)
             
             for module_name in import_lines:
@@ -926,9 +1015,102 @@ class WorkspaceManager:
                     importlib.import_module(base_module)
                 except ImportError as e:
                     result["import_warnings"].append(f"Cannot import '{module_name}': {e}")
+            
+            # P4 #33: Dangerous import detection
+            dangerous_modules = [
+                'requests', 'urllib', 'socket', 'subprocess', 'os.system',
+                'shutil.rmtree', 'eval', 'exec', 'compile', '__import__',
+                'pickle', 'marshal', 'ctypes', 'multiprocessing',
+            ]
+            
+            for dangerous in dangerous_modules:
+                if dangerous in content:
+                    result["dangerous_imports"].append(
+                        f"Potentially dangerous: '{dangerous}' found in script"
+                    )
+            
+            # P4 #34: Write path analysis - check for writes outside output dir
+            write_patterns = [
+                r'open\s*\(\s*["\']([^"\']+)["\'].*["\']w',
+                r'\.write\s*\(',
+                r'shutil\.copy',
+                r'shutil\.move',
+                r'os\.makedirs',
+                r'Path\s*\([^)]+\)\.write',
+            ]
+            
+            for pattern in write_patterns:
+                matches = re.findall(pattern, content)
+                for match in matches:
+                    if isinstance(match, str) and match:
+                        # Check if path is absolute and outside workspace
+                        if match.startswith('/') and not match.startswith(self.workspace_path):
+                            result["write_warnings"].append(
+                                f"Write to path outside workspace: '{match}'"
+                            )
+                        # Check for parent directory traversal
+                        if '..' in match:
+                            result["write_warnings"].append(
+                                f"Path traversal detected: '{match}'"
+                            )
         
         # If there are import warnings, mark as potentially invalid but don't fail
         if result["import_warnings"]:
             result["valid"] = True  # Still valid, just warnings
         
         return result
+    
+    def get_execution_environment(self) -> Dict[str, str]:
+        """
+        P4 #32: Get restricted execution environment for sandbox.
+        
+        Returns environment variables for sandboxed execution.
+        """
+        import os as os_module
+        
+        # Start with minimal environment
+        env = {
+            "PATH": os_module.environ.get("PATH", "/usr/bin:/bin"),
+            "HOME": os_module.environ.get("HOME", "/tmp"),
+            "PYTHONPATH": str(self.workspace_path),
+            "WORKSPACE_PATH": str(self.workspace_path),
+            "OUTPUT_DIR": str(self.runs_path),
+        }
+        
+        # Add Python-related vars
+        if "VIRTUAL_ENV" in os_module.environ:
+            env["VIRTUAL_ENV"] = os_module.environ["VIRTUAL_ENV"]
+        
+        # Restrict certain vars
+        restricted_vars = [
+            "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+            "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+            "DATABASE_URL", "REDIS_URL",
+        ]
+        
+        for var in restricted_vars:
+            if var in env:
+                del env[var]
+        
+        return env
+    
+    def get_execution_config(self) -> Dict[str, Any]:
+        """
+        P4 #32: Get execution configuration for sandbox.
+        
+        Returns configuration for sandboxed execution.
+        """
+        return {
+            "timeout_seconds": 600,  # 10 minute timeout
+            "working_directory": str(self.workspace_path),
+            "allowed_write_paths": [
+                str(self.runs_path),
+                str(self.workspace_path / "tools"),
+            ],
+            "restricted_imports": [
+                "requests", "urllib.request", "socket",
+                "subprocess", "os.system", "shutil.rmtree",
+            ],
+            "max_memory_mb": 4096,
+            "max_file_size_mb": 100,
+        }

@@ -58,14 +58,20 @@ class Question:
 
 @dataclass
 class FileUpdate:
-    """A file to create or update."""
+    """
+    A file to create or update.
+    
+    P1 #7: Supports both full content and unified diff patches.
+    """
     path: str  # Relative path within workspace (e.g., "master.py", "tools/my_tool.py")
-    content: str
+    content: str  # Full content OR unified diff patch
+    patch_style: Optional[str] = None  # None for full content, "unified_diff" for patch
     
     def to_dict(self) -> Dict[str, Any]:
         return {
             "path": self.path,
             "content": self.content,
+            "patch_style": self.patch_style,
         }
     
     @classmethod
@@ -73,7 +79,66 @@ class FileUpdate:
         return cls(
             path=d["path"],
             content=d["content"],
+            patch_style=d.get("patch_style"),
         )
+    
+    def is_patch(self) -> bool:
+        """Check if this is a patch update rather than full content."""
+        return self.patch_style == "unified_diff"
+    
+    def apply_patch(self, original_content: str) -> str:
+        """
+        Apply unified diff patch to original content.
+        
+        Parameters
+        ----------
+        original_content : str
+            The original file content
+            
+        Returns
+        -------
+        str
+            The patched content
+            
+        Raises
+        ------
+        ValueError
+            If patch cannot be applied
+        """
+        if not self.is_patch():
+            return self.content
+        
+        import subprocess
+        import tempfile
+        import os
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original_path = os.path.join(tmpdir, "original")
+            patch_path = os.path.join(tmpdir, "patch.diff")
+            
+            with open(original_path, 'w') as f:
+                f.write(original_content)
+            
+            with open(patch_path, 'w') as f:
+                f.write(self.content)
+            
+            try:
+                result = subprocess.run(
+                    ["patch", "-p0", "-i", patch_path, original_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                
+                if result.returncode != 0:
+                    raise ValueError(f"Patch failed: {result.stderr}")
+                
+                with open(original_path, 'r') as f:
+                    return f.read()
+            except subprocess.TimeoutExpired:
+                raise ValueError("Patch operation timed out")
+            except FileNotFoundError:
+                raise ValueError("patch command not found - falling back to full content")
 
 
 @dataclass
@@ -129,11 +194,79 @@ class WorkspaceUpdate:
 
 
 @dataclass
+class FactUpdate:
+    """
+    P2 #17: A structured fact update from the LLM.
+    
+    Allows the LLM to cleanly update structured facts (domain, inlet/outlet, targets).
+    """
+    op: str  # "set", "delete", "append"
+    path: str  # Fact path (e.g., "domain.type", "inlet.position")
+    value: Any = None
+    confidence: float = 1.0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "op": self.op,
+            "path": self.path,
+            "value": self.value,
+            "confidence": self.confidence,
+        }
+    
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "FactUpdate":
+        return cls(
+            op=d.get("op", "set"),
+            path=d["path"],
+            value=d.get("value"),
+            confidence=d.get("confidence", 1.0),
+        )
+
+
+@dataclass
+class PlanBoardUpdate:
+    """
+    P2 #18: Update to the plan board.
+    """
+    add_objectives: List[str] = field(default_factory=list)
+    add_assumptions: List[str] = field(default_factory=list)
+    set_strategy: Optional[str] = None
+    add_next_steps: List[str] = field(default_factory=list)
+    complete_steps: List[str] = field(default_factory=list)
+    add_risks: List[str] = field(default_factory=list)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "add_objectives": self.add_objectives,
+            "add_assumptions": self.add_assumptions,
+            "set_strategy": self.set_strategy,
+            "add_next_steps": self.add_next_steps,
+            "complete_steps": self.complete_steps,
+            "add_risks": self.add_risks,
+        }
+    
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "PlanBoardUpdate":
+        return cls(
+            add_objectives=d.get("add_objectives", []),
+            add_assumptions=d.get("add_assumptions", []),
+            set_strategy=d.get("set_strategy"),
+            add_next_steps=d.get("add_next_steps", []),
+            complete_steps=d.get("complete_steps", []),
+            add_risks=d.get("add_risks", []),
+        )
+
+
+@dataclass
 class Directive:
     """
     The LLM's decision about what to do next.
     
     This is the structured output from the brain that the controller acts on.
+    
+    P2 #17: Includes fact_updates for structured fact changes.
+    P2 #18: Includes plan_board_update for plan changes.
+    P2 #20: Includes preview_mode for quick preview runs.
     """
     assistant_message: str = ""
     questions: List[Question] = field(default_factory=list)
@@ -141,6 +274,12 @@ class Directive:
     request_execution: bool = False
     stop: bool = False
     reasoning: str = ""  # Internal reasoning (for debugging/tracing)
+    # P2 #17: Structured fact updates
+    fact_updates: List[FactUpdate] = field(default_factory=list)
+    # P2 #18: Plan board updates
+    plan_board_update: Optional[PlanBoardUpdate] = None
+    # P2 #20: Preview mode flag
+    preview_mode: bool = False
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -150,6 +289,9 @@ class Directive:
             "request_execution": self.request_execution,
             "stop": self.stop,
             "reasoning": self.reasoning,
+            "fact_updates": [f.to_dict() for f in self.fact_updates],
+            "plan_board_update": self.plan_board_update.to_dict() if self.plan_board_update else None,
+            "preview_mode": self.preview_mode,
         }
     
     @classmethod
@@ -158,6 +300,10 @@ class Directive:
         if d.get("workspace_update"):
             workspace_update = WorkspaceUpdate.from_dict(d["workspace_update"])
         
+        plan_board_update = None
+        if d.get("plan_board_update"):
+            plan_board_update = PlanBoardUpdate.from_dict(d["plan_board_update"])
+        
         return cls(
             assistant_message=d.get("assistant_message", ""),
             questions=[Question.from_dict(q) for q in d.get("questions", [])],
@@ -165,6 +311,9 @@ class Directive:
             request_execution=d.get("request_execution", False),
             stop=d.get("stop", False),
             reasoning=d.get("reasoning", ""),
+            fact_updates=[FactUpdate.from_dict(f) for f in d.get("fact_updates", [])],
+            plan_board_update=plan_board_update,
+            preview_mode=d.get("preview_mode", False),
         )
 
 
@@ -223,6 +372,85 @@ class ErrorPacket:
 
 
 @dataclass
+class ArtifactRequirements:
+    """
+    P0 #2: Required artifact paths injected into LLM prompt every run.
+    
+    Tells the LLM exactly what files must be created and their naming rules.
+    """
+    version: int = 1
+    required_files: List[str] = field(default_factory=list)
+    optional_files: List[str] = field(default_factory=list)
+    naming_rules: Dict[str, str] = field(default_factory=dict)
+    output_dir_env: str = "ORGAN_AGENT_OUTPUT_DIR"
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "version": self.version,
+            "required_files": self.required_files,
+            "optional_files": self.optional_files,
+            "naming_rules": self.naming_rules,
+            "output_dir_env": self.output_dir_env,
+        }
+    
+    @classmethod
+    def for_generation(cls, version: int) -> "ArtifactRequirements":
+        v = f"v{version:03d}"
+        return cls(
+            version=version,
+            required_files=[
+                f"04_outputs/network_{v}.json",
+                f"05_mesh/mesh_network_{v}.stl",
+            ],
+            optional_files=[
+                f"06_analysis/analysis_{v}.json",
+                f"06_analysis/analysis_{v}.txt",
+            ],
+            naming_rules={
+                "version_format": "v{version:03d}",
+                "network_pattern": "04_outputs/network_v{version:03d}.json",
+                "mesh_pattern": "05_mesh/mesh_network_v{version:03d}.stl",
+            },
+        )
+
+
+@dataclass 
+class PlanBoard:
+    """
+    P2 #18: Living plan structure that the LLM updates.
+    
+    Contains objectives, assumptions, strategy, steps, and risks.
+    """
+    objectives: List[str] = field(default_factory=list)
+    assumptions: List[str] = field(default_factory=list)
+    chosen_strategy: str = ""
+    next_steps: List[str] = field(default_factory=list)
+    done_steps: List[str] = field(default_factory=list)
+    risks: List[str] = field(default_factory=list)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "objectives": self.objectives,
+            "assumptions": self.assumptions,
+            "chosen_strategy": self.chosen_strategy,
+            "next_steps": self.next_steps,
+            "done_steps": self.done_steps,
+            "risks": self.risks,
+        }
+    
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "PlanBoard":
+        return cls(
+            objectives=d.get("objectives", []),
+            assumptions=d.get("assumptions", []),
+            chosen_strategy=d.get("chosen_strategy", ""),
+            next_steps=d.get("next_steps", []),
+            done_steps=d.get("done_steps", []),
+            risks=d.get("risks", []),
+        )
+
+
+@dataclass
 class ObservationPacket:
     """
     The observation packet sent to the LLM for decision-making.
@@ -242,6 +470,10 @@ class ObservationPacket:
     goal_satisfaction: Optional[GoalSatisfaction] = None
     # P2 #23: Error-to-fix packet
     error_packet: Optional[ErrorPacket] = None
+    # P0 #2: Required artifact paths
+    artifact_requirements: Optional[ArtifactRequirements] = None
+    # P2 #18: Plan board
+    plan_board: Optional[PlanBoard] = None
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -256,6 +488,8 @@ class ObservationPacket:
             "conversation_history": self.conversation_history,
             "goal_satisfaction": self.goal_satisfaction.to_dict() if self.goal_satisfaction else None,
             "error_packet": self.error_packet.to_dict() if self.error_packet else None,
+            "artifact_requirements": self.artifact_requirements.to_dict() if self.artifact_requirements else None,
+            "plan_board": self.plan_board.to_dict() if self.plan_board else None,
         }
 
 
@@ -411,6 +645,9 @@ class Brain:
         goal_progress: Dict[str, Any],
         last_run_result: Optional[Dict[str, Any]] = None,
         verification_report: Optional[Dict[str, Any]] = None,
+        goal_satisfaction: Optional[GoalSatisfaction] = None,
+        error_packet: Optional[ErrorPacket] = None,
+        plan_board: Optional[PlanBoard] = None,
     ) -> ObservationPacket:
         """
         Build an observation packet for the LLM.
@@ -429,12 +666,23 @@ class Brain:
             Result from the last script run
         verification_report : dict, optional
             Verification report from artifact verifier
+        goal_satisfaction : GoalSatisfaction, optional
+            P2 #22: Goal satisfaction signals
+        error_packet : ErrorPacket, optional
+            P2 #23: Error-to-fix packet
+        plan_board : PlanBoard, optional
+            P2 #18: Living plan structure
             
         Returns
         -------
         ObservationPacket
             The observation packet for the LLM
         """
+        # P0 #2: Get artifact requirements for current version
+        spec_data = workspace.read_spec()
+        run_version = spec_data.get("run_version", 1)
+        artifact_requirements = ArtifactRequirements.for_generation(run_version)
+        
         return ObservationPacket(
             user_message=user_message,
             world_model_summary=world_model.get_living_spec_summary(),
@@ -445,6 +693,10 @@ class Brain:
             verification_report=verification_report,
             goal_progress=goal_progress,
             conversation_history=list(self._conversation_history),
+            goal_satisfaction=goal_satisfaction,
+            error_packet=error_packet,
+            artifact_requirements=artifact_requirements,
+            plan_board=plan_board,
         )
     
     def build_prompt(self, observation: ObservationPacket) -> str:
@@ -474,6 +726,29 @@ class Brain:
                 facts_str = json.dumps(facts, indent=2, default=str)
                 sections.append(f"## Current Specification\n```json\n{facts_str}\n```")
         
+        # P0 #2: Required artifact paths - inject every run
+        if observation.artifact_requirements:
+            ar = observation.artifact_requirements
+            ar_lines = [
+                "## Required Artifacts (CRITICAL)",
+                f"Version: {ar.version}",
+                "",
+                "**REQUIRED files (verifier checks these exact paths):**",
+            ]
+            for f in ar.required_files:
+                ar_lines.append(f"- `$OUTPUT_DIR/{f}`")
+            ar_lines.append("")
+            ar_lines.append("**Optional files:**")
+            for f in ar.optional_files:
+                ar_lines.append(f"- `$OUTPUT_DIR/{f}`")
+            ar_lines.append("")
+            ar_lines.append(f"**Output directory env var:** `{ar.output_dir_env}`")
+            ar_lines.append("")
+            ar_lines.append("**Naming rules:**")
+            for key, pattern in ar.naming_rules.items():
+                ar_lines.append(f"- {key}: `{pattern}`")
+            sections.append('\n'.join(ar_lines))
+        
         # Workspace summary
         ws = observation.workspace_summary
         if ws:
@@ -486,6 +761,15 @@ class Brain:
             ]
             if ws.get('last_run_status'):
                 ws_lines.append(f"- Last run status: {ws.get('last_run_status')}")
+            # P1 #9: Include file hashes and modified times
+            if ws.get('files'):
+                ws_lines.append("")
+                ws_lines.append("**File details:**")
+                for file_info in ws.get('files', []):
+                    name = file_info.get('name', 'unknown')
+                    hash_val = file_info.get('hash', 'N/A')[:8] if file_info.get('hash') else 'N/A'
+                    modified = file_info.get('modified', 'N/A')
+                    ws_lines.append(f"- {name}: hash={hash_val}... modified={modified}")
             sections.append('\n'.join(ws_lines))
         
         # Master script content
@@ -496,10 +780,76 @@ class Brain:
         if observation.tool_registry_description:
             sections.append(f"## Tool Registry\n{observation.tool_registry_description}")
         
+        # P2 #18: Plan board
+        if observation.plan_board:
+            pb = observation.plan_board
+            pb_lines = ["## Plan Board"]
+            if pb.objectives:
+                pb_lines.append("**Objectives:**")
+                for obj in pb.objectives:
+                    pb_lines.append(f"- {obj}")
+            if pb.assumptions:
+                pb_lines.append("**Assumptions:**")
+                for a in pb.assumptions:
+                    pb_lines.append(f"- {a}")
+            if pb.chosen_strategy:
+                pb_lines.append(f"**Strategy:** {pb.chosen_strategy}")
+            if pb.done_steps:
+                pb_lines.append("**Done:**")
+                for s in pb.done_steps:
+                    pb_lines.append(f"- [x] {s}")
+            if pb.next_steps:
+                pb_lines.append("**Next:**")
+                for s in pb.next_steps:
+                    pb_lines.append(f"- [ ] {s}")
+            if pb.risks:
+                pb_lines.append("**Risks:**")
+                for r in pb.risks:
+                    pb_lines.append(f"- {r}")
+            sections.append('\n'.join(pb_lines))
+        
+        # P2 #22: Goal satisfaction signals
+        if observation.goal_satisfaction:
+            gs = observation.goal_satisfaction
+            gs_lines = [
+                "## Goal Satisfaction Signals",
+                f"- has_domain: {gs.has_domain}",
+                f"- has_inlet: {gs.has_inlet}",
+                f"- has_outlet: {gs.has_outlet}",
+                f"- has_topology: {gs.has_topology}",
+                f"- has_master_script: {gs.has_master_script}",
+                f"- has_successful_run: {gs.has_successful_run}",
+                f"- has_verified_mesh: {gs.has_verified_mesh}",
+            ]
+            if gs.missing_requirements:
+                gs_lines.append("**Missing requirements:**")
+                for req in gs.missing_requirements:
+                    gs_lines.append(f"- {req}")
+            sections.append('\n'.join(gs_lines))
+        
         # Last run result
         if observation.last_run_result:
             run_str = json.dumps(observation.last_run_result, indent=2, default=str)
             sections.append(f"## Last Run Result\n```json\n{run_str}\n```")
+        
+        # P2 #23: Error-to-fix packet
+        if observation.error_packet:
+            ep = observation.error_packet
+            ep_lines = [
+                "## Error Analysis (FIX THIS)",
+                f"**Exception:** {ep.exception_type}: {ep.exception_message}",
+            ]
+            if ep.stderr_tail:
+                ep_lines.append(f"**Stderr tail:**\n```\n{ep.stderr_tail}\n```")
+            if ep.verifier_summary:
+                ep_lines.append(f"**Verifier summary:** {ep.verifier_summary}")
+            if ep.mesh_stats:
+                ep_lines.append(f"**Mesh stats:** {json.dumps(ep.mesh_stats)}")
+            if ep.suggested_fix:
+                ep_lines.append(f"**Suggested fix:** {ep.suggested_fix}")
+            ep_lines.append("")
+            ep_lines.append("**Instructions:** Make a MINIMAL edit to fix the root cause. Do not rewrite the entire script.")
+            sections.append('\n'.join(ep_lines))
         
         # Verification report
         if observation.verification_report:
@@ -511,17 +861,33 @@ class Brain:
             goal_str = json.dumps(observation.goal_progress, indent=2, default=str)
             sections.append(f"## Goal Progress\n```json\n{goal_str}\n```")
         
+        # P2 #24: Self-check instructions
+        self_check = """## Self-Check (BEFORE requesting execution)
+
+Before setting request_execution=true, verify:
+1. Script computes WORKSPACE_DIR from `__file__` (NOT from cwd)
+2. Script loads spec.json and tool_registry.json from WORKSPACE_DIR
+3. Script writes to OUTPUT_DIR (from env var ORGAN_AGENT_OUTPUT_DIR)
+4. Script creates ALL required output files with EXACT paths
+5. Script prints ARTIFACTS_JSON footer with created files and metrics
+
+If any of these are missing, fix them first."""
+        
         # Instructions
-        sections.append("""## Your Task
+        instructions = """## Your Task
 
 Based on the above context, decide what to do next. Respond with a JSON object as specified in the system prompt.
 
 Remember:
-- If you need more information, ask questions
+- If you need more information, ask questions (propose defaults per P2 #19)
 - If the master script needs changes, include the full updated content
 - If the script is ready to run, set request_execution=true
 - If generation is complete and verified, set stop=true
-- Prefer minimal changes to existing working code""")
+- Prefer minimal changes to existing working code
+- Update the plan_board if your strategy changes"""
+        
+        sections.append(self_check)
+        sections.append(instructions)
         
         return '\n\n'.join(sections)
     

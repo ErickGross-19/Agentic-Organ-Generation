@@ -1858,6 +1858,8 @@ class SingleAgentOrganGeneratorV5:
         
         This writes files to the workspace without requiring approval
         (approval is only for execution).
+        
+        P0 #4: Resets verification state when workspace is updated.
         """
         if not self.workspace or not self._last_directive:
             return False
@@ -1866,13 +1868,38 @@ class SingleAgentOrganGeneratorV5:
         if not update:
             return False
         
+        # P0 #4: Reset verification state when workspace is updated
+        self._last_verification_report = None
+        self._last_run_result = None
+        
         self._emit_trace("llm_workspace_update", "Applying workspace updates")
         
         files_written = []
         
         for file_update in update.files:
             path = file_update.path
-            content = file_update.content
+            
+            # P1 #7: Handle patch-based updates
+            if file_update.is_patch():
+                try:
+                    if path == "master.py":
+                        original_content = self.workspace.read_master_script() or ""
+                    else:
+                        import os
+                        full_path = os.path.join(self.workspace.workspace_path, path)
+                        if os.path.exists(full_path):
+                            with open(full_path, 'r') as f:
+                                original_content = f.read()
+                        else:
+                            original_content = ""
+                    
+                    content = file_update.apply_patch(original_content)
+                    self.io.say_assistant(f"Applied patch to {path}")
+                except ValueError as e:
+                    self.io.say_error(f"Patch failed for {path}: {e}. Using full content.")
+                    content = file_update.content
+            else:
+                content = file_update.content
             
             if path == "master.py":
                 # Write master script with snapshot
@@ -1910,6 +1937,54 @@ class SingleAgentOrganGeneratorV5:
         # Export spec from world model to workspace
         if self.world_model.facts:
             self.workspace.export_spec_from_world_model(self.world_model)
+        
+        # P2 #17: Apply fact_updates from directive
+        if self._last_directive.fact_updates:
+            for fact_update in self._last_directive.fact_updates:
+                if fact_update.op == "set":
+                    self.world_model.set_fact(
+                        fact_update.path,
+                        fact_update.value,
+                        FactProvenance.INFERRED,
+                        confidence=fact_update.confidence,
+                        reason="LLM fact update",
+                    )
+                elif fact_update.op == "delete":
+                    if fact_update.path in self.world_model.facts:
+                        del self.world_model._facts[fact_update.path]
+            self._emit_trace("fact_updates_applied", f"Applied {len(self._last_directive.fact_updates)} fact updates")
+        
+        # P2 #18: Apply plan_board_update from directive
+        if self._last_directive.plan_board_update:
+            pbu = self._last_directive.plan_board_update
+            current_plan = self.world_model.get_artifact("plan_board") or {
+                "objectives": [], "assumptions": [], "strategy": None,
+                "next_steps": [], "done_steps": [], "risks": []
+            }
+            if pbu.add_objectives:
+                current_plan["objectives"].extend(pbu.add_objectives)
+            if pbu.add_assumptions:
+                current_plan["assumptions"].extend(pbu.add_assumptions)
+            if pbu.set_strategy:
+                current_plan["strategy"] = pbu.set_strategy
+            if pbu.add_next_steps:
+                current_plan["next_steps"].extend(pbu.add_next_steps)
+            if pbu.complete_steps:
+                for step in pbu.complete_steps:
+                    if step in current_plan["next_steps"]:
+                        current_plan["next_steps"].remove(step)
+                    current_plan["done_steps"].append(step)
+            if pbu.add_risks:
+                current_plan["risks"].extend(pbu.add_risks)
+            self.world_model.add_artifact("plan_board", current_plan)
+            self._emit_trace("plan_board_updated", "Updated plan board")
+        
+        # P2 #21: Check for contradictions after updates
+        contradictions = self.world_model.detect_contradictions()
+        if contradictions:
+            contradiction_msgs = [c["message"] for c in contradictions]
+            self.io.say_assistant(f"Detected contradictions: {'; '.join(contradiction_msgs)}")
+            self.world_model.add_artifact("contradictions", contradictions)
         
         self.world_model.add_artifact("workspace_files_written", files_written)
         self._emit_trace("llm_workspace_updated", f"Wrote {len(files_written)} files")
@@ -2018,6 +2093,16 @@ class SingleAgentOrganGeneratorV5:
         if validation["import_warnings"]:
             warnings_str = "; ".join(validation["import_warnings"][:3])
             self.io.say_assistant(f"Import warnings (may be OK): {warnings_str}")
+        
+        # P4 #33: Show dangerous import warnings
+        if validation.get("dangerous_imports"):
+            dangerous_str = "; ".join(validation["dangerous_imports"][:5])
+            self.io.say_assistant(f"Security warnings: {dangerous_str}")
+        
+        # P4 #34: Show write path warnings
+        if validation.get("write_warnings"):
+            write_str = "; ".join(validation["write_warnings"][:3])
+            self.io.say_assistant(f"Write path warnings: {write_str}")
         
         # Reset verification state for new run (P1 fix: avoid stale reports)
         self._last_verification_report = None
