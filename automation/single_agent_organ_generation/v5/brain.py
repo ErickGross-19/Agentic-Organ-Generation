@@ -27,6 +27,113 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _apply_unified_diff(original: str, patch: str) -> str:
+    """
+    Apply a unified diff patch to original content.
+    
+    Pure-Python implementation that doesn't require external `patch` binary.
+    
+    Parameters
+    ----------
+    original : str
+        The original file content
+    patch : str
+        The unified diff patch content
+        
+    Returns
+    -------
+    str
+        The patched content
+        
+    Raises
+    ------
+    ValueError
+        If patch cannot be applied (context mismatch, invalid format, etc.)
+    """
+    import re
+    
+    original_lines = original.splitlines(keepends=True)
+    if original and not original.endswith('\n'):
+        if original_lines:
+            original_lines[-1] += '\n'
+    
+    result_lines = list(original_lines)
+    
+    hunk_pattern = re.compile(r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@')
+    
+    patch_lines = patch.splitlines(keepends=True)
+    
+    i = 0
+    offset = 0
+    
+    while i < len(patch_lines):
+        line = patch_lines[i]
+        
+        if line.startswith('---') or line.startswith('+++'):
+            i += 1
+            continue
+        
+        match = hunk_pattern.match(line)
+        if match:
+            old_start = int(match.group(1))
+            
+            i += 1
+            
+            hunk_removes = []
+            hunk_adds = []
+            context_before_count = 0
+            in_changes = False
+            
+            while i < len(patch_lines):
+                hunk_line = patch_lines[i]
+                
+                if hunk_line.startswith('@@') or hunk_line.startswith('---') or hunk_line.startswith('+++'):
+                    break
+                
+                if hunk_line.startswith('-'):
+                    in_changes = True
+                    hunk_removes.append(hunk_line[1:])
+                elif hunk_line.startswith('+'):
+                    in_changes = True
+                    hunk_adds.append(hunk_line[1:])
+                elif hunk_line.startswith(' ') or hunk_line == '\n':
+                    if not in_changes:
+                        context_before_count += 1
+                elif hunk_line.startswith('\\'):
+                    i += 1
+                    continue
+                else:
+                    break
+                
+                i += 1
+            
+            apply_at = old_start - 1 + context_before_count + offset
+            
+            if apply_at < 0:
+                apply_at = 0
+            if apply_at > len(result_lines):
+                apply_at = len(result_lines)
+            
+            num_to_remove = len(hunk_removes)
+            
+            del result_lines[apply_at:apply_at + num_to_remove]
+            
+            for j, add_line in enumerate(hunk_adds):
+                if not add_line.endswith('\n'):
+                    add_line += '\n'
+                result_lines.insert(apply_at + j, add_line)
+            
+            offset += len(hunk_adds) - num_to_remove
+        else:
+            i += 1
+    
+    result = ''.join(result_lines)
+    if result.endswith('\n') and not original.endswith('\n'):
+        result = result[:-1]
+    
+    return result
+
+
 @dataclass
 class Question:
     """A question to ask the user."""
@@ -90,6 +197,8 @@ class FileUpdate:
         """
         Apply unified diff patch to original content.
         
+        Uses pure-Python implementation (no external `patch` binary required).
+        
         Parameters
         ----------
         original_content : str
@@ -108,37 +217,7 @@ class FileUpdate:
         if not self.is_patch():
             return self.content
         
-        import subprocess
-        import tempfile
-        import os
-        
-        with tempfile.TemporaryDirectory() as tmpdir:
-            original_path = os.path.join(tmpdir, "original")
-            patch_path = os.path.join(tmpdir, "patch.diff")
-            
-            with open(original_path, 'w') as f:
-                f.write(original_content)
-            
-            with open(patch_path, 'w') as f:
-                f.write(self.content)
-            
-            try:
-                result = subprocess.run(
-                    ["patch", "-p0", "-i", patch_path, original_path],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                )
-                
-                if result.returncode != 0:
-                    raise ValueError(f"Patch failed: {result.stderr}")
-                
-                with open(original_path, 'r') as f:
-                    return f.read()
-            except subprocess.TimeoutExpired:
-                raise ValueError("Patch operation timed out")
-            except FileNotFoundError:
-                raise ValueError("patch command not found - falling back to full content")
+        return _apply_unified_diff(original_content, self.content)
 
 
 @dataclass
@@ -1061,14 +1140,17 @@ import os
 import sys
 import json
 
-# Output directory from environment
+# Output directory from environment (set by subprocess_runner to run_dir)
 OUTPUT_DIR = os.environ.get('ORGAN_AGENT_OUTPUT_DIR', os.getcwd())
-WORKSPACE_DIR = os.path.join(os.path.dirname(OUTPUT_DIR), 'agent_workspace')
 
-# Add repo root to path for imports
-REPO_ROOT = os.environ.get('PYTHONPATH', '').split(':')[0]
-if REPO_ROOT:
-    sys.path.insert(0, REPO_ROOT)
+# Workspace directory: use WORKSPACE_PATH env var, or derive from __file__
+# master.py lives in workspace root, so dirname(__file__) is the workspace
+WORKSPACE_DIR = os.environ.get('WORKSPACE_PATH', os.path.dirname(os.path.abspath(__file__)))
+
+# Tools directory for generated tool imports
+TOOLS_DIR = os.path.join(WORKSPACE_DIR, 'tools')
+if os.path.isdir(TOOLS_DIR):
+    sys.path.insert(0, TOOLS_DIR)
 
 
 def load_spec():
