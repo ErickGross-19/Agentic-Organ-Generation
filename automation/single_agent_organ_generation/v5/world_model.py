@@ -424,6 +424,104 @@ class WorldModel:
         """
         self._approvals.clear()
     
+    def detect_contradictions(self) -> List[Dict[str, Any]]:
+        """
+        P2 #21: Detect contradictions in the spec.
+        
+        Checks for conflicting facts that need reconciliation.
+        
+        Returns
+        -------
+        List[Dict[str, Any]]
+            List of detected contradictions with details
+        """
+        contradictions = []
+        
+        # Check inlet/outlet position contradictions
+        inlet_pos = self.get_fact_value("inlet.position")
+        inlet_face = self.get_fact_value("inlet.face")
+        outlet_pos = self.get_fact_value("outlet.position")
+        outlet_face = self.get_fact_value("outlet.face")
+        
+        # If both position and face are set, check consistency
+        if inlet_pos and inlet_face:
+            domain_size = self.get_fact_value("domain.size", [0.02, 0.06, 0.03])
+            expected_pos = self._derive_position_from_face(inlet_face, domain_size)
+            if expected_pos and inlet_pos != expected_pos:
+                contradictions.append({
+                    "type": "position_face_mismatch",
+                    "field": "inlet",
+                    "position": inlet_pos,
+                    "face": inlet_face,
+                    "expected_position": expected_pos,
+                    "message": f"Inlet position {inlet_pos} doesn't match face '{inlet_face}'"
+                })
+        
+        if outlet_pos and outlet_face:
+            domain_size = self.get_fact_value("domain.size", [0.02, 0.06, 0.03])
+            expected_pos = self._derive_position_from_face(outlet_face, domain_size)
+            if expected_pos and outlet_pos != expected_pos:
+                contradictions.append({
+                    "type": "position_face_mismatch",
+                    "field": "outlet",
+                    "position": outlet_pos,
+                    "face": outlet_face,
+                    "expected_position": expected_pos,
+                    "message": f"Outlet position {outlet_pos} doesn't match face '{outlet_face}'"
+                })
+        
+        # Check if inlet and outlet are at the same position
+        if inlet_pos and outlet_pos and inlet_pos == outlet_pos:
+            contradictions.append({
+                "type": "same_position",
+                "field": "inlet_outlet",
+                "position": inlet_pos,
+                "message": "Inlet and outlet cannot be at the same position"
+            })
+        
+        # Check radius constraints
+        inlet_radius = self.get_fact_value("inlet.radius")
+        outlet_radius = self.get_fact_value("outlet.radius")
+        min_radius = self.get_fact_value("colonization.min_radius")
+        
+        if inlet_radius and min_radius and inlet_radius < min_radius:
+            contradictions.append({
+                "type": "radius_constraint",
+                "field": "inlet.radius",
+                "value": inlet_radius,
+                "min_radius": min_radius,
+                "message": f"Inlet radius {inlet_radius} is less than min_radius {min_radius}"
+            })
+        
+        if outlet_radius and min_radius and outlet_radius < min_radius:
+            contradictions.append({
+                "type": "radius_constraint",
+                "field": "outlet.radius",
+                "value": outlet_radius,
+                "min_radius": min_radius,
+                "message": f"Outlet radius {outlet_radius} is less than min_radius {min_radius}"
+            })
+        
+        return contradictions
+    
+    def _derive_position_from_face(self, face: str, domain_size: List[float]) -> Optional[List[float]]:
+        """Derive position from face name and domain size."""
+        if not domain_size or len(domain_size) < 3:
+            return None
+        
+        half_x, half_y, half_z = domain_size[0] / 2, domain_size[1] / 2, domain_size[2] / 2
+        
+        face_positions = {
+            "left": [-half_x, 0, 0],
+            "right": [half_x, 0, 0],
+            "front": [0, -half_y, 0],
+            "back": [0, half_y, 0],
+            "bottom": [0, 0, -half_z],
+            "top": [0, 0, half_z],
+        }
+        
+        return face_positions.get(face.lower())
+    
     def add_open_question(self, question: OpenQuestion) -> None:
         """Add an open question."""
         self._open_questions[question.question_id] = question
