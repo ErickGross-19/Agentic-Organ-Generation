@@ -6,7 +6,7 @@ A graphical user interface for the Agentic Organ Generation system. Provides wor
 
 The GUI wraps the existing command-line workflows with a professional interface:
 
-**Workflow Selection** - Single Agent Organ Generator V4 with interactive, topology-first questioning.
+**Workflow Selection** - Supports both Single Agent Organ Generator V5 (goal-driven controller, recommended) and V4 (state-machine workflow). V5 provides a more flexible, engineer-like experience with intelligent questioning, approval tracking, and safe fix policies.
 
 **Agent Configuration** - Configure LLM providers including OpenAI, Anthropic, Google Gemini, Mistral, xAI (Grok), Groq, and local OpenAI-compatible endpoints. API keys are stored securely with machine-specific encryption.
 
@@ -74,7 +74,8 @@ The primary application window with:
 Orchestrates workflow execution with:
 - Thread-safe message passing between workflow and GUI
 - User input handling via queue-based communication
-- Support for SingleAgentOrganGeneratorV4 workflow
+- Support for SingleAgentOrganGeneratorV5 (goal-driven) and V4 (state-machine) workflows
+- Dedicated approval queue for modal-safe approval handling in V5
 
 ### STLViewer (`stl_viewer.py`)
 

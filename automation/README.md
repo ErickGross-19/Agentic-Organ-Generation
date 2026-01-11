@@ -4,14 +4,15 @@ This module provides the LLM integration layer for AI-driven organ structure gen
 
 ## Overview
 
-The automation module comprises four integrated components:
+The automation module comprises five integrated components:
 
 | Component | Purpose |
 |-----------|---------|
 | **LLM Client** | Unified interface for multiple LLM providers (OpenAI, Anthropic, etc.) |
 | **Agent Runner** | Task orchestration with iteration control and artifact management |
 | **Task Templates** | Pre-built prompts for generation, validation, and iteration workflows |
-| **Single Agent Workflow** | Interactive, guided workflow for complete organ structure generation |
+| **V5 Goal-Driven Controller** | Goal-driven workflow with WorldModel, capabilities, and policies (recommended) |
+| **V3 State Machine Workflow** | State-machine-based workflow with adaptive rule engine (legacy) |
 
 ## Execution Modes
 
@@ -83,8 +84,20 @@ automation/
 ├── __init__.py              # Public API exports
 ├── llm_client.py            # Multi-provider LLM client
 ├── agent_runner.py          # Task orchestration and execution
-├── workflow.py              # Interactive workflow implementation
+├── workflow.py              # V3/V4 workflow implementation
 ├── cli.py                   # Command-line interface
+├── single_agent_organ_generation/
+│   └── v5/                  # V5 Goal-Driven Controller
+│       ├── __init__.py      # V5 public exports
+│       ├── controller.py    # Main agent loop
+│       ├── world_model.py   # Single source of truth
+│       ├── goals.py         # Goal definitions and tracking
+│       ├── policies.py      # Safe fix and approval policies
+│       ├── plan_synthesizer.py  # Object-specific plan generation
+│       └── io/              # IO adapters
+│           ├── base_io.py   # Base IO adapter interface
+│           ├── cli_io.py    # CLI IO adapter
+│           └── gui_io.py    # GUI IO adapter
 └── task_templates/          # Structured prompt templates
     ├── __init__.py
     ├── generate_structure.py   # Generation task prompts
@@ -463,9 +476,247 @@ Report any validation issues and suggest fixes.
 
 See the `examples/` directory for working examples:
 
-- `examples/single_agent_organgenerator_v2.ipynb` - Interactive Jupyter notebook demonstrating the Single Agent Organ Generator V3 workflow with all features including basic generation, interactive sessions, and validation workflows
+- `examples/single_agent_organgenerator_v2.ipynb` - Interactive Jupyter notebook demonstrating the Single Agent Organ Generator workflows with all features including basic generation, interactive sessions, and validation workflows
 
-## Single Agent Organ Generator V3 Workflow
+## Single Agent Organ Generator V5 (Recommended)
+
+The Single Agent Organ Generator V5 is a goal-driven controller that replaces the state-machine approach with a more flexible, engineer-like architecture. It maintains a WorldModel as the single source of truth and measures progress by goal satisfaction rather than state transitions.
+
+### V5 Architecture
+
+V5 consists of five core components:
+
+| Component | Purpose |
+|-----------|---------|
+| **Controller** | Main agent loop that ingests events, updates world model, picks capabilities, and executes |
+| **WorldModel** | Single source of truth for facts, approvals, artifacts, history, and undo stack |
+| **Goals** | Defines goals and tracks progress toward satisfaction |
+| **Policies** | Safe fix classification, approval rules, and capability selection |
+| **PlanSynthesizer** | Generates object-specific plans based on world model facts |
+
+### Quick Start
+
+```python
+from automation.single_agent_organ_generation.v5 import (
+    SingleAgentOrganGeneratorV5,
+    ControllerConfig,
+    CLIIOAdapter,
+)
+
+# Initialize the V5 controller
+io_adapter = CLIIOAdapter()
+config = ControllerConfig(
+    max_iterations=1000,
+    max_safe_fixes_per_run=10,
+    auto_select_plan_if_confident=True,
+    verbose=True,
+)
+
+controller = SingleAgentOrganGeneratorV5(
+    io_adapter=io_adapter,
+    config=config,
+)
+
+# Run the workflow
+controller.run()
+```
+
+### WorldModel
+
+The WorldModel is the single source of truth for all workflow state. It stores:
+
+| Data Type | Description |
+|-----------|-------------|
+| **Facts** | Key-value pairs with provenance (USER, INFERRED, DEFAULT, SAFE_FIX, SYSTEM) |
+| **OpenQuestions** | Questions that need to be resolved before proceeding |
+| **Approvals** | User approvals for generation and postprocessing |
+| **Artifacts** | Generated outputs (compiled spec, network, mesh, etc.) |
+| **History** | Undo stack for backtracking and revisiting decisions |
+| **Plans** | Synthesized plans with runtime estimates and recommendations |
+
+```python
+from automation.single_agent_organ_generation.v5 import WorldModel, FactProvenance
+
+# Create a world model
+world_model = WorldModel()
+
+# Set facts with provenance
+world_model.set_fact("domain.type", "box", FactProvenance.USER)
+world_model.set_fact("domain.size", [0.02, 0.06, 0.03], FactProvenance.USER)
+world_model.set_fact("inlet.face", "+z", FactProvenance.USER)
+world_model.set_fact("inlet.radius", 0.001, FactProvenance.USER)
+
+# Check fact values
+domain_type = world_model.get_fact_value("domain.type")
+has_inlet = world_model.has_fact("inlet.face")
+
+# Get living spec summary
+summary = world_model.get_living_spec_summary()
+```
+
+### Goals
+
+V5 progress is measured by goal satisfaction. Goals have preconditions and are checked against the world model:
+
+| Goal | Description | Preconditions |
+|------|-------------|---------------|
+| **spec_minimum_complete** | All required fields for the chosen topology are filled | None |
+| **spec_compiled** | Design spec has been compiled to executable form | spec_minimum_complete |
+| **pregen_verified** | Feasibility and schema checks passed | spec_compiled |
+| **generation_approved** | User has approved generation | pregen_verified |
+| **generation_done** | Vascular network has been generated | generation_approved |
+| **postprocess_approved** | User has approved postprocessing | generation_done |
+| **postprocess_done** | Embedding/voxelization/repair/export complete | postprocess_approved |
+| **validation_passed** | All validation checks passed | postprocess_done |
+| **outputs_packaged** | Final deliverables are packaged | validation_passed |
+
+```python
+from automation.single_agent_organ_generation.v5 import GoalTracker, GOAL_DEFINITIONS
+
+# Create a goal tracker
+tracker = GoalTracker(world_model)
+
+# Check goal status
+status = tracker.get_status("spec_minimum_complete")
+next_goal = tracker.get_next_goal()
+is_complete = tracker.is_complete()
+
+# Get progress summary
+progress = tracker.get_progress_summary()
+```
+
+### Required Fields for Spec Completion
+
+The `spec_minimum_complete` goal requires the following fields based on topology:
+
+| Field | Required For | Description |
+|-------|--------------|-------------|
+| `domain.type` | All topologies | Domain shape (box, ellipsoid, etc.) |
+| `domain.size` | All topologies | Domain dimensions in meters |
+| `topology.kind` | All topologies | Topology type (tree, path, backbone, loop) |
+| `inlet.face` | All topologies | Face for inlet placement (+x, -x, +y, -y, +z, -z) |
+| `inlet.radius` | All topologies | Inlet radius in meters |
+| `outlet.face` | path, backbone, loop | Face for outlet placement |
+| `outlet.radius` | path, backbone, loop | Outlet radius in meters |
+
+Note: V5 uses `inlet.face`/`outlet.face` instead of `inlet.position`/`outlet.position`. Positions are derived from faces during spec compilation.
+
+### Policies
+
+V5 includes three policy classes:
+
+#### SafeFixPolicy
+
+Classifies fixes as safe, needs_confirmation, or unsafe based on the type of change:
+
+| Classification | Criteria |
+|----------------|----------|
+| **SAFE** | Small numeric adjustments within bounded ranges, doesn't change topology or port faces |
+| **NEEDS_CONFIRMATION** | Larger changes that don't fundamentally alter the design |
+| **UNSAFE** | Changes to topology, port faces, or unit system |
+
+```python
+from automation.single_agent_organ_generation.v5 import SafeFixPolicy, FixSafety
+
+policy = SafeFixPolicy()
+safety = policy.classify_fix(
+    field="colonization.min_radius",
+    current_value=0.0001,
+    proposed_value=0.00015,
+    world_model=world_model,
+)
+
+if safety == FixSafety.SAFE:
+    # Apply fix automatically
+    pass
+```
+
+#### ApprovalPolicy
+
+Determines when user approval is required:
+
+| Approval Type | When Required |
+|---------------|---------------|
+| **generation** | Before running vascular network generation |
+| **postprocess** | Before running embedding/voxelization/export |
+
+#### CapabilitySelectionPolicy
+
+Selects the best capability to execute based on current goal and world model state.
+
+### PlanSynthesizer
+
+Generates object-specific plans based on world model facts. Plans differ on meaningful levers (complexity, runtime, risk) rather than cosmetic differences:
+
+```python
+from automation.single_agent_organ_generation.v5 import PlanSynthesizer
+
+synthesizer = PlanSynthesizer(world_model)
+
+# Synthesize plans for the current spec
+plans = synthesizer.synthesize_plans()
+
+# Get recommended plan with rationale
+recommended = synthesizer.get_recommended_plan()
+rationale = synthesizer.generate_recommendation_rationale()
+
+# Compute runtime estimate
+estimate = synthesizer.compute_runtime_estimate(
+    topology_kind="tree",
+    complexity_tier="medium",
+    target_terminals=300,
+)
+```
+
+### IO Adapters
+
+V5 uses IO adapters to abstract input/output operations. Two adapters are provided:
+
+| Adapter | Purpose |
+|---------|---------|
+| **CLIIOAdapter** | Command-line interface with text input/output |
+| **GUIIOAdapter** | GUI integration with message queues and approval callbacks |
+
+```python
+from automation.single_agent_organ_generation.v5 import CLIIOAdapter, GUIIOAdapter
+
+# CLI adapter for terminal usage
+cli_io = CLIIOAdapter()
+
+# GUI adapter for integration with the GUI module
+gui_io = GUIIOAdapter(
+    message_callback=lambda msg: display_message(msg),
+    approval_callback=lambda req: show_approval_dialog(req),
+)
+```
+
+### V5 Behavioral Features
+
+V5 includes several behavioral improvements over previous versions:
+
+| Feature | Description |
+|---------|-------------|
+| **Intelligent Questioning** | Automatically generates OpenQuestion objects for missing required fields |
+| **Spam Prevention** | Only summarizes spec when the spec hash changes |
+| **Approval Denial Tracking** | Records denied approvals and won't re-ask until spec changes |
+| **Safe Fix Prioritization** | When validation fails, prioritizes safe fixes over re-validation |
+| **Non-Safe Fix Gating** | Only offers non-safe fix choices when no safe candidates exist |
+
+### Controller Status
+
+The controller computes its status from the world model rather than maintaining explicit state:
+
+```python
+# Get current status
+status = controller.get_status()
+
+print(status.phase)              # Current phase (e.g., "requirements", "generation")
+print(status.is_waiting_for_user)  # True if waiting for user input
+print(status.is_waiting_for_approval)  # True if waiting for approval
+print(status.is_complete)        # True if all goals satisfied
+```
+
+## Single Agent Organ Generator V3 Workflow (Legacy)
 
 The Single Agent Organ Generator V3 (class name `SingleAgentOrganGeneratorV3` for backward compatibility) provides an interactive, guided workflow for complete organ structure generation. It combines LLM-assisted requirements capture with deterministic generation and validation, featuring an agent dialogue system that follows an Interpret → Plan → Ask pattern.
 
