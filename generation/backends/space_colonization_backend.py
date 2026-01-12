@@ -15,7 +15,7 @@ from .base import GenerationBackend, BackendConfig, GenerationState, GenerationA
 from ..core.network import VascularNetwork, Node
 from ..core.domain import DomainSpec
 from ..core.types import Point3D, Direction3D
-from ..ops.space_colonization import space_colonization_step, SpaceColonizationConfig as SCConfig
+from ..ops.space_colonization import space_colonization_step, SpaceColonizationParams as SCParams
 
 
 @dataclass
@@ -108,11 +108,10 @@ class SpaceColonizationBackend(GenerationBackend):
         attractors = domain.sample_points(num_attractors, seed=int(rng.integers(0, 2**31)))
         attractor_list = [Point3D.from_array(a) for a in attractors]
         
-        sc_config = SCConfig(
-            attraction_distance=config.attraction_distance,
-            kill_distance=config.kill_distance,
+        sc_config = SCParams(
+            influence_radius=config.attraction_distance,
+            kill_radius=config.kill_distance,
             step_size=config.step_size,
-            branch_angle_deg=config.branch_angle_deg,
         )
         
         active_nodes = [inlet_node.id]
@@ -167,11 +166,10 @@ class SpaceColonizationBackend(GenerationBackend):
             vessel_type = state.metadata.get("vessel_type", "arterial")
             
             if attractors and active_nodes:
-                sc_config = SCConfig(
-                    attraction_distance=config.attraction_distance,
-                    kill_distance=config.kill_distance,
+                sc_config = SCParams(
+                    influence_radius=config.attraction_distance,
+                    kill_radius=config.kill_distance,
                     step_size=config.step_size,
-                    branch_angle_deg=config.branch_angle_deg,
                 )
                 
                 result = space_colonization_step(
@@ -244,11 +242,10 @@ class SpaceColonizationBackend(GenerationBackend):
         
         arterial_attractors = [Point3D.from_array(a) for a in all_attractors[:len(all_attractors)//2]]
         
-        sc_config = SCConfig(
-            attraction_distance=config.attraction_distance,
-            kill_distance=config.kill_distance,
+        sc_config = SCParams(
+            influence_radius=config.attraction_distance,
+            kill_radius=config.kill_distance,
             step_size=config.step_size,
-            branch_angle_deg=config.branch_angle_deg,
         )
         
         active_nodes = [arterial_inlet_node.id]

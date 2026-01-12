@@ -8,7 +8,13 @@ This module provides a unified interface for different generation methods:
 
 from .base import GenerationBackend, BackendConfig
 from .cco_hybrid_backend import CCOHybridBackend, CCOConfig
-from .space_colonization_backend import SpaceColonizationBackend, SpaceColonizationConfig
+
+# Space colonization backend import is optional - it may fail if ops API has changed
+try:
+    from .space_colonization_backend import SpaceColonizationBackend, SpaceColonizationConfig
+except Exception:
+    SpaceColonizationBackend = None
+    SpaceColonizationConfig = None
 
 __all__ = [
     "GenerationBackend",
