@@ -196,6 +196,8 @@ class PlanSynthesizer:
         """
         Synthesize tailored plans based on current world model state.
         
+        Uses project.intent to shape plan recommendations and parameters.
+        
         Returns
         -------
         list
@@ -207,16 +209,153 @@ class PlanSynthesizer:
         domain_type = self.world_model.get_fact_value("domain.type", "box")
         domain_size = self.world_model.get_fact_value("domain.size", (0.02, 0.06, 0.03))
         
+        # Get project intent to influence plan generation
+        project_intent = self.world_model.get_fact_value("project.intent", {})
+        
         if topology_kind == "path":
-            return self._synthesize_path_plans(domain_type, domain_size)
+            plans = self._synthesize_path_plans(domain_type, domain_size)
         elif topology_kind == "backbone":
-            return self._synthesize_backbone_plans(domain_type, domain_size)
+            plans = self._synthesize_backbone_plans(domain_type, domain_size)
         elif topology_kind == "tree":
-            return self._synthesize_tree_plans(domain_type, domain_size)
+            plans = self._synthesize_tree_plans(domain_type, domain_size)
         elif topology_kind == "loop":
-            return self._synthesize_loop_plans(domain_type, domain_size)
+            plans = self._synthesize_loop_plans(domain_type, domain_size)
+        elif topology_kind == "dual_trees":
+            plans = self._synthesize_dual_trees_plans(domain_type, domain_size)
         else:
-            return self._synthesize_tree_plans(domain_type, domain_size)
+            plans = self._synthesize_tree_plans(domain_type, domain_size)
+        
+        # Apply intent-based adjustments to plans
+        plans = self._apply_intent_adjustments(plans, project_intent)
+        
+        return plans
+    
+    def _apply_intent_adjustments(
+        self,
+        plans: List["Plan"],
+        project_intent: Dict[str, Any],
+    ) -> List["Plan"]:
+        """
+        Adjust plans based on project intent extracted from description.
+        
+        This makes the intent actually drive planning, not just commentary.
+        """
+        if not project_intent:
+            return plans
+        
+        use_cases = project_intent.get("use_cases", [])
+        detected_organ = project_intent.get("detected_organ")
+        
+        for plan in plans:
+            # Adjust for perfusion use case
+            if "perfusion" in use_cases:
+                # Prioritize plans with good flow-through characteristics
+                if "balanced" in plan.plan_id or "straight" in plan.plan_id:
+                    if not plan.recommended:
+                        plan.risks = [r for r in plan.risks if "coverage" not in r.lower()]
+                # Add flow optimization note
+                plan.parameter_draft["flow.optimize_for"] = "perfusion"
+            
+            # Adjust for 3D printing use case
+            if "3d_printing" in use_cases:
+                # Add manufacturability constraints
+                plan.parameter_draft["manufacturing.min_channel_diameter"] = 0.0005  # 0.5mm
+                plan.parameter_draft["manufacturing.min_wall_thickness"] = 0.0003  # 0.3mm
+                if "dense" in plan.plan_id:
+                    plan.risks.append("Dense branching may challenge printer resolution")
+            
+            # Adjust for tissue engineering use case
+            if "tissue_engineering" in use_cases:
+                # Prioritize coverage
+                if "balanced" in plan.plan_id or "dense" in plan.plan_id:
+                    plan.parameter_draft["coverage.target"] = 0.9  # 90% coverage target
+            
+            # Adjust based on organ type
+            if detected_organ:
+                if detected_organ in ["liver", "kidney", "lung"]:
+                    # These organs benefit from dual vascular networks
+                    plan.parameter_draft["organ.type"] = detected_organ
+        
+        return plans
+    
+    def _synthesize_dual_trees_plans(
+        self,
+        domain_type: str,
+        domain_size: tuple,
+    ) -> List["Plan"]:
+        """Synthesize plans for DUAL_TREES topology (e.g., liver with arterial + venous)."""
+        from .world_model import Plan
+        
+        plans = []
+        
+        domain_volume = domain_size[0] * domain_size[1] * domain_size[2]
+        suggested_terminals = max(20, int(domain_volume * 1e6 * 30))  # Fewer per tree
+        
+        inlet_radius = self.world_model.get_fact_value("inlet.radius", 0.002)
+        
+        interleaved_runtime = self.compute_runtime_estimate("tree", "high", suggested_terminals * 2)
+        separated_runtime = self.compute_runtime_estimate("tree", "medium", suggested_terminals * 2)
+        
+        plans.append(Plan(
+            plan_id="dual_trees_interleaved",
+            name="Interleaved Dual Trees",
+            interpretation="Two vascular trees (arterial + venous) that interleave and meet in a capillary bed",
+            geometry_strategy="dual_space_colonization_interleaved",
+            parameter_draft={
+                "colonization.influence_radius": 0.012,
+                "colonization.kill_radius": 0.002,
+                "colonization.step_size": 0.001,
+                "colonization.min_radius": 0.0001,
+                "colonization.max_steps": 600,
+                "colonization.initial_radius": inlet_radius,
+                "colonization.radius_decay": 0.94,
+                "topology.target_terminals_per_tree": suggested_terminals,
+                "dual.meeting_shell_thickness": 0.002,
+                "dual.anastomosis_strategy": "capillary_bed",
+            },
+            risks=[
+                "Complex geometry may challenge mesh generation",
+                "Requires careful inlet/outlet placement on opposite faces",
+            ],
+            cost_estimate=f"High complexity, {interleaved_runtime}",
+            what_needed_from_user=["Confirm inlet/outlet face placement"],
+            patch_set={
+                "colonization.influence_radius": 0.012,
+                "dual.anastomosis_strategy": "capillary_bed",
+            },
+            recommended=True,
+        ))
+        
+        plans.append(Plan(
+            plan_id="dual_trees_separated",
+            name="Separated Dual Trees",
+            interpretation="Two independent vascular trees in separate regions of the domain",
+            geometry_strategy="dual_space_colonization_separated",
+            parameter_draft={
+                "colonization.influence_radius": 0.015,
+                "colonization.kill_radius": 0.002,
+                "colonization.step_size": 0.001,
+                "colonization.min_radius": 0.00012,
+                "colonization.max_steps": 400,
+                "colonization.initial_radius": inlet_radius,
+                "colonization.radius_decay": 0.95,
+                "topology.target_terminals_per_tree": suggested_terminals,
+                "dual.separation_plane": "z_mid",
+            },
+            risks=[
+                "Trees don't connect - no flow between them",
+                "May leave central region uncovered",
+            ],
+            cost_estimate=f"Medium complexity, {separated_runtime}",
+            what_needed_from_user=["Separation plane orientation"],
+            patch_set={
+                "colonization.influence_radius": 0.015,
+                "dual.separation_plane": "z_mid",
+            },
+            recommended=False,
+        ))
+        
+        return plans
     
     def _synthesize_path_plans(
         self,
