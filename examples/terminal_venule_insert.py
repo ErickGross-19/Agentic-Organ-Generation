@@ -88,9 +88,10 @@ from generation.specs.compile import compile_domain
 from generation.adapters.mesh_adapter import to_trimesh
 from generation.ops.embedding import embed_tree_as_negative_space
 from generation.backends.cco_hybrid_backend import CCOHybridBackend, CCOConfig
-from generation.core.types import Point3D
+from generation.core.types import Point3D, TubeGeometry
 from generation.core.result import OperationStatus
 from generation.core.network import Node, VesselSegment as Segment
+from generation.spatial.grid_index import segment_segment_distance_exact
 import numpy as np
 
 # Configure logging for verbose output
@@ -706,6 +707,390 @@ def create_multi_input_spec(
 
 
 # =============================================================================
+# INTER-TREE COLLISION DETECTION AND MERGING
+# =============================================================================
+
+def detect_inter_tree_collisions(
+    main_network: VascularNetwork,
+    new_tree: VascularNetwork,
+    min_clearance: float = 0.0005,
+) -> List[Dict[str, Any]]:
+    """
+    Detect collisions between segments of two separate networks.
+    
+    This function finds all segment pairs where a segment from the new tree
+    is too close to a segment from the main network.
+    
+    Parameters
+    ----------
+    main_network : VascularNetwork
+        The existing network to check against
+    new_tree : VascularNetwork
+        The new tree being merged
+    min_clearance : float
+        Minimum required clearance between segment surfaces (meters)
+        
+    Returns
+    -------
+    List[Dict[str, Any]]
+        List of collision records containing:
+        - main_seg_id: segment ID in main network
+        - new_seg_id: segment ID in new tree
+        - clearance: actual clearance (negative = overlapping)
+        - closest_point_main: closest point on main segment
+        - closest_point_new: closest point on new segment
+    """
+    collisions = []
+    
+    for main_seg in main_network.segments.values():
+        main_start_node = main_network.get_node(main_seg.start_node_id)
+        main_end_node = main_network.get_node(main_seg.end_node_id)
+        if main_start_node is None or main_end_node is None:
+            continue
+        
+        main_p1 = main_start_node.position.to_array()
+        main_p2 = main_end_node.position.to_array()
+        main_radius = main_seg.geometry.mean_radius()
+        
+        for new_seg in new_tree.segments.values():
+            new_start_node = new_tree.get_node(new_seg.start_node_id)
+            new_end_node = new_tree.get_node(new_seg.end_node_id)
+            if new_start_node is None or new_end_node is None:
+                continue
+            
+            new_p1 = new_start_node.position.to_array()
+            new_p2 = new_end_node.position.to_array()
+            new_radius = new_seg.geometry.mean_radius()
+            
+            # Compute centerline distance
+            centerline_dist = segment_segment_distance_exact(main_p1, main_p2, new_p1, new_p2)
+            
+            # Compute clearance (surface-to-surface distance)
+            clearance = centerline_dist - main_radius - new_radius
+            
+            if clearance < min_clearance:
+                # Find closest points on each segment for connection
+                closest_main, closest_new = _find_closest_points_on_segments(
+                    main_p1, main_p2, new_p1, new_p2
+                )
+                
+                collisions.append({
+                    "main_seg_id": main_seg.id,
+                    "new_seg_id": new_seg.id,
+                    "clearance": clearance,
+                    "centerline_distance": centerline_dist,
+                    "closest_point_main": closest_main,
+                    "closest_point_new": closest_new,
+                    "main_radius": main_radius,
+                    "new_radius": new_radius,
+                })
+    
+    return collisions
+
+
+def _find_closest_points_on_segments(
+    p1: np.ndarray, p2: np.ndarray,
+    q1: np.ndarray, q2: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Find the closest points on two line segments.
+    
+    Returns the points on each segment that are closest to each other.
+    """
+    d1 = p2 - p1  # Direction of segment 1
+    d2 = q2 - q1  # Direction of segment 2
+    r = p1 - q1
+    
+    a = np.dot(d1, d1)  # |d1|^2
+    e = np.dot(d2, d2)  # |d2|^2
+    f = np.dot(d2, r)
+    
+    EPSILON = 1e-10
+    
+    # Check if both segments are degenerate (points)
+    if a < EPSILON and e < EPSILON:
+        return p1.copy(), q1.copy()
+    
+    # Check if segment 1 is degenerate (point)
+    if a < EPSILON:
+        s = 0.0
+        t = np.clip(f / e, 0.0, 1.0)
+    else:
+        c = np.dot(d1, r)
+        
+        # Check if segment 2 is degenerate (point)
+        if e < EPSILON:
+            t = 0.0
+            s = np.clip(-c / a, 0.0, 1.0)
+        else:
+            # General non-degenerate case
+            b = np.dot(d1, d2)
+            denom = a * e - b * b  # Always >= 0
+            
+            # If segments are not parallel, compute closest point on line 1 to line 2
+            if denom > EPSILON:
+                s = np.clip((b * f - c * e) / denom, 0.0, 1.0)
+            else:
+                # Segments are parallel, pick arbitrary s
+                s = 0.0
+            
+            # Compute point on line 2 closest to S1(s)
+            t = (b * s + f) / e
+            
+            # If t is outside [0,1], clamp and recompute s
+            if t < 0.0:
+                t = 0.0
+                s = np.clip(-c / a, 0.0, 1.0)
+            elif t > 1.0:
+                t = 1.0
+                s = np.clip((b - c) / a, 0.0, 1.0)
+    
+    # Compute closest points
+    closest_p = p1 + s * d1
+    closest_q = q1 + t * d2
+    
+    return closest_p, closest_q
+
+
+def merge_trees_with_collision_connections(
+    main_network: VascularNetwork,
+    new_tree: VascularNetwork,
+    collisions: List[Dict[str, Any]],
+    connection_radius: float = 0.0003,
+    max_connections: int = 3,
+) -> Dict[str, Any]:
+    """
+    Merge a new tree into the main network, creating connections at collision points.
+    
+    This function:
+    1. Copies all nodes and segments from new_tree to main_network
+    2. For each collision, creates a connection segment between the closest points
+    
+    Parameters
+    ----------
+    main_network : VascularNetwork
+        The main network to merge into (modified in place)
+    new_tree : VascularNetwork
+        The new tree to merge
+    collisions : List[Dict[str, Any]]
+        Collision records from detect_inter_tree_collisions
+    connection_radius : float
+        Radius for connection segments (meters)
+    max_connections : int
+        Maximum number of connections to create
+        
+    Returns
+    -------
+    Dict[str, Any]
+        Merge results containing:
+        - node_id_map: mapping from old to new node IDs
+        - nodes_added: number of nodes added
+        - segments_added: number of segments added
+        - connections_created: number of connection segments created
+    """
+    # First, copy all nodes from new_tree to main_network
+    node_id_map = {}
+    for old_node in new_tree.nodes.values():
+        new_node_id = main_network.id_gen.next_id()
+        new_node = Node(
+            id=new_node_id,
+            position=copy.deepcopy(old_node.position),
+            node_type=old_node.node_type,
+            vessel_type=old_node.vessel_type,
+            attributes=old_node.attributes.copy(),
+        )
+        main_network.add_node(new_node)
+        node_id_map[old_node.id] = new_node_id
+    
+    # Copy all segments from new_tree to main_network
+    seg_id_map = {}
+    for old_seg in new_tree.segments.values():
+        new_seg_id = main_network.id_gen.next_id()
+        new_seg = Segment(
+            id=new_seg_id,
+            start_node_id=node_id_map[old_seg.start_node_id],
+            end_node_id=node_id_map[old_seg.end_node_id],
+            geometry=copy.deepcopy(old_seg.geometry),
+            vessel_type=old_seg.vessel_type,
+            attributes=old_seg.attributes.copy(),
+        )
+        main_network.add_segment(new_seg)
+        seg_id_map[old_seg.id] = new_seg_id
+    
+    # Sort collisions by clearance (most severe first) and limit connections
+    sorted_collisions = sorted(collisions, key=lambda c: c["clearance"])
+    collisions_to_connect = sorted_collisions[:max_connections]
+    
+    connections_created = 0
+    used_main_segs = set()
+    used_new_segs = set()
+    
+    for collision in collisions_to_connect:
+        main_seg_id = collision["main_seg_id"]
+        new_seg_id = collision["new_seg_id"]
+        
+        # Avoid creating multiple connections to the same segment
+        if main_seg_id in used_main_segs or new_seg_id in used_new_segs:
+            continue
+        
+        # Get the closest points
+        closest_main = collision["closest_point_main"]
+        closest_new = collision["closest_point_new"]
+        
+        # Create junction nodes at the closest points
+        main_junction_id = main_network.id_gen.next_id()
+        main_junction = Node(
+            id=main_junction_id,
+            position=Point3D.from_array(closest_main),
+            node_type="junction",
+            vessel_type=main_network.segments[main_seg_id].vessel_type,
+            attributes={"connection_point": True},
+        )
+        main_network.add_node(main_junction)
+        
+        new_junction_id = main_network.id_gen.next_id()
+        new_junction = Node(
+            id=new_junction_id,
+            position=Point3D.from_array(closest_new),
+            node_type="junction",
+            vessel_type=main_network.segments[seg_id_map[new_seg_id]].vessel_type,
+            attributes={"connection_point": True},
+        )
+        main_network.add_node(new_junction)
+        
+        # Split the main segment at the junction point
+        _split_segment_at_node(main_network, main_seg_id, main_junction_id)
+        
+        # Split the new segment (now in main_network) at the junction point
+        _split_segment_at_node(main_network, seg_id_map[new_seg_id], new_junction_id)
+        
+        # Create connection segment between the two junction nodes
+        connection_id = main_network.id_gen.next_id()
+        connection_geometry = TubeGeometry(
+            start=main_junction.position,
+            end=new_junction.position,
+            radius_start=connection_radius,
+            radius_end=connection_radius,
+        )
+        connection_seg = Segment(
+            id=connection_id,
+            start_node_id=main_junction_id,
+            end_node_id=new_junction_id,
+            geometry=connection_geometry,
+            vessel_type="connection",
+            attributes={"segment_kind": "inter_tree_connection"},
+        )
+        main_network.add_segment(connection_seg)
+        
+        connections_created += 1
+        used_main_segs.add(main_seg_id)
+        used_new_segs.add(new_seg_id)
+        
+        logger.info(f"    Created connection between trees at collision point "
+                   f"(clearance={collision['clearance']*1000:.3f}mm)")
+    
+    return {
+        "node_id_map": node_id_map,
+        "seg_id_map": seg_id_map,
+        "nodes_added": len(node_id_map),
+        "segments_added": len(seg_id_map),
+        "connections_created": connections_created,
+    }
+
+
+def _split_segment_at_node(
+    network: VascularNetwork,
+    segment_id: int,
+    junction_node_id: int,
+) -> Tuple[int, int]:
+    """
+    Split a segment at a junction node, creating two new segments.
+    
+    The original segment is removed and replaced with two segments:
+    - start_node -> junction_node
+    - junction_node -> end_node
+    
+    Parameters
+    ----------
+    network : VascularNetwork
+        Network containing the segment
+    segment_id : int
+        ID of segment to split
+    junction_node_id : int
+        ID of junction node to split at
+        
+    Returns
+    -------
+    Tuple[int, int]
+        IDs of the two new segments
+    """
+    segment = network.segments.get(segment_id)
+    if segment is None:
+        return (-1, -1)
+    
+    junction_node = network.get_node(junction_node_id)
+    start_node = network.get_node(segment.start_node_id)
+    end_node = network.get_node(segment.end_node_id)
+    
+    if junction_node is None or start_node is None or end_node is None:
+        return (-1, -1)
+    
+    # Compute interpolation parameter t for radius interpolation
+    total_length = start_node.position.distance_to(end_node.position)
+    if total_length < 1e-10:
+        t = 0.5
+    else:
+        dist_to_junction = start_node.position.distance_to(junction_node.position)
+        t = dist_to_junction / total_length
+    
+    # Interpolate radius at junction point
+    r_start = segment.geometry.radius_start
+    r_end = segment.geometry.radius_end
+    r_junction = r_start + t * (r_end - r_start)
+    
+    # Create first segment: start -> junction
+    seg1_id = network.id_gen.next_id()
+    seg1_geometry = TubeGeometry(
+        start=start_node.position,
+        end=junction_node.position,
+        radius_start=r_start,
+        radius_end=r_junction,
+    )
+    seg1 = Segment(
+        id=seg1_id,
+        start_node_id=segment.start_node_id,
+        end_node_id=junction_node_id,
+        geometry=seg1_geometry,
+        vessel_type=segment.vessel_type,
+        attributes=segment.attributes.copy(),
+    )
+    
+    # Create second segment: junction -> end
+    seg2_id = network.id_gen.next_id()
+    seg2_geometry = TubeGeometry(
+        start=junction_node.position,
+        end=end_node.position,
+        radius_start=r_junction,
+        radius_end=r_end,
+    )
+    seg2 = Segment(
+        id=seg2_id,
+        start_node_id=junction_node_id,
+        end_node_id=segment.end_node_id,
+        geometry=seg2_geometry,
+        vessel_type=segment.vessel_type,
+        attributes=segment.attributes.copy(),
+    )
+    
+    # Remove original segment and add new segments
+    network.remove_segment(segment_id)
+    network.add_segment(seg1)
+    network.add_segment(seg2)
+    
+    return (seg1_id, seg2_id)
+
+
+# =============================================================================
 # CUSTOM NETWORK GENERATION (using CCO hybrid backend)
 # =============================================================================
 
@@ -828,7 +1213,10 @@ def generate_network_from_spec(
             rng_seed=spec.seed,
         )
         
-        # Generate additional trees for remaining inlets and merge
+        # Track total connections created across all tree merges
+        total_connections = 0
+        
+        # Generate additional trees for remaining inlets and merge with collision handling
         for i, inlet_spec in enumerate(tree.inlets[1:], start=2):
             inlet_position = np.array(inlet_spec.position)
             inlet_radius = inlet_spec.radius
@@ -848,37 +1236,64 @@ def generate_network_from_spec(
                 rng_seed=(spec.seed + i) if spec.seed else None,
             )
             
-            # Merge the tree into the main network
-            # Create a mapping from old node IDs to new node IDs
-            # Note: We copy mutable objects (position, geometry) to avoid shared references
-            node_id_map = {}
-            for old_node in tree_network.nodes.values():
-                new_node_id = network.id_gen.next_id()
-                new_node = Node(
-                    id=new_node_id,
-                    position=copy.deepcopy(old_node.position),  # Deep copy Point3D
-                    node_type=old_node.node_type,
-                    vessel_type=old_node.vessel_type,
-                    attributes=old_node.attributes.copy(),
-                )
-                network.add_node(new_node)
-                node_id_map[old_node.id] = new_node_id
+            # Detect collisions between the new tree and existing network
+            collisions = detect_inter_tree_collisions(
+                main_network=network,
+                new_tree=tree_network,
+                min_clearance=cco_params.collision_clearance,
+            )
             
-            # Add segments with remapped node IDs
-            for old_seg in tree_network.segments.values():
-                new_seg_id = network.id_gen.next_id()
-                new_seg = Segment(
-                    id=new_seg_id,
-                    start_node_id=node_id_map[old_seg.start_node_id],
-                    end_node_id=node_id_map[old_seg.end_node_id],
-                    geometry=copy.deepcopy(old_seg.geometry),  # Deep copy geometry dataclass
-                    vessel_type=old_seg.vessel_type,
-                    attributes=old_seg.attributes.copy(),
+            if collisions:
+                logger.info(f"    Detected {len(collisions)} collisions with existing network")
+                
+                # Merge with collision connections
+                merge_result = merge_trees_with_collision_connections(
+                    main_network=network,
+                    new_tree=tree_network,
+                    collisions=collisions,
+                    connection_radius=vessels.terminal_radius if hasattr(vessels, 'terminal_radius') else 0.0003,
+                    max_connections=min(3, len(collisions)),  # Limit connections per tree
                 )
-                network.add_segment(new_seg)
-            
-            logger.info(f"    Merged tree {i}: {len(tree_network.nodes)} nodes, "
-                       f"{len(tree_network.segments)} segments")
+                
+                total_connections += merge_result["connections_created"]
+                logger.info(f"    Merged tree {i}: {merge_result['nodes_added']} nodes, "
+                           f"{merge_result['segments_added']} segments, "
+                           f"{merge_result['connections_created']} connections")
+            else:
+                # No collisions - simple merge without connections
+                logger.info(f"    No collisions detected - merging without connections")
+                
+                # Simple merge: copy nodes and segments
+                node_id_map = {}
+                for old_node in tree_network.nodes.values():
+                    new_node_id = network.id_gen.next_id()
+                    new_node = Node(
+                        id=new_node_id,
+                        position=copy.deepcopy(old_node.position),
+                        node_type=old_node.node_type,
+                        vessel_type=old_node.vessel_type,
+                        attributes=old_node.attributes.copy(),
+                    )
+                    network.add_node(new_node)
+                    node_id_map[old_node.id] = new_node_id
+                
+                for old_seg in tree_network.segments.values():
+                    new_seg_id = network.id_gen.next_id()
+                    new_seg = Segment(
+                        id=new_seg_id,
+                        start_node_id=node_id_map[old_seg.start_node_id],
+                        end_node_id=node_id_map[old_seg.end_node_id],
+                        geometry=copy.deepcopy(old_seg.geometry),
+                        vessel_type=old_seg.vessel_type,
+                        attributes=old_seg.attributes.copy(),
+                    )
+                    network.add_segment(new_seg)
+                
+                logger.info(f"    Merged tree {i}: {len(tree_network.nodes)} nodes, "
+                           f"{len(tree_network.segments)} segments")
+        
+        if total_connections > 0:
+            logger.info(f"  Total inter-tree connections created: {total_connections}")
     
     # Log network statistics
     logger.info(f"  CCO generation complete!")
