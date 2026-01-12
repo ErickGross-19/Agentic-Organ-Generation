@@ -152,6 +152,10 @@ class MainWindow:
         self._current_workflow_type: Optional[WorkflowType] = None
         self._agent_config: Optional[AgentConfiguration] = None
         
+        # Plan selection state (for in-chat selection)
+        self._awaiting_plan_selection: bool = False
+        self._pending_plan_selection: set = set()
+        
         self._setup_menu()
         self._setup_ui()
         self._setup_bindings()
@@ -524,14 +528,42 @@ class MainWindow:
             except Exception:
                 text = self.input_var.get().strip()
             
-            # Provide feedback even if text is empty (never fail silently)
-            if not text:
-                self._append_chat("system", "Please enter some text to send.")
-                return
-            
             # Check if workflow is running
             if not self.workflow_manager.is_running:
                 self._append_chat("system", "Please start a workflow first (File > New Workflow or Ctrl+N)")
+                return
+            
+            # Handle plan selection validation (in-chat selection)
+            if self._awaiting_plan_selection:
+                # Empty input means use recommended plan
+                if not text:
+                    self._append_chat("user", "(using recommended)")
+                    self.workflow_manager.send_input("")
+                    self._awaiting_plan_selection = False
+                    self._pending_plan_selection = set()
+                # Validate the plan ID
+                elif text in self._pending_plan_selection:
+                    self._append_chat("user", text)
+                    self.workflow_manager.send_input(text)
+                    self._awaiting_plan_selection = False
+                    self._pending_plan_selection = set()
+                else:
+                    # Invalid plan ID - show error and re-prompt without returning to controller
+                    self._append_chat("error", f"Invalid plan ID: '{text}'")
+                    valid_ids = ", ".join(sorted(self._pending_plan_selection))
+                    self._append_chat("system", f"Valid plan IDs are: {valid_ids}")
+                    self._append_chat("system", "Please enter a valid plan ID or press Enter for recommended.")
+                    # Don't clear awaiting state - let user try again
+                
+                # Clear the input field
+                self.input_var.set("")
+                self.input_entry.delete(0, "end")
+                return
+            
+            # Normal input handling
+            # Provide feedback even if text is empty (never fail silently)
+            if not text:
+                self._append_chat("system", "Please enter some text to send.")
                 return
             
             # Send the input
@@ -594,26 +626,41 @@ class MainWindow:
         self._append_chat("system", f"Approval: {'Approved' if result else 'Rejected'}")
     
     def _show_plan_selection_dialog(self, plans: list):
-        """Show plan selection dialog for V5 workflows."""
+        """Show plan selection in chat (no popup) for V5 workflows."""
         if not plans:
             self.workflow_manager.send_input("")
             return
         
-        plan_descriptions = []
-        for i, plan in enumerate(plans):
-            plan_id = plan.get("id", f"plan_{i}")
-            name = plan.get("name", f"Plan {i+1}")
-            desc = plan.get("description", "")
-            plan_descriptions.append(f"{plan_id}: {name}\n  {desc}")
+        # Build plan display for chat - use plan_id (not id)
+        valid_plan_ids = set()
+        plan_text = "Please select a plan by typing its ID:\n"
         
-        dialog_text = "Select a plan:\n\n" + "\n\n".join(plan_descriptions)
-        dialog_text += "\n\nEnter plan ID (or leave empty for recommended):"
+        for plan in plans:
+            plan_id = plan.get("plan_id", plan.get("id", ""))
+            valid_plan_ids.add(plan_id)
+            name = plan.get("name", "Unknown")
+            interpretation = plan.get("interpretation", "")
+            cost = plan.get("cost_estimate", "")
+            risks = plan.get("risks", [])
+            is_recommended = plan.get("recommended", False)
+            
+            rec_marker = " (RECOMMENDED)" if is_recommended else ""
+            plan_text += f"\n  [{plan_id}]{rec_marker} {name}"
+            if interpretation:
+                plan_text += f"\n    {interpretation}"
+            if cost:
+                plan_text += f"\n    Estimated: {cost}"
+            if risks:
+                plan_text += f"\n    Risks: {', '.join(risks[:2])}"
+                if len(risks) > 2:
+                    plan_text += f" (+{len(risks)-2} more)"
         
-        from tkinter import simpledialog
-        selected = simpledialog.askstring("Plan Selection", dialog_text, parent=self.root)
+        plan_text += "\n\nType a plan ID (e.g., 'tree_balanced') or press Enter for recommended:"
         
-        self.workflow_manager.send_input(selected or "")
-        self._append_chat("system", f"Selected plan: {selected or '(recommended)'}")
+        # Display in chat and store valid IDs for validation
+        self._append_chat("prompt", plan_text)
+        self._pending_plan_selection = valid_plan_ids
+        self._awaiting_plan_selection = True
     
     def _show_generation_ready_card(self, data: dict):
         """Show generation ready notification with approval."""
@@ -657,12 +704,13 @@ class MainWindow:
         """Display proposed plans in chat."""
         plans_text = "Proposed Plans:\n"
         for plan in plans:
-            plan_id = plan.get("id", "")
+            # Use plan_id (not id) - this is the correct key from Plan.to_dict()
+            plan_id = plan.get("plan_id", plan.get("id", ""))
             name = plan.get("name", "")
             is_recommended = " (RECOMMENDED)" if plan_id == recommended_id else ""
             plans_text += f"\n  [{plan_id}] {name}{is_recommended}"
-            if plan.get("description"):
-                plans_text += f"\n      {plan.get('description')}"
+            if plan.get("interpretation"):
+                plans_text += f"\n      {plan.get('interpretation')}"
         self._append_chat("plans", plans_text)
     
     def _show_safe_fix_notification(self, data: dict):

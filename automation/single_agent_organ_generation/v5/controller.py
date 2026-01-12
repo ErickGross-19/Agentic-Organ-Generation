@@ -1210,14 +1210,49 @@ class SingleAgentOrganGeneratorV5:
         return False
     
     def _cap_ask_best_next_question(self) -> bool:
-        """Capability 6: Ask best next question."""
+        """Capability 6: Ask best next question.
+        
+        Questions are prioritized by:
+        1. Priority questions from ambiguities (project.priority_questions)
+        2. Default priority ordering
+        """
         if not self.world_model.open_questions:
             return False
         
         questions = list(self.world_model.open_questions.values())
-        questions.sort(key=lambda q: q.priority, reverse=True)
+        
+        # Check for priority questions from ambiguities
+        priority_questions = self.world_model.get_fact_value("project.priority_questions", [])
+        
+        # Sort questions with priority questions first, then by default priority
+        def question_sort_key(q):
+            # Higher priority = asked first, so we want higher values for priority questions
+            if q.field in priority_questions:
+                # Priority questions get a boost of 1000 + their index (earlier in list = higher priority)
+                try:
+                    idx = priority_questions.index(q.field)
+                    return (1000 - idx, q.priority)
+                except ValueError:
+                    return (0, q.priority)
+            return (0, q.priority)
+        
+        questions.sort(key=question_sort_key, reverse=True)
         
         best_question = questions[0]
+        
+        # If we just asked a priority question, remove it from the list
+        if best_question.field in priority_questions:
+            remaining = [pq for pq in priority_questions if pq != best_question.field]
+            if remaining:
+                self.world_model.set_fact(
+                    "project.priority_questions",
+                    remaining,
+                    FactProvenance.SYSTEM,
+                    reason="Updated after asking priority question",
+                )
+            else:
+                # All priority questions asked - remove the fact
+                self.world_model._facts.pop("project.priority_questions", None)
         
         prompt = best_question.question
         if best_question.why:
@@ -1287,12 +1322,15 @@ class SingleAgentOrganGeneratorV5:
         - Size mentions (e.g., "2x3x6 mm") -> stored for reference
         - Use cases (perfusion, tissue engineering) -> stored for context
         - Specific constraints mentioned
+        - Ambiguities or conflicting information
         
         Extracted intent is stored in project.intent and used to provide
         topology suggestions when topology.kind hasn't been set yet.
+        Also detects ambiguities and labels them for the user.
         """
         description_lower = description.lower()
         extracted_intent = {}
+        ambiguities = []
         
         # Detect organ types and suggest appropriate topology
         # Use word boundary matching to avoid false positives (e.g., "heartfelt" matching "heart")
@@ -1308,14 +1346,43 @@ class SingleAgentOrganGeneratorV5:
             "bone": "tree",
         }
         
-        detected_organ = None
+        # Detect all mentioned organs (not just first)
+        detected_organs = []
         for organ, suggested_topology in organ_topology_map.items():
-            # Use word boundary regex to avoid false positives
             if re.search(rf"\b{organ}\b", description_lower):
-                detected_organ = organ
-                extracted_intent["detected_organ"] = organ
-                extracted_intent["suggested_topology"] = suggested_topology
-                break
+                detected_organs.append((organ, suggested_topology))
+        
+        # Handle multiple organs (ambiguity)
+        if len(detected_organs) > 1:
+            organ_names = [o[0] for o in detected_organs]
+            ambiguities.append({
+                "type": "multiple_organs",
+                "message": f"Multiple organs mentioned: {', '.join(organ_names)}. Which is the primary target?",
+                "priority_question": "organ_clarification",
+            })
+            # Use first mentioned as default
+            detected_organ = detected_organs[0][0]
+            extracted_intent["detected_organ"] = detected_organ
+            extracted_intent["suggested_topology"] = detected_organs[0][1]
+            extracted_intent["all_detected_organs"] = organ_names
+        elif len(detected_organs) == 1:
+            detected_organ = detected_organs[0][0]
+            extracted_intent["detected_organ"] = detected_organ
+            extracted_intent["suggested_topology"] = detected_organs[0][1]
+        else:
+            detected_organ = None
+        
+        # Detect microfluidic/channel/manifold keywords -> suggests path/backbone
+        microfluidic_keywords = ["microfluidic", "channel", "manifold", "conduit", "tube", "duct"]
+        if any(kw in description_lower for kw in microfluidic_keywords):
+            extracted_intent["microfluidic_hint"] = True
+            # This conflicts with organ-based topology suggestion
+            if detected_organ and extracted_intent.get("suggested_topology") in ["tree", "dual_trees"]:
+                ambiguities.append({
+                    "type": "topology_conflict",
+                    "message": f"You mentioned '{detected_organ}' (suggests branching tree) but also microfluidic/channel terms (suggests simpler path). Which structure do you need?",
+                    "priority_question": "topology.kind",
+                })
         
         # Detect size mentions (e.g., "2x3x6 mm", "20mm x 30mm x 40mm")
         size_match = re.search(
@@ -1340,6 +1407,18 @@ class SingleAgentOrganGeneratorV5:
         if use_cases:
             extracted_intent["use_cases"] = use_cases
         
+        # Detect conflicting use cases
+        if "perfusion" in use_cases and "implantation" in use_cases:
+            ambiguities.append({
+                "type": "use_case_conflict",
+                "message": "Both perfusion testing and implantation mentioned - these have different design priorities. Which is primary?",
+                "priority_question": "use_case_clarification",
+            })
+        
+        # Store ambiguities
+        if ambiguities:
+            extracted_intent["ambiguities"] = ambiguities
+        
         # Store the extracted intent in the world model
         if extracted_intent:
             self.world_model.set_fact(
@@ -1351,7 +1430,7 @@ class SingleAgentOrganGeneratorV5:
             
             # Provide detailed conversational feedback about what was understood
             # and how it will influence the final object generation
-            self._provide_description_feedback(extracted_intent, detected_organ, use_cases)
+            self._provide_description_feedback(extracted_intent, detected_organ, use_cases, ambiguities)
             
             self._emit_trace("project_intent_extracted", f"Extracted intent: {extracted_intent}")
         else:
@@ -1368,11 +1447,15 @@ class SingleAgentOrganGeneratorV5:
         extracted_intent: Dict[str, Any],
         detected_organ: Optional[str],
         use_cases: List[str],
+        ambiguities: List[Dict[str, Any]] = None,
     ) -> None:
         """
         Provide detailed conversational feedback about what was understood from
         the project description and how it will influence the final object generation.
+        
+        Also labels any ambiguities detected and explains what needs clarification.
         """
+        ambiguities = ambiguities or []
         feedback_lines = []
         generation_implications = []
         
@@ -1400,6 +1483,13 @@ class SingleAgentOrganGeneratorV5:
                     generation_implications.append(
                         "The final mesh will have one inlet that branches into many terminals"
                     )
+        
+        # Microfluidic hint feedback
+        if extracted_intent.get("microfluidic_hint"):
+            feedback_lines.append(
+                "I noticed microfluidic/channel terminology - if you need a simple channel or manifold "
+                "rather than a branching tree, consider **path** or **backbone** topology."
+            )
         
         # Size detection feedback
         detected_size = extracted_intent.get("detected_size")
@@ -1450,6 +1540,24 @@ class SingleAgentOrganGeneratorV5:
             for impl in generation_implications:
                 implications_text += f"- {impl}\n"
             self.io.say_assistant(implications_text.strip())
+        
+        # Output ambiguities that need clarification
+        if ambiguities:
+            ambiguity_text = "**I noticed some things that need clarification:**\n"
+            for amb in ambiguities:
+                ambiguity_text += f"- {amb['message']}\n"
+            ambiguity_text += "\nI'll ask about these in the next questions to make sure I understand your needs correctly."
+            self.io.say_assistant(ambiguity_text)
+            
+            # Store priority questions from ambiguities for question reordering
+            priority_questions = [amb.get("priority_question") for amb in ambiguities if amb.get("priority_question")]
+            if priority_questions:
+                self.world_model.set_fact(
+                    "project.priority_questions",
+                    priority_questions,
+                    FactProvenance.SYSTEM,
+                    reason="Questions prioritized due to ambiguities in description",
+                )
     
     def _maybe_readback(self, field: str, value: Any) -> None:
         """
