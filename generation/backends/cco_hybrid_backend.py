@@ -908,29 +908,88 @@ class CCOHybridBackend(GenerationBackend):
                 seg.end_node_id == split_seg.end_node_id):
                 continue
             
-            seg_start = network.nodes[seg.start_node_id].position.to_array()
-            seg_end = network.nodes[seg.end_node_id].position.to_array()
             seg_radius = seg.geometry.mean_radius()
             
-            # P0-7: Check collision with proposed A→X segment
-            dist_AX = segment_segment_distance_exact(A, X, seg_start, seg_end)
-            required_clearance_AX = r_AX + seg_radius + clearance
-            if dist_AX < required_clearance_AX:
-                return True
-            
-            # Check collision with proposed X→B segment
-            dist_XB = segment_segment_distance_exact(X, B, seg_start, seg_end)
-            required_clearance_XB = r_child1 + seg_radius + clearance
-            if dist_XB < required_clearance_XB:
-                return True
-            
-            # Check collision with proposed X→T segment
-            dist_XT = segment_segment_distance_exact(X, T, seg_start, seg_end)
-            required_clearance_XT = r_child2 + seg_radius + clearance
-            if dist_XT < required_clearance_XT:
-                return True
+            # P0-NEW-4 / P2-NEW-2: Build polyline for existing segment if it has centerline_points
+            if seg.geometry.centerline_points:
+                seg_start_node = network.nodes[seg.start_node_id]
+                seg_end_node = network.nodes[seg.end_node_id]
+                seg_polyline = [seg_start_node.position.to_array()]
+                seg_polyline.extend([p.to_array() for p in seg.geometry.centerline_points])
+                seg_polyline.append(seg_end_node.position.to_array())
+                
+                # Check collision with proposed A→X segment against polyline
+                dist_AX = self._segment_to_polyline_distance(A, X, seg_polyline)
+                required_clearance_AX = r_AX + seg_radius + clearance
+                if dist_AX < required_clearance_AX:
+                    return True
+                
+                # Check collision with proposed X→B segment against polyline
+                dist_XB = self._segment_to_polyline_distance(X, B, seg_polyline)
+                required_clearance_XB = r_child1 + seg_radius + clearance
+                if dist_XB < required_clearance_XB:
+                    return True
+                
+                # Check collision with proposed X→T segment against polyline
+                dist_XT = self._segment_to_polyline_distance(X, T, seg_polyline)
+                required_clearance_XT = r_child2 + seg_radius + clearance
+                if dist_XT < required_clearance_XT:
+                    return True
+            else:
+                # Simple straight segment - use fast path
+                seg_start = network.nodes[seg.start_node_id].position.to_array()
+                seg_end = network.nodes[seg.end_node_id].position.to_array()
+                
+                # P0-7: Check collision with proposed A→X segment
+                dist_AX = segment_segment_distance_exact(A, X, seg_start, seg_end)
+                required_clearance_AX = r_AX + seg_radius + clearance
+                if dist_AX < required_clearance_AX:
+                    return True
+                
+                # Check collision with proposed X→B segment
+                dist_XB = segment_segment_distance_exact(X, B, seg_start, seg_end)
+                required_clearance_XB = r_child1 + seg_radius + clearance
+                if dist_XB < required_clearance_XB:
+                    return True
+                
+                # Check collision with proposed X→T segment
+                dist_XT = segment_segment_distance_exact(X, T, seg_start, seg_end)
+                required_clearance_XT = r_child2 + seg_radius + clearance
+                if dist_XT < required_clearance_XT:
+                    return True
         
         return False
+    
+    def _segment_to_polyline_distance(
+        self,
+        p1: np.ndarray,
+        p2: np.ndarray,
+        polyline: List[np.ndarray],
+    ) -> float:
+        """
+        Compute minimum distance from a straight segment to a polyline.
+        
+        P0-NEW-4 / P2-NEW-2: Helper for collision checking against polyline segments.
+        
+        Parameters
+        ----------
+        p1, p2 : np.ndarray
+            Endpoints of the straight segment
+        polyline : list of np.ndarray
+            List of polyline vertices
+            
+        Returns
+        -------
+        float
+            Minimum distance between the segment and polyline
+        """
+        from ..spatial.grid_index import segment_segment_distance_exact
+        
+        min_dist = float('inf')
+        for i in range(len(polyline) - 1):
+            dist = segment_segment_distance_exact(p1, p2, polyline[i], polyline[i + 1])
+            min_dist = min(min_dist, dist)
+        return min_dist
     
     def _perform_insertion(
         self,

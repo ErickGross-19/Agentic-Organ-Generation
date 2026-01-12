@@ -190,26 +190,30 @@ def detect_unit(value: float, context: str = "length") -> str:
 
 def warn_if_legacy_units(value: float, context: str = "length", param_name: str = "value") -> None:
     """
-    Warn if value appears to be in legacy meter units.
+    Warn if value appears to be in millimeters when meters are expected.
+    
+    The library uses METERS internally for all geometry. This function warns
+    when a value looks like it might be in millimeters (e.g., 50.0 meaning 50mm)
+    being passed where meters are expected (should be 0.05).
     
     Parameters
     ----------
     value : float
         Value to check
     context : str
-        Context hint
+        Context hint ('length', 'radius', 'domain_size')
     param_name : str
         Parameter name for warning message
     """
     import warnings
     
     detected = detect_unit(value, context)
-    if detected == "m":
+    if detected == "mm":
         warnings.warn(
-            f"Parameter '{param_name}' value {value} appears to be in meters (legacy). "
-            f"The library now uses millimeters as the default unit. "
-            f"If this is intentional, multiply by 1000 to convert to mm. "
-            f"To silence this warning, explicitly set units='m' in your spec.",
+            f"Parameter '{param_name}' value {value} appears to be in millimeters. "
+            f"The library uses METERS internally for all geometry. "
+            f"If you intended {value}mm, divide by 1000 to convert to meters (e.g., {value / 1000}). "
+            f"To silence this warning, ensure your values are in meters.",
             UserWarning,
             stacklevel=3
         )

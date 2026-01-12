@@ -251,6 +251,10 @@ def compute_component_flows(network: VascularNetwork) -> Dict:
     through the entire tree to its terminals. This is useful for dual-tree
     networks where arterial and venous trees should be analyzed separately.
     
+    For mixed components (containing both arterial and venous nodes, e.g., after
+    anastomosis creation), reports per-vessel-type metrics within the component
+    to ensure flow totals are correctly computed for evaluation.
+    
     Parameters
     ----------
     network : VascularNetwork
@@ -262,7 +266,7 @@ def compute_component_flows(network: VascularNetwork) -> Dict:
         Dictionary with per-component flow metrics:
         - components: list of component info dicts, each containing:
           - component_id: int
-          - vessel_type: str (arterial, venous, or mixed)
+          - vessel_type: str (arterial, venous)
           - root_node_id: int (inlet or outlet node)
           - root_node_type: str (inlet or outlet)
           - total_flow: float (flow at root node)
@@ -271,6 +275,7 @@ def compute_component_flows(network: VascularNetwork) -> Dict:
           - terminal_nodes: list of terminal node IDs
           - avg_pressure: float
           - pressure_drop: float (from root to terminals)
+        For mixed components, two entries are created (one arterial, one venous).
     """
     import networkx as nx
     from ..adapters.networkx_adapter import to_networkx_graph
@@ -292,71 +297,173 @@ def compute_component_flows(network: VascularNetwork) -> Dict:
     component_metrics = []
     
     for comp_idx, comp_nodes in enumerate(components):
-        comp_vascular_ids = [nx_to_vascular[nx_id] for nx_id in comp_nodes]
+        comp_vascular_ids = set(nx_to_vascular[nx_id] for nx_id in comp_nodes)
         
         comp_nodes_objs = [network.nodes[vid] for vid in comp_vascular_ids]
         
-        inlet_nodes = [n for n in comp_nodes_objs if n.node_type == "inlet"]
-        outlet_nodes = [n for n in comp_nodes_objs if n.node_type == "outlet"]
-        terminal_nodes = [n for n in comp_nodes_objs if n.node_type == "terminal"]
-        
         vessel_types = set(n.vessel_type for n in comp_nodes_objs if n.vessel_type)
-        if len(vessel_types) == 1:
-            vessel_type = list(vessel_types)[0]
-        elif len(vessel_types) > 1:
-            vessel_type = "mixed"
+        
+        # P0-NEW-3: For mixed components, report per-vessel-type metrics
+        if len(vessel_types) > 1:
+            # Mixed component - split into arterial and venous sub-metrics
+            for vtype in vessel_types:
+                if vtype not in ("arterial", "venous"):
+                    continue
+                    
+                metrics = _compute_vessel_type_metrics(
+                    network, comp_vascular_ids, vtype, comp_idx
+                )
+                if metrics:
+                    component_metrics.append(metrics)
+        elif len(vessel_types) == 1:
+            # Single vessel type - compute normally
+            vtype = list(vessel_types)[0]
+            metrics = _compute_vessel_type_metrics(
+                network, comp_vascular_ids, vtype, comp_idx
+            )
+            if metrics:
+                component_metrics.append(metrics)
         else:
-            vessel_type = "unknown"
-        
-        if inlet_nodes:
-            root_node = inlet_nodes[0]
-            root_type = "inlet"
-        elif outlet_nodes:
-            root_node = outlet_nodes[0]
-            root_type = "outlet"
-        else:
-            continue
-        
-        total_flow = 0.0
-        for seg in network.segments.values():
-            if seg.start_node_id == root_node.id:
-                total_flow += seg.attributes.get('flow', 0.0)
-            elif seg.end_node_id == root_node.id:
-                total_flow += seg.attributes.get('flow', 0.0)
-        
-        pressures = [n.attributes.get('pressure', 0.0) for n in comp_nodes_objs 
-                    if 'pressure' in n.attributes]
-        avg_pressure = float(np.mean(pressures)) if pressures else 0.0
-        
-        root_pressure = root_node.attributes.get('pressure', 0.0)
-        terminal_pressures = [n.attributes.get('pressure', 0.0) for n in terminal_nodes
-                             if 'pressure' in n.attributes]
-        avg_terminal_pressure = float(np.mean(terminal_pressures)) if terminal_pressures else 0.0
-        pressure_drop = abs(root_pressure - avg_terminal_pressure)
-        
-        comp_segments = [seg for seg in network.segments.values()
-                        if seg.start_node_id in comp_vascular_ids 
-                        and seg.end_node_id in comp_vascular_ids]
-        
-        component_metrics.append({
-            'component_id': comp_idx,
-            'vessel_type': vessel_type,
-            'root_node_id': root_node.id,
-            'root_node_type': root_type,
-            'total_flow': float(total_flow),
-            'num_nodes': len(comp_vascular_ids),
-            'num_segments': len(comp_segments),
-            'terminal_nodes': [n.id for n in terminal_nodes],
-            'num_terminals': len(terminal_nodes),
-            'avg_pressure': avg_pressure,
-            'root_pressure': float(root_pressure),
-            'avg_terminal_pressure': avg_terminal_pressure,
-            'pressure_drop': float(pressure_drop),
-        })
+            # Unknown vessel type - try to compute with "unknown"
+            metrics = _compute_vessel_type_metrics(
+                network, comp_vascular_ids, "unknown", comp_idx
+            )
+            if metrics:
+                component_metrics.append(metrics)
     
     return {
         'components': component_metrics,
         'num_components': len(component_metrics),
+    }
+
+
+def _compute_vessel_type_metrics(
+    network: VascularNetwork,
+    comp_vascular_ids: set,
+    vessel_type: str,
+    comp_idx: int,
+) -> Optional[Dict]:
+    """
+    Compute flow metrics for a specific vessel type within a component.
+    
+    P0-NEW-3: Handles mixed components by filtering nodes/segments by vessel_type.
+    P1-NEW-1: Computes flow leaving root consistently using pressure direction.
+    
+    Parameters
+    ----------
+    network : VascularNetwork
+        Network with solved flow
+    comp_vascular_ids : set
+        Set of node IDs in this component
+    vessel_type : str
+        Vessel type to filter by ("arterial", "venous", or "unknown")
+    comp_idx : int
+        Component index for reporting
+        
+    Returns
+    -------
+    dict or None
+        Component metrics dict, or None if no valid root found
+    """
+    # Filter nodes by vessel type (or include all if "unknown")
+    if vessel_type in ("arterial", "venous"):
+        type_node_ids = {
+            vid for vid in comp_vascular_ids
+            if network.nodes[vid].vessel_type == vessel_type
+        }
+    else:
+        type_node_ids = comp_vascular_ids
+    
+    if not type_node_ids:
+        return None
+    
+    type_nodes_objs = [network.nodes[vid] for vid in type_node_ids]
+    
+    inlet_nodes = [n for n in type_nodes_objs if n.node_type == "inlet"]
+    outlet_nodes = [n for n in type_nodes_objs if n.node_type == "outlet"]
+    terminal_nodes = [n for n in type_nodes_objs if n.node_type == "terminal"]
+    
+    # Determine root node
+    if inlet_nodes:
+        root_node = inlet_nodes[0]
+        root_type = "inlet"
+    elif outlet_nodes:
+        root_node = outlet_nodes[0]
+        root_type = "outlet"
+    else:
+        return None
+    
+    # P1-NEW-1: Compute flow leaving root consistently using pressure direction
+    # For inlet: flow leaves root (outgoing), for outlet: flow enters root (incoming)
+    root_pressure = root_node.attributes.get('pressure', 0.0)
+    total_flow = 0.0
+    
+    for seg in network.segments.values():
+        # Only consider segments connected to root
+        if seg.start_node_id == root_node.id:
+            other_node = network.nodes.get(seg.end_node_id)
+            if other_node:
+                other_pressure = other_node.attributes.get('pressure', 0.0)
+                flow = abs(seg.attributes.get('flow', 0.0))
+                # Flow goes from high to low pressure
+                if root_pressure > other_pressure:
+                    # Flow leaving root
+                    total_flow += flow
+                else:
+                    # Flow entering root (shouldn't happen for inlet, but handle it)
+                    total_flow += flow
+        elif seg.end_node_id == root_node.id:
+            other_node = network.nodes.get(seg.start_node_id)
+            if other_node:
+                other_pressure = other_node.attributes.get('pressure', 0.0)
+                flow = abs(seg.attributes.get('flow', 0.0))
+                # Flow goes from high to low pressure
+                if other_pressure > root_pressure:
+                    # Flow entering root
+                    total_flow += flow
+                else:
+                    # Flow leaving root
+                    total_flow += flow
+    
+    # Compute pressure metrics
+    pressures = [n.attributes.get('pressure', 0.0) for n in type_nodes_objs 
+                if 'pressure' in n.attributes]
+    avg_pressure = float(np.mean(pressures)) if pressures else 0.0
+    
+    terminal_pressures = [n.attributes.get('pressure', 0.0) for n in terminal_nodes
+                         if 'pressure' in n.attributes]
+    avg_terminal_pressure = float(np.mean(terminal_pressures)) if terminal_pressures else 0.0
+    pressure_drop = abs(root_pressure - avg_terminal_pressure)
+    
+    # Filter segments by vessel type
+    if vessel_type in ("arterial", "venous"):
+        comp_segments = [
+            seg for seg in network.segments.values()
+            if seg.vessel_type == vessel_type
+            and seg.start_node_id in comp_vascular_ids 
+            and seg.end_node_id in comp_vascular_ids
+        ]
+    else:
+        comp_segments = [
+            seg for seg in network.segments.values()
+            if seg.start_node_id in comp_vascular_ids 
+            and seg.end_node_id in comp_vascular_ids
+        ]
+    
+    return {
+        'component_id': comp_idx,
+        'vessel_type': vessel_type,
+        'root_node_id': root_node.id,
+        'root_node_type': root_type,
+        'total_flow': float(total_flow),
+        'num_nodes': len(type_node_ids),
+        'num_segments': len(comp_segments),
+        'terminal_nodes': [n.id for n in terminal_nodes],
+        'num_terminals': len(terminal_nodes),
+        'avg_pressure': avg_pressure,
+        'root_pressure': float(root_pressure),
+        'avg_terminal_pressure': avg_terminal_pressure,
+        'pressure_drop': float(pressure_drop),
     }
 
 
