@@ -36,6 +36,10 @@ def check_murrays_law(
     
     For blood vessels, gamma is typically 3.0.
     
+    Uses topology-based parent detection when possible, falling back to
+    radius-based heuristic only when necessary. Excludes junctions in
+    cycles (anastomoses) where parent/child relationships are ambiguous.
+    
     Parameters
     ----------
     network : VascularNetwork
@@ -50,9 +54,22 @@ def check_murrays_law(
     GraphCheckResult
         Result with pass/fail status and details
     """
+    from generation.analysis.radius import (
+        compute_murray_deviation_at_junction,
+        find_root_node_id,
+        is_junction_in_cycle,
+        segment_radius_at_node,
+        identify_parent_segment_at_junction,
+    )
+    
     deviations = []
     bifurcation_count = 0
     violations = []
+    skipped_cycles = 0
+    
+    # Find root nodes for topology-based parent detection
+    arterial_root = find_root_node_id(network, vessel_type="arterial")
+    venous_root = find_root_node_id(network, vessel_type="venous")
     
     for node_id, node in network.nodes.items():
         if node.node_type == "junction":
@@ -67,19 +84,34 @@ def check_murrays_law(
             if len(connected_segs) >= 2:
                 bifurcation_count += 1
                 
-                # Get radii
-                radii = []
-                for seg in connected_segs:
-                    if hasattr(seg, 'geometry') and seg.geometry is not None:
-                        r = (seg.geometry.radius_start + seg.geometry.radius_end) / 2
-                    else:
-                        r = seg.attributes.get("radius", 0.001)
-                    radii.append(r)
+                # Skip junctions in cycles (anastomoses) - parent/child is ambiguous
+                if is_junction_in_cycle(network, node_id):
+                    skipped_cycles += 1
+                    continue
                 
-                # Find parent (largest radius) and children
-                parent_idx = np.argmax(radii)
-                parent_r = radii[parent_idx]
-                child_radii = [r for i, r in enumerate(radii) if i != parent_idx]
+                # Use appropriate root for this node's vessel type
+                root_id = arterial_root if node.vessel_type == "arterial" else venous_root
+                if root_id is None:
+                    root_id = arterial_root or venous_root
+                
+                # Use topology-based parent detection
+                parent_seg_id, child_seg_ids = identify_parent_segment_at_junction(
+                    network, node_id, root_node_id=root_id
+                )
+                
+                if parent_seg_id is None or len(child_seg_ids) == 0:
+                    continue
+                
+                parent_seg = network.segments.get(parent_seg_id)
+                if parent_seg is None:
+                    continue
+                
+                parent_r = segment_radius_at_node(parent_seg, node_id)
+                child_radii = []
+                for child_id in child_seg_ids:
+                    child_seg = network.segments.get(child_id)
+                    if child_seg is not None:
+                        child_radii.append(segment_radius_at_node(child_seg, node_id))
                 
                 if child_radii and parent_r > 0:
                     # Murray's law: parent^gamma = sum(child^gamma)
@@ -102,6 +134,7 @@ def check_murrays_law(
     
     details = {
         "bifurcation_count": bifurcation_count,
+        "skipped_cycles": skipped_cycles,
         "mean_deviation": mean_deviation,
         "max_deviation": max_deviation,
         "gamma": gamma,

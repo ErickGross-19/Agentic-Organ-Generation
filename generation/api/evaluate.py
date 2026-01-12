@@ -287,42 +287,92 @@ def _compute_structure_metrics(network: VascularNetwork, config: EvalConfig) -> 
     
     mean_branching_angle = float(np.mean(branching_angles)) if branching_angles else 0.0
     
+    from ..analysis.radius import (
+        compute_murray_deviation_at_junction,
+        find_root_node_id,
+        is_junction_in_cycle,
+    )
+    
     murray_deviations = []
+    
+    # Find root nodes for topology-based parent detection
+    arterial_root = find_root_node_id(network, vessel_type="arterial")
+    venous_root = find_root_node_id(network, vessel_type="venous")
+    
     for node in network.nodes.values():
         if node.node_type == "junction":
-            connected_seg_ids = network.get_connected_segment_ids(node.id)
-            segs = [network.segments.get(sid) for sid in connected_seg_ids]
-            segs = [s for s in segs if s is not None]
-            if len(segs) >= 2:
-                radii = [s.attributes.get("radius", 0.001) for s in segs]
-                parent_idx = np.argmax(radii)
-                parent_r = radii[parent_idx]
-                child_radii = [r for i, r in enumerate(radii) if i != parent_idx]
-                expected = sum(r**3 for r in child_radii) ** (1/3)
-                if expected > 0:
-                    murray_deviations.append(abs(parent_r - expected) / expected)
+            # Skip junctions in cycles (anastomoses) - parent/child is ambiguous
+            if is_junction_in_cycle(network, node.id):
+                continue
+            
+            # Use appropriate root for this node's vessel type
+            root_id = arterial_root if node.vessel_type == "arterial" else venous_root
+            if root_id is None:
+                root_id = arterial_root or venous_root
+            
+            deviation = compute_murray_deviation_at_junction(
+                network, node.id,
+                gamma=3.0,
+                root_node_id=root_id,
+            )
+            
+            if deviation is not None:
+                murray_deviations.append(deviation)
     
     murray_deviation = float(np.mean(murray_deviations)) if murray_deviations else 0.0
     
+    # Use SpatialIndex for collision detection (consistent with validity checks)
     collision_count = 0
     min_clearance = float('inf')
-    seg_list = list(network.segments.values())
-    for i, seg1 in enumerate(seg_list[:min(100, len(seg_list))]):
-        for seg2 in seg_list[i+1:min(i+101, len(seg_list))]:
-            if seg1.start_node_id in (seg2.start_node_id, seg2.end_node_id) or                seg1.end_node_id in (seg2.start_node_id, seg2.end_node_id):
-                continue
-            p1 = network.nodes[seg1.start_node_id].position.to_array()
-            p2 = network.nodes[seg1.end_node_id].position.to_array()
-            p3 = network.nodes[seg2.start_node_id].position.to_array()
-            p4 = network.nodes[seg2.end_node_id].position.to_array()
-            mid1 = (p1 + p2) / 2
-            mid2 = (p3 + p4) / 2
-            dist = np.linalg.norm(mid1 - mid2)
-            min_clearance = min(min_clearance, dist)
-            r1 = seg1.attributes.get("radius", 0.001)
-            r2 = seg2.attributes.get("radius", 0.001)
-            if dist < (r1 + r2):
-                collision_count += 1
+    try:
+        spatial_index = network.get_spatial_index()
+        # Get all collisions with zero clearance (actual intersections)
+        collisions = spatial_index.get_collisions(
+            min_clearance=0.0,
+            exclude_connected=True,
+        )
+        collision_count = len(collisions)
+        
+        # Compute min clearance from collision pairs
+        for seg1_id, seg2_id, clearance in collisions:
+            min_clearance = min(min_clearance, clearance)
+        
+        # If no collisions, estimate min clearance from nearby segment pairs
+        if min_clearance == float('inf') and network.segments:
+            # Sample a few segments and find their nearest non-connected neighbors
+            from ..analysis.radius import segment_mean_radius
+            from ..core.types import Point3D
+            seg_list = list(network.segments.values())[:50]
+            for seg in seg_list:
+                # Compute midpoint manually (TubeGeometry doesn't have midpoint property)
+                start_pos = network.nodes[seg.start_node_id].position
+                end_pos = network.nodes[seg.end_node_id].position
+                midpoint = Point3D(
+                    (start_pos.x + end_pos.x) / 2,
+                    (start_pos.y + end_pos.y) / 2,
+                    (start_pos.z + end_pos.z) / 2,
+                )
+                nearby = spatial_index.query_nearby_segments(midpoint, 0.01)
+                for other_seg in nearby:
+                    if other_seg.id == seg.id:
+                        continue
+                    if (seg.start_node_id in (other_seg.start_node_id, other_seg.end_node_id) or
+                        seg.end_node_id in (other_seg.start_node_id, other_seg.end_node_id)):
+                        continue
+                    # Compute centerline distance
+                    from ..spatial.grid_index import segment_segment_distance_exact
+                    p1 = network.nodes[seg.start_node_id].position.to_array()
+                    p2 = network.nodes[seg.end_node_id].position.to_array()
+                    p3 = network.nodes[other_seg.start_node_id].position.to_array()
+                    p4 = network.nodes[other_seg.end_node_id].position.to_array()
+                    dist = segment_segment_distance_exact(p1, p2, p3, p4)
+                    r1 = segment_mean_radius(seg)
+                    r2 = segment_mean_radius(other_seg)
+                    clearance = dist - r1 - r2
+                    min_clearance = min(min_clearance, max(0.0, clearance))
+    except Exception:
+        # Fallback to simple estimation if SpatialIndex fails
+        pass
     
     if min_clearance == float('inf'):
         min_clearance = 0.0
@@ -338,26 +388,88 @@ def _compute_structure_metrics(network: VascularNetwork, config: EvalConfig) -> 
 
 
 def _compute_validity_metrics(network: VascularNetwork) -> ValidityMetrics:
-    """Compute validity and quality checks."""
-    has_self_intersections = False
-    parameter_warnings = []
+    """
+    Compute validity and quality checks.
     
+    Performs actual checks for:
+    - Self-intersections (collisions between non-adjacent segments)
+    - Watertight geometry (all segments connected, no dangling nodes)
+    - Parameter warnings (very small radii, very short segments)
+    """
+    from ..analysis.radius import segment_mean_radius
+    
+    parameter_warnings = []
+    error_codes = []
+    
+    # Check for self-intersections using SpatialIndex collision detection
+    has_self_intersections = False
+    try:
+        spatial_index = network.get_spatial_index()
+        collisions = spatial_index.get_collisions(
+            min_clearance=0.0,  # Just check for actual intersections
+            exclude_connected=True,  # Exclude segments that share a node
+        )
+        if collisions:
+            has_self_intersections = True
+            error_codes.append(f"COLLISION_COUNT_{len(collisions)}")
+    except Exception as e:
+        # If collision check fails, report as unknown
+        parameter_warnings.append(f"Could not check collisions: {str(e)}")
+    
+    # Check for watertight geometry (all nodes connected, no isolated components)
+    is_watertight = True
+    try:
+        # Check for dangling nodes (nodes with only one connection that aren't terminals/inlets/outlets)
+        for node in network.nodes.values():
+            connected_segs = network.get_connected_segment_ids(node.id)
+            if len(connected_segs) == 0:
+                is_watertight = False
+                error_codes.append(f"ISOLATED_NODE_{node.id}")
+            elif len(connected_segs) == 1 and node.node_type not in ("terminal", "inlet", "outlet"):
+                is_watertight = False
+                error_codes.append(f"DANGLING_NODE_{node.id}")
+        
+        # Check for disconnected components (simple connectivity check)
+        if network.nodes:
+            visited = set()
+            start_node = next(iter(network.nodes.keys()))
+            to_visit = [start_node]
+            while to_visit:
+                node_id = to_visit.pop()
+                if node_id in visited:
+                    continue
+                visited.add(node_id)
+                for seg_id in network.get_connected_segment_ids(node_id):
+                    seg = network.segments.get(seg_id)
+                    if seg:
+                        other_id = seg.end_node_id if seg.start_node_id == node_id else seg.start_node_id
+                        if other_id not in visited:
+                            to_visit.append(other_id)
+            
+            if len(visited) < len(network.nodes):
+                is_watertight = False
+                error_codes.append(f"DISCONNECTED_COMPONENTS_{len(network.nodes) - len(visited)}_UNREACHABLE")
+    except Exception as e:
+        is_watertight = None  # Unknown
+        parameter_warnings.append(f"Could not check watertight: {str(e)}")
+    
+    # Check for parameter warnings (very small radii, very short segments)
     for seg in network.segments.values():
-        r = seg.attributes.get("radius", 0.001)
-        if r < 0.0001:
+        r = segment_mean_radius(seg)
+        if r < 0.0001:  # 0.1mm
             parameter_warnings.append(f"Segment {seg.id} has very small radius: {r:.6f}m")
             break
     
     for seg in network.segments.values():
-        if seg.length < 0.0001:
+        if seg.length < 0.0001:  # 0.1mm
             parameter_warnings.append(f"Segment {seg.id} is very short: {seg.length:.6f}m")
             break
     
     return ValidityMetrics(
-        is_watertight=True,
+        is_watertight=is_watertight if is_watertight is not None else False,
         has_self_intersections=has_self_intersections,
         parameter_warnings=parameter_warnings,
-        error_codes=[],
+        error_codes=error_codes,
     )
 
 

@@ -38,6 +38,10 @@ class CFDConfig:
     
     fidelity: Literal["0D", "1D", "3D"] = "0D"
     
+    # Solver mode: "placeholder" uses simplified solvers, "simvascular" requires SimVascular installation
+    # The 3D solver in placeholder mode provides reasonable estimates but is not production-ready
+    solver_mode: Literal["placeholder", "simvascular"] = "placeholder"
+    
     fluid: FluidProperties = field(default_factory=FluidProperties)
     
     inlet_type: InletType = InletType.STEADY_FLOW
@@ -65,6 +69,7 @@ class CFDConfig:
         """Convert to dictionary for serialization."""
         return {
             "fidelity": self.fidelity,
+            "solver_mode": self.solver_mode,
             "fluid": self.fluid.to_dict(),
             "inlet_type": self.inlet_type.value,
             "inlet_flow_rate": self.inlet_flow_rate,
