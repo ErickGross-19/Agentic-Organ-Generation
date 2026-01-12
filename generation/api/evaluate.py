@@ -341,9 +341,17 @@ def _compute_structure_metrics(network: VascularNetwork, config: EvalConfig) -> 
         if min_clearance == float('inf') and network.segments:
             # Sample a few segments and find their nearest non-connected neighbors
             from ..analysis.radius import segment_mean_radius
+            from ..core.types import Point3D
             seg_list = list(network.segments.values())[:50]
             for seg in seg_list:
-                midpoint = seg.geometry.midpoint
+                # Compute midpoint manually (TubeGeometry doesn't have midpoint property)
+                start_pos = network.nodes[seg.start_node_id].position
+                end_pos = network.nodes[seg.end_node_id].position
+                midpoint = Point3D(
+                    (start_pos.x + end_pos.x) / 2,
+                    (start_pos.y + end_pos.y) / 2,
+                    (start_pos.z + end_pos.z) / 2,
+                )
                 nearby = spatial_index.query_nearby_segments(midpoint, 0.01)
                 for other_seg in nearby:
                     if other_seg.id == seg.id:
