@@ -2,18 +2,18 @@
 """
 Terminal-Venule Insert Generator for 48-Well Plate Compatible Scaffolds
 
-This module generates single-well inserts with terminal-venule-like channel architecture
-designed for hepatocyte culture experiments. The design mimics liver sinusoidal topology
-where many small tributaries (sinusoid-like channels) converge into a central collecting
-venule.
+This module generates single-well inserts with vascular channel architecture
+designed for hepatocyte culture experiments. The design uses CCO (Constrained
+Constructive Optimization) to generate diverging vascular trees from inlet points
+to randomly distributed terminal nodes within the domain.
 
 DESIGN BRIEF
 ------------
 The insert combines:
-1. Terminal-venule-like channel architecture: many small tributaries converging into
-   one central collecting venule
-   - Human reference: central venule ~25-150 µm; sinusoids ~7-15 µm
-   - Scaled up for printability while preserving topology
+1. Vascular channel architecture: diverging trees from inlets to terminal nodes
+   - CCO algorithm generates physiologically realistic branching patterns
+   - Murray's law-based radius scaling for optimal flow
+   - Scaled for printability while preserving topology
 
 2. Open porous scaffold domain around/among channels for:
    - Cell invasion ("dig into")
@@ -25,13 +25,13 @@ TWO DESIGN VARIANTS
 -------------------
 1. Single-Input Design:
    - One inlet at the perimeter
-   - One central "venule" outlet/sink at the bottom center
-   - Creates a simple converging tree topology
+   - Diverging tree to terminal nodes distributed within the domain
+   - Simple branching vascular network
 
 2. Multi-Input Design:
    - 4-6 inlets distributed around the perimeter/top
-   - All converging to one central "venule" outlet/sink
-   - Creates a more complex, radially symmetric converging network
+   - Each inlet generates its own diverging tree
+   - Trees are merged with collision-based connections
 
 EXPERIMENT PLAN (Comparison)
 ----------------------------
@@ -82,7 +82,6 @@ from generation.specs.design_spec import (
     EllipsoidSpec,
     TreeSpec,
     InletSpec,
-    OutletSpec,
 )
 from generation.specs.compile import compile_domain
 from generation.adapters.mesh_adapter import to_trimesh
@@ -149,34 +148,25 @@ class VesselDimensions:
     Vessel radius parameters scaled for printability.
     
     Human liver reference values:
-    - Central venule: 25-150 µm diameter
     - Sinusoids: 7-15 µm diameter
-    
-    These are scaled up significantly for bioprinting compatibility while
-    maintaining the topological relationship (sinusoids << venule).
+    - Scaled up significantly for bioprinting compatibility
     
     Attributes
     ----------
-    central_venule_radius : float
-        Radius of the central collecting venule (outlet) in meters.
-        Default: 0.0005m (500µm). This is the largest vessel.
-        Scaled from human ~75µm to ~500µm for printability.
-        
     inlet_radius : float
         Radius of inlet vessels in meters.
-        Default: 0.0003m (300µm). Intermediate size.
+        Default: 0.0004m (400µm). Root vessel size.
         
     sinusoid_min_radius : float
-        Minimum radius for sinusoid-like terminal branches in meters.
-        Default: 0.0001m (100µm). Smallest printable vessel.
-        Scaled from human ~10µm to ~100µm for printability.
+        Minimum radius for terminal branches in meters.
+        Default: 0.0003m (300µm). Smallest printable vessel.
+        Scaled from human ~10µm to ~300µm for printability.
         
     taper_factor : float
         Radius reduction factor per generation (Murray's law approximation).
-        Default: 0.85. Each child branch is 85% of parent radius.
+        Default: 0.9. Each child branch is 90% of parent radius.
         Range: 0.7-0.95. Lower = faster tapering, more generations.
     """
-    central_venule_radius: float = 0.0005   # 500µm - central outlet
     inlet_radius: float = 0.0004            # 400µm - peripheral inlets (must be > BranchingConstraints.min_radius=0.3mm)
     sinusoid_min_radius: float = 0.0003     # 300µm - minimum branch radius (must be >= BranchingConstraints.min_radius)
     taper_factor: float = 0.9               # Radius decay per generation (higher to avoid hitting min_radius too fast)
@@ -407,14 +397,7 @@ def validate_parameters(
         issues.append(
             f"WARNING: sinusoid_min_radius ({vessels.sinusoid_min_radius*1000:.2f}mm) "
             f">= inlet_radius ({vessels.inlet_radius*1000:.2f}mm). "
-            "Sinusoids should be smaller than inlets."
-        )
-    
-    if vessels.inlet_radius >= vessels.central_venule_radius:
-        issues.append(
-            f"WARNING: inlet_radius ({vessels.inlet_radius*1000:.2f}mm) "
-            f">= central_venule_radius ({vessels.central_venule_radius*1000:.2f}mm). "
-            "Inlets should be smaller than central venule."
+            "Terminal branches should be smaller than inlets."
         )
     
     # Check voxel pitch vs vessel radii
@@ -569,18 +552,14 @@ def create_single_input_spec(
     seed: int = 42,
 ) -> DesignSpec:
     """
-    Create design specification for single-input terminal-venule insert.
+    Create design specification for single-input vascular insert.
     
-    Note: The CCO backend generates a DIVERGING tree from the inlet to randomly
-    sampled terminal points within the domain. The OutletSpec (central venule)
-    is included for specification completeness but is NOT directly connected
-    by the CCO algorithm. To create a true converging topology, additional
-    post-processing or a different generation approach would be needed.
+    The CCO backend generates a DIVERGING tree from the inlet to randomly
+    sampled terminal points within the domain.
     
     This creates a diverging tree topology with:
     - One inlet at the perimeter (top edge) - root of the tree
     - Terminal nodes randomly distributed within the domain
-    - One outlet spec at center bottom (for documentation, not connected by CCO)
     
     Parameters
     ----------
@@ -600,9 +579,6 @@ def create_single_input_spec(
     """
     logger.info("Creating single-input design specification...")
     
-    # Define ellipsoid domain (approximating cylindrical insert)
-    # Using ellipsoid because BoxDomain doesn't have center attribute needed by design_from_spec
-    # Semi-axes: radius for X/Y, height/2 for Z
     domain = EllipsoidSpec(
         type="ellipsoid",
         center=(0.0, 0.0, geometry.height / 2),
@@ -612,53 +588,35 @@ def create_single_input_spec(
     logger.info(f"  Domain: ellipsoid with semi-axes ({geometry.radius*1000:.1f}mm, "
                f"{geometry.radius*1000:.1f}mm, {geometry.height/2*1000:.1f}mm)")
     
-    # Single inlet at perimeter (positive X edge, near top)
-    # For ellipsoid domain, we need to ensure the inlet is inside the ellipsoid
-    # Ellipsoid equation: (x/a)² + (y/b)² + ((z-cz)/(c))² <= 1
-    # Place inlet at 70% of radius on X-axis, at domain center height
     domain_center_z = geometry.height / 2
-    inlet_x = geometry.radius * 0.7  # 70% of radius to stay inside ellipsoid
-    inlet_z = domain_center_z + (geometry.height / 2) * 0.5  # Upper half of domain
+    inlet_x = geometry.radius * 0.7
+    inlet_z = domain_center_z + (geometry.height / 2) * 0.5
     inlet = InletSpec(
         position=(inlet_x, 0.0, inlet_z),
         radius=vessels.inlet_radius,
-        vessel_type="venous",  # Using venous for converging topology
+        vessel_type="venous",
     )
     
     logger.info(f"  Inlet: position=({inlet_x*1000:.2f}, 0, {inlet_z*1000:.2f})mm, "
                f"radius={vessels.inlet_radius*1000:.2f}mm")
     
-    # Central outlet at bottom center (the "central venule")
-    # Place at domain center height minus some offset to be inside ellipsoid
-    outlet_z = domain_center_z - (geometry.height / 2) * 0.5  # Lower half of domain
-    outlet = OutletSpec(
-        position=(0.0, 0.0, outlet_z),
-        radius=vessels.central_venule_radius,
-        vessel_type="venous",
-    )
-    
-    logger.info(f"  Outlet (central venule): position=(0, 0, {outlet_z*1000:.2f})mm, "
-               f"radius={vessels.central_venule_radius*1000:.2f}mm")
-    
     logger.info(f"  CCO params: num_outlets={cco_params.num_outlets}, "
                f"murray_exponent={cco_params.murray_exponent}")
     
-    # Create tree spec (colonization is None for CCO-based generation)
     tree = TreeSpec(
         inlets=[inlet],
-        outlets=[outlet],
+        outlets=[],
         colonization=None,
     )
     
-    # Create full design spec
     spec = DesignSpec(
         domain=domain,
         tree=tree,
         seed=seed,
         metadata={
-            "design_type": "terminal_venule_insert",
+            "design_type": "vascular_insert",
             "variant": "single_input",
-            "description": "Single-input converging venule topology for 48-well insert (CCO)",
+            "description": "Single-input diverging vascular tree for 48-well insert (CCO)",
             "generation_method": "cco_hybrid",
         },
         output_units="mm",
@@ -677,20 +635,15 @@ def create_multi_input_spec(
     seed: int = 42,
 ) -> DesignSpec:
     """
-    Create design specification for multi-input terminal-venule insert.
+    Create design specification for multi-input vascular insert.
     
-    Note: The CCO backend generates DIVERGING trees from each inlet to randomly
-    sampled terminal points within the domain. The OutletSpec (central venule)
-    is included for specification completeness but is NOT directly connected
-    by the CCO algorithm. Each inlet generates its own tree, and trees are
-    merged with collision-based connections. To create a true converging
-    topology, additional post-processing or a different generation approach
-    would be needed.
+    The CCO backend generates DIVERGING trees from each inlet to randomly
+    sampled terminal points within the domain. Each inlet generates its own
+    tree, and trees are merged with collision-based connections.
     
     This creates multiple diverging trees with:
     - Multiple inlets (4-6) distributed radially around the perimeter - each is a tree root
     - Terminal nodes randomly distributed within the domain for each tree
-    - One outlet spec at center bottom (for documentation, not connected by CCO)
     - Inter-tree connections created at collision points
     
     Parameters
@@ -713,8 +666,6 @@ def create_multi_input_spec(
     """
     logger.info(f"Creating multi-input design specification ({multi_config.num_inlets} inlets)...")
     
-    # Define ellipsoid domain (approximating cylindrical insert)
-    # Using ellipsoid because BoxDomain doesn't have center attribute needed by design_from_spec
     domain = EllipsoidSpec(
         type="ellipsoid",
         center=(0.0, 0.0, geometry.height / 2),
@@ -724,14 +675,10 @@ def create_multi_input_spec(
     logger.info(f"  Domain: ellipsoid with semi-axes ({geometry.radius*1000:.1f}mm, "
                f"{geometry.radius*1000:.1f}mm, {geometry.height/2*1000:.1f}mm)")
     
-    # Create multiple inlets distributed radially
-    # For ellipsoid domain, we need to ensure inlets are inside the ellipsoid
-    # Ellipsoid equation: (x/a)² + (y/b)² + ((z-cz)/(c))² <= 1
-    # Place inlets at 60% of radius to stay safely inside ellipsoid
     inlets = []
     domain_center_z = geometry.height / 2
-    inlet_radial_pos = geometry.radius * 0.6  # 60% of radius to stay inside ellipsoid
-    inlet_z = domain_center_z + (geometry.height / 2) * 0.4  # Upper portion of domain
+    inlet_radial_pos = geometry.radius * 0.6
+    inlet_z = domain_center_z + (geometry.height / 2) * 0.4
     
     for i in range(multi_config.num_inlets):
         angle = 2 * math.pi * i / multi_config.num_inlets
@@ -748,37 +695,24 @@ def create_multi_input_spec(
         logger.info(f"  Inlet {i+1}: position=({inlet_x*1000:.2f}, {inlet_y*1000:.2f}, "
                    f"{inlet_z*1000:.2f})mm, radius={vessels.inlet_radius*1000:.2f}mm")
     
-    # Central outlet at bottom center (inside ellipsoid)
-    outlet_z = domain_center_z - (geometry.height / 2) * 0.5  # Lower half of domain
-    outlet = OutletSpec(
-        position=(0.0, 0.0, outlet_z),
-        radius=vessels.central_venule_radius,
-        vessel_type="venous",
-    )
-    
-    logger.info(f"  Outlet (central venule): position=(0, 0, {outlet_z*1000:.2f})mm, "
-               f"radius={vessels.central_venule_radius*1000:.2f}mm")
-    
     logger.info(f"  CCO params: num_outlets={cco_params.num_outlets}, "
                f"murray_exponent={cco_params.murray_exponent}")
     
-    # Create tree spec (colonization is None for CCO-based generation)
     tree = TreeSpec(
         inlets=inlets,
-        outlets=[outlet],
+        outlets=[],
         colonization=None,
     )
     
-    # Create full design spec
     spec = DesignSpec(
         domain=domain,
         tree=tree,
         seed=seed,
         metadata={
-            "design_type": "terminal_venule_insert",
+            "design_type": "vascular_insert",
             "variant": "multi_input",
             "num_inlets": multi_config.num_inlets,
-            "description": f"Multi-input ({multi_config.num_inlets} inlets) converging venule topology (CCO)",
+            "description": f"Multi-input ({multi_config.num_inlets} inlets) diverging vascular trees (CCO)",
             "generation_method": "cco_hybrid",
         },
         output_units="mm",
