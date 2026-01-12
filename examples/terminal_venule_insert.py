@@ -79,7 +79,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from generation import VascularNetwork
 from generation.specs.design_spec import (
     DesignSpec,
-    EllipsoidSpec,
+    CylinderSpec,
     TreeSpec,
     InletSpec,
 )
@@ -579,14 +579,15 @@ def create_single_input_spec(
     """
     logger.info("Creating single-input design specification...")
     
-    domain = EllipsoidSpec(
-        type="ellipsoid",
+    domain = CylinderSpec(
+        type="cylinder",
         center=(0.0, 0.0, geometry.height / 2),
-        semi_axes=(geometry.radius, geometry.radius, geometry.height / 2),
+        radius=geometry.radius,
+        height=geometry.height,
     )
     
-    logger.info(f"  Domain: ellipsoid with semi-axes ({geometry.radius*1000:.1f}mm, "
-               f"{geometry.radius*1000:.1f}mm, {geometry.height/2*1000:.1f}mm)")
+    logger.info(f"  Domain: cylinder with radius={geometry.radius*1000:.1f}mm, "
+               f"height={geometry.height*1000:.1f}mm")
     
     domain_center_z = geometry.height / 2
     inlet_x = geometry.radius * 0.7
@@ -666,14 +667,15 @@ def create_multi_input_spec(
     """
     logger.info(f"Creating multi-input design specification ({multi_config.num_inlets} inlets)...")
     
-    domain = EllipsoidSpec(
-        type="ellipsoid",
+    domain = CylinderSpec(
+        type="cylinder",
         center=(0.0, 0.0, geometry.height / 2),
-        semi_axes=(geometry.radius, geometry.radius, geometry.height / 2),
+        radius=geometry.radius,
+        height=geometry.height,
     )
     
-    logger.info(f"  Domain: ellipsoid with semi-axes ({geometry.radius*1000:.1f}mm, "
-               f"{geometry.radius*1000:.1f}mm, {geometry.height/2*1000:.1f}mm)")
+    logger.info(f"  Domain: cylinder with radius={geometry.radius*1000:.1f}mm, "
+               f"height={geometry.height*1000:.1f}mm")
     
     inlets = []
     domain_center_z = geometry.height / 2
@@ -934,8 +936,16 @@ def merge_trees_with_collision_connections(
         main_network.add_segment(new_seg)
         seg_id_map[old_seg.id] = new_seg_id
     
-    # Sort collisions by clearance (most severe first) and limit connections
-    sorted_collisions = sorted(collisions, key=lambda c: c["clearance"])
+    # Filter out negative clearance collisions (overlapping segments)
+    # Only use near-miss collisions with positive clearance for connections
+    valid_collisions = [c for c in collisions if c["clearance"] >= 0]
+    
+    if len(valid_collisions) < len(collisions):
+        logger.warning(f"    Filtered out {len(collisions) - len(valid_collisions)} overlapping "
+                      f"collisions (negative clearance)")
+    
+    # Sort by clearance (smallest positive first = closest near-misses)
+    sorted_collisions = sorted(valid_collisions, key=lambda c: c["clearance"])
     collisions_to_connect = sorted_collisions[:max_connections]
     
     connections_created = 0
@@ -1019,6 +1029,7 @@ def _split_segment_at_node(
     network: VascularNetwork,
     segment_id: int,
     junction_node_id: int,
+    min_segment_length: float = 0.0001,
 ) -> Tuple[int, int]:
     """
     Split a segment at a junction node, creating two new segments.
@@ -1026,6 +1037,10 @@ def _split_segment_at_node(
     The original segment is removed and replaced with two segments:
     - start_node -> junction_node
     - junction_node -> end_node
+    
+    If the junction is too close to an endpoint (would create a segment shorter
+    than min_segment_length), the split is skipped and the junction is connected
+    directly to the existing endpoint.
     
     Parameters
     ----------
@@ -1035,11 +1050,13 @@ def _split_segment_at_node(
         ID of segment to split
     junction_node_id : int
         ID of junction node to split at
+    min_segment_length : float
+        Minimum allowed segment length (meters). Default: 0.1mm
         
     Returns
     -------
     Tuple[int, int]
-        IDs of the two new segments
+        IDs of the two new segments (-1 if segment was not created)
     """
     segment = network.segments.get(segment_id)
     if segment is None:
@@ -1052,13 +1069,29 @@ def _split_segment_at_node(
     if junction_node is None or start_node is None or end_node is None:
         return (-1, -1)
     
-    # Compute interpolation parameter t for radius interpolation
+    # Compute distances
+    dist_to_start = start_node.position.distance_to(junction_node.position)
+    dist_to_end = end_node.position.distance_to(junction_node.position)
     total_length = start_node.position.distance_to(end_node.position)
+    
+    # Check if junction is too close to start or end
+    if dist_to_start < min_segment_length:
+        logger.debug(f"    Junction too close to start ({dist_to_start*1000:.4f}mm), "
+                    f"connecting to start node instead")
+        junction_node.position = start_node.position
+        return (-1, segment_id)
+    
+    if dist_to_end < min_segment_length:
+        logger.debug(f"    Junction too close to end ({dist_to_end*1000:.4f}mm), "
+                    f"connecting to end node instead")
+        junction_node.position = end_node.position
+        return (segment_id, -1)
+    
+    # Compute interpolation parameter t for radius interpolation
     if total_length < 1e-10:
         t = 0.5
     else:
-        dist_to_junction = start_node.position.distance_to(junction_node.position)
-        t = dist_to_junction / total_length
+        t = dist_to_start / total_length
     
     # Interpolate radius at junction point
     r_start = segment.geometry.radius_start
@@ -1105,6 +1138,51 @@ def _split_segment_at_node(
     network.add_segment(seg2)
     
     return (seg1_id, seg2_id)
+
+
+def cleanup_degenerate_segments(
+    network: VascularNetwork,
+    min_length: float = 0.0001,
+) -> Dict[str, int]:
+    """
+    Remove degenerate (zero-length or very short) segments from the network.
+    
+    Parameters
+    ----------
+    network : VascularNetwork
+        Network to clean up (modified in place)
+    min_length : float
+        Minimum allowed segment length (meters). Default: 0.1mm
+        
+    Returns
+    -------
+    Dict[str, int]
+        Cleanup statistics: segments_removed, nodes_removed
+    """
+    segments_to_remove = []
+    
+    for seg in network.segments.values():
+        start_node = network.get_node(seg.start_node_id)
+        end_node = network.get_node(seg.end_node_id)
+        
+        if start_node is None or end_node is None:
+            segments_to_remove.append(seg.id)
+            continue
+        
+        length = start_node.position.distance_to(end_node.position)
+        if length < min_length:
+            segments_to_remove.append(seg.id)
+    
+    for seg_id in segments_to_remove:
+        network.remove_segment(seg_id)
+    
+    if segments_to_remove:
+        logger.info(f"    Removed {len(segments_to_remove)} degenerate segments "
+                   f"(length < {min_length*1000:.3f}mm)")
+    
+    return {
+        "segments_removed": len(segments_to_remove),
+    }
 
 
 # =============================================================================
@@ -1327,6 +1405,11 @@ def generate_network_from_spec(
         
         if total_connections > 0:
             logger.info(f"  Total inter-tree connections created: {total_connections}")
+        
+        # Clean up any degenerate segments created during merging
+        cleanup_result = cleanup_degenerate_segments(network, min_length=0.0001)
+        if cleanup_result["segments_removed"] > 0:
+            logger.info(f"  Post-merge cleanup: removed {cleanup_result['segments_removed']} degenerate segments")
     
     # Log network statistics
     logger.info(f"  CCO generation complete!")

@@ -41,8 +41,8 @@ USAGE
 from typing import Optional
 import numpy as np
 
-from .design_spec import DomainSpec as SpecDomainSpec, EllipsoidSpec, BoxSpec
-from ..core.domain import DomainSpec as RuntimeDomainSpec, EllipsoidDomain, BoxDomain
+from .design_spec import DomainSpec as SpecDomainSpec, EllipsoidSpec, BoxSpec, CylinderSpec
+from ..core.domain import DomainSpec as RuntimeDomainSpec, EllipsoidDomain, BoxDomain, CylinderDomain
 from ..core.types import Point3D
 
 
@@ -100,6 +100,8 @@ def compile_domain(
         return _compile_ellipsoid(spec, transform)
     elif isinstance(spec, BoxSpec):
         return _compile_box(spec, transform)
+    elif isinstance(spec, CylinderSpec):
+        return _compile_cylinder(spec, transform)
     else:
         raise ValueError(f"Unsupported domain spec type: {type(spec).__name__}")
 
@@ -169,6 +171,39 @@ def _compile_box(
         width=spec.size[0],
         height=spec.size[1],
         depth=spec.size[2],
+    )
+
+
+def _compile_cylinder(
+    spec: CylinderSpec,
+    transform: Optional[np.ndarray] = None,
+) -> CylinderDomain:
+    """
+    Compile a CylinderSpec into a CylinderDomain.
+    
+    Parameters
+    ----------
+    spec : CylinderSpec
+        Cylinder specification with center, radius, and height in meters
+    transform : np.ndarray, optional
+        4x4 transformation matrix (only translation is applied)
+        
+    Returns
+    -------
+    CylinderDomain
+        Compiled cylinder domain
+    """
+    center = np.array(spec.center)
+    
+    if transform is not None:
+        center_homogeneous = np.array([center[0], center[1], center[2], 1.0])
+        transformed = transform @ center_homogeneous
+        center = transformed[:3]
+    
+    return CylinderDomain(
+        radius=spec.radius,
+        height=spec.height,
+        center=Point3D(float(center[0]), float(center[1]), float(center[2])),
     )
 
 
