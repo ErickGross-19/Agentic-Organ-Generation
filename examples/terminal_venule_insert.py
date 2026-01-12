@@ -505,13 +505,15 @@ def validate_network(
         )
         results["valid"] = False
     
-    # Check for inlets and outlets
+    # Check for inlets and outlets/terminals
+    # Note: CCO backend creates 'terminal' nodes instead of 'outlet' nodes
+    # For CCO-based generation, terminals serve as the effective outlets
     if node_counts["inlet"] == 0:
         results["issues"].append("ERROR: No inlet nodes found in network.")
         results["valid"] = False
     
-    if node_counts["outlet"] == 0:
-        results["issues"].append("ERROR: No outlet nodes found in network.")
+    if node_counts["outlet"] == 0 and node_counts["terminal"] == 0:
+        results["issues"].append("ERROR: No outlet or terminal nodes found in network.")
         results["valid"] = False
     
     # Compute segment length statistics
@@ -569,10 +571,16 @@ def create_single_input_spec(
     """
     Create design specification for single-input terminal-venule insert.
     
-    This creates a converging tree topology with:
-    - One inlet at the perimeter (top edge)
-    - One outlet at the center bottom (central venule)
-    - Branching network connecting inlet to outlet using CCO algorithm
+    Note: The CCO backend generates a DIVERGING tree from the inlet to randomly
+    sampled terminal points within the domain. The OutletSpec (central venule)
+    is included for specification completeness but is NOT directly connected
+    by the CCO algorithm. To create a true converging topology, additional
+    post-processing or a different generation approach would be needed.
+    
+    This creates a diverging tree topology with:
+    - One inlet at the perimeter (top edge) - root of the tree
+    - Terminal nodes randomly distributed within the domain
+    - One outlet spec at center bottom (for documentation, not connected by CCO)
     
     Parameters
     ----------
@@ -671,10 +679,19 @@ def create_multi_input_spec(
     """
     Create design specification for multi-input terminal-venule insert.
     
-    This creates a converging tree topology with:
-    - Multiple inlets (4-6) distributed radially around the perimeter
-    - One outlet at the center bottom (central venule)
-    - Multiple branching networks all converging to the central outlet using CCO algorithm
+    Note: The CCO backend generates DIVERGING trees from each inlet to randomly
+    sampled terminal points within the domain. The OutletSpec (central venule)
+    is included for specification completeness but is NOT directly connected
+    by the CCO algorithm. Each inlet generates its own tree, and trees are
+    merged with collision-based connections. To create a true converging
+    topology, additional post-processing or a different generation approach
+    would be needed.
+    
+    This creates multiple diverging trees with:
+    - Multiple inlets (4-6) distributed radially around the perimeter - each is a tree root
+    - Terminal nodes randomly distributed within the domain for each tree
+    - One outlet spec at center bottom (for documentation, not connected by CCO)
+    - Inter-tree connections created at collision points
     
     Parameters
     ----------
@@ -1333,7 +1350,7 @@ def generate_network_from_spec(
                     main_network=network,
                     new_tree=tree_network,
                     collisions=collisions,
-                    connection_radius=vessels.terminal_radius if hasattr(vessels, 'terminal_radius') else 0.0003,
+                    connection_radius=vessels.sinusoid_min_radius,
                     max_connections=min(3, len(collisions)),  # Limit connections per tree
                 )
                 
@@ -1455,13 +1472,16 @@ def generate_insert(
     output_dir: str,
     embedding_params: EmbeddingParameters = DEFAULT_EMBEDDING_PARAMS,
     skip_embedding: bool = False,
+    geometry: InsertGeometry = DEFAULT_INSERT_GEOMETRY,
+    vessels: VesselDimensions = DEFAULT_VESSEL_DIMENSIONS,
+    cco_params: CCOParameters = DEFAULT_CCO_PARAMS,
 ) -> Dict[str, Any]:
     """
     Generate terminal-venule insert from design specification.
     
     This function:
     1. Validates input parameters
-    2. Generates vascular network via space colonization
+    2. Generates vascular network via CCO hybrid backend with optional NLP optimization
     3. Validates the generated network
     4. Exports vascular mesh to STL
     5. Creates scaffold with channels as voids (optional)
@@ -1479,6 +1499,12 @@ def generate_insert(
         Parameters for scaffold embedding
     skip_embedding : bool
         If True, skip the embedding step (faster for testing)
+    geometry : InsertGeometry
+        Insert geometry parameters (for report recording)
+    vessels : VesselDimensions
+        Vessel dimension parameters (for report recording)
+    cco_params : CCOParameters
+        CCO algorithm parameters (for report recording)
         
     Returns
     -------
@@ -1611,7 +1637,7 @@ def generate_insert(
                 output_void=False,
                 output_shell=False,
                 shell_thickness=embedding_params.shell_thickness,
-                stl_units="mm",
+                stl_units="m",
                 output_units="mm",
             )
             
@@ -1655,10 +1681,10 @@ def generate_insert(
         "output_files": results["paths"],
         "errors": results["errors"],
         "parameters": {
-            "geometry": asdict(DEFAULT_INSERT_GEOMETRY),
-            "vessels": asdict(DEFAULT_VESSEL_DIMENSIONS),
-            "cco_params": asdict(DEFAULT_CCO_PARAMS),
-            "embedding": asdict(DEFAULT_EMBEDDING_PARAMS),
+            "geometry": asdict(geometry),
+            "vessels": asdict(vessels),
+            "cco_params": asdict(cco_params),
+            "embedding": asdict(embedding_params),
         },
     }
     
