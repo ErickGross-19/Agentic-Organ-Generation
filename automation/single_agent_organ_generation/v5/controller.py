@@ -584,17 +584,13 @@ class SingleAgentOrganGeneratorV5:
             else:
                 available.append("generate_missing_field_questions")
             
-            # Only propose plans if:
-            # 1. No plans exist yet (auto-propose ONCE)
-            # 2. User explicitly requested re-proposal, OR
-            # 3. A "major" field changed (topology.kind, domain.type)
+            # Only propose/select plans if:
+            # 1. No open questions remain (all questions answered first)
+            # 2. Has minimum intent (domain type, topology kind, or some decisions made)
+            # 3. No plan selected yet
             # 
-            # This prevents the infinite plan loop where every answer triggers re-proposal.
-            # 
-            # Additionally, gate plan proposal to only be available after minimum intent:
-            # - domain type must be set, OR
-            # - topology kind must be set, OR
-            # - at least one question has been answered (first round of questions generated/answered)
+            # This prevents the plan selection loop where plans are offered while
+            # questions are still being asked, which confuses the flow.
             has_minimum_intent = (
                 self.world_model.has_fact("domain.type") or
                 self.world_model.has_fact("domain_type") or
@@ -604,7 +600,11 @@ class SingleAgentOrganGeneratorV5:
                 len(self.world_model._decisions) > 0
             )
             
-            if not self.world_model.selected_plan and has_minimum_intent:
+            # Only offer plan proposal/selection when no open questions remain
+            # This ensures all questions are answered before plan selection
+            no_open_questions = not self.world_model.open_questions
+            
+            if not self.world_model.selected_plan and has_minimum_intent and no_open_questions:
                 if not self.world_model.plans:
                     # No plans yet - propose some (auto-propose ONCE)
                     available.append("propose_tailored_plans")
@@ -1341,22 +1341,107 @@ class SingleAgentOrganGeneratorV5:
                 reason="Extracted from project description",
             )
             
-            # Provide feedback about what was understood
-            feedback_parts = []
-            if detected_organ:
-                feedback_parts.append(f"building a {detected_organ} scaffold")
-                # If topology wasn't set yet, suggest it
-                if not self.world_model.has_fact("topology.kind"):
-                    suggested = extracted_intent.get("suggested_topology")
-                    if suggested:
-                        feedback_parts.append(f"I'd suggest {suggested} topology for {detected_organ}")
-            if use_cases:
-                feedback_parts.append(f"intended for {', '.join(use_cases).replace('_', ' ')}")
-            
-            if feedback_parts:
-                self.io.say_assistant(f"I understand you're {'. '.join(feedback_parts)}.")
+            # Provide detailed conversational feedback about what was understood
+            # and how it will influence the final object generation
+            self._provide_description_feedback(extracted_intent, detected_organ, use_cases)
             
             self._emit_trace("project_intent_extracted", f"Extracted intent: {extracted_intent}")
+        else:
+            # No specific intent extracted - acknowledge and explain what we're looking for
+            self.io.say_assistant(
+                "Thanks for the description! I didn't detect a specific organ type or use case, "
+                "but that's okay - I'll ask you about the details as we go. "
+                "If you mention things like 'liver', 'kidney', 'perfusion', or '3D printing' later, "
+                "I can adjust my suggestions accordingly."
+            )
+    
+    def _provide_description_feedback(
+        self,
+        extracted_intent: Dict[str, Any],
+        detected_organ: Optional[str],
+        use_cases: List[str],
+    ) -> None:
+        """
+        Provide detailed conversational feedback about what was understood from
+        the project description and how it will influence the final object generation.
+        """
+        feedback_lines = []
+        generation_implications = []
+        
+        # Organ detection feedback
+        if detected_organ:
+            feedback_lines.append(f"I see you're building a **{detected_organ}** scaffold.")
+            
+            # Explain topology suggestion based on organ
+            suggested_topology = extracted_intent.get("suggested_topology")
+            if suggested_topology:
+                if suggested_topology == "dual_trees":
+                    feedback_lines.append(
+                        f"For {detected_organ}, I'd recommend **dual_trees** topology - "
+                        "this creates two interleaved vascular networks (like arterial and venous) "
+                        "that meet in a capillary bed, which is how real organs handle blood supply and drainage."
+                    )
+                    generation_implications.append(
+                        "The final mesh will have two separate inlet/outlet pairs for the arterial and venous trees"
+                    )
+                else:
+                    feedback_lines.append(
+                        f"For {detected_organ}, a **tree** topology should work well - "
+                        "this creates a branching network from a single inlet that distributes flow throughout the scaffold."
+                    )
+                    generation_implications.append(
+                        "The final mesh will have one inlet that branches into many terminals"
+                    )
+        
+        # Size detection feedback
+        detected_size = extracted_intent.get("detected_size")
+        if detected_size:
+            feedback_lines.append(f"I noted the size you mentioned: **{detected_size}**.")
+            generation_implications.append(
+                f"I'll use this as a reference when you specify the domain dimensions"
+            )
+        
+        # Use case feedback with generation implications
+        if use_cases:
+            use_case_descriptions = {
+                "perfusion": (
+                    "**perfusion testing**",
+                    "I'll ensure the vascular network has good flow-through characteristics with clear inlet and outlet paths"
+                ),
+                "tissue_engineering": (
+                    "**tissue engineering**",
+                    "I'll optimize for tissue coverage - making sure the vascular network reaches all parts of the scaffold for nutrient delivery"
+                ),
+                "3d_printing": (
+                    "**3D printing/bioprinting**",
+                    "I'll ensure minimum channel diameters meet printability constraints and avoid overhangs where possible"
+                ),
+                "implantation": (
+                    "**implantation/transplant**",
+                    "I'll focus on biocompatible geometry with smooth vessel transitions and physiologically realistic branching"
+                ),
+            }
+            
+            use_case_names = []
+            for uc in use_cases:
+                if uc in use_case_descriptions:
+                    name, implication = use_case_descriptions[uc]
+                    use_case_names.append(name)
+                    generation_implications.append(implication)
+            
+            if use_case_names:
+                feedback_lines.append(f"Your intended use case is {', '.join(use_case_names)}.")
+        
+        # Output the feedback
+        if feedback_lines:
+            self.io.say_assistant("\n".join(feedback_lines))
+        
+        # Output generation implications
+        if generation_implications:
+            implications_text = "**How this affects the final object:**\n"
+            for impl in generation_implications:
+                implications_text += f"- {impl}\n"
+            self.io.say_assistant(implications_text.strip())
     
     def _maybe_readback(self, field: str, value: Any) -> None:
         """
