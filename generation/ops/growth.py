@@ -212,6 +212,7 @@ def grow_to_point(
     target_radius: Optional[float] = None,
     constraints: Optional[BranchingConstraints] = None,
     check_collisions: bool = True,
+    fail_on_collision: bool = True,
     use_polyline_routing: bool = False,
     seed: Optional[int] = None,
 ) -> OperationResult:
@@ -224,6 +225,10 @@ def grow_to_point(
     avoid collisions or stay within the domain.
     
     Note: The library uses METERS internally for all geometry.
+    
+    P2-3: fail_on_collision defaults to True for agent workflows. When True,
+    the operation fails if a collision is detected (unless polyline routing
+    succeeds). When False, collisions generate warnings but don't fail.
     
     Parameters
     ----------
@@ -239,6 +244,10 @@ def grow_to_point(
         Branching constraints
     check_collisions : bool
         Whether to check for collisions
+    fail_on_collision : bool
+        If True (default), fail the operation when collision is detected
+        and polyline routing is not enabled or fails. If False, collisions
+        generate warnings but the operation succeeds.
     use_polyline_routing : bool
         If True, attempt polyline routing when straight-line growth
         would collide or exit domain. Creates a TubeGeometry with
@@ -385,6 +394,42 @@ def grow_to_point(
                     f"to avoid {'collision' if has_collision else 'domain boundary'}"
                 )
             else:
+                if fail_on_collision:
+                    error_msgs = []
+                    for detail in collision_details:
+                        error_msgs.append(
+                            f"Collision with segment {detail['segment_id']} "
+                            f"(clearance: {detail['clearance']:.4f}m, required: {detail['min_required']:.4f}m)"
+                        )
+                    if not domain_fits:
+                        error_msgs.append(f"Tube extends outside domain (margin: {margin:.4f}m)")
+                    return OperationResult.failure(
+                        message="Growth failed: collision detected and polyline routing failed",
+                        errors=error_msgs,
+                    )
+                else:
+                    for detail in collision_details:
+                        warnings.append(
+                            f"Near collision with segment {detail['segment_id']} "
+                            f"(clearance: {detail['clearance']:.4f}m, required: {detail['min_required']:.4f}m)"
+                        )
+                    if not domain_fits:
+                        warnings.append(f"Tube may extend outside domain (margin: {margin:.4f}m)")
+        elif has_collision or not domain_fits:
+            if fail_on_collision:
+                error_msgs = []
+                for detail in collision_details:
+                    error_msgs.append(
+                        f"Collision with segment {detail['segment_id']} "
+                        f"(clearance: {detail['clearance']:.4f}m, required: {detail['min_required']:.4f}m)"
+                    )
+                if not domain_fits:
+                    error_msgs.append(f"Tube extends outside domain (margin: {margin:.4f}m)")
+                return OperationResult.failure(
+                    message="Growth failed: collision detected",
+                    errors=error_msgs,
+                )
+            else:
                 for detail in collision_details:
                     warnings.append(
                         f"Near collision with segment {detail['segment_id']} "
@@ -392,15 +437,6 @@ def grow_to_point(
                     )
                 if not domain_fits:
                     warnings.append(f"Tube may extend outside domain (margin: {margin:.4f}m)")
-        else:
-            for detail in collision_details:
-                warnings.append(
-                    f"Near collision with segment {detail['segment_id']} "
-                    f"(clearance: {detail['clearance']:.4f}m, required: {detail['min_required']:.4f}m)"
-                )
-            
-            if not domain_fits:
-                warnings.append(f"Tube may extend outside domain (margin: {margin:.4f}m)")
     
     new_node_id = network.id_gen.next_id()
     new_node = Node(

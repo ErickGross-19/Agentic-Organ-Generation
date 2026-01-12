@@ -14,14 +14,10 @@ def estimate_flows(
     blood_viscosity: float = 0.004,  # Pa·s (typical blood viscosity)
 ) -> Dict:
     """
-    import warnings
-    warnings.warn(
-        "estimate_flows() is deprecated. Use compute_component_flows() from solver.py instead.",
-        DeprecationWarning,
-        stacklevel=2
-    )
-    
     Estimate flows using simplified network flow model.
+    
+    .. deprecated::
+        Use compute_component_flows() from solver.py instead.
     
     Uses Poiseuille's law for resistance and solves linear system.
     
@@ -46,6 +42,12 @@ def estimate_flows(
         - total_outlet_flow: total flow leaving network
         - flow_balance_error: relative error in flow conservation
     """
+    import warnings
+    warnings.warn(
+        "estimate_flows() is deprecated. Use compute_component_flows() from solver.py instead.",
+        DeprecationWarning,
+        stacklevel=2
+    )
     
     node_ids = list(network.nodes.keys())
     segment_ids = list(network.segments.keys())

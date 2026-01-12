@@ -87,12 +87,19 @@ def compute_perfusion_metrics_segment_based(
         venous_distances = np.minimum(venous_distances, distance_cap)
     
     w_a, w_v = weights
-    epsilon = 1e-6
     
-    perfusion_scores = 1.0 / (w_a * arterial_distances + w_v * venous_distances + epsilon)
+    # P1-3: Use absolute exponential mapping instead of normalizing by max score
+    # score = exp(-(wA*dA + wV*dV)/d0) where d0 is the diffusion target distance
+    # This makes threshold stable across networks
+    d0 = 0.005  # 5mm diffusion target distance (typical oxygen diffusion limit)
     
-    if perfusion_scores.max() > 0:
-        perfusion_scores = perfusion_scores / perfusion_scores.max()
+    weighted_distances = w_a * arterial_distances + w_v * venous_distances
+    perfusion_scores = np.exp(-weighted_distances / d0)
+    
+    # If distance_cap exists, set score=0 beyond cap
+    if distance_cap is not None:
+        beyond_cap = (arterial_distances >= distance_cap) | (venous_distances >= distance_cap)
+        perfusion_scores[beyond_cap] = 0.0
     
     well_perfused_mask = perfusion_scores >= well_perfused_threshold
     well_perfused_fraction = float(np.sum(well_perfused_mask) / n_points)
@@ -217,12 +224,19 @@ def compute_perfusion_metrics(
         venous_distances = np.minimum(venous_distances, distance_cap)
     
     w_a, w_v = weights
-    epsilon = 1e-6
     
-    perfusion_scores = 1.0 / (w_a * arterial_distances + w_v * venous_distances + epsilon)
+    # P1-3: Use absolute exponential mapping instead of normalizing by max score
+    # score = exp(-(wA*dA + wV*dV)/d0) where d0 is the diffusion target distance
+    # This makes threshold stable across networks
+    d0 = 0.005  # 5mm diffusion target distance (typical oxygen diffusion limit)
     
-    if perfusion_scores.max() > 0:
-        perfusion_scores = perfusion_scores / perfusion_scores.max()
+    weighted_distances = w_a * arterial_distances + w_v * venous_distances
+    perfusion_scores = np.exp(-weighted_distances / d0)
+    
+    # If distance_cap exists, set score=0 beyond cap
+    if distance_cap is not None:
+        beyond_cap = (arterial_distances >= distance_cap) | (venous_distances >= distance_cap)
+        perfusion_scores[beyond_cap] = 0.0
     
     well_perfused_threshold = 0.5
     well_perfused_mask = perfusion_scores >= well_perfused_threshold

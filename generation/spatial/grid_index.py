@@ -3,7 +3,7 @@ Uniform grid-based spatial index for fast neighbor queries.
 """
 
 from collections import defaultdict
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 import numpy as np
 from ..core.types import Point3D
 from ..core.network import VascularNetwork, VesselSegment
@@ -94,9 +94,12 @@ class SpatialIndex:
     Uniform 3D grid spatial index for vascular networks.
     
     Provides efficient collision detection and neighbor queries.
+    
+    P2-2: Cell size is now scale-aware - if cell_size is None, it is computed
+    from network statistics (0.5 * median segment length, clamped to reasonable bounds).
     """
     
-    def __init__(self, network: VascularNetwork, cell_size: float = 0.005):
+    def __init__(self, network: VascularNetwork, cell_size: Optional[float] = None):
         """
         Initialize spatial index.
         
@@ -104,14 +107,51 @@ class SpatialIndex:
         ----------
         network : VascularNetwork
             Network to index
-        cell_size : float
-            Size of grid cells (meters). Should be ~2-3x typical segment length.
+        cell_size : float, optional
+            Size of grid cells (meters). If None, automatically computed from
+            network statistics: cell_size = clamp(0.5 * median_segment_length, min=0.0005, max=0.05)
         """
         self.network = network
-        self.cell_size = cell_size
+        
+        # P2-2: Scale-aware cell size computation
+        if cell_size is None:
+            self.cell_size = self._compute_adaptive_cell_size()
+        else:
+            self.cell_size = cell_size
+            
         self.grid: Dict[Tuple[int, int, int], Set[int]] = defaultdict(set)
         
         self._build_index()
+    
+    def _compute_adaptive_cell_size(self) -> float:
+        """
+        Compute cell size from network statistics.
+        
+        P2-2: Uses 0.5 * median segment length, clamped to [0.0005m, 0.05m].
+        This ensures the grid is appropriately sized for the network scale.
+        """
+        min_cell_size = 0.0005  # 0.5mm minimum
+        max_cell_size = 0.05    # 50mm maximum
+        default_cell_size = 0.005  # 5mm default
+        
+        if not self.network.segments:
+            return default_cell_size
+        
+        # Compute segment lengths
+        segment_lengths = []
+        for seg in self.network.segments.values():
+            segment_lengths.append(seg.length)
+        
+        if not segment_lengths:
+            return default_cell_size
+        
+        median_length = float(np.median(segment_lengths))
+        
+        # Cell size = 0.5 * median segment length, clamped
+        cell_size = 0.5 * median_length
+        cell_size = max(min_cell_size, min(max_cell_size, cell_size))
+        
+        return cell_size
     
     def _get_cell_coords(self, point: Point3D) -> Tuple[int, int, int]:
         """Convert world coordinates to grid cell coordinates."""
@@ -122,25 +162,50 @@ class SpatialIndex:
         )
     
     def _get_cells_for_segment(self, segment: VesselSegment) -> Set[Tuple[int, int, int]]:
-        """Get all grid cells that a segment intersects."""
+        """
+        Get all grid cells that a segment intersects.
+        
+        P0-3: If segment has centerline_points (polyline), iterate all subsegments
+        and mark all covered cells for correct spatial indexing of curved routes.
+        """
         start_node = self.network.get_node(segment.start_node_id)
         end_node = self.network.get_node(segment.end_node_id)
         
         if start_node is None or end_node is None:
             return set()
         
-        start_pos = start_node.position
-        end_pos = end_node.position
-        
-        cell1 = self._get_cell_coords(start_pos)
-        cell2 = self._get_cell_coords(end_pos)
-        
         cells = set()
         
-        for i in range(min(cell1[0], cell2[0]), max(cell1[0], cell2[0]) + 1):
-            for j in range(min(cell1[1], cell2[1]), max(cell1[1], cell2[1]) + 1):
-                for k in range(min(cell1[2], cell2[2]), max(cell1[2], cell2[2]) + 1):
-                    cells.add((i, j, k))
+        # Build list of points along the segment (including centerline_points if present)
+        if segment.geometry.centerline_points:
+            # P0-3: Polyline-aware indexing - iterate all subsegments
+            points = [start_node.position]
+            points.extend(segment.geometry.centerline_points)
+            points.append(end_node.position)
+            
+            # Add cells for each subsegment
+            for i in range(len(points) - 1):
+                p1 = points[i]
+                p2 = points[i + 1]
+                cell1 = self._get_cell_coords(p1)
+                cell2 = self._get_cell_coords(p2)
+                
+                for ci in range(min(cell1[0], cell2[0]), max(cell1[0], cell2[0]) + 1):
+                    for cj in range(min(cell1[1], cell2[1]), max(cell1[1], cell2[1]) + 1):
+                        for ck in range(min(cell1[2], cell2[2]), max(cell1[2], cell2[2]) + 1):
+                            cells.add((ci, cj, ck))
+        else:
+            # Simple straight segment
+            start_pos = start_node.position
+            end_pos = end_node.position
+            
+            cell1 = self._get_cell_coords(start_pos)
+            cell2 = self._get_cell_coords(end_pos)
+            
+            for i in range(min(cell1[0], cell2[0]), max(cell1[0], cell2[0]) + 1):
+                for j in range(min(cell1[1], cell2[1]), max(cell1[1], cell2[1]) + 1):
+                    for k in range(min(cell1[2], cell2[2]), max(cell1[2], cell2[2]) + 1):
+                        cells.add((i, j, k))
         
         return cells
     
@@ -291,34 +356,65 @@ class SpatialIndex:
         Parameters
         ----------
         min_clearance : float
-            Minimum required clearance between segments
+            Minimum required clearance between segment surfaces
         exclude_connected : bool
             If True, exclude segments that share a node
         
         Returns
         -------
         collisions : List[Tuple[int, int, float]]
-            List of (segment_id1, segment_id2, distance) tuples
+            List of (segment_id1, segment_id2, clearance) tuples where
+            clearance = centerline_distance - r1 - r2. Negative clearance
+            indicates overlapping vessels.
         """
         collisions = []
+        checked_pairs = set()
         segment_ids = list(self.network.segments.keys())
         
-        for i, seg_id1 in enumerate(segment_ids):
+        for seg_id1 in segment_ids:
             seg1 = self.network.get_segment(seg_id1)
             if seg1 is None:
                 continue
             
+            # P0-2: Query at start, mid, and end points to catch mid-segment collisions
             start_node1 = self.network.get_node(seg1.start_node_id)
-            if start_node1 is None:
+            end_node1 = self.network.get_node(seg1.end_node_id)
+            if start_node1 is None or end_node1 is None:
                 continue
             
-            nearby = self.query_nearby_segments(
-                start_node1.position,
-                min_clearance * 3.0,
+            r1 = seg1.geometry.mean_radius()
+            
+            # Compute midpoint
+            mid_pos = Point3D(
+                (start_node1.position.x + end_node1.position.x) / 2,
+                (start_node1.position.y + end_node1.position.y) / 2,
+                (start_node1.position.z + end_node1.position.z) / 2,
             )
             
-            for seg2 in nearby:
-                if seg2.id <= seg_id1:
+            # Estimate max radius in network for search radius
+            r_max = max(seg.geometry.mean_radius() for seg in self.network.segments.values())
+            search_radius = r1 + r_max + min_clearance + 0.001  # margin
+            
+            # Query at start, mid, and end points
+            query_points = [start_node1.position, mid_pos, end_node1.position]
+            candidate_segments = set()
+            for qp in query_points:
+                nearby = self.query_nearby_segments(qp, search_radius)
+                for seg in nearby:
+                    candidate_segments.add(seg.id)
+            
+            for seg2_id in candidate_segments:
+                if seg2_id == seg_id1:
+                    continue
+                
+                # Avoid checking same pair twice
+                pair_key = (min(seg_id1, seg2_id), max(seg_id1, seg2_id))
+                if pair_key in checked_pairs:
+                    continue
+                checked_pairs.add(pair_key)
+                
+                seg2 = self.network.get_segment(seg2_id)
+                if seg2 is None:
                     continue
                 
                 if exclude_connected:
@@ -328,21 +424,25 @@ class SpatialIndex:
                         seg1.end_node_id == seg2.end_node_id):
                         continue
                 
-                dist = self._segment_to_segment_distance(seg1, seg2)
+                centerline_dist = self._segment_to_segment_distance(seg1, seg2)
                 
-                r1 = seg1.geometry.mean_radius()
                 r2 = seg2.geometry.mean_radius()
                 
-                required_clearance = r1 + r2 + min_clearance
+                # P0-1: Return clearance (surface-to-surface distance), not centerline distance
+                clearance = centerline_dist - r1 - r2
                 
-                if dist < required_clearance:
-                    collisions.append((seg_id1, seg2.id, dist))
+                if clearance < min_clearance:
+                    collisions.append((seg_id1, seg2_id, clearance))
         
         return collisions
     
     def _segment_to_segment_distance(self, seg1: VesselSegment, seg2: VesselSegment) -> float:
         """
         Compute exact minimum distance between two segment centerlines.
+        
+        P0-3: If either segment is a polyline (has centerline_points), compute
+        min distance across all subsegment pairs for correct collision detection
+        of curved routes.
         
         Uses analytic formula for true minimum distance between 3D line segments,
         handling all cases including parallel and skew segments.
@@ -355,9 +455,35 @@ class SpatialIndex:
         if None in (start1, end1, start2, end2):
             return float('inf')
         
-        p1_start = start1.position.to_array()
-        p1_end = end1.position.to_array()
-        p2_start = start2.position.to_array()
-        p2_end = end2.position.to_array()
+        # Build polyline for seg1
+        if seg1.geometry.centerline_points:
+            polyline1 = [start1.position.to_array()]
+            polyline1.extend([p.to_array() for p in seg1.geometry.centerline_points])
+            polyline1.append(end1.position.to_array())
+        else:
+            polyline1 = [start1.position.to_array(), end1.position.to_array()]
         
-        return segment_segment_distance_exact(p1_start, p1_end, p2_start, p2_end)
+        # Build polyline for seg2
+        if seg2.geometry.centerline_points:
+            polyline2 = [start2.position.to_array()]
+            polyline2.extend([p.to_array() for p in seg2.geometry.centerline_points])
+            polyline2.append(end2.position.to_array())
+        else:
+            polyline2 = [start2.position.to_array(), end2.position.to_array()]
+        
+        # If both are simple segments (no centerline_points), use fast path
+        if len(polyline1) == 2 and len(polyline2) == 2:
+            return segment_segment_distance_exact(polyline1[0], polyline1[1], polyline2[0], polyline2[1])
+        
+        # P0-3: Compute min distance across all subsegment pairs
+        min_dist = float('inf')
+        for i in range(len(polyline1) - 1):
+            p1_start = polyline1[i]
+            p1_end = polyline1[i + 1]
+            for j in range(len(polyline2) - 1):
+                p2_start = polyline2[j]
+                p2_end = polyline2[j + 1]
+                dist = segment_segment_distance_exact(p1_start, p1_end, p2_start, p2_end)
+                min_dist = min(min_dist, dist)
+        
+        return min_dist

@@ -171,6 +171,9 @@ def solve_flow(
                 vascular_id = nx_to_vascular[nx_id]
                 network.nodes[vascular_id].attributes['pressure'] = float(pressure)
             
+            # Blood properties for Reynolds calculation
+            rho = 1060.0  # kg/m³ for blood
+            
             for (u_nx, v_nx), flow in edge_flows.items():
                 u_vascular = nx_to_vascular[u_nx]
                 v_vascular = nx_to_vascular[v_nx]
@@ -181,9 +184,23 @@ def solve_flow(
                         seg.attributes['flow'] = float(abs(flow))
                         radius_mm = (seg.geometry.radius_start + seg.geometry.radius_end) / 2
                         radius_m = to_si_length(radius_mm, geometry_units)
-                        seg.attributes['velocity'] = float(
-                            abs(flow) / (np.pi * radius_m ** 2)
+                        velocity = float(abs(flow) / (np.pi * radius_m ** 2))
+                        seg.attributes['velocity'] = velocity
+                        
+                        # P0-5: Add normalized pressure/flow attributes for evaluation
+                        # Store endpoint pressures on segment for easy access
+                        seg.attributes['pressure_start'] = float(
+                            network.nodes[seg.start_node_id].attributes.get('pressure', 0.0)
                         )
+                        seg.attributes['pressure_end'] = float(
+                            network.nodes[seg.end_node_id].attributes.get('pressure', 0.0)
+                        )
+                        
+                        # Compute Reynolds number: Re = rho * v * D / mu
+                        diameter_m = 2 * radius_m
+                        reynolds = rho * velocity * diameter_m / mu
+                        seg.attributes['reynolds'] = float(reynolds)
+                        
                         break
         
         component_flows = compute_component_flows(network)
