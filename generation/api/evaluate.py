@@ -359,13 +359,9 @@ def _compute_structure_metrics(network: VascularNetwork, config: EvalConfig) -> 
                     if (seg.start_node_id in (other_seg.start_node_id, other_seg.end_node_id) or
                         seg.end_node_id in (other_seg.start_node_id, other_seg.end_node_id)):
                         continue
-                    # Compute centerline distance
-                    from ..spatial.grid_index import segment_segment_distance_exact
-                    p1 = network.nodes[seg.start_node_id].position.to_array()
-                    p2 = network.nodes[seg.end_node_id].position.to_array()
-                    p3 = network.nodes[other_seg.start_node_id].position.to_array()
-                    p4 = network.nodes[other_seg.end_node_id].position.to_array()
-                    dist = segment_segment_distance_exact(p1, p2, p3, p4)
+                    # P0-NEW-4: Use polyline-aware distance for segments with centerline_points
+                    from ..spatial.grid_index import polyline_segment_distance
+                    dist = polyline_segment_distance(network, seg, other_seg)
                     r1 = segment_mean_radius(seg)
                     r2 = segment_mean_radius(other_seg)
                     clearance = dist - r1 - r2

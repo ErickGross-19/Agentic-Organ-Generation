@@ -14,13 +14,16 @@ def segment_segment_distance_exact(
     p3: np.ndarray, p4: np.ndarray,
 ) -> float:
     """
-    Compute exact minimum distance between two 3D line segments.
+    Compute exact minimum distance between two 3D line segments (straight lines only).
     
     Segment 1: p1 to p2
     Segment 2: p3 to p4
     
     Uses the analytic formula for closest points on two line segments.
     This handles all cases including parallel segments and endpoint proximity.
+    
+    NOTE: This function only handles straight segments. For polyline-aware distance
+    that handles segments with centerline_points, use `polyline_segment_distance()`.
     
     Parameters
     ----------
@@ -87,6 +90,74 @@ def segment_segment_distance_exact(
     closest2 = p3 + t * d2
     
     return float(np.linalg.norm(closest1 - closest2))
+
+
+def polyline_segment_distance(
+    network: "VascularNetwork",
+    seg1: "VesselSegment",
+    seg2: "VesselSegment",
+) -> float:
+    """
+    Compute exact minimum distance between two segment centerlines, handling polylines.
+    
+    P0-NEW-4: This function handles segments with centerline_points (polylines) by
+    computing the minimum distance across all subsegment pairs. Use this instead of
+    segment_segment_distance_exact() when segments may have curved centerlines.
+    
+    Parameters
+    ----------
+    network : VascularNetwork
+        Network containing the segments (needed to look up node positions)
+    seg1 : VesselSegment
+        First segment
+    seg2 : VesselSegment
+        Second segment
+        
+    Returns
+    -------
+    float
+        Minimum distance between the two segment centerlines
+    """
+    start1 = network.get_node(seg1.start_node_id)
+    end1 = network.get_node(seg1.end_node_id)
+    start2 = network.get_node(seg2.start_node_id)
+    end2 = network.get_node(seg2.end_node_id)
+    
+    if None in (start1, end1, start2, end2):
+        return float('inf')
+    
+    # Build polyline for seg1
+    if seg1.geometry.centerline_points:
+        polyline1 = [start1.position.to_array()]
+        polyline1.extend([p.to_array() for p in seg1.geometry.centerline_points])
+        polyline1.append(end1.position.to_array())
+    else:
+        polyline1 = [start1.position.to_array(), end1.position.to_array()]
+    
+    # Build polyline for seg2
+    if seg2.geometry.centerline_points:
+        polyline2 = [start2.position.to_array()]
+        polyline2.extend([p.to_array() for p in seg2.geometry.centerline_points])
+        polyline2.append(end2.position.to_array())
+    else:
+        polyline2 = [start2.position.to_array(), end2.position.to_array()]
+    
+    # If both are simple segments (no centerline_points), use fast path
+    if len(polyline1) == 2 and len(polyline2) == 2:
+        return segment_segment_distance_exact(polyline1[0], polyline1[1], polyline2[0], polyline2[1])
+    
+    # Compute min distance across all subsegment pairs
+    min_dist = float('inf')
+    for i in range(len(polyline1) - 1):
+        p1_start = polyline1[i]
+        p1_end = polyline1[i + 1]
+        for j in range(len(polyline2) - 1):
+            p2_start = polyline2[j]
+            p2_end = polyline2[j + 1]
+            dist = segment_segment_distance_exact(p1_start, p1_end, p2_start, p2_end)
+            min_dist = min(min_dist, dist)
+    
+    return min_dist
 
 
 class SpatialIndex:
@@ -371,6 +442,11 @@ class SpatialIndex:
         checked_pairs = set()
         segment_ids = list(self.network.segments.keys())
         
+        # P2-NEW-1: Compute r_max once before iterating (was O(N²) when inside loop)
+        if not self.network.segments:
+            return collisions
+        r_max = max(seg.geometry.mean_radius() for seg in self.network.segments.values())
+        
         for seg_id1 in segment_ids:
             seg1 = self.network.get_segment(seg_id1)
             if seg1 is None:
@@ -391,8 +467,7 @@ class SpatialIndex:
                 (start_node1.position.z + end_node1.position.z) / 2,
             )
             
-            # Estimate max radius in network for search radius
-            r_max = max(seg.geometry.mean_radius() for seg in self.network.segments.values())
+            # Search radius uses pre-computed r_max
             search_radius = r1 + r_max + min_clearance + 0.001  # margin
             
             # Query at start, mid, and end points

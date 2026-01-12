@@ -460,14 +460,14 @@ def _check_segment_clearance(
             continue
         
         other_start = np.array([
-            other_seg.geometry.start_point.x,
-            other_seg.geometry.start_point.y,
-            other_seg.geometry.start_point.z,
+            other_seg.geometry.start.x,
+            other_seg.geometry.start.y,
+            other_seg.geometry.start.z,
         ])
         other_end = np.array([
-            other_seg.geometry.end_point.x,
-            other_seg.geometry.end_point.y,
-            other_seg.geometry.end_point.z,
+            other_seg.geometry.end.x,
+            other_seg.geometry.end.y,
+            other_seg.geometry.end.z,
         ])
         other_radius = (other_seg.geometry.radius_start + other_seg.geometry.radius_end) / 2
         

@@ -237,6 +237,46 @@ class VascularNetwork:
                 self._adjacency_map[seg.end_node_id] = []
             self._adjacency_map[seg.end_node_id].append(seg_id)
     
+    def sync_segment_geometry_from_nodes(self) -> None:
+        """
+        Sync segment geometry.start/end from node positions.
+        
+        P0-NEW-5: After operations that move nodes or rewire segments (NLP refinement,
+        topology swaps, etc.), the segment.geometry.start/end may become inconsistent
+        with the actual node positions. This method updates all segment geometries
+        to match their connected node positions.
+        
+        Call this after any operation that:
+        - Moves node positions
+        - Rewires segment connections
+        - Performs NLP refinement
+        - Swaps topology
+        
+        Note: This preserves centerline_points if present, only updating the
+        start/end positions. For segments with centerline_points, you may also
+        need to update the intermediate points if the overall path has changed.
+        """
+        from .types import TubeGeometry
+        
+        for seg in self.segments.values():
+            start_node = self.nodes.get(seg.start_node_id)
+            end_node = self.nodes.get(seg.end_node_id)
+            
+            if start_node is None or end_node is None:
+                continue
+            
+            # Update geometry start/end to match node positions
+            seg.geometry = TubeGeometry(
+                start=start_node.position,
+                end=end_node.position,
+                radius_start=seg.geometry.radius_start,
+                radius_end=seg.geometry.radius_end,
+                centerline_points=seg.geometry.centerline_points,
+            )
+        
+        # Invalidate spatial index since geometry has changed
+        self._invalidate_spatial_index()
+    
     def snapshot(self) -> dict:
         """Create a snapshot of current network state."""
         return {
