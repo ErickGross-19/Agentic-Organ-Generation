@@ -26,6 +26,9 @@ class EvalConfig:
     perfusion_weights: tuple = (1.0, 1.0)
     well_perfused_threshold: float = 0.5
     perfusion_threshold: float = 0.005
+    enable_cfd: bool = False
+    cfd_fidelity: str = "0D"
+    cfd_output_dir: Optional[str] = None
 
 
 def evaluate_network(
@@ -68,6 +71,10 @@ def evaluate_network(
         perfusion_metrics = _compute_perfusion_metrics(network, tissue_points, config)
         metadata["perfusion"] = perfusion_metrics
     
+    if config.enable_cfd:
+        cfd_metrics = _compute_cfd_metrics(network, config)
+        metadata["cfd"] = cfd_metrics
+    
     return EvalResult(
         coverage=coverage, flow=flow, structure=structure,
         validity=validity, scores=scores,
@@ -95,6 +102,37 @@ def _compute_perfusion_metrics(
         distance_cap=config.perfusion_distance_cap,
         well_perfused_threshold=config.well_perfused_threshold,
     )
+
+
+def _compute_cfd_metrics(
+    network: VascularNetwork,
+    config: EvalConfig,
+) -> Dict[str, Any]:
+    """
+    Compute CFD metrics using the CFD pipeline.
+    
+    Runs hemodynamic simulation at the specified fidelity level
+    and returns flow/pressure metrics.
+    """
+    from ..cfd.pipeline import run_cfd_pipeline, CFDConfig
+    
+    cfd_config = CFDConfig(
+        fidelity=config.cfd_fidelity,
+        output_dir=config.cfd_output_dir,
+    )
+    
+    result = run_cfd_pipeline(network, cfd_config)
+    
+    return {
+        "success": result.success,
+        "fidelity": result.fidelity,
+        "pressure_drop": result.metrics.pressure.pressure_drop_root_to_terminals,
+        "flow_uniformity": result.metrics.flow.flow_uniformity,
+        "perfusable_fraction": result.metrics.perfusion.perfusable_fraction,
+        "wall_time_seconds": result.wall_time_seconds,
+        "warnings": result.warnings,
+        "errors": result.errors,
+    }
 
 
 def _compute_coverage_metrics(
