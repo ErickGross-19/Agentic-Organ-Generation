@@ -550,15 +550,17 @@ def create_single_input_spec(
     vessels: VesselDimensions = DEFAULT_VESSEL_DIMENSIONS,
     cco_params: CCOParameters = DEFAULT_CCO_PARAMS,
     seed: int = 42,
+    inlet_z_offset: float = 0.0005,
+    radial_position_fraction: float = 0.85,
 ) -> DesignSpec:
     """
     Create design specification for single-input vascular insert.
     
     The CCO backend generates a DIVERGING tree from the inlet to randomly
-    sampled terminal points within the domain.
+    sampled terminal points within the cylindrical domain.
     
     This creates a diverging tree topology with:
-    - One inlet at the perimeter (top edge) - root of the tree
+    - One inlet at the top surface of the cylinder - root of the tree
     - Terminal nodes randomly distributed within the domain
     
     Parameters
@@ -571,6 +573,12 @@ def create_single_input_spec(
         CCO generation parameters
     seed : int
         Random seed for reproducibility
+    inlet_z_offset : float
+        Vertical offset of inlet from top surface, in meters.
+        Default: 0.0005m (0.5mm). Inlet slightly below top surface.
+    radial_position_fraction : float
+        Fraction of radius where inlet is positioned.
+        Default: 0.85. Inlet at 85% of radius from center.
         
     Returns
     -------
@@ -589,17 +597,18 @@ def create_single_input_spec(
     logger.info(f"  Domain: cylinder with radius={geometry.radius*1000:.1f}mm, "
                f"height={geometry.height*1000:.1f}mm")
     
-    domain_center_z = geometry.height / 2
-    inlet_x = geometry.radius * 0.7
-    inlet_z = domain_center_z + (geometry.height / 2) * 0.5
+    inlet_radial_pos = geometry.radius * radial_position_fraction
+    inlet_z = geometry.height - inlet_z_offset
     inlet = InletSpec(
-        position=(inlet_x, 0.0, inlet_z),
+        position=(inlet_radial_pos, 0.0, inlet_z),
         radius=vessels.inlet_radius,
         vessel_type="venous",
     )
     
-    logger.info(f"  Inlet: position=({inlet_x*1000:.2f}, 0, {inlet_z*1000:.2f})mm, "
+    logger.info(f"  Inlet: position=({inlet_radial_pos*1000:.2f}, 0, {inlet_z*1000:.2f})mm, "
                f"radius={vessels.inlet_radius*1000:.2f}mm")
+    logger.info(f"  Inlet placement: {radial_position_fraction*100:.0f}% of radius, "
+               f"{inlet_z_offset*1000:.1f}mm below top surface")
     
     logger.info(f"  CCO params: num_outlets={cco_params.num_outlets}, "
                f"murray_exponent={cco_params.murray_exponent}")
@@ -678,9 +687,11 @@ def create_multi_input_spec(
                f"height={geometry.height*1000:.1f}mm")
     
     inlets = []
-    domain_center_z = geometry.height / 2
-    inlet_radial_pos = geometry.radius * 0.6
-    inlet_z = domain_center_z + (geometry.height / 2) * 0.4
+    inlet_radial_pos = geometry.radius * multi_config.radial_position_fraction
+    inlet_z = geometry.height - multi_config.inlet_z_offset
+    
+    logger.info(f"  Inlet placement: {multi_config.radial_position_fraction*100:.0f}% of radius, "
+               f"{multi_config.inlet_z_offset*1000:.1f}mm below top surface")
     
     for i in range(multi_config.num_inlets):
         angle = 2 * math.pi * i / multi_config.num_inlets
