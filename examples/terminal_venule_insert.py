@@ -94,6 +94,7 @@ from generation.ops.embedding import embed_tree_as_negative_space
 from generation.backends.cco_hybrid_backend import CCOHybridBackend, CCOConfig
 from generation.core.types import Point3D
 from generation.core.result import OperationStatus
+from generation.core.network import Node, Segment
 import numpy as np
 
 # Configure logging for verbose output
@@ -727,6 +728,10 @@ def generate_network_from_spec(
     - Murray's law-based radius scaling with demand-based splitting
     - Local radius-at-split interpolation for correct bifurcation behavior
     
+    For multi-inlet specifications, this generates a separate CCO tree for each
+    inlet and merges them into a single network. Each inlet gets an equal share
+    of the total target outlets.
+    
     Parameters
     ----------
     spec : DesignSpec
@@ -771,31 +776,112 @@ def generate_network_from_spec(
     
     logger.info(f"  CCO config: murray_exponent={config.murray_exponent}, "
                f"collision_clearance={config.collision_clearance*1000:.3f}mm")
-    logger.info(f"  Target outlets: {cco_params.num_outlets}")
     
     # Create CCO backend
     backend = CCOHybridBackend()
     
-    # Get inlet position and radius from first inlet spec
-    inlet_spec = tree.inlets[0]
-    inlet_position = np.array(inlet_spec.position)
-    inlet_radius = inlet_spec.radius
-    vessel_type = inlet_spec.vessel_type
+    num_inlets = len(tree.inlets)
     
-    logger.info(f"  Inlet: position=({inlet_position[0]*1000:.2f}, {inlet_position[1]*1000:.2f}, "
-               f"{inlet_position[2]*1000:.2f})mm, radius={inlet_radius*1000:.2f}mm")
-    
-    # Generate network using CCO backend
-    logger.info(f"  Running CCO generation (num_outlets={cco_params.num_outlets})...")
-    network = backend.generate(
-        domain=domain,
-        num_outlets=cco_params.num_outlets,
-        inlet_position=inlet_position,
-        inlet_radius=inlet_radius,
-        vessel_type=vessel_type,
-        config=config,
-        rng_seed=spec.seed,
-    )
+    if num_inlets == 1:
+        # Single inlet case - generate one tree
+        inlet_spec = tree.inlets[0]
+        inlet_position = np.array(inlet_spec.position)
+        inlet_radius = inlet_spec.radius
+        vessel_type = inlet_spec.vessel_type
+        
+        logger.info(f"  Single inlet: position=({inlet_position[0]*1000:.2f}, "
+                   f"{inlet_position[1]*1000:.2f}, {inlet_position[2]*1000:.2f})mm, "
+                   f"radius={inlet_radius*1000:.2f}mm")
+        logger.info(f"  Target outlets: {cco_params.num_outlets}")
+        
+        # Generate network using CCO backend
+        logger.info(f"  Running CCO generation (num_outlets={cco_params.num_outlets})...")
+        network = backend.generate(
+            domain=domain,
+            num_outlets=cco_params.num_outlets,
+            inlet_position=inlet_position,
+            inlet_radius=inlet_radius,
+            vessel_type=vessel_type,
+            config=config,
+            rng_seed=spec.seed,
+        )
+    else:
+        # Multi-inlet case - generate separate trees and merge
+        logger.info(f"  Multi-inlet mode: {num_inlets} inlets")
+        
+        # Distribute outlets evenly among inlets
+        outlets_per_inlet = max(1, cco_params.num_outlets // num_inlets)
+        logger.info(f"  Target outlets per inlet: {outlets_per_inlet}")
+        
+        # Generate first tree (this becomes the base network)
+        inlet_spec = tree.inlets[0]
+        inlet_position = np.array(inlet_spec.position)
+        inlet_radius = inlet_spec.radius
+        vessel_type = inlet_spec.vessel_type
+        
+        logger.info(f"  Inlet 1: position=({inlet_position[0]*1000:.2f}, "
+                   f"{inlet_position[1]*1000:.2f}, {inlet_position[2]*1000:.2f})mm")
+        
+        network = backend.generate(
+            domain=domain,
+            num_outlets=outlets_per_inlet,
+            inlet_position=inlet_position,
+            inlet_radius=inlet_radius,
+            vessel_type=vessel_type,
+            config=config,
+            rng_seed=spec.seed,
+        )
+        
+        # Generate additional trees for remaining inlets and merge
+        for i, inlet_spec in enumerate(tree.inlets[1:], start=2):
+            inlet_position = np.array(inlet_spec.position)
+            inlet_radius = inlet_spec.radius
+            vessel_type = inlet_spec.vessel_type
+            
+            logger.info(f"  Inlet {i}: position=({inlet_position[0]*1000:.2f}, "
+                       f"{inlet_position[1]*1000:.2f}, {inlet_position[2]*1000:.2f})mm")
+            
+            # Generate tree for this inlet with different seed
+            tree_network = backend.generate(
+                domain=domain,
+                num_outlets=outlets_per_inlet,
+                inlet_position=inlet_position,
+                inlet_radius=inlet_radius,
+                vessel_type=vessel_type,
+                config=config,
+                rng_seed=(spec.seed + i) if spec.seed else None,
+            )
+            
+            # Merge the tree into the main network
+            # Create a mapping from old node IDs to new node IDs
+            node_id_map = {}
+            for old_node in tree_network.nodes.values():
+                new_node_id = network.id_gen.next_id()
+                new_node = Node(
+                    id=new_node_id,
+                    position=old_node.position,
+                    node_type=old_node.node_type,
+                    vessel_type=old_node.vessel_type,
+                    attributes=old_node.attributes.copy(),
+                )
+                network.add_node(new_node)
+                node_id_map[old_node.id] = new_node_id
+            
+            # Add segments with remapped node IDs
+            for old_seg in tree_network.segments.values():
+                new_seg_id = network.id_gen.next_id()
+                new_seg = Segment(
+                    id=new_seg_id,
+                    start_node_id=node_id_map[old_seg.start_node_id],
+                    end_node_id=node_id_map[old_seg.end_node_id],
+                    geometry=old_seg.geometry,
+                    vessel_type=old_seg.vessel_type,
+                    attributes=old_seg.attributes.copy(),
+                )
+                network.add_segment(new_seg)
+            
+            logger.info(f"    Merged tree {i}: {len(tree_network.nodes)} nodes, "
+                       f"{len(tree_network.segments)} segments")
     
     # Log network statistics
     logger.info(f"  CCO generation complete!")
