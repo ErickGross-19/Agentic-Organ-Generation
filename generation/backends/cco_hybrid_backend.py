@@ -122,30 +122,48 @@ class ArrayTreeView:
         self._compute_path_to_root_aggregates()
     
     def _compute_parent_map(self) -> Dict[int, Optional[int]]:
-        """Compute parent segment for each segment based on tree structure."""
+        """
+        Compute parent segment for each segment based on tree structure.
+        
+        P0-8: Uses proper BFS/DFS traversal from root_node_id to build directed
+        tree structure. Tracks incoming segment at each node to correctly identify
+        parent-child relationships even at junctions with multiple branches.
+        """
         parent_map: Dict[int, Optional[int]] = {}
         
         visited_nodes: Set[int] = {self.root_node_id}
-        queue = [self.root_node_id]
+        # Queue contains (node_id, incoming_seg_id) tuples
+        # incoming_seg_id is None for root, otherwise the segment we arrived from
+        queue: List[Tuple[int, Optional[int]]] = [(self.root_node_id, None)]
         
         while queue:
-            node_id = queue.pop(0)
+            node_id, incoming_seg_id = queue.pop(0)
             connected_segs = self.network.get_connected_segment_ids(node_id)
             
             for seg_id in connected_segs:
+                # Skip the segment we arrived from (it's already processed)
+                if seg_id == incoming_seg_id:
+                    continue
+                    
                 seg = self.network.segments[seg_id]
                 other_node = seg.end_node_id if seg.start_node_id == node_id else seg.start_node_id
                 
                 if other_node not in visited_nodes:
-                    parent_seg = self._find_parent_segment(node_id, seg_id)
-                    parent_map[seg_id] = parent_seg
+                    # P0-8: Parent is the incoming segment at this node
+                    parent_map[seg_id] = incoming_seg_id
                     visited_nodes.add(other_node)
-                    queue.append(other_node)
+                    # Continue BFS with this segment as the incoming segment for other_node
+                    queue.append((other_node, seg_id))
         
         return parent_map
     
     def _find_parent_segment(self, parent_node_id: int, current_seg_id: int) -> Optional[int]:
-        """Find the parent segment of a given segment."""
+        """
+        Find the parent segment of a given segment.
+        
+        Note: This method is kept for backward compatibility but the main
+        parent mapping logic is now in _compute_parent_map using proper BFS.
+        """
         connected = self.network.get_connected_segment_ids(parent_node_id)
         for seg_id in connected:
             if seg_id != current_seg_id:
@@ -823,6 +841,9 @@ class CCOHybridBackend(GenerationBackend):
         """
         Check if proposed insertion would cause collisions with existing segments.
         
+        P0-7: Tests all three new segments (A→X, X→B, X→T) for collisions,
+        not assuming segment orientation.
+        
         Uses 2-stage method:
         1. Cheap spatial query to find nearby segments
         2. Exact segment-segment distance check for candidates
@@ -854,18 +875,25 @@ class CCOHybridBackend(GenerationBackend):
         X = bifurcation_point.to_array()
         T = outlet_point.to_array()
         
-        # Get the segment being split
+        # P0-7: Define endpoints from geometry, not assuming orientation
         split_seg = network.segments[split_seg_id]
+        A = network.nodes[split_seg.start_node_id].position.to_array()
         B = network.nodes[split_seg.end_node_id].position.to_array()
+        
+        # Estimate radius for A→X segment (interpolated from parent)
+        t = np.linalg.norm(X - A) / max(np.linalg.norm(B - A), 1e-10)
+        r_at_X = split_seg.geometry.radius_start + t * (split_seg.geometry.radius_end - split_seg.geometry.radius_start)
+        r_AX = (split_seg.geometry.radius_start + r_at_X) / 2  # Average radius for A→X
         
         # Stage 1: Cheap spatial query to find nearby segments
         spatial_index = network.get_spatial_index()
         
-        # Search radius should cover the new segments plus clearance
+        # Search radius should cover all three new segments plus clearance
         search_radius = max(
+            np.linalg.norm(X - A),
             np.linalg.norm(X - B),
             np.linalg.norm(X - T),
-        ) + clearance + max(r_child1, r_child2) * 2
+        ) + clearance + max(r_child1, r_child2, r_AX) * 2
         
         nearby_segments = spatial_index.query_nearby_segments(bifurcation_point, search_radius)
         
@@ -883,6 +911,12 @@ class CCOHybridBackend(GenerationBackend):
             seg_start = network.nodes[seg.start_node_id].position.to_array()
             seg_end = network.nodes[seg.end_node_id].position.to_array()
             seg_radius = seg.geometry.mean_radius()
+            
+            # P0-7: Check collision with proposed A→X segment
+            dist_AX = segment_segment_distance_exact(A, X, seg_start, seg_end)
+            required_clearance_AX = r_AX + seg_radius + clearance
+            if dist_AX < required_clearance_AX:
+                return True
             
             # Check collision with proposed X→B segment
             dist_XB = segment_segment_distance_exact(X, B, seg_start, seg_end)
@@ -910,10 +944,28 @@ class CCOHybridBackend(GenerationBackend):
     ) -> None:
         """
         Perform the actual insertion by splitting edge and adding new outlet.
+        
+        P1-1: Uses local radius-at-split computed via linear interpolation
+        instead of mean radius for correct Murray behavior.
         """
         seg = network.segments[seg_id]
         start_node = network.nodes[seg.start_node_id]
         end_node = network.nodes[seg.end_node_id]
+        
+        # P1-1: Compute local radius at split point using linear interpolation
+        # t = |A→X| / |A→B|, rX = lerp(r_start, r_end, t)
+        A = start_node.position.to_array()
+        B = end_node.position.to_array()
+        X = bifurcation_point.to_array()
+        
+        seg_length = np.linalg.norm(B - A)
+        if seg_length > 1e-10:
+            t = np.linalg.norm(X - A) / seg_length
+        else:
+            t = 0.5
+        
+        # Linear interpolation for radius at split point
+        r_at_split = seg.geometry.radius_start + t * (seg.geometry.radius_end - seg.geometry.radius_start)
         
         bifurcation_node = Node(
             id=network.id_gen.next_id(),
@@ -921,13 +973,14 @@ class CCOHybridBackend(GenerationBackend):
             node_type="junction",
             vessel_type=vessel_type,
             attributes={
-                "radius": seg.geometry.mean_radius(),
+                "radius": r_at_split,
                 "branch_order": start_node.attributes.get("branch_order", 0) + 1,
             },
         )
         network.add_node(bifurcation_node)
         
-        r_parent = seg.geometry.mean_radius()
+        # P1-1: Use local radius at split for Murray calculations
+        r_parent = r_at_split
         
         # Demand-based Murray splitting: use subtree terminal counts as demand proxy
         gamma = config.murray_exponent
@@ -1015,9 +1068,18 @@ class CCOHybridBackend(GenerationBackend):
         config: CCOConfig,
     ) -> None:
         """
-        Rescale radii from root using Murray's law.
+        Rescale radii from root using Murray's law with demand-based splitting.
         
-        Uses array broadcasting for efficient update.
+        P1-2: Uses terminal counts as demand proxy for Murray splitting instead
+        of equal splitting across children. This produces more physiologically
+        realistic radii where branches with more terminals get larger radii.
+        
+        For each branching node:
+        - demand(child) = terminal count in child subtree
+        - f_i = demand_i / sum(demands)
+        - r_i = r_parent * (f_i)^(1/gamma)
+        
+        This satisfies Murray's law: r_parent^gamma = sum(r_i^gamma)
         """
         gamma = config.murray_exponent
         
@@ -1061,11 +1123,9 @@ class CCOHybridBackend(GenerationBackend):
             
             n_children = len(child_segs)
             if n_children == 1:
+                # Single child: slight taper
                 child_radius = parent_radius * 0.9
-            else:
-                child_radius = parent_radius * (1.0 / n_children) ** (1.0 / gamma)
-            
-            for seg_id, child_node_id in child_segs:
+                seg_id, child_node_id = child_segs[0]
                 seg = network.segments[seg_id]
                 
                 if seg.start_node_id == node_id:
@@ -1076,8 +1136,34 @@ class CCOHybridBackend(GenerationBackend):
                     seg.geometry.radius_end = parent_radius
                 
                 network.nodes[child_node_id].attributes["radius"] = child_radius
-                
                 rescale_subtree(child_node_id, child_radius, visited)
+            else:
+                # P1-2: Demand-based Murray splitting for multiple children
+                # Compute demand (terminal count) for each child subtree
+                child_demands = []
+                for seg_id, child_node_id in child_segs:
+                    # Count terminals in this child's subtree
+                    demand = count_terminals(child_node_id, visited.copy())
+                    child_demands.append((seg_id, child_node_id, max(demand, 1)))
+                
+                total_demand = sum(d for _, _, d in child_demands)
+                
+                for seg_id, child_node_id, demand in child_demands:
+                    # f_i = demand_i / total_demand
+                    f_i = demand / total_demand
+                    # r_i = r_parent * (f_i)^(1/gamma)
+                    child_radius = parent_radius * (f_i ** (1.0 / gamma))
+                    
+                    seg = network.segments[seg_id]
+                    if seg.start_node_id == node_id:
+                        seg.geometry.radius_start = parent_radius
+                        seg.geometry.radius_end = child_radius
+                    else:
+                        seg.geometry.radius_start = child_radius
+                        seg.geometry.radius_end = parent_radius
+                    
+                    network.nodes[child_node_id].attributes["radius"] = child_radius
+                    rescale_subtree(child_node_id, child_radius, visited)
         
         network.nodes[root_node_id].attributes["radius"] = root_radius
         rescale_subtree(root_node_id, root_radius, set())

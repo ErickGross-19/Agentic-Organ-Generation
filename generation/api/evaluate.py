@@ -200,13 +200,13 @@ def _compute_flow_metrics(network: VascularNetwork, config: EvalConfig) -> FlowM
         pressure_drop_art = 0.0
         pressure_drop_ven = 0.0
         
-        for comp_id, flow_data in component_flows.items():
-            if flow_data["vessel_type"] == "arterial":
-                total_flow_art += flow_data["total_flow"]
-                pressure_drop_art = max(pressure_drop_art, flow_data.get("pressure_drop", 0.0))
-            elif flow_data["vessel_type"] == "venous":
-                total_flow_ven += flow_data["total_flow"]
-                pressure_drop_ven = max(pressure_drop_ven, flow_data.get("pressure_drop", 0.0))
+        for comp in component_flows.get("components", []):
+            if comp["vessel_type"] == "arterial":
+                total_flow_art += comp["total_flow"]
+                pressure_drop_art = max(pressure_drop_art, comp.get("pressure_drop", 0.0))
+            elif comp["vessel_type"] == "venous":
+                total_flow_ven += comp["total_flow"]
+                pressure_drop_ven = max(pressure_drop_ven, comp.get("pressure_drop", 0.0))
         
         flow_balance_error = abs(total_flow_art - total_flow_ven) / total_flow_art if total_flow_art > 0 else 1.0
         
@@ -387,14 +387,29 @@ def _compute_structure_metrics(network: VascularNetwork, config: EvalConfig) -> 
     )
 
 
-def _compute_validity_metrics(network: VascularNetwork) -> ValidityMetrics:
+def _compute_validity_metrics(
+    network: VascularNetwork,
+    allow_disconnected_by_vessel_type: bool = True,
+) -> ValidityMetrics:
     """
     Compute validity and quality checks.
     
+    P0-6: Validates connectivity per vessel_type rather than treating the entire
+    network as one component. This allows dual-tree networks (arterial + venous)
+    without anastomoses to be valid as long as each tree is internally connected.
+    
     Performs actual checks for:
     - Self-intersections (collisions between non-adjacent segments)
-    - Watertight geometry (all segments connected, no dangling nodes)
+    - Connectivity (per vessel_type if allow_disconnected_by_vessel_type=True)
     - Parameter warnings (very small radii, very short segments)
+    
+    Parameters
+    ----------
+    network : VascularNetwork
+        Network to validate
+    allow_disconnected_by_vessel_type : bool
+        If True, allow disconnected components as long as each vessel_type
+        (arterial, venous) forms a single connected component. Default True.
     """
     from ..analysis.radius import segment_mean_radius
     
@@ -416,7 +431,7 @@ def _compute_validity_metrics(network: VascularNetwork) -> ValidityMetrics:
         # If collision check fails, report as unknown
         parameter_warnings.append(f"Could not check collisions: {str(e)}")
     
-    # Check for watertight geometry (all nodes connected, no isolated components)
+    # P0-6: Check connectivity - use vessel_type-aware validation for dual trees
     is_watertight = True
     try:
         # Check for dangling nodes (nodes with only one connection that aren't terminals/inlets/outlets)
@@ -429,29 +444,73 @@ def _compute_validity_metrics(network: VascularNetwork) -> ValidityMetrics:
                 is_watertight = False
                 error_codes.append(f"DANGLING_NODE_{node.id}")
         
-        # Check for disconnected components (simple connectivity check)
-        if network.nodes:
-            visited = set()
-            start_node = next(iter(network.nodes.keys()))
-            to_visit = [start_node]
-            while to_visit:
-                node_id = to_visit.pop()
-                if node_id in visited:
-                    continue
-                visited.add(node_id)
-                for seg_id in network.get_connected_segment_ids(node_id):
-                    seg = network.segments.get(seg_id)
-                    if seg:
-                        other_id = seg.end_node_id if seg.start_node_id == node_id else seg.start_node_id
-                        if other_id not in visited:
-                            to_visit.append(other_id)
+        # P0-6: Validate connectivity per vessel_type for dual-tree networks
+        if allow_disconnected_by_vessel_type:
+            # Group nodes by vessel_type
+            vessel_type_nodes: dict = {}
+            for node in network.nodes.values():
+                vt = node.vessel_type or "unknown"
+                if vt not in vessel_type_nodes:
+                    vessel_type_nodes[vt] = set()
+                vessel_type_nodes[vt].add(node.id)
             
-            if len(visited) < len(network.nodes):
-                is_watertight = False
-                error_codes.append(f"DISCONNECTED_COMPONENTS_{len(network.nodes) - len(visited)}_UNREACHABLE")
+            # Check each vessel_type forms a single connected component
+            for vessel_type, node_ids in vessel_type_nodes.items():
+                if not node_ids:
+                    continue
+                    
+                # BFS from first node of this vessel_type
+                start_node = next(iter(node_ids))
+                visited = set()
+                to_visit = [start_node]
+                
+                while to_visit:
+                    node_id = to_visit.pop()
+                    if node_id in visited:
+                        continue
+                    visited.add(node_id)
+                    
+                    for seg_id in network.get_connected_segment_ids(node_id):
+                        seg = network.segments.get(seg_id)
+                        if seg:
+                            other_id = seg.end_node_id if seg.start_node_id == node_id else seg.start_node_id
+                            # Only traverse within same vessel_type
+                            other_node = network.nodes.get(other_id)
+                            if other_node and (other_node.vessel_type or "unknown") == vessel_type:
+                                if other_id not in visited:
+                                    to_visit.append(other_id)
+                
+                # Check if all nodes of this vessel_type were visited
+                unreachable = node_ids - visited
+                if unreachable:
+                    is_watertight = False
+                    error_codes.append(
+                        f"DISCONNECTED_{vessel_type.upper()}_{len(unreachable)}_UNREACHABLE"
+                    )
+        else:
+            # Original behavior: check entire network as one component
+            if network.nodes:
+                visited = set()
+                start_node = next(iter(network.nodes.keys()))
+                to_visit = [start_node]
+                while to_visit:
+                    node_id = to_visit.pop()
+                    if node_id in visited:
+                        continue
+                    visited.add(node_id)
+                    for seg_id in network.get_connected_segment_ids(node_id):
+                        seg = network.segments.get(seg_id)
+                        if seg:
+                            other_id = seg.end_node_id if seg.start_node_id == node_id else seg.start_node_id
+                            if other_id not in visited:
+                                to_visit.append(other_id)
+                
+                if len(visited) < len(network.nodes):
+                    is_watertight = False
+                    error_codes.append(f"DISCONNECTED_COMPONENTS_{len(network.nodes) - len(visited)}_UNREACHABLE")
     except Exception as e:
         is_watertight = None  # Unknown
-        parameter_warnings.append(f"Could not check watertight: {str(e)}")
+        parameter_warnings.append(f"Could not check connectivity: {str(e)}")
     
     # Check for parameter warnings (very small radii, very short segments)
     for seg in network.segments.values():
