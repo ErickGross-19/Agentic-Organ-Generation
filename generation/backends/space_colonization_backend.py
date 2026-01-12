@@ -109,10 +109,9 @@ class SpaceColonizationBackend(GenerationBackend):
         attractor_list = [Point3D.from_array(a) for a in attractors]
         
         sc_config = SCParams(
-            attraction_distance=config.attraction_distance,
-            kill_distance=config.kill_distance,
+            influence_radius=config.attraction_distance,
+            kill_radius=config.kill_distance,
             step_size=config.step_size,
-            branch_angle_deg=config.branch_angle_deg,
         )
         
         active_nodes = [inlet_node.id]
@@ -245,10 +244,9 @@ class SpaceColonizationBackend(GenerationBackend):
         arterial_attractors = [Point3D.from_array(a) for a in all_attractors[:len(all_attractors)//2]]
         
         sc_config = SCParams(
-            attraction_distance=config.attraction_distance,
-            kill_distance=config.kill_distance,
+            influence_radius=config.attraction_distance,
+            kill_radius=config.kill_distance,
             step_size=config.step_size,
-            branch_angle_deg=config.branch_angle_deg,
         )
         
         active_nodes = [arterial_inlet_node.id]

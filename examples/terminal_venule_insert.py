@@ -856,7 +856,7 @@ def generate_network_from_spec(
                 new_node_id = network.id_gen.next_id()
                 new_node = Node(
                     id=new_node_id,
-                    position=old_node.position.copy(),  # Copy numpy array
+                    position=copy.deepcopy(old_node.position),  # Deep copy Point3D
                     node_type=old_node.node_type,
                     vessel_type=old_node.vessel_type,
                     attributes=old_node.attributes.copy(),
