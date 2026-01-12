@@ -200,16 +200,30 @@ class SpatialIndex:
         return nearby
     
     def _point_to_segment_distance(self, point: Point3D, segment: VesselSegment) -> float:
-        """Compute minimum distance from point to segment centerline."""
+        """
+        Compute minimum distance from point to segment centerline.
+        
+        Supports polyline centerlines via TubeGeometry.centerline_points.
+        If centerline_points is populated, computes distance to the full
+        polyline path rather than just the straight line between endpoints.
+        """
         start_node = self.network.get_node(segment.start_node_id)
         end_node = self.network.get_node(segment.end_node_id)
         
         if start_node is None or end_node is None:
             return float('inf')
         
+        p = point.to_array()
+        
+        if segment.geometry.centerline_points:
+            polyline = [start_node.position.to_array()]
+            polyline.extend([cp.to_array() for cp in segment.geometry.centerline_points])
+            polyline.append(end_node.position.to_array())
+            
+            return self._point_to_polyline_distance(p, polyline)
+        
         p1 = start_node.position.to_array()
         p2 = end_node.position.to_array()
-        p = point.to_array()
         
         v = p2 - p1
         length_sq = np.dot(v, v)
@@ -223,6 +237,48 @@ class SpatialIndex:
         closest = p1 + t * v
         
         return float(np.linalg.norm(p - closest))
+    
+    def _point_to_polyline_distance(self, point: np.ndarray, polyline: List[np.ndarray]) -> float:
+        """
+        Compute minimum distance from point to a polyline.
+        
+        Parameters
+        ----------
+        point : np.ndarray
+            Query point (x, y, z)
+        polyline : list of np.ndarray
+            List of polyline vertices
+            
+        Returns
+        -------
+        float
+            Minimum distance from point to polyline
+        """
+        if len(polyline) < 2:
+            if len(polyline) == 1:
+                return float(np.linalg.norm(point - polyline[0]))
+            return float('inf')
+        
+        min_dist = float('inf')
+        
+        for i in range(len(polyline) - 1):
+            p1 = polyline[i]
+            p2 = polyline[i + 1]
+            
+            v = p2 - p1
+            length_sq = np.dot(v, v)
+            
+            if length_sq < 1e-10:
+                dist = float(np.linalg.norm(point - p1))
+            else:
+                t = np.dot(point - p1, v) / length_sq
+                t = np.clip(t, 0.0, 1.0)
+                closest = p1 + t * v
+                dist = float(np.linalg.norm(point - closest))
+            
+            min_dist = min(min_dist, dist)
+        
+        return min_dist
     
     def get_collisions(
         self,

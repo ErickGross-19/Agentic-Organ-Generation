@@ -20,6 +20,12 @@ class EvalConfig:
     structure_weight: float = 0.2
     reynolds_turbulent_threshold: float = 2300.0
     murray_tolerance: float = 0.15
+    use_segment_distance: bool = True
+    enable_perfusion: bool = False
+    perfusion_distance_cap: Optional[float] = None
+    perfusion_weights: tuple = (1.0, 1.0)
+    well_perfused_threshold: float = 0.5
+    perfusion_threshold: float = 0.005
 
 
 def evaluate_network(
@@ -27,7 +33,13 @@ def evaluate_network(
     tissue_points: Union[np.ndarray, int],
     config: Optional[EvalConfig] = None,
 ) -> EvalResult:
-    """Evaluate vascular network quality with comprehensive metrics."""
+    """
+    Evaluate vascular network quality with comprehensive metrics.
+    
+    Uses segment-based distance calculations by default for more accurate
+    coverage assessment. Optionally includes perfusion analysis for
+    dual-tree networks.
+    """
     if config is None:
         config = EvalConfig()
     
@@ -36,42 +48,91 @@ def evaluate_network(
             raise ValueError("Network must have a domain to generate tissue points")
         tissue_points = network.domain.sample_points(n_points=tissue_points)
     
-    coverage = _compute_coverage_metrics(network, tissue_points)
+    coverage = _compute_coverage_metrics(network, tissue_points, config)
     flow = _compute_flow_metrics(network, config)
     structure = _compute_structure_metrics(network, config)
     validity = _compute_validity_metrics(network)
     scores = _compute_scores(coverage, flow, structure, config)
     
+    metadata = {
+        "num_tissue_points": len(tissue_points),
+        "config": {
+            "coverage_weight": config.coverage_weight,
+            "flow_weight": config.flow_weight,
+            "structure_weight": config.structure_weight,
+            "use_segment_distance": config.use_segment_distance,
+        },
+    }
+    
+    if config.enable_perfusion:
+        perfusion_metrics = _compute_perfusion_metrics(network, tissue_points, config)
+        metadata["perfusion"] = perfusion_metrics
+    
     return EvalResult(
         coverage=coverage, flow=flow, structure=structure,
         validity=validity, scores=scores,
-        metadata={
-            "num_tissue_points": len(tissue_points),
-            "config": {
-                "coverage_weight": config.coverage_weight,
-                "flow_weight": config.flow_weight,
-                "structure_weight": config.structure_weight,
-            },
-        },
+        metadata=metadata,
     )
 
 
-def _compute_coverage_metrics(network: VascularNetwork, tissue_points: np.ndarray) -> CoverageMetrics:
-    """Compute coverage and perfusion metrics."""
+def _compute_perfusion_metrics(
+    network: VascularNetwork,
+    tissue_points: np.ndarray,
+    config: EvalConfig,
+) -> Dict[str, Any]:
+    """
+    Compute perfusion metrics using segment-based distances.
+    
+    Analyzes tissue perfusion based on proximity to both arterial (supply)
+    and venous (drainage) vessels.
+    """
+    from ..analysis.perfusion import compute_perfusion_metrics_segment_based
+    
+    return compute_perfusion_metrics_segment_based(
+        network=network,
+        tissue_points=tissue_points,
+        weights=config.perfusion_weights,
+        distance_cap=config.perfusion_distance_cap,
+        well_perfused_threshold=config.well_perfused_threshold,
+    )
+
+
+def _compute_coverage_metrics(
+    network: VascularNetwork,
+    tissue_points: np.ndarray,
+    config: Optional[EvalConfig] = None,
+) -> CoverageMetrics:
+    """
+    Compute coverage and perfusion metrics using segment-based distances.
+    
+    Uses distance to vessel surface (centerline - radius) rather than
+    distance to nodes for more accurate coverage assessment.
+    """
+    if config is None:
+        config = EvalConfig()
+    
     if len(tissue_points) == 0:
         return CoverageMetrics(0.0, 0, 0.0, 0.0, 0.0)
     
-    distances = []
-    perfusion_threshold = 0.005
+    perfusion_threshold = config.perfusion_threshold
     
-    for tp in tissue_points:
-        min_dist = float('inf')
-        for node in network.nodes.values():
-            dist = np.linalg.norm(node.position.to_array() - tp)
-            min_dist = min(min_dist, dist)
-        distances.append(min_dist)
+    if config.use_segment_distance:
+        from ..analysis.distance import compute_tissue_coverage_distances
+        
+        coverage_result = compute_tissue_coverage_distances(
+            tissue_points, network, vessel_type=None, use_surface_distance=True
+        )
+        distances = coverage_result["distances"]
+    else:
+        distances = []
+        for tp in tissue_points:
+            min_dist = float('inf')
+            for node in network.nodes.values():
+                dist = np.linalg.norm(node.position.to_array() - tp)
+                min_dist = min(min_dist, dist)
+            distances.append(min_dist)
+        distances = np.array(distances)
     
-    distances = np.array(distances)
     perfused = distances < perfusion_threshold
     coverage_fraction = float(np.mean(perfused))
     unperfused_points = int(np.sum(~perfused))
