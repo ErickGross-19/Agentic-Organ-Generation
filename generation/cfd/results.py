@@ -217,6 +217,7 @@ def compute_metrics_from_0d_solution(
     segment_flows: Dict[int, float],
     inlet_node_id: int,
     outlet_node_ids: List[int],
+    network: Optional["VascularNetwork"] = None,
 ) -> CFDMetrics:
     """
     Compute CFD metrics from 0D lumped parameter solution.
@@ -231,6 +232,8 @@ def compute_metrics_from_0d_solution(
         ID of inlet node
     outlet_node_ids : list
         IDs of outlet nodes
+    network : VascularNetwork, optional
+        Network for finding segments connected to nodes
         
     Returns
     -------
@@ -246,13 +249,24 @@ def compute_metrics_from_0d_solution(
     metrics.pressure.compute_pressure_drop()
     
     total_inlet_flow = 0.0
-    for seg_id, flow in segment_flows.items():
-        total_inlet_flow = max(total_inlet_flow, abs(flow))
-    metrics.flow.total_inlet_flow = total_inlet_flow
+    outlet_flows = {}
     
-    metrics.flow.outlet_flows = {
-        nid: abs(segment_flows.get(nid, 0.0)) for nid in outlet_node_ids
-    }
+    if network is not None:
+        for seg_id, segment in network.segments.items():
+            flow = abs(segment_flows.get(seg_id, 0.0))
+            if segment.start_node_id == inlet_node_id or segment.end_node_id == inlet_node_id:
+                total_inlet_flow += flow
+            if segment.end_node_id in outlet_node_ids:
+                outlet_flows[segment.end_node_id] = flow
+            elif segment.start_node_id in outlet_node_ids:
+                outlet_flows[segment.start_node_id] = flow
+    else:
+        for seg_id, flow in segment_flows.items():
+            total_inlet_flow = max(total_inlet_flow, abs(flow))
+        outlet_flows = {nid: 0.0 for nid in outlet_node_ids}
+    
+    metrics.flow.total_inlet_flow = total_inlet_flow
+    metrics.flow.outlet_flows = outlet_flows
     metrics.flow.compute_uniformity()
     
     metrics.perfusion.compute_from_flows(metrics.flow.outlet_flows)

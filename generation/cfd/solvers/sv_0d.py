@@ -117,6 +117,7 @@ class Solver0D(BaseSolver):
                 self._segment_flows,
                 self._inlet_node_ids[0] if self._inlet_node_ids else 0,
                 self._outlet_node_ids,
+                self._network,
             )
             
             result.success = True
