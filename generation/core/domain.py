@@ -285,6 +285,122 @@ class BoxDomain(DomainSpec):
 
 
 @dataclass
+class CylinderDomain(DomainSpec):
+    """Cylindrical domain aligned with Z-axis."""
+    
+    radius: float
+    height: float
+    center: Point3D = None
+    
+    def __post_init__(self):
+        if self.center is None:
+            self.center = Point3D(0.0, 0.0, 0.0)
+        if self.radius <= 0:
+            raise ValueError(f"radius ({self.radius}) must be positive")
+        if self.height <= 0:
+            raise ValueError(f"height ({self.height}) must be positive")
+    
+    def contains(self, point: Point3D) -> bool:
+        """Check if point is inside cylinder."""
+        dx = point.x - self.center.x
+        dy = point.y - self.center.y
+        dz = point.z - self.center.z
+        
+        r_xy = np.sqrt(dx**2 + dy**2)
+        half_height = self.height / 2
+        
+        return r_xy <= self.radius and abs(dz) <= half_height
+    
+    def project_inside(self, point: Point3D) -> Point3D:
+        """Project point to nearest point inside cylinder."""
+        if self.contains(point):
+            return point
+        
+        dx = point.x - self.center.x
+        dy = point.y - self.center.y
+        dz = point.z - self.center.z
+        
+        r_xy = np.sqrt(dx**2 + dy**2)
+        half_height = self.height / 2
+        
+        margin = 0.001
+        
+        if r_xy > self.radius:
+            scale = (self.radius - margin) / r_xy
+            dx *= scale
+            dy *= scale
+        
+        dz = np.clip(dz, -half_height + margin, half_height - margin)
+        
+        return Point3D(
+            self.center.x + dx,
+            self.center.y + dy,
+            self.center.z + dz,
+        )
+    
+    def distance_to_boundary(self, point: Point3D) -> float:
+        """Compute distance to nearest cylinder surface."""
+        dx = point.x - self.center.x
+        dy = point.y - self.center.y
+        dz = point.z - self.center.z
+        
+        r_xy = np.sqrt(dx**2 + dy**2)
+        half_height = self.height / 2
+        
+        dist_to_side = self.radius - r_xy
+        dist_to_top = half_height - dz
+        dist_to_bottom = half_height + dz
+        
+        return float(min(dist_to_side, dist_to_top, dist_to_bottom))
+    
+    def sample_points(self, n_points: int, seed: Optional[int] = None) -> np.ndarray:
+        """Sample random points uniformly inside cylinder."""
+        rng = np.random.default_rng(seed)
+        
+        half_height = self.height / 2
+        
+        r = self.radius * np.sqrt(rng.uniform(0, 1, n_points))
+        theta = rng.uniform(0, 2 * np.pi, n_points)
+        z = rng.uniform(-half_height, half_height, n_points)
+        
+        x = self.center.x + r * np.cos(theta)
+        y = self.center.y + r * np.sin(theta)
+        z = self.center.z + z
+        
+        return np.column_stack([x, y, z])
+    
+    def get_bounds(self) -> tuple:
+        """Get bounding box."""
+        half_height = self.height / 2
+        return (
+            self.center.x - self.radius,
+            self.center.x + self.radius,
+            self.center.y - self.radius,
+            self.center.y + self.radius,
+            self.center.z - half_height,
+            self.center.z + half_height,
+        )
+    
+    def to_dict(self) -> dict:
+        """Convert to dictionary."""
+        return {
+            "type": "cylinder",
+            "radius": self.radius,
+            "height": self.height,
+            "center": self.center.to_dict(),
+        }
+    
+    @classmethod
+    def from_dict(cls, d: dict) -> "CylinderDomain":
+        """Create from dictionary."""
+        return cls(
+            radius=d["radius"],
+            height=d["height"],
+            center=Point3D.from_dict(d["center"]),
+        )
+
+
+@dataclass
 class MeshDomain(DomainSpec):
     """Mesh-based domain from STL file."""
     
@@ -386,6 +502,8 @@ def domain_from_dict(d: dict) -> DomainSpec:
         return EllipsoidDomain.from_dict(d)
     elif domain_type == "box":
         return BoxDomain.from_dict(d)
+    elif domain_type == "cylinder":
+        return CylinderDomain.from_dict(d)
     elif domain_type == "mesh":
         return MeshDomain.from_dict(d)
     else:

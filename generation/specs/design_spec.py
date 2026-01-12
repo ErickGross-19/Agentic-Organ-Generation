@@ -56,6 +56,8 @@ class DomainSpec:
             return EllipsoidSpec.from_dict(d)
         elif domain_type == "box":
             return BoxSpec.from_dict(d)
+        elif domain_type == "cylinder":
+            return CylinderSpec.from_dict(d)
         else:
             raise ValueError(f"Unknown domain type: {domain_type}")
 
@@ -113,6 +115,37 @@ class BoxSpec(DomainSpec):
         return BoxSpec(
             center=tuple(d.get("center", [0.0, 0.0, 0.0])),
             size=tuple(d.get("size", [0.10, 0.09, 0.07])),
+        )
+
+
+@dataclass
+class CylinderSpec(DomainSpec):
+    """Cylinder domain specification (spec units: METERS).
+    
+    Use compile_domain() to convert to runtime CylinderDomain.
+    
+    Parameters
+    ----------
+    center : Tuple[float, float, float]
+        Center point (x, y, z) in METERS. Default: origin (0, 0, 0).
+    radius : float
+        Cylinder radius in METERS. Default: 0.005 (5mm).
+    height : float
+        Cylinder height in METERS. Default: 0.010 (10mm).
+    """
+    
+    type: str = "cylinder"
+    center: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    radius: float = 0.005
+    height: float = 0.010
+    
+    @staticmethod
+    def from_dict(d: Dict[str, Any]) -> 'CylinderSpec':
+        """Create CylinderSpec from dictionary."""
+        return CylinderSpec(
+            center=tuple(d.get("center", [0.0, 0.0, 0.0])),
+            radius=d.get("radius", 0.005),
+            height=d.get("height", 0.010),
         )
 
 

@@ -79,7 +79,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from generation import VascularNetwork
 from generation.specs.design_spec import (
     DesignSpec,
-    EllipsoidSpec,
+    CylinderSpec,
     TreeSpec,
     InletSpec,
 )
@@ -579,14 +579,15 @@ def create_single_input_spec(
     """
     logger.info("Creating single-input design specification...")
     
-    domain = EllipsoidSpec(
-        type="ellipsoid",
+    domain = CylinderSpec(
+        type="cylinder",
         center=(0.0, 0.0, geometry.height / 2),
-        semi_axes=(geometry.radius, geometry.radius, geometry.height / 2),
+        radius=geometry.radius,
+        height=geometry.height,
     )
     
-    logger.info(f"  Domain: ellipsoid with semi-axes ({geometry.radius*1000:.1f}mm, "
-               f"{geometry.radius*1000:.1f}mm, {geometry.height/2*1000:.1f}mm)")
+    logger.info(f"  Domain: cylinder with radius={geometry.radius*1000:.1f}mm, "
+               f"height={geometry.height*1000:.1f}mm")
     
     domain_center_z = geometry.height / 2
     inlet_x = geometry.radius * 0.7
@@ -666,14 +667,15 @@ def create_multi_input_spec(
     """
     logger.info(f"Creating multi-input design specification ({multi_config.num_inlets} inlets)...")
     
-    domain = EllipsoidSpec(
-        type="ellipsoid",
+    domain = CylinderSpec(
+        type="cylinder",
         center=(0.0, 0.0, geometry.height / 2),
-        semi_axes=(geometry.radius, geometry.radius, geometry.height / 2),
+        radius=geometry.radius,
+        height=geometry.height,
     )
     
-    logger.info(f"  Domain: ellipsoid with semi-axes ({geometry.radius*1000:.1f}mm, "
-               f"{geometry.radius*1000:.1f}mm, {geometry.height/2*1000:.1f}mm)")
+    logger.info(f"  Domain: cylinder with radius={geometry.radius*1000:.1f}mm, "
+               f"height={geometry.height*1000:.1f}mm")
     
     inlets = []
     domain_center_z = geometry.height / 2
