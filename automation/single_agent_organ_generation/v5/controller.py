@@ -1188,8 +1188,14 @@ class SingleAgentOrganGeneratorV5:
         
         selected_id = self.io.prompt_plan_selection([p.to_dict() for p in plans])
         
-        if selected_id is None and recommended:
-            selected_id = recommended.plan_id
+        # If user didn't explicitly select, use recommended plan or first available
+        if selected_id is None:
+            if recommended:
+                selected_id = recommended.plan_id
+                self.io.say_assistant(f"No selection made - using recommended plan.")
+            elif plans:
+                selected_id = plans[0].plan_id
+                self.io.say_assistant(f"No selection made - using first available plan.")
         
         if selected_id and selected_id in self.world_model.plans:
             selected = self.world_model.plans[selected_id]
@@ -1199,6 +1205,8 @@ class SingleAgentOrganGeneratorV5:
             self._emit_trace("plan_selected", f"User selected: {selected_id}")
             return True
         
+        # This should not happen if plans exist, but log it for debugging
+        self._emit_trace("plan_selection_failed", f"Failed to select plan. selected_id={selected_id}, plans={[p.plan_id for p in plans]}")
         return False
     
     def _cap_ask_best_next_question(self) -> bool:
