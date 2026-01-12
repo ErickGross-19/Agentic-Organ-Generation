@@ -214,7 +214,9 @@ The system follows a three-tier approach: infer from user text, propose sensible
 
 ### Graphical User Interface
 
-The GUI provides a visual interface for workflow execution with integrated STL visualization:
+The GUI provides a visual interface for workflow execution with integrated STL visualization.
+
+#### Launching the GUI
 
 ```bash
 # Launch the GUI
@@ -224,7 +226,76 @@ python main.py
 python -m gui
 ```
 
-The GUI features agent configuration with secure API key storage, a three-panel layout (chat, output, STL viewer), and real-time 3D mesh visualization. For detailed GUI documentation, see [gui/README.md](gui/README.md).
+#### Getting Started with the GUI
+
+Follow these steps to generate your first organ structure using the GUI:
+
+**Step 1: Configure the LLM Agent**
+
+Click the "Agent Config" button in the toolbar to open the configuration dialog:
+
+| Setting | Description | Example |
+|---------|-------------|---------|
+| **Provider** | LLM provider to use | OpenAI, Anthropic, Google, Mistral, xAI, Groq, or Local |
+| **API Key** | Your API key for the selected provider | `sk-...` (stored securely) |
+| **Model** | Model name | `gpt-4`, `claude-3-opus`, etc. |
+| **Temperature** | Sampling temperature (0.0-1.0) | `0.7` (default) |
+| **Max Tokens** | Maximum response length | `4096` (default) |
+
+For local providers (e.g., Ollama), set the API Base URL instead of an API key.
+
+**Step 2: Select a Workflow**
+
+Click "Select Workflow" in the toolbar or use File > New Workflow (Ctrl+N). Currently available:
+
+- **Single Agent Organ Generator**: Interactive workflow with topology-first questioning. Best for guided organ structure design.
+
+**Step 3: Choose Output Directory**
+
+After clicking "Start", you'll be prompted to select an output directory where generated files will be saved.
+
+**Step 4: Interact with the Agent**
+
+The agent will guide you through the design process in the chat panel:
+
+1. **Project Description**: Describe what you want to build (e.g., "I want to create a liver scaffold for perfusion testing, approximately 20x30x40 mm")
+2. **Topology Selection**: Choose the vascular topology (tree, dual_trees, path, backbone, loop)
+3. **Domain Configuration**: Specify domain type and dimensions
+4. **Inlet/Outlet Placement**: Define where fluid enters and exits
+5. **Plan Selection**: Review and select from generated plans
+6. **Generation Approval**: Approve the generation step
+7. **Postprocessing**: Approve mesh embedding and export
+
+**Step 5: View Results**
+
+Generated STL files appear in the STL Viewer panel on the right. You can:
+
+- Rotate the view by dragging
+- Zoom with the scroll wheel
+- Load additional STL files via File > Load STL
+- Export the current view via File > Export View
+
+#### GUI Features
+
+| Feature | Description |
+|---------|-------------|
+| **Three-Panel Layout** | Chat (interaction), Output (logs), STL Viewer (3D visualization) |
+| **Secure API Key Storage** | API keys are encrypted and stored locally |
+| **Real-time Progress** | Status bar shows current workflow state |
+| **Undo Support** | Backtrack decisions during the workflow |
+| **Run History** | View previous generation runs and their outputs |
+| **Verification Reports** | Inspect validation results for generated structures |
+
+#### Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| "Agent not configured" | Click "Agent Config" and enter your API key |
+| "Please start a workflow first" | Click "Select Workflow" then "Start" |
+| STL not loading | Ensure the file path is valid and the file is not corrupted |
+| Workflow stuck | Check the Output panel for error messages; try stopping and restarting |
+
+For detailed GUI documentation, see [gui/README.md](gui/README.md).
 
 ### Command-Line Interface
 

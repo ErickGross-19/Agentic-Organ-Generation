@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 from enum import Enum
 
+from ..world_model import TraceEvent
+
 
 class IOMessageKind(Enum):
     """Kind of IO message."""
@@ -68,21 +70,6 @@ class TextPrompt:
             "prompt": self.prompt,
             "suggestions": self.suggestions,
             "default": self.default,
-        }
-
-
-@dataclass
-class TraceEvent:
-    """A trace event for GUI timeline."""
-    event_type: str
-    message: str
-    data: Optional[Dict[str, Any]] = None
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "event_type": self.event_type,
-            "message": self.message,
-            "data": self.data,
         }
 
 

@@ -236,47 +236,47 @@ class SingleAgentOrganGeneratorV5:
         bool
             True if spec has minimum required fields, False otherwise
         """
-        # Check domain type
-        domain_type = self.world_model.get_fact_value("domain_type")
+        # Check domain type (uses dot notation consistent with world model)
+        domain_type = self.world_model.get_fact_value("domain.type")
         if not domain_type:
             return False
         
         # Check domain size (at least one dimension)
         has_size = any([
-            self.world_model.get_fact_value("domain_width"),
-            self.world_model.get_fact_value("domain_height"),
-            self.world_model.get_fact_value("domain_depth"),
-            self.world_model.get_fact_value("domain_radius"),
-            self.world_model.get_fact_value("domain_size"),
+            self.world_model.get_fact_value("domain.width"),
+            self.world_model.get_fact_value("domain.height"),
+            self.world_model.get_fact_value("domain.depth"),
+            self.world_model.get_fact_value("domain.radius"),
+            self.world_model.get_fact_value("domain.size"),
         ])
         if not has_size:
             return False
         
         # Check inlet (face or point + radius)
         has_inlet = (
-            self.world_model.get_fact_value("inlet_face") or
-            self.world_model.get_fact_value("inlet_position") or
-            self.world_model.get_fact_value("inlet_point")
+            self.world_model.get_fact_value("inlet.face") or
+            self.world_model.get_fact_value("inlet.position") or
+            self.world_model.get_fact_value("inlet.point")
         )
-        inlet_radius = self.world_model.get_fact_value("inlet_radius")
+        inlet_radius = self.world_model.get_fact_value("inlet.radius")
         if not has_inlet or not inlet_radius:
             return False
         
         # Check outlet (face or point + radius)
         has_outlet = (
-            self.world_model.get_fact_value("outlet_face") or
-            self.world_model.get_fact_value("outlet_position") or
-            self.world_model.get_fact_value("outlet_point")
+            self.world_model.get_fact_value("outlet.face") or
+            self.world_model.get_fact_value("outlet.position") or
+            self.world_model.get_fact_value("outlet.point")
         )
-        outlet_radius = self.world_model.get_fact_value("outlet_radius")
+        outlet_radius = self.world_model.get_fact_value("outlet.radius")
         if not has_outlet or not outlet_radius:
             return False
         
         # Check target resolution (any of these is acceptable)
         has_resolution = any([
-            self.world_model.get_fact_value("target_terminals"),
-            self.world_model.get_fact_value("segment_budget"),
-            self.world_model.get_fact_value("density_level"),
+            self.world_model.get_fact_value("topology.target_terminals"),
+            self.world_model.get_fact_value("topology.segment_budget"),
+            self.world_model.get_fact_value("topology.density_level"),
             self.world_model.get_fact_value("resolution"),
         ])
         if not has_resolution:
@@ -295,45 +295,46 @@ class SingleAgentOrganGeneratorV5:
         """
         missing = []
         
-        if not self.world_model.get_fact_value("domain_type"):
+        # Uses dot notation consistent with world model
+        if not self.world_model.get_fact_value("domain.type"):
             missing.append("domain type (box, cylinder, sphere, etc.)")
         
         has_size = any([
-            self.world_model.get_fact_value("domain_width"),
-            self.world_model.get_fact_value("domain_height"),
-            self.world_model.get_fact_value("domain_depth"),
-            self.world_model.get_fact_value("domain_radius"),
-            self.world_model.get_fact_value("domain_size"),
+            self.world_model.get_fact_value("domain.width"),
+            self.world_model.get_fact_value("domain.height"),
+            self.world_model.get_fact_value("domain.depth"),
+            self.world_model.get_fact_value("domain.radius"),
+            self.world_model.get_fact_value("domain.size"),
         ])
         if not has_size:
             missing.append("domain size/dimensions")
         
         has_inlet = (
-            self.world_model.get_fact_value("inlet_face") or
-            self.world_model.get_fact_value("inlet_position") or
-            self.world_model.get_fact_value("inlet_point")
+            self.world_model.get_fact_value("inlet.face") or
+            self.world_model.get_fact_value("inlet.position") or
+            self.world_model.get_fact_value("inlet.point")
         )
         if not has_inlet:
             missing.append("inlet location (face or point)")
         
-        if not self.world_model.get_fact_value("inlet_radius"):
+        if not self.world_model.get_fact_value("inlet.radius"):
             missing.append("inlet radius")
         
         has_outlet = (
-            self.world_model.get_fact_value("outlet_face") or
-            self.world_model.get_fact_value("outlet_position") or
-            self.world_model.get_fact_value("outlet_point")
+            self.world_model.get_fact_value("outlet.face") or
+            self.world_model.get_fact_value("outlet.position") or
+            self.world_model.get_fact_value("outlet.point")
         )
         if not has_outlet:
             missing.append("outlet location (face or point)")
         
-        if not self.world_model.get_fact_value("outlet_radius"):
+        if not self.world_model.get_fact_value("outlet.radius"):
             missing.append("outlet radius")
         
         has_resolution = any([
-            self.world_model.get_fact_value("target_terminals"),
-            self.world_model.get_fact_value("segment_budget"),
-            self.world_model.get_fact_value("density_level"),
+            self.world_model.get_fact_value("topology.target_terminals"),
+            self.world_model.get_fact_value("topology.segment_budget"),
+            self.world_model.get_fact_value("topology.density_level"),
             self.world_model.get_fact_value("resolution"),
         ])
         if not has_resolution:
@@ -1251,8 +1252,13 @@ class SingleAgentOrganGeneratorV5:
                     reason="Updated after asking priority question",
                 )
             else:
-                # All priority questions asked - remove the fact
-                self.world_model._facts.pop("project.priority_questions", None)
+                # All priority questions asked - remove the fact using public API
+                self.world_model.delete_fact(
+                    "project.priority_questions",
+                    FactProvenance.SYSTEM,
+                    reason="All priority questions asked",
+                    record_history=False,  # Don't need to track this in history
+                )
         
         prompt = best_question.question
         if best_question.why:
