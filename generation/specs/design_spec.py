@@ -261,7 +261,7 @@ class TreeSpec:
     
     inlets: List[InletSpec]
     outlets: List[OutletSpec]
-    colonization: ColonizationSpec
+    colonization: Optional[ColonizationSpec] = None
     topology_kind: Optional[TopologyKind] = None
     terminal_count: Optional[int] = None
     terminal_density: Optional[float] = None
@@ -291,8 +291,9 @@ class TreeSpec:
         result = {
             "inlets": [inlet.to_dict() for inlet in self.inlets],
             "outlets": [outlet.to_dict() for outlet in self.outlets],
-            "colonization": self.colonization.to_dict(),
         }
+        if self.colonization is not None:
+            result["colonization"] = self.colonization.to_dict()
         if self.topology_kind is not None:
             result["topology_kind"] = self.topology_kind
         if self.terminal_count is not None:
@@ -306,7 +307,7 @@ class TreeSpec:
         return TreeSpec(
             inlets=[InletSpec.from_dict(i) for i in d["inlets"]],
             outlets=[OutletSpec.from_dict(o) for o in d["outlets"]],
-            colonization=ColonizationSpec.from_dict(d["colonization"]),
+            colonization=ColonizationSpec.from_dict(d["colonization"]) if "colonization" in d and d["colonization"] is not None else None,
             topology_kind=d.get("topology_kind"),
             terminal_count=d.get("terminal_count"),
             terminal_density=d.get("terminal_density"),

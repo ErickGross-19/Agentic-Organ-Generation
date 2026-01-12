@@ -92,6 +92,7 @@ from generation.core.types import Point3D, TubeGeometry
 from generation.core.result import OperationStatus
 from generation.core.network import Node, VesselSegment as Segment
 from generation.spatial.grid_index import segment_segment_distance_exact
+from generation.optimization import optimize_geometry, NLPConfig, NLPResult
 import numpy as np
 
 # Configure logging for verbose output
@@ -294,6 +295,70 @@ class MultiInputConfig:
     radial_position_fraction: float = 0.85  # 85% of radius from center
 
 
+@dataclass
+class NLPParameters:
+    """
+    NLP (Non-Linear Programming) global geometry optimization parameters.
+    
+    After CCO generates the initial network topology, NLP optimization refines
+    the geometry by optimizing node positions, radii, and pressures to minimize
+    total vessel volume while satisfying physiological constraints.
+    
+    This implements Jessen-style optimization with:
+    - Murray's law at bifurcations
+    - Poiseuille pressure drop per segment
+    - Kirchhoff flow conservation
+    - Homogeneous terminal flow distribution
+    
+    Attributes
+    ----------
+    enabled : bool
+        Whether to apply NLP optimization after CCO generation.
+        Default: True. Set to False to skip optimization.
+        
+    murray_exponent : float
+        Exponent for Murray's law radius scaling (r_parent^gamma = sum(r_child^gamma)).
+        Default: 3.0 (physiological value for blood vessels).
+        
+    target_pressure_drop : float
+        Target pressure drop across the network, in Pascals.
+        Default: 13332.0 Pa (~100 mmHg, typical arterial-venous drop).
+        
+    viscosity : float
+        Blood viscosity in Pa*s.
+        Default: 0.0035 Pa*s (typical blood viscosity).
+        
+    fix_terminal_positions : bool
+        Whether to fix terminal node positions during optimization.
+        Default: True. Keeps outlet positions fixed.
+        
+    fix_root_position : bool
+        Whether to fix inlet (root) node position during optimization.
+        Default: True. Keeps inlet position fixed.
+        
+    max_iterations : int
+        Maximum number of optimization iterations.
+        Default: 500. Increase for better convergence on complex networks.
+        
+    solver_tolerance : float
+        Convergence tolerance for the NLP solver.
+        Default: 1e-6. Smaller = more precise but slower.
+        
+    cleanup_degenerate_segments : bool
+        Whether to remove degenerate segments (length < diameter) after optimization.
+        Default: True. May create trifurcations.
+    """
+    enabled: bool = True                        # Enable NLP optimization
+    murray_exponent: float = 3.0                # Murray's law exponent
+    target_pressure_drop: float = 13332.0       # ~100 mmHg pressure drop
+    viscosity: float = 0.0035                   # Blood viscosity (Pa*s)
+    fix_terminal_positions: bool = True         # Fix terminal positions
+    fix_root_position: bool = True              # Fix inlet position
+    max_iterations: int = 500                   # Max optimization iterations
+    solver_tolerance: float = 1e-6              # Solver convergence tolerance
+    cleanup_degenerate_segments: bool = True    # Remove degenerate segments
+
+
 # =============================================================================
 # DEFAULT PARAMETER INSTANCES
 # =============================================================================
@@ -303,6 +368,7 @@ DEFAULT_VESSEL_DIMENSIONS = VesselDimensions()
 DEFAULT_CCO_PARAMS = CCOParameters()
 DEFAULT_EMBEDDING_PARAMS = EmbeddingParameters()
 DEFAULT_MULTI_INPUT_CONFIG = MultiInputConfig()
+DEFAULT_NLP_PARAMS = NLPParameters()
 
 
 # =============================================================================
@@ -1098,16 +1164,30 @@ def generate_network_from_spec(
     spec: DesignSpec,
     vessels: VesselDimensions = DEFAULT_VESSEL_DIMENSIONS,
     cco_params: CCOParameters = DEFAULT_CCO_PARAMS,
+    nlp_params: NLPParameters = DEFAULT_NLP_PARAMS,
 ) -> VascularNetwork:
     """
-    Generate vascular network from design specification using CCO hybrid backend.
+    Generate vascular network from design specification using CCO hybrid backend
+    with optional global NLP geometry optimization.
     
-    This function uses the CCOHybridBackend which implements Sexton et al.'s
-    accelerated CCO algorithm with:
+    This function uses a two-stage approach:
+    
+    Stage 1 - CCO Generation:
+    Uses the CCOHybridBackend which implements Sexton et al.'s accelerated CCO
+    algorithm with:
     - Partial binding optimization for fast bifurcation optimization
     - Collision avoidance triage (cheap filter then expensive test)
     - Murray's law-based radius scaling with demand-based splitting
     - Local radius-at-split interpolation for correct bifurcation behavior
+    
+    Stage 2 - Global NLP Optimization (optional):
+    Applies Jessen-style NLP optimization to refine the network geometry by
+    optimizing node positions, radii, and pressures to minimize total vessel
+    volume while satisfying physiological constraints:
+    - Murray's law at bifurcations
+    - Poiseuille pressure drop per segment
+    - Kirchhoff flow conservation
+    - Homogeneous terminal flow distribution
     
     For multi-inlet specifications, this generates a separate CCO tree for each
     inlet and merges them into a single network. Each inlet gets an equal share
@@ -1121,11 +1201,13 @@ def generate_network_from_spec(
         Vessel dimension parameters (in meters)
     cco_params : CCOParameters
         CCO algorithm parameters
+    nlp_params : NLPParameters
+        NLP global geometry optimization parameters
         
     Returns
     -------
     VascularNetwork
-        Generated vascular network
+        Generated vascular network (optimized if nlp_params.enabled is True)
     """
     logger.info("Generating network using CCO hybrid backend...")
     
@@ -1305,6 +1387,60 @@ def generate_network_from_spec(
         if node.node_type in node_counts:
             node_counts[node.node_type] += 1
     logger.info(f"  Node types: {node_counts}")
+    
+    # Stage 2: Apply global NLP geometry optimization (if enabled)
+    if nlp_params.enabled:
+        logger.info("-" * 50)
+        logger.info("STAGE 2: Applying global NLP geometry optimization...")
+        logger.info("-" * 50)
+        
+        # Create NLP configuration from parameters
+        nlp_config = NLPConfig(
+            murray_exponent=nlp_params.murray_exponent,
+            target_pressure_drop=nlp_params.target_pressure_drop,
+            viscosity=nlp_params.viscosity,
+            fix_terminal_positions=nlp_params.fix_terminal_positions,
+            fix_root_position=nlp_params.fix_root_position,
+            max_iterations=nlp_params.max_iterations,
+            solver_tolerance=nlp_params.solver_tolerance,
+            cleanup_degenerate_segments=nlp_params.cleanup_degenerate_segments,
+        )
+        
+        logger.info(f"  NLP config: murray_exponent={nlp_config.murray_exponent}, "
+                   f"target_pressure_drop={nlp_config.target_pressure_drop:.0f}Pa, "
+                   f"max_iterations={nlp_config.max_iterations}")
+        
+        # Run NLP optimization
+        nlp_start = time.time()
+        nlp_result = optimize_geometry(network, nlp_config)
+        nlp_time = time.time() - nlp_start
+        
+        if nlp_result.success:
+            logger.info(f"  NLP optimization successful!")
+            logger.info(f"  Volume reduction: {nlp_result.volume_reduction*100:.1f}%")
+            logger.info(f"  Initial volume: {nlp_result.initial_volume*1e9:.3f} mm^3")
+            logger.info(f"  Final volume: {nlp_result.final_volume*1e9:.3f} mm^3")
+            logger.info(f"  Iterations: {nlp_result.iterations}")
+            logger.info(f"  Optimization time: {nlp_time:.2f}s")
+            
+            if nlp_result.segments_removed > 0:
+                logger.info(f"  Degenerate segments removed: {nlp_result.segments_removed}")
+            if nlp_result.trifurcations_created > 0:
+                logger.info(f"  Trifurcations created: {nlp_result.trifurcations_created}")
+            
+            for warning in nlp_result.warnings:
+                logger.warning(f"  NLP warning: {warning}")
+        else:
+            logger.warning(f"  NLP optimization did not converge")
+            for error in nlp_result.errors:
+                logger.error(f"  NLP error: {error}")
+            for warning in nlp_result.warnings:
+                logger.warning(f"  NLP warning: {warning}")
+        
+        # Log updated network statistics
+        logger.info(f"  Post-NLP network: {len(network.nodes)} nodes, {len(network.segments)} segments")
+    else:
+        logger.info("  NLP optimization disabled, skipping Stage 2")
     
     return network
 
