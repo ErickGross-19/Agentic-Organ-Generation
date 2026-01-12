@@ -167,10 +167,9 @@ class SpaceColonizationBackend(GenerationBackend):
             
             if attractors and active_nodes:
                 sc_config = SCParams(
-                    attraction_distance=config.attraction_distance,
-                    kill_distance=config.kill_distance,
+                    influence_radius=config.attraction_distance,
+                    kill_radius=config.kill_distance,
                     step_size=config.step_size,
-                    branch_angle_deg=config.branch_angle_deg,
                 )
                 
                 result = space_colonization_step(
