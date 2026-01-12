@@ -569,8 +569,10 @@ class SingleAgentOrganGeneratorV5:
         if self.world_model._pending_patches:
             available.append("apply_patch")
         
-        if self.world_model.history:
-            available.append("undo")
+        # Note: "undo" capability is NOT automatically added here.
+        # Undo is triggered only via explicit user request, which is handled
+        # in _cap_interpret_user_turn() when user says "undo" or similar.
+        # This prevents the undo loop where undo was auto-selected after plan selection.
         
         current_spec_hash = self.world_model.compute_spec_hash()
         
@@ -1378,10 +1380,24 @@ class SingleAgentOrganGeneratorV5:
         else:
             detected_organ = None
         
+        # Detect domain type from description keywords
+        domain_keywords = {
+            "box": "box", "rectangular": "box", "cube": "box", "cuboid": "box",
+            "ellipsoid": "ellipsoid", "oval": "ellipsoid", "egg": "ellipsoid", "spheroid": "ellipsoid",
+            "cylinder": "cylinder", "cylindrical": "cylinder", "tubular": "cylinder",
+        }
+        for keyword, domain_type in domain_keywords.items():
+            if re.search(rf"\b{keyword}\b", description_lower):
+                extracted_intent["suggested_domain_type"] = domain_type
+                break
+        
         # Detect microfluidic/channel/manifold keywords -> suggests path/backbone
-        microfluidic_keywords = ["microfluidic", "channel", "manifold", "conduit", "tube", "duct"]
+        microfluidic_keywords = ["microfluidic", "channel", "manifold", "conduit", "tube", "duct", "straight"]
         if any(kw in description_lower for kw in microfluidic_keywords):
             extracted_intent["microfluidic_hint"] = True
+            # For simple channel/path structures, suggest path topology
+            if "straight" in description_lower or "channel" in description_lower:
+                extracted_intent["suggested_topology"] = "path"
             # This conflicts with organ-based topology suggestion
             if detected_organ and extracted_intent.get("suggested_topology") in ["tree", "dual_trees"]:
                 ambiguities.append({
@@ -1605,7 +1621,11 @@ class SingleAgentOrganGeneratorV5:
         
         if field == "domain.size":
             if isinstance(value, (list, tuple)) and len(value) == 3:
-                return f"{ack} — {value[0]}×{value[1]}×{value[2]} mm."
+                # Values are stored in meters, convert to mm for display
+                x_mm = value[0] * 1000
+                y_mm = value[1] * 1000
+                z_mm = value[2] * 1000
+                return f"{ack} — {x_mm}×{y_mm}×{z_mm} mm."
             return f"{ack} — domain size: {value}."
         
         if field == "topology.kind":
@@ -1714,6 +1734,8 @@ class SingleAgentOrganGeneratorV5:
             return "Options: tree (branching), dual_trees (arterial + venous), path (single channel), backbone (main trunk with branches), loop (circular)"
         if field == "domain.type":
             return "Options: box (rectangular), ellipsoid (oval), cylinder (tubular)"
+        if field in ("inlet.face", "outlet.face"):
+            return "Options: left, right, front, back, bottom, top"
         return f"Options: {', '.join(options)}"
     
     def _get_detailed_options_help(self, field: str, options: List[str]) -> str:
@@ -1737,6 +1759,17 @@ class SingleAgentOrganGeneratorV5:
                 "- **ellipsoid**: An oval/egg shape. Good for organ-like geometries.\n"
                 "- **cylinder**: A tubular shape. Good for vessel segments or tubular organs.\n\n"
                 "Which shape would you like?"
+            )
+        if field in ("inlet.face", "outlet.face"):
+            return (
+                "Here are the available face positions:\n"
+                "- **left**: The left side of the domain (x_min)\n"
+                "- **right**: The right side of the domain (x_max)\n"
+                "- **front**: The front of the domain (y_min)\n"
+                "- **back**: The back of the domain (y_max)\n"
+                "- **bottom**: The bottom of the domain (z_min)\n"
+                "- **top**: The top of the domain (z_max)\n\n"
+                "Which face would you like?"
             )
         return f"Please choose one of the following options: {', '.join(options)}"
     
@@ -1834,9 +1867,9 @@ class SingleAgentOrganGeneratorV5:
             ("domain.size", "What are the domain dimensions (width x depth x height in mm)?", "Defines the physical size of the organ scaffold", None),
             ("project.description", "Describe your project in a few sentences. What organ or structure are you building? What's the intended use?", "Helps me understand your goals and suggest appropriate parameters", None),
             ("topology.kind", "What vascular topology?", "Determines branching pattern", ["tree", "dual_trees", "path", "backbone", "loop"]),
-            ("inlet.face", "Which face should the inlet be on?", "Determines where blood enters", ["x_min", "x_max", "y_min", "y_max", "z_min", "z_max"]),
+            ("inlet.face", "Which face should the inlet be on?", "Determines where fluid enters", ["left", "right", "front", "back", "bottom", "top"]),
             ("inlet.radius", "What inlet radius (in mm)?", "Determines the main vessel diameter", None),
-            ("outlet.face", "Which face should the outlet be on?", "Determines where blood exits", ["x_min", "x_max", "y_min", "y_max", "z_min", "z_max"]),
+            ("outlet.face", "Which face should the outlet be on?", "Determines where fluid exits", ["left", "right", "front", "back", "bottom", "top"]),
             ("outlet.radius", "What outlet radius (in mm)?", "Determines the exit vessel diameter", None),
         ]
         
