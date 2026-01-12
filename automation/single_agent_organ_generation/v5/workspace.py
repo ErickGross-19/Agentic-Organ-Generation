@@ -153,16 +153,23 @@ class RunRecord:
 # Default repo tools that are always available
 # NOTE: These must match actual module paths and entrypoints in the codebase!
 # Validated against generation/ops/__init__.py and generation/core/__init__.py
+#
+# TOOL CATEGORIES:
+# 1. Generation tools (generation.*) - Core network building operations
+# 2. Validation tools (validity.*) - Pre/post-embedding validation
+# 3. Analysis tools (generation.analysis.*) - Network analysis and coverage
+# 4. Organ generators (generation.organ_generators.*) - Organ-specific generation
 DEFAULT_REPO_TOOLS: List[ToolRegistryEntry] = [
+    # === GENERATION TOOLS ===
     ToolRegistryEntry(
         name="ops",
         origin="repo",
         module="generation.ops",
         entrypoints=[
-            "create_network", "add_inlet", "add_outlet",  # from build.py
-            "space_colonization_step", "SpaceColonizationParams",  # from space_colonization.py
-            "grow_branch", "grow_to_point", "bifurcate",  # from growth.py
-            "embed_tree_as_negative_space",  # from embedding.py
+            "create_network", "add_inlet", "add_outlet",
+            "space_colonization_step", "SpaceColonizationParams",
+            "grow_branch", "grow_to_point", "bifurcate",
+            "embed_tree_as_negative_space",
         ],
         description="Core operations for building and modifying vascular networks",
     ),
@@ -171,10 +178,10 @@ DEFAULT_REPO_TOOLS: List[ToolRegistryEntry] = [
         origin="repo",
         module="generation.core",
         entrypoints=[
-            "Point3D", "Direction3D", "TubeGeometry",  # from types.py
-            "Node", "VesselSegment", "VascularNetwork",  # from network.py
-            "DomainSpec", "EllipsoidDomain", "BoxDomain", "MeshDomain",  # from domain.py
-            "OperationResult", "Delta",  # from result.py
+            "Point3D", "Direction3D", "TubeGeometry",
+            "Node", "VesselSegment", "VascularNetwork",
+            "DomainSpec", "EllipsoidDomain", "BoxDomain", "MeshDomain",
+            "OperationResult", "Delta",
         ],
         description="Core data structures: network, domain, types",
     ),
@@ -183,9 +190,9 @@ DEFAULT_REPO_TOOLS: List[ToolRegistryEntry] = [
         origin="repo",
         module="generation.adapters",
         entrypoints=[
-            "to_networkx_graph", "from_networkx_graph",  # from networkx_adapter.py
-            "to_trimesh", "to_hollow_tube_mesh", "export_hollow_tube_stl",  # from mesh_adapter.py
-            "make_full_report",  # from report_adapter.py
+            "to_networkx_graph", "from_networkx_graph",
+            "to_trimesh", "to_hollow_tube_mesh", "export_hollow_tube_stl",
+            "make_full_report",
         ],
         description="Adapters for mesh export, NetworkX conversion, and reporting",
     ),
@@ -210,18 +217,83 @@ DEFAULT_REPO_TOOLS: List[ToolRegistryEntry] = [
         entrypoints=["grow_toward_targets", "CostWeights"],
         description="Pathfinding and targeted growth operations",
     ),
+    
+    # === VALIDATION TOOLS ===
+    ToolRegistryEntry(
+        name="validity",
+        origin="repo",
+        module="validity",
+        entrypoints=[
+            "run_pre_embedding_validation",
+            "run_post_embedding_validation",
+            "ValidationReport",
+            "ValidationConfig",
+        ],
+        description="Two-stage validation: pre-embedding (topology/flow) and post-embedding (manufacturability)",
+    ),
+    ToolRegistryEntry(
+        name="validity_orchestrators",
+        origin="repo",
+        module="validity.orchestrators",
+        entrypoints=[
+            "run_pre_embedding_validation",
+            "run_post_embedding_validation",
+            "ValidationReport",
+            "ValidationConfig",
+        ],
+        description="Validation orchestrators for running full validation pipelines",
+    ),
+    
+    # === ANALYSIS TOOLS ===
+    ToolRegistryEntry(
+        name="analysis",
+        origin="repo",
+        module="generation.analysis",
+        entrypoints=[
+            "get_leaf_nodes", "get_paths_from_inlet",
+            "compute_coverage",
+        ],
+        description="Network analysis: query, coverage, flow analysis",
+    ),
+    
+    # === ORGAN GENERATORS ===
+    ToolRegistryEntry(
+        name="organ_generators",
+        origin="repo",
+        module="generation.organ_generators",
+        entrypoints=[
+            "generate_liver_vasculature",
+            "LiverVascularConfig",
+        ],
+        description="Organ-specific vascular network generators (liver, kidney, etc.)",
+    ),
+    
+    # === HIGH-LEVEL API ===
+    ToolRegistryEntry(
+        name="generation_api",
+        origin="repo",
+        module="generation",
+        entrypoints=[
+            "design_from_spec",
+            "evaluate_network",
+            "run_experiment",
+        ],
+        description="High-level generation API for design and experimentation",
+    ),
 ]
 
 
 # P1 #12: Tool discovery capability - scan packages for available functions
-def discover_tools_from_package(package_name: str) -> List[ToolRegistryEntry]:
+def discover_tools_from_package(package_name: str, include_signatures: bool = False) -> List[ToolRegistryEntry]:
     """
     Discover tools from a package by scanning its modules.
     
     Parameters
     ----------
     package_name : str
-        Name of the package to scan (e.g., "generation")
+        Name of the package to scan (e.g., "generation", "validity")
+    include_signatures : bool
+        If True, include function signatures and docstrings in description
         
     Returns
     -------
@@ -248,23 +320,122 @@ def discover_tools_from_package(package_name: str) -> List[ToolRegistryEntry]:
         if all_names:
             # Collect functions and classes from __all__
             entrypoints = []
+            signatures_info = []
             for name in all_names:
                 obj = getattr(package, name, None)
                 if obj and (inspect.isfunction(obj) or inspect.isclass(obj)):
                     entrypoints.append(name)
+                    if include_signatures:
+                        try:
+                            sig = inspect.signature(obj)
+                            doc = inspect.getdoc(obj) or ""
+                            first_line = doc.split('\n')[0] if doc else ""
+                            signatures_info.append(f"{name}{sig}: {first_line}")
+                        except (ValueError, TypeError):
+                            signatures_info.append(name)
             
             if entrypoints:
+                description = f"Auto-discovered from {package_name}"
+                if include_signatures and signatures_info:
+                    description += "\n" + "\n".join(signatures_info[:10])
+                
                 discovered.append(ToolRegistryEntry(
                     name=package_name.split('.')[-1],
                     origin="discovered",
                     module=package_name,
                     entrypoints=entrypoints,
-                    description=f"Auto-discovered from {package_name}",
+                    description=description,
                 ))
     except ImportError as e:
         logger.warning(f"Failed to discover tools from {package_name}: {e}")
     
     return discovered
+
+
+def discover_all_tools(include_signatures: bool = False) -> List[ToolRegistryEntry]:
+    """
+    Discover all available tools from generation and validity packages.
+    
+    This function scans the following packages for available tools:
+    - generation (core generation library)
+    - generation.ops (operations)
+    - generation.core (data structures)
+    - generation.adapters (export adapters)
+    - generation.analysis (network analysis)
+    - generation.organ_generators (organ-specific generators)
+    - validity (validation library)
+    - validity.orchestrators (validation orchestrators)
+    
+    Parameters
+    ----------
+    include_signatures : bool
+        If True, include function signatures and docstrings
+        
+    Returns
+    -------
+    List[ToolRegistryEntry]
+        All discovered tool entries
+    """
+    packages_to_scan = [
+        "generation",
+        "generation.ops",
+        "generation.core",
+        "generation.adapters",
+        "generation.analysis",
+        "generation.organ_generators",
+        "validity",
+        "validity.orchestrators",
+    ]
+    
+    all_tools = []
+    for package in packages_to_scan:
+        tools = discover_tools_from_package(package, include_signatures)
+        all_tools.extend(tools)
+    
+    return all_tools
+
+
+def get_tool_documentation(tool_entry: ToolRegistryEntry) -> str:
+    """
+    Get detailed documentation for a tool entry including signatures and docstrings.
+    
+    Parameters
+    ----------
+    tool_entry : ToolRegistryEntry
+        The tool entry to document
+        
+    Returns
+    -------
+    str
+        Formatted documentation string
+    """
+    import importlib
+    import inspect
+    
+    lines = [f"## {tool_entry.name} ({tool_entry.module})"]
+    lines.append(f"Description: {tool_entry.description}")
+    lines.append("")
+    
+    try:
+        module = importlib.import_module(tool_entry.module)
+        for ep_name in tool_entry.entrypoints:
+            obj = getattr(module, ep_name, None)
+            if obj:
+                try:
+                    sig = inspect.signature(obj)
+                    doc = inspect.getdoc(obj) or "No documentation available"
+                    lines.append(f"### {ep_name}{sig}")
+                    lines.append(doc)
+                    lines.append("")
+                except (ValueError, TypeError):
+                    lines.append(f"### {ep_name}")
+                    doc = inspect.getdoc(obj) or "No documentation available"
+                    lines.append(doc)
+                    lines.append("")
+    except ImportError:
+        lines.append("(Module not available)")
+    
+    return "\n".join(lines)
 
 
 def validate_tool_registry(tools: List[ToolRegistryEntry]) -> List[ToolRegistryEntry]:
