@@ -212,13 +212,18 @@ def grow_to_point(
     target_radius: Optional[float] = None,
     constraints: Optional[BranchingConstraints] = None,
     check_collisions: bool = True,
+    use_polyline_routing: bool = False,
     seed: Optional[int] = None,
 ) -> OperationResult:
     """
-    Grow a straight branch from an existing node to a target point.
+    Grow a branch from an existing node to a target point.
     
     This is a convenience function that computes the direction and length
-    from the parent node to the target point, then grows a branch.
+    from the parent node to the target point, then grows a branch. By default
+    grows a straight segment, but can optionally use polyline routing to
+    avoid collisions or stay within the domain.
+    
+    Note: The library uses METERS internally for all geometry.
     
     Parameters
     ----------
@@ -227,13 +232,17 @@ def grow_to_point(
     from_node_id : int
         Node to grow from
     target_point : tuple or Point3D
-        Target point to grow to (x, y, z) in millimeters
+        Target point to grow to (x, y, z) in meters
     target_radius : float, optional
-        Radius of new segment (if None, uses parent radius)
+        Radius of new segment in meters (if None, uses parent radius)
     constraints : BranchingConstraints, optional
         Branching constraints
     check_collisions : bool
         Whether to check for collisions
+    use_polyline_routing : bool
+        If True, attempt polyline routing when straight-line growth
+        would collide or exit domain. Creates a TubeGeometry with
+        centerline_points for curved paths.
     seed : int, optional
         Random seed for deterministic behavior
     
@@ -241,6 +250,8 @@ def grow_to_point(
     -------
     result : OperationResult
         Result with new_ids containing 'node' and 'segment'
+        If polyline routing was used, the segment geometry will have
+        centerline_points populated.
     
     Examples
     --------
@@ -249,16 +260,16 @@ def grow_to_point(
     >>> from generation.ops.growth import grow_to_point
     >>> 
     >>> # Create network with inlet node
-    >>> domain = BoxDomain.from_center_and_size((0, 0, 0), 100, 100, 100)
+    >>> domain = BoxDomain.from_center_and_size((0, 0, 0), 0.1, 0.1, 0.1)
     >>> network = VascularNetwork(domain=domain)
-    >>> inlet_id = network.add_inlet((0, 0, 0), radius=5.0)
+    >>> inlet_id = network.add_inlet((0, 0, 0), radius=0.005)
     >>> 
     >>> # Grow branch to specific point
     >>> result = grow_to_point(
     ...     network,
     ...     from_node_id=inlet_id,
-    ...     target_point=(20, 10, 5),  # Target coordinates in mm
-    ...     target_radius=3.0,
+    ...     target_point=(0.02, 0.01, 0.005),  # Target coordinates in meters
+    ...     target_radius=0.003,
     ... )
     >>> 
     >>> if result.is_success():
@@ -328,19 +339,21 @@ def grow_to_point(
         )
     
     warnings = []
+    centerline_points: List[Point3D] = []
+    
+    parent_pos = np.array([
+        parent_node.position.x,
+        parent_node.position.y,
+        parent_node.position.z,
+    ])
+    target_pos = np.array([
+        target_point.x,
+        target_point.y,
+        target_point.z,
+    ])
+    
     if check_collisions:
         from .collision import check_segment_collision_swept, check_domain_boundary_clearance
-        
-        parent_pos = np.array([
-            parent_node.position.x,
-            parent_node.position.y,
-            parent_node.position.z,
-        ])
-        target_pos = np.array([
-            target_point.x,
-            target_point.y,
-            target_point.z,
-        ])
         
         has_collision, collision_details = check_segment_collision_swept(
             network,
@@ -351,21 +364,42 @@ def grow_to_point(
             min_clearance=0.001,
         )
         
-        for detail in collision_details:
-            warnings.append(
-                f"Near collision with segment {detail['segment_id']} "
-                f"(clearance: {detail['clearance']:.4f}m, required: {detail['min_required']:.4f}m)"
-            )
-        
+        domain_fits = True
         if hasattr(network, 'domain') and network.domain is not None:
-            fits, margin = check_domain_boundary_clearance(
+            domain_fits, margin = check_domain_boundary_clearance(
                 network.domain,
                 parent_pos,
                 target_pos,
                 target_radius,
                 wall_thickness=0.0003,
             )
-            if not fits:
+        
+        if (has_collision or not domain_fits) and use_polyline_routing:
+            centerline_points = _compute_polyline_route(
+                network, parent_pos, target_pos, target_radius, from_node_id
+            )
+            
+            if centerline_points:
+                warnings.append(
+                    f"Used polyline routing with {len(centerline_points)} waypoints "
+                    f"to avoid {'collision' if has_collision else 'domain boundary'}"
+                )
+            else:
+                for detail in collision_details:
+                    warnings.append(
+                        f"Near collision with segment {detail['segment_id']} "
+                        f"(clearance: {detail['clearance']:.4f}m, required: {detail['min_required']:.4f}m)"
+                    )
+                if not domain_fits:
+                    warnings.append(f"Tube may extend outside domain (margin: {margin:.4f}m)")
+        else:
+            for detail in collision_details:
+                warnings.append(
+                    f"Near collision with segment {detail['segment_id']} "
+                    f"(clearance: {detail['clearance']:.4f}m, required: {detail['min_required']:.4f}m)"
+                )
+            
+            if not domain_fits:
                 warnings.append(f"Tube may extend outside domain (margin: {margin:.4f}m)")
     
     new_node_id = network.id_gen.next_id()
@@ -382,12 +416,13 @@ def grow_to_point(
     )
     
     segment_id = network.id_gen.next_id()
-    parent_radius = parent_node.attributes.get("radius", target_radius)
+    parent_radius_val = parent_node.attributes.get("radius", target_radius)
     geometry = TubeGeometry(
         start=parent_node.position,
         end=target_point,
-        radius_start=parent_radius,
+        radius_start=parent_radius_val,
         radius_end=target_radius,
+        centerline_points=centerline_points if centerline_points else None,
     )
     
     segment = VesselSegment(
@@ -586,3 +621,131 @@ def bifurcate(
         delta=delta,
         rng_state=network.id_gen.get_state(),
     )
+
+
+def _compute_polyline_route(
+    network: VascularNetwork,
+    start_pos: np.ndarray,
+    end_pos: np.ndarray,
+    radius: float,
+    exclude_node_id: int,
+    max_waypoints: int = 5,
+) -> List[Point3D]:
+    """
+    Compute a polyline route from start to end that avoids collisions.
+    
+    Uses a simple waypoint-based approach: tries to find intermediate points
+    that avoid obstacles by detouring around them.
+    
+    Parameters
+    ----------
+    network : VascularNetwork
+        Network containing existing segments to avoid
+    start_pos : np.ndarray
+        Starting position
+    end_pos : np.ndarray
+        Target position
+    radius : float
+        Radius of the new segment
+    exclude_node_id : int
+        Node ID to exclude from collision checks
+    max_waypoints : int
+        Maximum number of waypoints to try
+        
+    Returns
+    -------
+    waypoints : list of Point3D
+        List of intermediate waypoints (not including start/end)
+        Empty list if no valid route found
+    """
+    from .collision import check_segment_collision_swept
+    
+    direct_vec = end_pos - start_pos
+    direct_length = np.linalg.norm(direct_vec)
+    
+    if direct_length < 1e-6:
+        return []
+    
+    direct_dir = direct_vec / direct_length
+    
+    if abs(direct_dir[2]) < 0.9:
+        perp1 = np.cross(direct_dir, np.array([0, 0, 1]))
+    else:
+        perp1 = np.cross(direct_dir, np.array([1, 0, 0]))
+    perp1 = perp1 / np.linalg.norm(perp1)
+    perp2 = np.cross(direct_dir, perp1)
+    
+    detour_distances = [0.005, 0.01, 0.02, 0.03]
+    detour_directions = [perp1, -perp1, perp2, -perp2, perp1 + perp2, perp1 - perp2, -perp1 + perp2, -perp1 - perp2]
+    
+    for detour_dist in detour_distances:
+        for detour_dir in detour_directions:
+            detour_dir = detour_dir / np.linalg.norm(detour_dir)
+            
+            mid_point = (start_pos + end_pos) / 2 + detour_dir * detour_dist
+            
+            if hasattr(network, 'domain') and network.domain is not None:
+                mid_point3d = Point3D.from_array(mid_point)
+                if not network.domain.contains(mid_point3d):
+                    continue
+            
+            has_collision1, _ = check_segment_collision_swept(
+                network,
+                new_seg_start=start_pos,
+                new_seg_end=mid_point,
+                new_seg_radius=radius,
+                exclude_node_ids=[exclude_node_id],
+                min_clearance=0.0005,
+            )
+            
+            if has_collision1:
+                continue
+            
+            has_collision2, _ = check_segment_collision_swept(
+                network,
+                new_seg_start=mid_point,
+                new_seg_end=end_pos,
+                new_seg_radius=radius,
+                exclude_node_ids=[exclude_node_id],
+                min_clearance=0.0005,
+            )
+            
+            if not has_collision2:
+                return [Point3D.from_array(mid_point)]
+    
+    for detour_dist in detour_distances:
+        for detour_dir in detour_directions:
+            detour_dir = detour_dir / np.linalg.norm(detour_dir)
+            
+            quarter_point = start_pos + direct_vec * 0.25 + detour_dir * detour_dist
+            three_quarter_point = start_pos + direct_vec * 0.75 + detour_dir * detour_dist
+            
+            if hasattr(network, 'domain') and network.domain is not None:
+                qp = Point3D.from_array(quarter_point)
+                tqp = Point3D.from_array(three_quarter_point)
+                if not network.domain.contains(qp) or not network.domain.contains(tqp):
+                    continue
+            
+            segments_ok = True
+            test_points = [start_pos, quarter_point, three_quarter_point, end_pos]
+            
+            for i in range(len(test_points) - 1):
+                has_collision, _ = check_segment_collision_swept(
+                    network,
+                    new_seg_start=test_points[i],
+                    new_seg_end=test_points[i + 1],
+                    new_seg_radius=radius,
+                    exclude_node_ids=[exclude_node_id],
+                    min_clearance=0.0005,
+                )
+                if has_collision:
+                    segments_ok = False
+                    break
+            
+            if segments_ok:
+                return [
+                    Point3D.from_array(quarter_point),
+                    Point3D.from_array(three_quarter_point),
+                ]
+    
+    return []
