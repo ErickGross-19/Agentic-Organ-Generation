@@ -128,6 +128,11 @@ class Solver3D(BaseSolver):
                 self._solve_with_simvascular()
             else:
                 self._solve_simplified()
+                # Add warning that placeholder mode was used
+                result.warnings.append(
+                    "3D solver running in PLACEHOLDER mode. Results are simplified estimates. "
+                    "For production-quality 3D CFD, install SimVascular and set solver_mode='simvascular'."
+                )
             
             result.node_pressures = self._node_pressures.copy()
             result.segment_flows = self._segment_flows.copy()
@@ -158,10 +163,13 @@ class Solver3D(BaseSolver):
     
     def _solve_simplified(self) -> None:
         """
-        Simplified 3D solver for demonstration.
+        Simplified 3D solver for demonstration (PLACEHOLDER MODE).
         
         Uses a basic finite element approach with linear elements.
         Not suitable for production use but provides reasonable estimates.
+        
+        WARNING: This is a placeholder solver. For production-quality 3D CFD,
+        install SimVascular and set solver_mode="simvascular" in CFDConfig.
         """
         vertices = self._mesh_data["vertices"]
         cells = self._mesh_data["cells"]

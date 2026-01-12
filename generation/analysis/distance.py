@@ -162,11 +162,14 @@ def compute_nearest_segment_distance(
     network: VascularNetwork,
     vessel_type: Optional[str] = None,
     use_surface_distance: bool = True,
+    search_radius_hint: Optional[float] = None,
+    use_brute_force: bool = False,
 ) -> Tuple[float, int, float]:
     """
     Find the nearest segment to a point and compute distance.
     
-    Uses SpatialIndex for efficient queries when available.
+    Uses SpatialIndex for efficient queries with adaptive radius expansion.
+    Falls back to brute-force only when use_brute_force=True (for debugging).
     
     Parameters
     ----------
@@ -179,6 +182,11 @@ def compute_nearest_segment_distance(
     use_surface_distance : bool
         If True, compute distance to vessel surface (accounting for radius)
         If False, compute distance to centerline only
+    search_radius_hint : float, optional
+        Initial search radius for SpatialIndex query. If None, uses adaptive
+        strategy starting with typical vessel radius or cell size.
+    use_brute_force : bool
+        If True, skip SpatialIndex and check all segments (for debugging/validation)
         
     Returns
     -------
@@ -191,6 +199,130 @@ def compute_nearest_segment_distance(
     """
     point_arr = point.to_array()
     
+    # Use SpatialIndex with adaptive radius unless brute_force is requested
+    if not use_brute_force and len(network.segments) > 0:
+        return _compute_nearest_segment_with_spatial_index(
+            point, point_arr, network, vessel_type, use_surface_distance, search_radius_hint
+        )
+    
+    # Brute-force fallback (for debugging or empty networks)
+    return _compute_nearest_segment_brute_force(
+        point_arr, network, vessel_type, use_surface_distance
+    )
+
+
+def _compute_nearest_segment_with_spatial_index(
+    point: Point3D,
+    point_arr: np.ndarray,
+    network: VascularNetwork,
+    vessel_type: Optional[str],
+    use_surface_distance: bool,
+    search_radius_hint: Optional[float],
+) -> Tuple[float, int, float]:
+    """
+    Find nearest segment using SpatialIndex with adaptive radius expansion.
+    
+    Strategy:
+    1. Start with search_radius_hint or estimate from typical vessel radius
+    2. Query SpatialIndex for nearby segments
+    3. If no segments found, expand radius geometrically (2x) up to domain diagonal
+    4. Compute exact distance only for candidates from spatial query
+    """
+    spatial_index = network.get_spatial_index()
+    
+    # Estimate domain size for max search radius
+    all_positions = [n.position.to_array() for n in network.nodes.values()]
+    if not all_positions:
+        return float('inf'), -1, float('inf')
+    
+    positions_arr = np.array(all_positions)
+    domain_min = np.min(positions_arr, axis=0)
+    domain_max = np.max(positions_arr, axis=0)
+    domain_diag = float(np.linalg.norm(domain_max - domain_min))
+    
+    # Estimate typical vessel radius for initial search
+    typical_radius = 0.001  # 1mm default
+    if network.segments:
+        radii = []
+        for seg in list(network.segments.values())[:100]:  # Sample first 100
+            radii.append(seg.geometry.mean_radius())
+        typical_radius = float(np.median(radii)) if radii else 0.001
+    
+    # Initial search radius
+    if search_radius_hint is not None:
+        initial_radius = search_radius_hint
+    else:
+        # Start with 10x typical radius or spatial index cell size
+        initial_radius = max(typical_radius * 10, spatial_index.cell_size * 2)
+    
+    # Adaptive radius expansion
+    search_radius = initial_radius
+    max_radius = domain_diag * 1.5  # Allow slightly beyond domain
+    expansion_factor = 2.0
+    
+    min_distance = float('inf')
+    nearest_seg_id = -1
+    nearest_centerline_dist = float('inf')
+    
+    while search_radius <= max_radius:
+        # Query spatial index
+        candidate_segments = spatial_index.query_nearby_segments(point, search_radius)
+        
+        # Filter by vessel type if specified
+        if vessel_type is not None:
+            candidate_segments = [s for s in candidate_segments if s.vessel_type == vessel_type]
+        
+        if candidate_segments:
+            # Compute exact distances for candidates
+            for segment in candidate_segments:
+                if use_surface_distance:
+                    surface_dist, centerline_dist = point_to_vessel_surface_distance(
+                        point_arr, segment, network
+                    )
+                    dist = surface_dist
+                else:
+                    start_node = network.nodes[segment.start_node_id]
+                    end_node = network.nodes[segment.end_node_id]
+                    
+                    if segment.geometry.centerline_points:
+                        polyline = [start_node.position.to_array()]
+                        polyline.extend([p.to_array() for p in segment.geometry.centerline_points])
+                        polyline.append(end_node.position.to_array())
+                        dist, _, _ = point_to_polyline_distance(point_arr, polyline)
+                    else:
+                        p1 = start_node.position.to_array()
+                        p2 = end_node.position.to_array()
+                        dist, _ = _point_to_segment_distance_with_param(point_arr, p1, p2)
+                    
+                    centerline_dist = dist
+                
+                if dist < min_distance:
+                    min_distance = dist
+                    nearest_seg_id = segment.id
+                    nearest_centerline_dist = centerline_dist if use_surface_distance else dist
+            
+            # If we found segments and the best distance is within our search radius,
+            # we can be confident we found the true nearest (no need to expand further)
+            if min_distance < search_radius:
+                break
+        
+        # Expand search radius
+        search_radius *= expansion_factor
+    
+    return min_distance, nearest_seg_id, nearest_centerline_dist
+
+
+def _compute_nearest_segment_brute_force(
+    point_arr: np.ndarray,
+    network: VascularNetwork,
+    vessel_type: Optional[str],
+    use_surface_distance: bool,
+) -> Tuple[float, int, float]:
+    """
+    Brute-force nearest segment search (O(N) per point).
+    
+    Used as debug fallback to validate SpatialIndex results.
+    """
     min_distance = float('inf')
     nearest_seg_id = -1
     nearest_centerline_dist = float('inf')
@@ -234,11 +366,13 @@ def compute_tissue_coverage_distances(
     network: VascularNetwork,
     vessel_type: Optional[str] = None,
     use_surface_distance: bool = True,
+    search_radius_hint: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Compute distances from tissue points to nearest vessel segments.
     
     This is the segment-based replacement for node-based coverage metrics.
+    Uses SpatialIndex for efficient O(N log N) queries instead of O(N²) brute-force.
     
     Parameters
     ----------
@@ -250,6 +384,9 @@ def compute_tissue_coverage_distances(
         Filter by vessel type
     use_surface_distance : bool
         If True, compute distance to vessel surface
+    search_radius_hint : float, optional
+        Initial search radius for SpatialIndex queries. If None, uses adaptive
+        strategy. For perfusion analysis, consider using perfusion_threshold.
         
     Returns
     -------
@@ -270,7 +407,8 @@ def compute_tissue_coverage_distances(
     for i, tp in enumerate(tissue_points):
         point = Point3D.from_array(tp)
         dist, seg_id, cl_dist = compute_nearest_segment_distance(
-            point, network, vessel_type, use_surface_distance
+            point, network, vessel_type, use_surface_distance,
+            search_radius_hint=search_radius_hint,
         )
         distances[i] = dist
         nearest_segments[i] = seg_id
@@ -290,9 +428,12 @@ def compute_perfusion_distances(
     tissue_points: np.ndarray,
     network: VascularNetwork,
     use_surface_distance: bool = True,
+    search_radius_hint: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Compute distances to both arterial and venous vessels for perfusion analysis.
+    
+    Uses SpatialIndex for efficient O(N log N) queries instead of O(N²) brute-force.
     
     Parameters
     ----------
@@ -302,6 +443,9 @@ def compute_perfusion_distances(
         Vascular network with arterial and venous vessels
     use_surface_distance : bool
         If True, compute distance to vessel surface
+    search_radius_hint : float, optional
+        Initial search radius for SpatialIndex queries. If None, uses adaptive
+        strategy. Consider using perfusion_threshold from EvalConfig.
         
     Returns
     -------
@@ -315,11 +459,15 @@ def compute_perfusion_distances(
         - venous_stats: statistics for venous distances
     """
     arterial_result = compute_tissue_coverage_distances(
-        tissue_points, network, vessel_type="arterial", use_surface_distance=use_surface_distance
+        tissue_points, network, vessel_type="arterial",
+        use_surface_distance=use_surface_distance,
+        search_radius_hint=search_radius_hint,
     )
     
     venous_result = compute_tissue_coverage_distances(
-        tissue_points, network, vessel_type="venous", use_surface_distance=use_surface_distance
+        tissue_points, network, vessel_type="venous",
+        use_surface_distance=use_surface_distance,
+        search_radius_hint=search_radius_hint,
     )
     
     return {

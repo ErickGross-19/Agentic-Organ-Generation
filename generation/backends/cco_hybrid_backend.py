@@ -33,6 +33,15 @@ class CCOConfig(BackendConfig):
     candidate_edges_k: int = 50
     use_partial_binding: bool = True
     use_collision_triage: bool = True
+    
+    # Collision avoidance parameters
+    collision_clearance: float = 0.0001  # 0.1mm minimum clearance between vessels
+    collision_check_enabled: bool = True  # Enable actual collision prevention during insertion
+    
+    # Dual-tree outlet validation parameters
+    min_terminal_separation_same_type: Optional[float] = None  # If None, uses min_terminal_separation
+    min_terminal_separation_cross_type: Optional[float] = None  # A-V separation (if None, no cross-type check)
+    encourage_av_proximity: bool = False  # If True, prefer outlets near opposite vessel type terminals
 
 
 @dataclass
@@ -431,7 +440,7 @@ class CCOHybridBackend(GenerationBackend):
         
         for i in range(arterial_outlets - 1):
             outlet_point = self._sample_outlet_point(domain, rng, config)
-            if self._is_valid_outlet(outlet_point, network, config):
+            if self._is_valid_outlet(outlet_point, network, config, vessel_type="arterial"):
                 self._insert_outlet(
                     network, arterial_tree_view, outlet_point,
                     arterial_radius, "arterial", config, rng
@@ -454,7 +463,7 @@ class CCOHybridBackend(GenerationBackend):
         
         for i in range(venous_outlets - 1):
             outlet_point = self._sample_outlet_point(domain, rng, config)
-            if self._is_valid_outlet(outlet_point, network, config):
+            if self._is_valid_outlet(outlet_point, network, config, vessel_type="venous"):
                 self._insert_outlet(
                     network, venous_tree_view, outlet_point,
                     venous_radius, "venous", config, rng
@@ -483,16 +492,57 @@ class CCOHybridBackend(GenerationBackend):
         point: Point3D,
         network: VascularNetwork,
         config: CCOConfig,
+        vessel_type: Optional[str] = None,
     ) -> bool:
-        """Check if outlet point satisfies constraints."""
+        """
+        Check if outlet point satisfies constraints.
+        
+        Supports vessel-type-aware validation for dual-tree generation:
+        - Enforces min separation against same vessel_type terminals
+        - Optionally enforces different (smaller) separation across A-V
+        - Can optionally encourage A-V proximity for better perfusion
+        
+        Parameters
+        ----------
+        point : Point3D
+            Proposed outlet point
+        network : VascularNetwork
+            Current network
+        config : CCOConfig
+            Configuration with separation thresholds
+        vessel_type : str, optional
+            Vessel type of the proposed outlet ("arterial" or "venous").
+            If None, uses legacy behavior (check against all terminals).
+        """
         if not network.domain.contains(point):
             return False
+        
+        # Determine separation thresholds
+        same_type_sep = config.min_terminal_separation_same_type
+        if same_type_sep is None:
+            same_type_sep = config.min_terminal_separation
+        
+        cross_type_sep = config.min_terminal_separation_cross_type
+        # If cross_type_sep is None, we don't enforce cross-type separation
         
         for node in network.nodes.values():
             if node.node_type == "terminal":
                 dist = point.distance_to(node.position)
-                if dist < config.min_terminal_separation:
-                    return False
+                
+                if vessel_type is None:
+                    # Legacy behavior: check against all terminals
+                    if dist < config.min_terminal_separation:
+                        return False
+                else:
+                    # Vessel-type-aware validation
+                    if node.vessel_type == vessel_type:
+                        # Same vessel type: enforce same_type_sep
+                        if dist < same_type_sep:
+                            return False
+                    else:
+                        # Different vessel type (A-V): enforce cross_type_sep if set
+                        if cross_type_sep is not None and dist < cross_type_sep:
+                            return False
         
         return True
     
@@ -699,6 +749,9 @@ class CCOHybridBackend(GenerationBackend):
         
         Cost = sum over affected segments of (radius^alpha * length)
         Plus penalty for domain boundary proximity.
+        
+        Also performs collision checks if config.collision_check_enabled is True.
+        Returns inf if the proposed insertion would cause collisions.
         """
         seg = network.segments[seg_id]
         A = network.nodes[seg.start_node_id].position
@@ -717,8 +770,32 @@ class CCOHybridBackend(GenerationBackend):
         
         r_parent = seg.geometry.mean_radius()
         
-        r_child1 = r_parent * 0.8
-        r_child2 = r_parent * 0.8
+        # Demand-based Murray splitting: use subtree terminal counts as demand proxy
+        # r_i = r_parent * (f_i)^(1/gamma) where f_i = demand_i / sum(demand)
+        gamma = config.murray_exponent
+        
+        # Get subtree terminal count for the segment being split
+        seg_record = tree_view.segments.get(seg_id)
+        existing_demand = seg_record.subtree_terminal_count if seg_record else 1
+        new_demand = 1  # New outlet adds 1 terminal
+        total_demand = existing_demand + new_demand
+        
+        if total_demand > 0:
+            f_existing = existing_demand / total_demand
+            f_new = new_demand / total_demand
+            r_child1 = r_parent * (f_existing ** (1.0 / gamma))  # Existing subtree
+            r_child2 = r_parent * (f_new ** (1.0 / gamma))  # New outlet
+        else:
+            # Fallback to equal split
+            r_child1 = r_parent * 0.8
+            r_child2 = r_parent * 0.8
+        
+        # Collision check: verify proposed new segments don't collide with existing segments
+        if config.collision_check_enabled:
+            if self._check_insertion_collision(
+                network, seg_id, X, T, r_child1, r_child2, config.collision_clearance
+            ):
+                return float('inf')
         
         alpha = config.murray_exponent
         
@@ -732,6 +809,94 @@ class CCOHybridBackend(GenerationBackend):
             cost += config.boundary_penalty_weight * (0.002 - boundary_dist)
         
         return cost
+    
+    def _check_insertion_collision(
+        self,
+        network: VascularNetwork,
+        split_seg_id: int,
+        bifurcation_point: Point3D,
+        outlet_point: Point3D,
+        r_child1: float,
+        r_child2: float,
+        clearance: float,
+    ) -> bool:
+        """
+        Check if proposed insertion would cause collisions with existing segments.
+        
+        Uses 2-stage method:
+        1. Cheap spatial query to find nearby segments
+        2. Exact segment-segment distance check for candidates
+        
+        Parameters
+        ----------
+        network : VascularNetwork
+            Current network
+        split_seg_id : int
+            ID of segment being split (excluded from collision check)
+        bifurcation_point : Point3D
+            Proposed bifurcation point X
+        outlet_point : Point3D
+            Target outlet point T
+        r_child1 : float
+            Radius of child segment X→B
+        r_child2 : float
+            Radius of new outlet segment X→T
+        clearance : float
+            Minimum required clearance between vessels
+            
+        Returns
+        -------
+        bool
+            True if collision detected, False if safe
+        """
+        from ..spatial.grid_index import segment_segment_distance_exact
+        
+        X = bifurcation_point.to_array()
+        T = outlet_point.to_array()
+        
+        # Get the segment being split
+        split_seg = network.segments[split_seg_id]
+        B = network.nodes[split_seg.end_node_id].position.to_array()
+        
+        # Stage 1: Cheap spatial query to find nearby segments
+        spatial_index = network.get_spatial_index()
+        
+        # Search radius should cover the new segments plus clearance
+        search_radius = max(
+            np.linalg.norm(X - B),
+            np.linalg.norm(X - T),
+        ) + clearance + max(r_child1, r_child2) * 2
+        
+        nearby_segments = spatial_index.query_nearby_segments(bifurcation_point, search_radius)
+        
+        # Stage 2: Exact collision check for candidates
+        for seg in nearby_segments:
+            # Skip the segment being split and its connected segments
+            if seg.id == split_seg_id:
+                continue
+            if (seg.start_node_id == split_seg.start_node_id or
+                seg.start_node_id == split_seg.end_node_id or
+                seg.end_node_id == split_seg.start_node_id or
+                seg.end_node_id == split_seg.end_node_id):
+                continue
+            
+            seg_start = network.nodes[seg.start_node_id].position.to_array()
+            seg_end = network.nodes[seg.end_node_id].position.to_array()
+            seg_radius = seg.geometry.mean_radius()
+            
+            # Check collision with proposed X→B segment
+            dist_XB = segment_segment_distance_exact(X, B, seg_start, seg_end)
+            required_clearance_XB = r_child1 + seg_radius + clearance
+            if dist_XB < required_clearance_XB:
+                return True
+            
+            # Check collision with proposed X→T segment
+            dist_XT = segment_segment_distance_exact(X, T, seg_start, seg_end)
+            required_clearance_XT = r_child2 + seg_radius + clearance
+            if dist_XT < required_clearance_XT:
+                return True
+        
+        return False
     
     def _perform_insertion(
         self,
@@ -762,20 +927,36 @@ class CCOHybridBackend(GenerationBackend):
         )
         network.add_node(bifurcation_node)
         
+        r_parent = seg.geometry.mean_radius()
+        
+        # Demand-based Murray splitting: use subtree terminal counts as demand proxy
+        gamma = config.murray_exponent
+        seg_record = tree_view.segments.get(seg_id)
+        existing_demand = seg_record.subtree_terminal_count if seg_record else 1
+        new_demand = 1  # New outlet adds 1 terminal
+        total_demand = existing_demand + new_demand
+        
+        if total_demand > 0:
+            f_existing = existing_demand / total_demand
+            f_new = new_demand / total_demand
+            r_child_existing = r_parent * (f_existing ** (1.0 / gamma))  # Existing subtree
+            r_child_new = r_parent * (f_new ** (1.0 / gamma))  # New outlet
+        else:
+            # Fallback to equal split
+            r_child_existing = r_parent * 0.8
+            r_child_new = r_parent * 0.8
+        
         outlet_node = Node(
             id=network.id_gen.next_id(),
             position=outlet_point,
             node_type="terminal",
             vessel_type=vessel_type,
             attributes={
-                "radius": seg.geometry.mean_radius() * 0.7,
+                "radius": r_child_new,
                 "branch_order": bifurcation_node.attributes.get("branch_order", 0) + 1,
             },
         )
         network.add_node(outlet_node)
-        
-        r_parent = seg.geometry.mean_radius()
-        r_child = r_parent * 0.8
         
         seg1_geometry = TubeGeometry(
             start=start_node.position,
@@ -794,7 +975,7 @@ class CCOHybridBackend(GenerationBackend):
         seg2_geometry = TubeGeometry(
             start=bifurcation_point,
             end=end_node.position,
-            radius_start=r_child,
+            radius_start=r_child_existing,
             radius_end=seg.geometry.radius_end,
         )
         seg2 = VesselSegment(
@@ -808,8 +989,8 @@ class CCOHybridBackend(GenerationBackend):
         seg3_geometry = TubeGeometry(
             start=bifurcation_point,
             end=outlet_point,
-            radius_start=r_child,
-            radius_end=r_child * 0.9,
+            radius_start=r_child_new,
+            radius_end=r_child_new * 0.9,
         )
         seg3 = VesselSegment(
             id=network.id_gen.next_id(),
