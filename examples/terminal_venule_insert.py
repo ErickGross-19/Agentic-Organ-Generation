@@ -79,7 +79,6 @@ from generation import (
     create_network,
     add_inlet,
     add_outlet,
-    space_colonization_step,
     VascularNetwork,
 )
 from generation.specs.design_spec import (
@@ -88,15 +87,14 @@ from generation.specs.design_spec import (
     TreeSpec,
     InletSpec,
     OutletSpec,
-    ColonizationSpec,
 )
 from generation.specs.compile import compile_domain
 from generation.adapters.mesh_adapter import to_trimesh
 from generation.ops.embedding import embed_tree_as_negative_space
-from generation.ops.space_colonization import SpaceColonizationParams
-from generation.rules.constraints import BranchingConstraints
+from generation.backends.cco_hybrid_backend import CCOHybridBackend, CCOConfig
 from generation.core.types import Point3D
 from generation.core.result import OperationStatus
+from generation.core.network import Node, Segment
 import numpy as np
 
 # Configure logging for verbose output
@@ -187,63 +185,58 @@ class VesselDimensions:
 
 
 @dataclass
-class ColonizationParameters:
+class CCOParameters:
     """
-    Space colonization algorithm parameters for network growth.
+    CCO (Constrained Constructive Optimization) algorithm parameters for network growth.
     
-    These control how the vascular network grows from inlets toward the
-    central outlet, creating the converging tree topology.
+    These control how the vascular network grows using the CCO hybrid backend,
+    which implements Sexton et al.'s accelerated CCO algorithm with:
+    - Partial binding optimization
+    - Collision avoidance triage
+    - Murray's law-based radius scaling
     
     Attributes
     ----------
-    influence_radius : float
-        Radius within which tissue points attract growing tips, in meters.
-        Default: 0.002m (2mm). Larger = longer-range attraction, sparser network.
+    num_outlets : int
+        Target number of terminal outlets (branch endpoints).
+        Default: 20. More outlets = denser network.
         
-    kill_radius : float
-        Radius within which tissue points are considered "perfused" and removed.
-        Default: 0.0004m (0.4mm). Smaller = denser network coverage.
+    murray_exponent : float
+        Exponent for Murray's law radius scaling (r_parent^gamma = sum(r_child^gamma)).
+        Default: 3.0 (physiological value for blood vessels).
         
-    step_size : float
-        Growth step size per iteration, in meters.
-        Default: 0.0003m (0.3mm). Smaller = smoother curves, more iterations.
+    collision_clearance : float
+        Minimum clearance between vessel surfaces, in meters.
+        Default: 0.0001m (0.1mm). Prevents vessel overlap.
         
-    max_steps : int
-        Maximum number of growth iterations.
-        Default: 200. Increase for denser networks, decrease for faster generation.
+    min_segment_length : float
+        Minimum allowed segment length, in meters.
+        Default: 0.0005m (0.5mm).
         
-    directional_bias : float
-        Weight for preferred direction (toward center) vs pure attraction.
-        Range: 0.0-1.0. Default: 0.3.
-        0.0 = pure attraction-based growth
-        1.0 = pure directional growth toward center
+    max_segment_length : float
+        Maximum allowed segment length, in meters.
+        Default: 0.010m (10mm).
         
-    smoothing_weight : float
-        Weight for smoothing growth direction with previous direction.
-        Range: 0.0-1.0. Default: 0.3.
-        Higher = smoother, more gradual curves.
+    min_terminal_separation : float
+        Minimum distance between terminal outlets, in meters.
+        Default: 0.0005m (0.5mm). Prevents clustering.
         
-    encourage_bifurcation : bool
-        Whether to encourage branching at nodes with multiple attractions.
-        Default: True. Creates more realistic tree topology.
+    candidate_edges_k : int
+        Number of candidate edges to consider for each insertion.
+        Default: 50. Higher = better optimization, slower.
         
-    bifurcation_probability : float
-        Probability of bifurcating when conditions are met.
-        Range: 0.0-1.0. Default: 0.6.
-        
-    bifurcation_angle_threshold_deg : float
-        Minimum angle spread (degrees) between attractions to trigger bifurcation.
-        Default: 35.0 degrees.
+    optimization_grid_resolution : int
+        Resolution of grid for bifurcation point optimization.
+        Default: 10. Higher = finer optimization.
     """
-    influence_radius: float = 0.004         # 4mm attraction range (larger for small domain)
-    kill_radius: float = 0.001              # 1.0mm perfusion radius
-    step_size: float = 0.001                # 1.0mm growth step (must be >= BranchingConstraints.min_segment_length)
-    max_steps: int = 50                     # Maximum iterations
-    directional_bias: float = 0.3           # Bias toward center
-    smoothing_weight: float = 0.3           # Direction smoothing
-    encourage_bifurcation: bool = True      # Enable branching
-    bifurcation_probability: float = 0.6    # Branching probability
-    bifurcation_angle_threshold_deg: float = 35.0  # Min angle for bifurcation
+    num_outlets: int = 20                   # Target number of terminal outlets
+    murray_exponent: float = 3.0            # Murray's law exponent
+    collision_clearance: float = 0.0001     # 0.1mm minimum clearance
+    min_segment_length: float = 0.0005      # 0.5mm minimum segment
+    max_segment_length: float = 0.010       # 10mm maximum segment
+    min_terminal_separation: float = 0.0005 # 0.5mm between terminals
+    candidate_edges_k: int = 50             # Candidate edges for optimization
+    optimization_grid_resolution: int = 10  # Grid resolution for optimization
 
 
 @dataclass
@@ -310,7 +303,7 @@ class MultiInputConfig:
 
 DEFAULT_INSERT_GEOMETRY = InsertGeometry()
 DEFAULT_VESSEL_DIMENSIONS = VesselDimensions()
-DEFAULT_COLONIZATION_PARAMS = ColonizationParameters()
+DEFAULT_CCO_PARAMS = CCOParameters()
 DEFAULT_EMBEDDING_PARAMS = EmbeddingParameters()
 DEFAULT_MULTI_INPUT_CONFIG = MultiInputConfig()
 
@@ -322,7 +315,7 @@ DEFAULT_MULTI_INPUT_CONFIG = MultiInputConfig()
 def validate_parameters(
     geometry: InsertGeometry,
     vessels: VesselDimensions,
-    colonization: ColonizationParameters,
+    cco_params: CCOParameters,
     embedding: EmbeddingParameters,
 ) -> List[str]:
     """
@@ -334,8 +327,8 @@ def validate_parameters(
         Insert geometry parameters
     vessels : VesselDimensions
         Vessel dimension parameters
-    colonization : ColonizationParameters
-        Space colonization parameters
+    cco_params : CCOParameters
+        CCO generation parameters
     embedding : EmbeddingParameters
         Embedding parameters
         
@@ -369,19 +362,17 @@ def validate_parameters(
             "Voxel resolution may be too coarse to capture small vessels."
         )
     
-    # Check colonization parameters
-    if colonization.kill_radius >= colonization.influence_radius:
+    # Check CCO parameters
+    if cco_params.min_segment_length >= cco_params.max_segment_length:
         issues.append(
-            f"ERROR: kill_radius ({colonization.kill_radius*1000:.2f}mm) "
-            f">= influence_radius ({colonization.influence_radius*1000:.2f}mm). "
-            "Kill radius must be smaller than influence radius."
+            f"ERROR: min_segment_length ({cco_params.min_segment_length*1000:.2f}mm) "
+            f">= max_segment_length ({cco_params.max_segment_length*1000:.2f}mm). "
+            "Minimum segment length must be smaller than maximum."
         )
     
-    if colonization.step_size >= colonization.influence_radius:
+    if cco_params.num_outlets < 1:
         issues.append(
-            f"WARNING: step_size ({colonization.step_size*1000:.2f}mm) "
-            f">= influence_radius ({colonization.influence_radius*1000:.2f}mm). "
-            "Step size should be smaller than influence radius for smooth growth."
+            f"ERROR: num_outlets ({cco_params.num_outlets}) must be at least 1."
         )
     
     # Check geometry constraints
@@ -509,7 +500,7 @@ def validate_network(
 def create_single_input_spec(
     geometry: InsertGeometry = DEFAULT_INSERT_GEOMETRY,
     vessels: VesselDimensions = DEFAULT_VESSEL_DIMENSIONS,
-    colonization: ColonizationParameters = DEFAULT_COLONIZATION_PARAMS,
+    cco_params: CCOParameters = DEFAULT_CCO_PARAMS,
     seed: int = 42,
 ) -> DesignSpec:
     """
@@ -518,7 +509,7 @@ def create_single_input_spec(
     This creates a converging tree topology with:
     - One inlet at the perimeter (top edge)
     - One outlet at the center bottom (central venule)
-    - Branching network connecting inlet to outlet
+    - Branching network connecting inlet to outlet using CCO algorithm
     
     Parameters
     ----------
@@ -526,8 +517,8 @@ def create_single_input_spec(
         Insert geometry parameters
     vessels : VesselDimensions
         Vessel dimension parameters
-    colonization : ColonizationParameters
-        Space colonization parameters
+    cco_params : CCOParameters
+        CCO generation parameters
     seed : int
         Random seed for reproducibility
         
@@ -578,43 +569,14 @@ def create_single_input_spec(
     logger.info(f"  Outlet (central venule): position=(0, 0, {outlet_z*1000:.2f})mm, "
                f"radius={vessels.central_venule_radius*1000:.2f}mm")
     
-    # Colonization parameters with directional bias toward center
-    # Preferred direction points from inlet toward outlet (toward center and down)
-    preferred_dir = (-inlet_x, 0.0, outlet_z - inlet_z)
-    # Normalize
-    dir_length = math.sqrt(preferred_dir[0]**2 + preferred_dir[1]**2 + preferred_dir[2]**2)
-    preferred_dir = (
-        preferred_dir[0] / dir_length,
-        preferred_dir[1] / dir_length,
-        preferred_dir[2] / dir_length,
-    )
+    logger.info(f"  CCO params: num_outlets={cco_params.num_outlets}, "
+               f"murray_exponent={cco_params.murray_exponent}")
     
-    col_spec = ColonizationSpec(
-        influence_radius=colonization.influence_radius,
-        kill_radius=colonization.kill_radius,
-        step_size=colonization.step_size,
-        max_steps=colonization.max_steps,
-        initial_radius=vessels.inlet_radius,
-        min_radius=vessels.sinusoid_min_radius,
-        radius_decay=vessels.taper_factor,
-        preferred_direction=preferred_dir,
-        directional_bias=colonization.directional_bias,
-        smoothing_weight=colonization.smoothing_weight,
-        encourage_bifurcation=colonization.encourage_bifurcation,
-        bifurcation_probability=colonization.bifurcation_probability,
-        bifurcation_angle_threshold_deg=colonization.bifurcation_angle_threshold_deg,
-    )
-    
-    logger.info(f"  Colonization: influence_radius={colonization.influence_radius*1000:.2f}mm, "
-               f"kill_radius={colonization.kill_radius*1000:.2f}mm, "
-               f"max_steps={colonization.max_steps}")
-    logger.info(f"  Preferred direction: {preferred_dir}")
-    
-    # Create tree spec
+    # Create tree spec (colonization is None for CCO-based generation)
     tree = TreeSpec(
         inlets=[inlet],
         outlets=[outlet],
-        colonization=col_spec,
+        colonization=None,
     )
     
     # Create full design spec
@@ -625,7 +587,8 @@ def create_single_input_spec(
         metadata={
             "design_type": "terminal_venule_insert",
             "variant": "single_input",
-            "description": "Single-input converging venule topology for 48-well insert",
+            "description": "Single-input converging venule topology for 48-well insert (CCO)",
+            "generation_method": "cco_hybrid",
         },
         output_units="mm",
     )
@@ -638,7 +601,7 @@ def create_single_input_spec(
 def create_multi_input_spec(
     geometry: InsertGeometry = DEFAULT_INSERT_GEOMETRY,
     vessels: VesselDimensions = DEFAULT_VESSEL_DIMENSIONS,
-    colonization: ColonizationParameters = DEFAULT_COLONIZATION_PARAMS,
+    cco_params: CCOParameters = DEFAULT_CCO_PARAMS,
     multi_config: MultiInputConfig = DEFAULT_MULTI_INPUT_CONFIG,
     seed: int = 42,
 ) -> DesignSpec:
@@ -648,7 +611,7 @@ def create_multi_input_spec(
     This creates a converging tree topology with:
     - Multiple inlets (4-6) distributed radially around the perimeter
     - One outlet at the center bottom (central venule)
-    - Multiple branching networks all converging to the central outlet
+    - Multiple branching networks all converging to the central outlet using CCO algorithm
     
     Parameters
     ----------
@@ -656,8 +619,8 @@ def create_multi_input_spec(
         Insert geometry parameters
     vessels : VesselDimensions
         Vessel dimension parameters
-    colonization : ColonizationParameters
-        Space colonization parameters
+    cco_params : CCOParameters
+        CCO generation parameters
     multi_config : MultiInputConfig
         Multi-input specific configuration
     seed : int
@@ -716,35 +679,14 @@ def create_multi_input_spec(
     logger.info(f"  Outlet (central venule): position=(0, 0, {outlet_z*1000:.2f})mm, "
                f"radius={vessels.central_venule_radius*1000:.2f}mm")
     
-    # Colonization parameters - preferred direction toward center (0, 0, outlet_z)
-    # Since inlets are distributed radially, we use a downward bias
-    preferred_dir = (0.0, 0.0, -1.0)  # Straight down toward outlet
+    logger.info(f"  CCO params: num_outlets={cco_params.num_outlets}, "
+               f"murray_exponent={cco_params.murray_exponent}")
     
-    col_spec = ColonizationSpec(
-        influence_radius=colonization.influence_radius,
-        kill_radius=colonization.kill_radius,
-        step_size=colonization.step_size,
-        max_steps=colonization.max_steps,
-        initial_radius=vessels.inlet_radius,
-        min_radius=vessels.sinusoid_min_radius,
-        radius_decay=vessels.taper_factor,
-        preferred_direction=preferred_dir,
-        directional_bias=colonization.directional_bias,
-        smoothing_weight=colonization.smoothing_weight,
-        encourage_bifurcation=colonization.encourage_bifurcation,
-        bifurcation_probability=colonization.bifurcation_probability,
-        bifurcation_angle_threshold_deg=colonization.bifurcation_angle_threshold_deg,
-    )
-    
-    logger.info(f"  Colonization: influence_radius={colonization.influence_radius*1000:.2f}mm, "
-               f"kill_radius={colonization.kill_radius*1000:.2f}mm, "
-               f"max_steps={colonization.max_steps}")
-    
-    # Create tree spec
+    # Create tree spec (colonization is None for CCO-based generation)
     tree = TreeSpec(
         inlets=inlets,
         outlets=[outlet],
-        colonization=col_spec,
+        colonization=None,
     )
     
     # Create full design spec
@@ -756,7 +698,8 @@ def create_multi_input_spec(
             "design_type": "terminal_venule_insert",
             "variant": "multi_input",
             "num_inlets": multi_config.num_inlets,
-            "description": f"Multi-input ({multi_config.num_inlets} inlets) converging venule topology",
+            "description": f"Multi-input ({multi_config.num_inlets} inlets) converging venule topology (CCO)",
+            "generation_method": "cco_hybrid",
         },
         output_units="mm",
     )
@@ -767,155 +710,189 @@ def create_multi_input_spec(
 
 
 # =============================================================================
-# CUSTOM NETWORK GENERATION (with proper constraints in meters)
+# CUSTOM NETWORK GENERATION (using CCO hybrid backend)
 # =============================================================================
 
 def generate_network_from_spec(
     spec: DesignSpec,
     vessels: VesselDimensions = DEFAULT_VESSEL_DIMENSIONS,
-    colonization: ColonizationParameters = DEFAULT_COLONIZATION_PARAMS,
+    cco_params: CCOParameters = DEFAULT_CCO_PARAMS,
 ) -> VascularNetwork:
     """
-    Generate vascular network from design specification with proper constraints.
+    Generate vascular network from design specification using CCO hybrid backend.
     
-    This function bypasses design_from_spec to use custom BranchingConstraints
-    with values in meters (the internal unit system) rather than millimeters.
+    This function uses the CCOHybridBackend which implements Sexton et al.'s
+    accelerated CCO algorithm with:
+    - Partial binding optimization for fast bifurcation optimization
+    - Collision avoidance triage (cheap filter then expensive test)
+    - Murray's law-based radius scaling with demand-based splitting
+    - Local radius-at-split interpolation for correct bifurcation behavior
     
-    The default BranchingConstraints uses millimeters, but all network operations
-    use meters internally, causing a unit mismatch. This function creates
-    constraints in meters to ensure proper network generation.
+    For multi-inlet specifications, this generates a separate CCO tree for each
+    inlet and merges them into a single network. Each inlet gets an equal share
+    of the total target outlets.
     
     Parameters
     ----------
     spec : DesignSpec
-        Design specification with domain, tree, and colonization settings
+        Design specification with domain, tree, and inlet/outlet settings
     vessels : VesselDimensions
         Vessel dimension parameters (in meters)
-    colonization : ColonizationParameters
-        Colonization algorithm parameters (in meters)
+    cco_params : CCOParameters
+        CCO algorithm parameters
         
     Returns
     -------
     VascularNetwork
         Generated vascular network
     """
-    logger.info("Generating network with custom constraints (in meters)...")
+    logger.info("Generating network using CCO hybrid backend...")
     
     # Compile domain from spec
     domain = compile_domain(spec.domain)
-    
-    # Create network
-    network = create_network(domain=domain, seed=spec.seed)
     
     # Get tree spec
     tree = spec.tree
     if tree is None:
         raise ValueError("DesignSpec must have a tree specification")
     
-    # Compute domain center for direction calculations
-    domain_center = np.array([domain.center.x, domain.center.y, domain.center.z])
+    if not tree.inlets:
+        raise ValueError("DesignSpec must have at least one inlet")
     
-    # Add inlets
-    for inlet_spec in tree.inlets:
-        inlet_pos = np.array(inlet_spec.position)
-        # Direction points inward from inlet toward domain center
-        direction_vec = domain_center - inlet_pos
-        direction_norm = np.linalg.norm(direction_vec)
-        if direction_norm > 1e-9:
-            direction = tuple(direction_vec / direction_norm)
-        else:
-            direction = (0.0, 0.0, -1.0)  # Default downward
-        
-        result = add_inlet(
-            network,
-            position=Point3D(*inlet_spec.position),
-            radius=inlet_spec.radius,
-            vessel_type=inlet_spec.vessel_type,
-            direction=direction,
-        )
-        if not result.is_success():
-            logger.warning(f"Failed to add inlet: {result.message}")
-    
-    # Add outlets
-    for outlet_spec in tree.outlets:
-        outlet_pos = np.array(outlet_spec.position)
-        # Direction points outward from domain center toward outlet
-        direction_vec = outlet_pos - domain_center
-        direction_norm = np.linalg.norm(direction_vec)
-        if direction_norm > 1e-9:
-            direction = tuple(direction_vec / direction_norm)
-        else:
-            direction = (0.0, 0.0, 1.0)  # Default upward
-        
-        result = add_outlet(
-            network,
-            position=Point3D(*outlet_spec.position),
-            radius=outlet_spec.radius,
-            vessel_type=outlet_spec.vessel_type,
-            direction=direction,
-        )
-        if not result.is_success():
-            logger.warning(f"Failed to add outlet: {result.message}")
-    
-    # Sample tissue points from domain
-    tissue_points = domain.sample_points(n_points=1000, seed=spec.seed)
-    logger.info(f"  Sampled {len(tissue_points)} tissue points from domain")
-    
-    # Create custom BranchingConstraints in METERS (not millimeters)
-    # The default BranchingConstraints uses mm, but network operations use meters
-    constraints = BranchingConstraints(
-        min_radius=vessels.sinusoid_min_radius,      # In meters
-        max_radius=vessels.central_venule_radius * 2, # In meters
-        min_segment_length=colonization.step_size * 0.5,  # In meters
-        max_segment_length=colonization.step_size * 10,   # In meters
-        max_branch_order=20,
-        max_branch_angle_deg=80.0,
-    )
-    logger.info(f"  Custom constraints: min_radius={constraints.min_radius*1000:.3f}mm, "
-               f"min_segment_length={constraints.min_segment_length*1000:.3f}mm")
-    
-    # Get colonization spec
-    col_spec = tree.colonization
-    
-    # Create SpaceColonizationParams
-    params = SpaceColonizationParams(
-        influence_radius=col_spec.influence_radius,
-        kill_radius=col_spec.kill_radius,
-        step_size=col_spec.step_size,
-        min_radius=col_spec.min_radius,
-        taper_factor=col_spec.radius_decay if hasattr(col_spec, 'radius_decay') else 0.95,
-        vessel_type=tree.inlets[0].vessel_type if tree.inlets else "arterial",
-        max_steps=col_spec.max_steps,
-        preferred_direction=col_spec.preferred_direction,
-        directional_bias=col_spec.directional_bias,
-        max_deviation_deg=col_spec.max_deviation_deg,
-        smoothing_weight=col_spec.smoothing_weight,
-        encourage_bifurcation=col_spec.encourage_bifurcation,
-        min_attractions_for_bifurcation=col_spec.min_attractions_for_bifurcation,
-        max_children_per_node=col_spec.max_children_per_node,
-        bifurcation_angle_threshold_deg=col_spec.bifurcation_angle_threshold_deg,
-        bifurcation_probability=col_spec.bifurcation_probability,
-    )
-    
-    # Run space colonization with custom constraints
-    logger.info(f"  Running space colonization (max_steps={params.max_steps})...")
-    result = space_colonization_step(
-        network,
-        tissue_points=tissue_points,
-        params=params,
-        constraints=constraints,
+    # Create CCO configuration
+    config = CCOConfig(
         seed=spec.seed,
+        murray_exponent=cco_params.murray_exponent,
+        collision_clearance=cco_params.collision_clearance,
+        min_segment_length=cco_params.min_segment_length,
+        max_segment_length=cco_params.max_segment_length,
+        min_terminal_separation=cco_params.min_terminal_separation,
+        candidate_edges_k=cco_params.candidate_edges_k,
+        optimization_grid_resolution=cco_params.optimization_grid_resolution,
+        collision_check_enabled=True,
+        use_partial_binding=True,
+        use_collision_triage=True,
     )
     
-    if result.status == OperationStatus.SUCCESS:
-        logger.info(f"  Colonization succeeded: {result.message}")
-    elif result.status == OperationStatus.PARTIAL_SUCCESS:
-        logger.info(f"  Colonization partial success: {result.message}")
+    logger.info(f"  CCO config: murray_exponent={config.murray_exponent}, "
+               f"collision_clearance={config.collision_clearance*1000:.3f}mm")
+    
+    # Create CCO backend
+    backend = CCOHybridBackend()
+    
+    num_inlets = len(tree.inlets)
+    
+    if num_inlets == 1:
+        # Single inlet case - generate one tree
+        inlet_spec = tree.inlets[0]
+        inlet_position = np.array(inlet_spec.position)
+        inlet_radius = inlet_spec.radius
+        vessel_type = inlet_spec.vessel_type
+        
+        logger.info(f"  Single inlet: position=({inlet_position[0]*1000:.2f}, "
+                   f"{inlet_position[1]*1000:.2f}, {inlet_position[2]*1000:.2f})mm, "
+                   f"radius={inlet_radius*1000:.2f}mm")
+        logger.info(f"  Target outlets: {cco_params.num_outlets}")
+        
+        # Generate network using CCO backend
+        logger.info(f"  Running CCO generation (num_outlets={cco_params.num_outlets})...")
+        network = backend.generate(
+            domain=domain,
+            num_outlets=cco_params.num_outlets,
+            inlet_position=inlet_position,
+            inlet_radius=inlet_radius,
+            vessel_type=vessel_type,
+            config=config,
+            rng_seed=spec.seed,
+        )
     else:
-        logger.warning(f"  Colonization warning: {result.message}")
+        # Multi-inlet case - generate separate trees and merge
+        logger.info(f"  Multi-inlet mode: {num_inlets} inlets")
+        
+        # Distribute outlets evenly among inlets
+        outlets_per_inlet = max(1, cco_params.num_outlets // num_inlets)
+        logger.info(f"  Target outlets per inlet: {outlets_per_inlet}")
+        
+        # Generate first tree (this becomes the base network)
+        inlet_spec = tree.inlets[0]
+        inlet_position = np.array(inlet_spec.position)
+        inlet_radius = inlet_spec.radius
+        vessel_type = inlet_spec.vessel_type
+        
+        logger.info(f"  Inlet 1: position=({inlet_position[0]*1000:.2f}, "
+                   f"{inlet_position[1]*1000:.2f}, {inlet_position[2]*1000:.2f})mm")
+        
+        network = backend.generate(
+            domain=domain,
+            num_outlets=outlets_per_inlet,
+            inlet_position=inlet_position,
+            inlet_radius=inlet_radius,
+            vessel_type=vessel_type,
+            config=config,
+            rng_seed=spec.seed,
+        )
+        
+        # Generate additional trees for remaining inlets and merge
+        for i, inlet_spec in enumerate(tree.inlets[1:], start=2):
+            inlet_position = np.array(inlet_spec.position)
+            inlet_radius = inlet_spec.radius
+            vessel_type = inlet_spec.vessel_type
+            
+            logger.info(f"  Inlet {i}: position=({inlet_position[0]*1000:.2f}, "
+                       f"{inlet_position[1]*1000:.2f}, {inlet_position[2]*1000:.2f})mm")
+            
+            # Generate tree for this inlet with different seed
+            tree_network = backend.generate(
+                domain=domain,
+                num_outlets=outlets_per_inlet,
+                inlet_position=inlet_position,
+                inlet_radius=inlet_radius,
+                vessel_type=vessel_type,
+                config=config,
+                rng_seed=(spec.seed + i) if spec.seed else None,
+            )
+            
+            # Merge the tree into the main network
+            # Create a mapping from old node IDs to new node IDs
+            node_id_map = {}
+            for old_node in tree_network.nodes.values():
+                new_node_id = network.id_gen.next_id()
+                new_node = Node(
+                    id=new_node_id,
+                    position=old_node.position,
+                    node_type=old_node.node_type,
+                    vessel_type=old_node.vessel_type,
+                    attributes=old_node.attributes.copy(),
+                )
+                network.add_node(new_node)
+                node_id_map[old_node.id] = new_node_id
+            
+            # Add segments with remapped node IDs
+            for old_seg in tree_network.segments.values():
+                new_seg_id = network.id_gen.next_id()
+                new_seg = Segment(
+                    id=new_seg_id,
+                    start_node_id=node_id_map[old_seg.start_node_id],
+                    end_node_id=node_id_map[old_seg.end_node_id],
+                    geometry=old_seg.geometry,
+                    vessel_type=old_seg.vessel_type,
+                    attributes=old_seg.attributes.copy(),
+                )
+                network.add_segment(new_seg)
+            
+            logger.info(f"    Merged tree {i}: {len(tree_network.nodes)} nodes, "
+                       f"{len(tree_network.segments)} segments")
     
     # Log network statistics
+    logger.info(f"  CCO generation complete!")
     logger.info(f"  Network: {len(network.nodes)} nodes, {len(network.segments)} segments")
+    
+    # Count node types
+    node_counts = {"inlet": 0, "outlet": 0, "terminal": 0, "junction": 0}
+    for node in network.nodes.values():
+        if node.node_type in node_counts:
+            node_counts[node.node_type] += 1
+    logger.info(f"  Node types: {node_counts}")
     
     return network
 
@@ -1132,7 +1109,7 @@ def generate_insert(
         "parameters": {
             "geometry": asdict(DEFAULT_INSERT_GEOMETRY),
             "vessels": asdict(DEFAULT_VESSEL_DIMENSIONS),
-            "colonization": asdict(DEFAULT_COLONIZATION_PARAMS),
+            "cco_params": asdict(DEFAULT_CCO_PARAMS),
             "embedding": asdict(DEFAULT_EMBEDDING_PARAMS),
         },
     }
@@ -1193,7 +1170,7 @@ def generate_single_input_insert(
     issues = validate_parameters(
         DEFAULT_INSERT_GEOMETRY,
         DEFAULT_VESSEL_DIMENSIONS,
-        DEFAULT_COLONIZATION_PARAMS,
+        DEFAULT_CCO_PARAMS,
         DEFAULT_EMBEDDING_PARAMS,
     )
     
@@ -1249,7 +1226,7 @@ def generate_multi_input_insert(
     issues = validate_parameters(
         DEFAULT_INSERT_GEOMETRY,
         DEFAULT_VESSEL_DIMENSIONS,
-        DEFAULT_COLONIZATION_PARAMS,
+        DEFAULT_CCO_PARAMS,
         DEFAULT_EMBEDDING_PARAMS,
     )
     
