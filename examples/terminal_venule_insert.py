@@ -66,6 +66,7 @@ import os
 import json
 import time
 import math
+import copy
 import argparse
 import logging
 from pathlib import Path
@@ -75,12 +76,7 @@ from dataclasses import dataclass, asdict
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from generation import (
-    create_network,
-    add_inlet,
-    add_outlet,
-    VascularNetwork,
-)
+from generation import VascularNetwork
 from generation.specs.design_spec import (
     DesignSpec,
     EllipsoidSpec,
@@ -94,7 +90,7 @@ from generation.ops.embedding import embed_tree_as_negative_space
 from generation.backends.cco_hybrid_backend import CCOHybridBackend, CCOConfig
 from generation.core.types import Point3D
 from generation.core.result import OperationStatus
-from generation.core.network import Node, Segment
+from generation.core.network import Node, VesselSegment as Segment
 import numpy as np
 
 # Configure logging for verbose output
@@ -854,12 +850,13 @@ def generate_network_from_spec(
             
             # Merge the tree into the main network
             # Create a mapping from old node IDs to new node IDs
+            # Note: We copy mutable objects (position, geometry) to avoid shared references
             node_id_map = {}
             for old_node in tree_network.nodes.values():
                 new_node_id = network.id_gen.next_id()
                 new_node = Node(
                     id=new_node_id,
-                    position=old_node.position,
+                    position=old_node.position.copy(),  # Copy numpy array
                     node_type=old_node.node_type,
                     vessel_type=old_node.vessel_type,
                     attributes=old_node.attributes.copy(),
@@ -874,7 +871,7 @@ def generate_network_from_spec(
                     id=new_seg_id,
                     start_node_id=node_id_map[old_seg.start_node_id],
                     end_node_id=node_id_map[old_seg.end_node_id],
-                    geometry=old_seg.geometry,
+                    geometry=copy.deepcopy(old_seg.geometry),  # Deep copy geometry dataclass
                     vessel_type=old_seg.vessel_type,
                     attributes=old_seg.attributes.copy(),
                 )
