@@ -1046,6 +1046,33 @@ class SingleAgentOrganGeneratorV5:
             else:
                 patches["outlet.radius"] = val
         
+        # Parse spatial commands using the spatial parser
+        spatial_commands = self._parse_spatial_commands(message)
+        if spatial_commands:
+            for cmd in spatial_commands:
+                if cmd.get("element") == "inlet" and cmd.get("position"):
+                    pos = cmd["position"]
+                    if pos.get("face"):
+                        face_map = {
+                            "left": "x_min", "right": "x_max",
+                            "front": "y_min", "back": "y_max",
+                            "bottom": "z_min", "top": "z_max",
+                        }
+                        patches["inlet.face"] = face_map.get(pos["face"], pos["face"])
+                    elif pos.get("coordinates"):
+                        patches["inlet.position"] = pos["coordinates"]
+                elif cmd.get("element") == "outlet" and cmd.get("position"):
+                    pos = cmd["position"]
+                    if pos.get("face"):
+                        face_map = {
+                            "left": "x_min", "right": "x_max",
+                            "front": "y_min", "back": "y_max",
+                            "bottom": "z_min", "top": "z_max",
+                        }
+                        patches["outlet.face"] = face_map.get(pos["face"], pos["face"])
+                    elif pos.get("coordinates"):
+                        patches["outlet.position"] = pos["coordinates"]
+        
         if self.world_model.open_questions:
             for q_id, question in self.world_model.open_questions.items():
                 field = question.field
@@ -1067,7 +1094,35 @@ class SingleAgentOrganGeneratorV5:
             "is_correction": is_correction,
             "dialogue_intent": intent.value if intent else None,
             "raw_message": message,
+            "spatial_commands": spatial_commands,
         }
+    
+    def _parse_spatial_commands(self, message: str) -> List[Dict[str, Any]]:
+        """
+        Parse spatial commands from user message using the spatial parser.
+        
+        Parameters
+        ----------
+        message : str
+            User message that may contain spatial commands
+            
+        Returns
+        -------
+        List[Dict[str, Any]]
+            List of parsed spatial commands as dictionaries
+        """
+        try:
+            from .spatial_parser import parse_spatial_description, SpatialCommandType
+            
+            result = parse_spatial_description(message)
+            if result.success and result.commands:
+                return [cmd.to_dict() for cmd in result.commands]
+        except ImportError:
+            pass
+        except Exception:
+            pass
+        
+        return []
     
     def _cap_apply_patch(self) -> bool:
         """Capability 2: Apply patch to world model."""
@@ -1857,20 +1912,68 @@ class SingleAgentOrganGeneratorV5:
         return response
     
     def _cap_generate_missing_field_questions(self) -> bool:
-        """Capability 6b: Generate open questions for missing required fields."""
+        """Capability 6b: Generate open questions for missing required fields.
+        
+        Questions are ordered to be ORGAN-AGNOSTIC in the first rounds:
+        1. First ask about generic vascular topology patterns (tree, dual_trees, path, etc.)
+        2. Then collect generic parameters: inlet/outlet count, domain size, flow requirements
+        3. Defer organ-specific constraints until after basic structure is defined
+        
+        This allows the system to handle any vascular network design without
+        requiring organ type specification upfront.
+        """
         from .world_model import OpenQuestion
         
-        # Always ask for outlet regardless of topology - most biomedical use cases
-        # need flow-through (perfusion), and being explicit about outlet is better UX
+        # ORGAN-AGNOSTIC QUESTION ORDER:
+        # Priority 1 (100-90): Generic vascular topology patterns
+        # Priority 2 (89-80): Generic domain and port configuration
+        # Priority 3 (79-70): Optional organ/use-case context (deferred)
         required_fields = [
-            ("domain.type", "What type of domain shape?", "Determines the bounding geometry", ["box", "ellipsoid", "cylinder"]),
-            ("domain.size", "What are the domain dimensions (width x depth x height in mm)?", "Defines the physical size of the organ scaffold", None),
-            ("project.description", "Describe your project in a few sentences. What organ or structure are you building? What's the intended use?", "Helps me understand your goals and suggest appropriate parameters", None),
-            ("topology.kind", "What vascular topology?", "Determines branching pattern", ["tree", "dual_trees", "path", "backbone", "loop"]),
-            ("inlet.face", "Which face should the inlet be on?", "Determines where fluid enters", ["left", "right", "front", "back", "bottom", "top"]),
-            ("inlet.radius", "What inlet radius (in mm)?", "Determines the main vessel diameter", None),
-            ("outlet.face", "Which face should the outlet be on?", "Determines where fluid exits", ["left", "right", "front", "back", "bottom", "top"]),
-            ("outlet.radius", "What outlet radius (in mm)?", "Determines the exit vessel diameter", None),
+            # Priority 1: Generic vascular topology (asked first)
+            ("topology.kind", 
+             "What vascular network topology do you need?\n"
+             "  - tree: Single inlet branching to multiple terminals (most common)\n"
+             "  - dual_trees: Two interleaved trees meeting in a capillary bed (liver, kidney)\n"
+             "  - path: Simple inlet-to-outlet channel\n"
+             "  - backbone: Main trunk with side branches\n"
+             "  - loop: Circular/recirculating network",
+             "Determines the fundamental branching pattern of your vascular network",
+             ["tree", "dual_trees", "path", "backbone", "loop"]),
+            
+            # Priority 2: Generic domain configuration
+            ("domain.type", 
+             "What domain shape should contain the network?",
+             "Determines the bounding geometry for the vascular structure",
+             ["box", "ellipsoid", "cylinder"]),
+            ("domain.size", 
+             "What are the domain dimensions (width x depth x height in mm)?",
+             "Defines the physical size of the scaffold",
+             None),
+            
+            # Priority 3: Generic port configuration
+            ("inlet.face", 
+             "Which face should the inlet (fluid entry) be on?",
+             "Determines where fluid enters the network",
+             ["left", "right", "front", "back", "bottom", "top"]),
+            ("inlet.radius", 
+             "What inlet radius (in mm)?",
+             "Determines the main vessel diameter at entry",
+             None),
+            ("outlet.face", 
+             "Which face should the outlet (fluid exit) be on?",
+             "Determines where fluid exits the network",
+             ["left", "right", "front", "back", "bottom", "top"]),
+            ("outlet.radius", 
+             "What outlet radius (in mm)?",
+             "Determines the exit vessel diameter",
+             None),
+            
+            # Priority 4: Optional context (deferred - asked last)
+            ("project.description", 
+             "Optionally, describe your project context (organ type, intended use, constraints).\n"
+             "This helps me suggest appropriate parameters, but is not required.",
+             "Provides context for parameter suggestions (optional)",
+             None),
         ]
         
         questions_added = 0
