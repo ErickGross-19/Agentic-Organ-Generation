@@ -91,6 +91,29 @@ INLET_PLACEMENT_FRACTION = 0.7
 # =============================================================================
 # HELPER FUNCTIONS FOR PARAMETER INFERENCE
 # =============================================================================
+def ensure_mesh_in_world_units(mesh_out: trimesh.Trimesh,
+                               reference_extent_m: float,
+                               voxel_transform: np.ndarray,
+                               label: str = "",
+                               ratio_threshold: float = 50.0) -> trimesh.Trimesh:
+    """
+    Some trimesh builds return marching_cubes meshes in voxel-index coordinates.
+    Detect by comparing extents to an expected reference extent (meters).
+    If output is wildly larger, apply voxel_transform to convert to world units.
+    """
+    try:
+        out_extent = float(np.max(mesh_out.extents))
+        if reference_extent_m > 0:
+            ratio = out_extent / float(reference_extent_m)
+            if ratio > ratio_threshold:
+                print(f"[units-fix]{' '+label if label else ''} marching_cubes looks like voxel coords "
+                      f"(out/ref={ratio:.1f}). Applying voxel transform.")
+                mesh_out = mesh_out.copy()
+                mesh_out.apply_transform(voxel_transform)
+    except Exception as e:
+        print(f"[units-fix]{' '+label if label else ''} warning: {e}")
+    return mesh_out
+
 def compute_inlet_positions(
     num_inlets: int,
     inlet_radius: float,
@@ -883,6 +906,16 @@ def embed_void_in_cylinder(
         )
 
         domain_with_void = result.get("domain_with_void", None)
+        ref_extent = max(2.0 * CYLINDER_RADIUS_M, CYLINDER_HEIGHT_M)
+        # We don't have the voxel grid transform here, so we can only detect + warn:
+        try:
+            out_extent = float(np.max(domain_with_void.extents))
+            ratio = out_extent / float(ref_extent)
+            if ratio > 50.0:
+                print(f"[units-fix embed_primary] WARNING: embedded mesh scale looks wrong (out/ref={ratio:.1f}). "
+                      f"Embedding may be returning voxel-index units.")
+        except Exception:
+            pass
         if domain_with_void is None:
             raise RuntimeError("embed_tree_as_negative_space returned None for domain_with_void")
 
@@ -1004,6 +1037,10 @@ def embed_void_in_cylinder(
 
         vg = VoxelGrid(result_mask, transform=T)
         domain_with_void = vg.marching_cubes
+        # Ensure fallback marching_cubes output is in meters
+        ref_extent = max(2.0 * CYLINDER_RADIUS_M, CYLINDER_HEIGHT_M)
+        domain_with_void = ensure_mesh_in_world_units(domain_with_void, ref_extent, vg.transform, label="embed_fallback")
+        
 
         # Cleanup + orientation
         domain_with_void.remove_unreferenced_vertices()
