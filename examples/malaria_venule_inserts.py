@@ -605,6 +605,77 @@ def export_mesh_with_units(mesh: trimesh.Trimesh, output_path: Path, units: str 
     print(f"  Units sidecar: {sidecar_path}")
 
 
+def repair_mesh_for_embedding(mesh: trimesh.Trimesh, name: str = "mesh") -> trimesh.Trimesh:
+    """
+    Repair a mesh to ensure it is watertight before embedding.
+    
+    Uses trimesh's built-in repair functions and optionally the validity library's
+    meshfix_repair if available.
+    
+    Parameters
+    ----------
+    mesh : trimesh.Trimesh
+        The mesh to repair
+    name : str
+        Name for logging purposes
+    
+    Returns
+    -------
+    trimesh.Trimesh
+        The repaired mesh
+    """
+    repaired = mesh.copy()
+    
+    print(f"    Repairing {name} for embedding...")
+    print(f"    Before repair: {len(repaired.vertices)} vertices, {len(repaired.faces)} faces, watertight={repaired.is_watertight}")
+    
+    # Step 1: Fix normals
+    try:
+        trimesh.repair.fix_normals(repaired)
+        print(f"    Fixed normals")
+    except Exception as e:
+        print(f"    Warning: fix_normals failed: {e}")
+    
+    # Step 2: Fix winding
+    try:
+        trimesh.repair.fix_winding(repaired)
+        print(f"    Fixed winding")
+    except Exception as e:
+        print(f"    Warning: fix_winding failed: {e}")
+    
+    # Step 3: Fill holes
+    if not repaired.is_watertight:
+        try:
+            trimesh.repair.fill_holes(repaired)
+            print(f"    Filled holes")
+        except Exception as e:
+            print(f"    Warning: fill_holes failed: {e}")
+    
+    # Step 4: Try validity library's meshfix_repair if available and still not watertight
+    if not repaired.is_watertight:
+        try:
+            from validity.mesh.repair import meshfix_repair
+            print(f"    Attempting meshfix_repair from validity library...")
+            repaired = meshfix_repair(repaired, keep_largest_component=True)
+            print(f"    meshfix_repair complete")
+        except ImportError:
+            print(f"    meshfix_repair not available (pymeshfix not installed)")
+        except Exception as e:
+            print(f"    Warning: meshfix_repair failed: {e}")
+    
+    # Step 5: Remove degenerate faces
+    try:
+        repaired.remove_degenerate_faces()
+        repaired.remove_unreferenced_vertices()
+        print(f"    Removed degenerate faces")
+    except Exception as e:
+        print(f"    Warning: remove_degenerate_faces failed: {e}")
+    
+    print(f"    After repair: {len(repaired.vertices)} vertices, {len(repaired.faces)} faces, watertight={repaired.is_watertight}")
+    
+    return repaired
+
+
 def embed_void_in_cylinder(
     void_mesh: trimesh.Trimesh,
     output_dir: Optional[Path] = None,
@@ -642,6 +713,9 @@ def embed_void_in_cylinder(
     import tempfile
     from skimage.measure import marching_cubes
     from scipy import ndimage
+    
+    # Repair the void mesh before embedding to ensure watertightness
+    void_mesh = repair_mesh_for_embedding(void_mesh, name=f"{object_name}_void")
     
     # Print diagnostic info about the void mesh
     void_bounds = void_mesh.bounds
@@ -687,6 +761,8 @@ def embed_void_in_cylinder(
     
     try:
         # Call the repo's embedding function
+        # IMPORTANT: smoothing_iters=0 to prevent voxelization from smoothing over the embedding
+        # The embedding function applies binary closing/opening which can smooth out void edges
         result = embed_tree_as_negative_space(
             tree_stl_path=void_stl_path,
             domain=domain,
@@ -695,7 +771,7 @@ def embed_void_in_cylinder(
             geometry_units="m",  # Domain is in meters
             output_units="m",  # Return in meters (we'll scale to mm at final export)
             output_void=True,
-            smoothing_iters=2,  # Reduced smoothing to preserve void shape
+            smoothing_iters=0,  # NO smoothing to preserve void shape exactly
         )
         
         domain_with_void = result['domain_with_void']
@@ -821,9 +897,8 @@ def embed_void_in_cylinder(
         result_mask = aligned_cyl & (~aligned_void)
         print(f"    Result voxels: {result_mask.sum()}")
         
-        # Apply light smoothing
-        result_mask = ndimage.binary_closing(result_mask, iterations=1)
-        result_mask = ndimage.binary_opening(result_mask, iterations=1)
+        # NO smoothing to preserve void shape exactly
+        # Binary closing/opening can smooth out void edges, so we skip it
         
         # Generate mesh with marching cubes
         if result_mask.any():
