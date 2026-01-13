@@ -1277,7 +1277,7 @@ class CCOHybridBackend(GenerationBackend):
         AB: np.ndarray,
     ) -> Tuple[Point3D, float]:
         """
-        NLP-based bifurcation point optimization using scipy.optimize.
+        NLP-based bifurcation point optimization using shared solver utilities.
         
         Uses gradient-based optimization to find the optimal bifurcation point
         in the 2D parameter space (t, s) where:
@@ -1288,9 +1288,10 @@ class CCOHybridBackend(GenerationBackend):
         X = A + t * AB + s * (T - (A + t * AB))
         
         This enables more natural, organic branching patterns compared to
-        discrete grid search.
+        discrete grid search. Supports IPOPT (if available) in addition to
+        scipy solvers (SLSQP, trust-constr, L-BFGS-B).
         """
-        from scipy.optimize import minimize, Bounds
+        from ..optimization.solvers import solve_bounded_optimization
         
         def params_to_point(params: np.ndarray) -> np.ndarray:
             t, s = params[0], params[1]
@@ -1309,16 +1310,6 @@ class CCOHybridBackend(GenerationBackend):
             )
             return cost if cost < float('inf') else 1e10
         
-        def objective_with_gradient(params: np.ndarray) -> Tuple[float, np.ndarray]:
-            eps = 1e-7
-            f0 = objective(params)
-            grad = np.zeros(2)
-            for i in range(2):
-                params_plus = params.copy()
-                params_plus[i] += eps
-                grad[i] = (objective(params_plus) - f0) / eps
-            return f0, grad
-        
         initial_guess = np.array([0.5, 0.5])
         
         if config.nlp_use_grid_initial_guess:
@@ -1333,53 +1324,17 @@ class CCOHybridBackend(GenerationBackend):
                         best_cost = cost
                         initial_guess = np.array([t, s])
         
-        bounds = Bounds([0.0, 0.0], [1.0, 1.0])
+        result = solve_bounded_optimization(
+            objective=objective,
+            x0=initial_guess,
+            lower_bounds=np.array([0.0, 0.0]),
+            upper_bounds=np.array([1.0, 1.0]),
+            method=config.nlp_solver,
+            tolerance=config.nlp_tolerance,
+            max_iterations=config.max_nlp_iterations,
+        )
         
-        solver_options = {
-            'maxiter': config.max_nlp_iterations,
-            'ftol': config.nlp_tolerance,
-        }
-        
-        if config.nlp_solver == "SLSQP":
-            result = minimize(
-                objective,
-                initial_guess,
-                method='SLSQP',
-                bounds=bounds,
-                options=solver_options,
-            )
-        elif config.nlp_solver == "trust-constr":
-            result = minimize(
-                objective,
-                initial_guess,
-                method='trust-constr',
-                bounds=bounds,
-                options={
-                    'maxiter': config.max_nlp_iterations,
-                    'gtol': config.nlp_tolerance,
-                },
-            )
-        elif config.nlp_solver == "L-BFGS-B":
-            result = minimize(
-                objective,
-                initial_guess,
-                method='L-BFGS-B',
-                bounds=bounds,
-                options={
-                    'maxiter': config.max_nlp_iterations,
-                    'ftol': config.nlp_tolerance,
-                },
-            )
-        else:
-            result = minimize(
-                objective,
-                initial_guess,
-                method='SLSQP',
-                bounds=bounds,
-                options=solver_options,
-            )
-        
-        if result.success or result.fun < 1e9:
+        if result.success or result.objective_value < 1e9:
             X_opt = params_to_point(result.x)
             X_point = Point3D.from_array(X_opt)
             final_cost = self._compute_insertion_cost(
