@@ -533,8 +533,12 @@ def voxel_union_meshes(meshes: List[trimesh.Trimesh], pitch: float) -> trimesh.T
     
     This is the overlap-based merge strategy: overlapping volumes are
     automatically merged during voxelization.
+    
+    Uses the repo's voxelized_with_retry() function for robust voxelization
+    with automatic retry on memory errors.
     """
     from skimage.measure import marching_cubes
+    from validity.mesh.voxel_utils import voxelized_with_retry
     
     if not meshes:
         raise ValueError("No meshes to union")
@@ -545,15 +549,15 @@ def voxel_union_meshes(meshes: List[trimesh.Trimesh], pitch: float) -> trimesh.T
     # Concatenate all meshes
     combined = trimesh.util.concatenate(meshes)
     
-    # Voxelize
-    try:
-        voxels = combined.voxelized(pitch)
-        voxel_matrix = voxels.matrix
-    except (MemoryError, ValueError):
-        # Try with coarser pitch
-        pitch *= 2
-        voxels = combined.voxelized(pitch)
-        voxel_matrix = voxels.matrix
+    # Voxelize using repo's voxelized_with_retry for robust handling of memory errors
+    voxels = voxelized_with_retry(
+        combined, 
+        pitch, 
+        max_attempts=4, 
+        factor=1.5,
+        log_prefix="[voxel_union_meshes] ",
+    )
+    voxel_matrix = voxels.matrix
     
     # Marching cubes
     verts, faces, _, _ = marching_cubes(
@@ -1090,6 +1094,16 @@ def generate_object2_channels(output_dir: Optional[Path] = None) -> trimesh.Trim
         intermediate_path.parent.mkdir(parents=True, exist_ok=True)
         scale_mesh_to_mm(channel_void).export(str(intermediate_path))
         print(f"    Exported intermediate void: {intermediate_path}")
+    
+    # Run pre-embedding validation on channel void mesh
+    print("  Running pre-embedding validation on channel void mesh...")
+    try:
+        pre_report = run_pre_embedding_validation(mesh=channel_void)
+        print_validation_details(pre_report)
+    except Exception as e:
+        print(f"    Pre-embedding validation error: {e}")
+        import traceback
+        traceback.print_exc()
     
     # Use the repo's embed_tree_as_negative_space function to carve channels from cylinder
     print("  Carving channels using embed_tree_as_negative_space...")
