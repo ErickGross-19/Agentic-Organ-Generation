@@ -78,6 +78,9 @@ RIDGE_THICKNESS_M = 0.0001         # 0.1 mm ridge thickness (annular ring width)
 # - Outer radius = CYLINDER_RADIUS_M (5.0 mm)
 # - Inner radius = CYLINDER_RADIUS_M - RIDGE_THICKNESS_M (4.9 mm)
 # - Z range = [+1.0 mm, +1.1 mm] (top of cylinder to top of ridge)
+# IMPORTANT: For voxel union to work correctly, the ridge must OVERLAP with the
+# cylinder (not just touch). We extend the ridge slightly INTO the cylinder.
+RIDGE_OVERLAP_M = 0.00005          # 0.05 mm overlap into cylinder for voxel union
 
 # --- Derived Parameters ---
 RIDGE_INNER_RADIUS_M = CYLINDER_RADIUS_M - RIDGE_THICKNESS_M  # 4.9 mm
@@ -1127,18 +1130,23 @@ def generate_object1_control(output_dir: Optional[Path] = None) -> trimesh.Trime
         print(f"    Exported intermediate: {intermediate_path}")
     
     # Create ridge on top face
+    # IMPORTANT: For voxel union to work correctly, the ridge must OVERLAP with the
+    # cylinder (not just touch at z_top). We extend the ridge slightly INTO the cylinder.
     print("  Creating ridge...")
     z_top = CYLINDER_CENTER[2] + CYLINDER_HEIGHT_M / 2  # Top of cylinder
+    ridge_z_base = z_top - RIDGE_OVERLAP_M  # Start ridge slightly INSIDE cylinder for overlap
+    ridge_total_height = RIDGE_HEIGHT_M + RIDGE_OVERLAP_M  # Total height includes overlap
     ridge = create_ridge_mesh(
         outer_radius=CYLINDER_RADIUS_M,
         inner_radius=CYLINDER_RADIUS_M - RIDGE_THICKNESS_M,
-        height=RIDGE_HEIGHT_M,
-        z_base=z_top,
+        height=ridge_total_height,
+        z_base=ridge_z_base,
         center_xy=(CYLINDER_CENTER[0], CYLINDER_CENTER[1]),
     )
     print(f"    Ridge: outer_r={meters_to_mm(CYLINDER_RADIUS_M)}mm, "
           f"inner_r={meters_to_mm(CYLINDER_RADIUS_M - RIDGE_THICKNESS_M)}mm, "
-          f"height={meters_to_mm(RIDGE_HEIGHT_M)}mm")
+          f"height={meters_to_mm(RIDGE_HEIGHT_M)}mm (visible), "
+          f"overlap={meters_to_mm(RIDGE_OVERLAP_M)}mm")
     
     # Export intermediate ridge mesh
     if output_dir:
@@ -2372,11 +2380,16 @@ def add_ridge_to_mesh(mesh_m: trimesh.Trimesh) -> trimesh.Trimesh:
     print(f"    Input mesh bounds: {mesh_m.bounds}")
     print(f"    Input mesh watertight: {mesh_m.is_watertight}")
     
+    # IMPORTANT: For voxel union to work correctly, the ridge must OVERLAP with the
+    # mesh (not just touch at z_top). We extend the ridge slightly INTO the mesh.
+    ridge_z_base = z_top - RIDGE_OVERLAP_M  # Start ridge slightly INSIDE for overlap
+    ridge_total_height = RIDGE_HEIGHT_M + RIDGE_OVERLAP_M  # Total height includes overlap
+    
     ridge = create_ridge_mesh(
         outer_radius=CYLINDER_RADIUS_M,
         inner_radius=CYLINDER_RADIUS_M - RIDGE_THICKNESS_M,
-        height=RIDGE_HEIGHT_M,
-        z_base=z_top,
+        height=ridge_total_height,
+        z_base=ridge_z_base,
         center_xy=(CYLINDER_CENTER[0], CYLINDER_CENTER[1]),
     )
     
@@ -2384,7 +2397,7 @@ def add_ridge_to_mesh(mesh_m: trimesh.Trimesh) -> trimesh.Trimesh:
     print(f"    Ridge mesh: {len(ridge.vertices)} vertices, {len(ridge.faces)} faces")
     print(f"    Ridge mesh bounds: {ridge.bounds}")
     print(f"    Ridge mesh watertight: {ridge.is_watertight}")
-    print(f"    Ridge Z range: [{z_top}, {z_top + RIDGE_HEIGHT_M}] (should be on top of cylinder)")
+    print(f"    Ridge Z range: [{ridge_z_base}, {ridge_z_base + ridge_total_height}] (overlaps into mesh by {RIDGE_OVERLAP_M*1e6:.0f}um)")
     
     print(f"    Using voxel union with fine pitch ({VOXEL_PITCH_RIDGE_M*1e6:.0f}um) to preserve ridge detail")
     print(f"    Ridge thickness ({RIDGE_THICKNESS_M*1e6:.0f}um) / voxel pitch ({VOXEL_PITCH_RIDGE_M*1e6:.0f}um) = {RIDGE_THICKNESS_M/VOXEL_PITCH_RIDGE_M:.1f} voxels")
