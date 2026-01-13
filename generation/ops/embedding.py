@@ -639,7 +639,11 @@ def embed_tree_as_negative_space(
             allow_degenerate=False,
         )
         
-        verts = verts[:, [2, 1, 0]]
+        # NOTE: Do NOT swap axes here. The voxel masks (_compute_cylinder_mask_slicewise,
+        # _compute_ellipsoid_mask_slicewise) are created in (x, y, z) order, and
+        # marching_cubes returns vertices in the same order as the input volume.
+        # Swapping axes would rotate the mesh 90 degrees, making the cylinder
+        # perpendicular to the ridge and branches.
         
         verts += domain_min_padded
         
@@ -675,7 +679,7 @@ def embed_tree_as_negative_space(
             allow_degenerate=False,
         )
         
-        verts = verts[:, [2, 1, 0]]
+        # NOTE: Do NOT swap axes - see comment above for domain mesh
         
         verts += domain_min_padded
         
@@ -738,7 +742,7 @@ def embed_tree_as_negative_space(
                 allow_degenerate=False,
             )
             
-            verts = verts[:, [2, 1, 0]]
+            # NOTE: Do NOT swap axes - see comment above for domain mesh
             
             verts += domain_min_padded
             
