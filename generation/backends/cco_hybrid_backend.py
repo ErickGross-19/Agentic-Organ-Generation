@@ -12,13 +12,17 @@ Note: The library uses METERS internally for all geometry.
 """
 
 from dataclasses import dataclass
+import logging
 from typing import Optional, Dict, List, Tuple, Set
+
 import numpy as np
 
 from .base import GenerationBackend, BackendConfig, GenerationState, GenerationAction
 from ..core.network import VascularNetwork, Node, VesselSegment
 from ..core.domain import DomainSpec
 from ..core.types import Point3D, TubeGeometry
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -1256,10 +1260,18 @@ class CCOHybridBackend(GenerationBackend):
             )
         
         if config.use_nlp_optimization:
+            logger.debug(
+                "Using NLP optimization for bifurcation point (solver=%s, tol=%g, max_iter=%d)",
+                config.nlp_solver, config.nlp_tolerance, config.max_nlp_iterations
+            )
             return self._optimize_bifurcation_point_nlp(
                 network, tree_view, seg_id, outlet_point, config, A, B, T, AB
             )
         else:
+            logger.debug(
+                "Using grid search optimization for bifurcation point (resolution=%d)",
+                config.optimization_grid_resolution
+            )
             return self._optimize_bifurcation_point_grid(
                 network, tree_view, seg_id, outlet_point, config, A, B, T, AB
             )
@@ -1340,8 +1352,16 @@ class CCOHybridBackend(GenerationBackend):
             final_cost = self._compute_insertion_cost(
                 network, tree_view, seg_id, X_point, outlet_point, config
             )
+            logger.debug(
+                "NLP optimization succeeded (iterations=%d, cost=%g)",
+                result.iterations, final_cost
+            )
             return X_point, final_cost
         else:
+            logger.debug(
+                "NLP optimization failed (message=%s), falling back to grid search",
+                result.message
+            )
             return self._optimize_bifurcation_point_grid(
                 network, tree_view, seg_id, outlet_point, config, A, B, T, AB
             )
