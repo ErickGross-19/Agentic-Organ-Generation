@@ -9,6 +9,9 @@ tqdm>=4.60.0
 pymeshfix>=0.16.0
 scikit-image>=0.18.0
 
+# Optional: NLP optimization (IPOPT solver for better convergence)
+cyipopt>=1.2.0
+
 # Optional: LLM automation
 openai>=1.0.0
 anthropic>=0.18.0
