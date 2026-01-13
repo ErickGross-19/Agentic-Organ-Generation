@@ -85,96 +85,93 @@ RIDGE_OVERLAP_M = 0.00005          # 0.05 mm overlap into cylinder for voxel uni
 # --- Derived Parameters ---
 RIDGE_INNER_RADIUS_M = CYLINDER_RADIUS_M - RIDGE_THICKNESS_M  # 4.9 mm
 TOP_FACE_Z_M = CYLINDER_CENTER[2] + CYLINDER_HEIGHT_M / 2     # +1.0 mm
-
+# Used by compute_inlet_positions for 2/3/N inlet layouts
+INLET_PLACEMENT_FRACTION = 0.7
 
 # =============================================================================
 # HELPER FUNCTIONS FOR PARAMETER INFERENCE
 # =============================================================================
-
 def compute_inlet_positions(
     num_inlets: int,
     inlet_radius: float,
-    cylinder_radius: float = CYLINDER_RADIUS_M,
-    ridge_inner_radius: float = RIDGE_INNER_RADIUS_M,
-    wall_margin: float = 0.0005,  # 0.5 mm default wall margin (same as OBJ2_WALL_MARGIN_M)
+    cylinder_radius: float = None,
+    ridge_inner_radius: float = None,
+    wall_margin: float = 0.0005,
     include_z: bool = False,
     z_position: float = None,
+    placement_fraction: float = None,
 ) -> List[Tuple[float, ...]]:
     """
     Compute inlet positions based on geometry parameters.
-    
-    Inlets are placed in a symmetric pattern inside the ridge, leaving enough
-    margin from the ridge inner edge and between adjacent inlets.
-    
-    Parameters
-    ----------
-    num_inlets : int
-        Number of inlets to place
-    inlet_radius : float
-        Radius of each inlet (in meters)
-    cylinder_radius : float
-        Radius of the cylinder (in meters)
-    ridge_inner_radius : float
-        Inner radius of the ridge (in meters)
-    wall_margin : float
-        Minimum margin from ridge inner edge (in meters)
-    include_z : bool
-        If True, return 3D positions (x, y, z); if False, return 2D (x, y)
-    z_position : float
-        Z coordinate for 3D positions (required if include_z=True)
-    
-    Returns
-    -------
-    List of tuples with inlet positions
+
+    Fixes:
+      - avoids NameError when INLET_PLACEMENT_FRACTION defined later
+      - validates max_placement_radius (prevents negative offsets)
+      - uses cylinder_radius meaningfully (limit is min(cylinder_radius, ridge_inner_radius))
+      - avoids relying on mutable/late globals as default args
     """
     if num_inlets == 0:
         return []
-    
+
+    if cylinder_radius is None:
+        cylinder_radius = CYLINDER_RADIUS_M
+    if ridge_inner_radius is None:
+        ridge_inner_radius = RIDGE_INNER_RADIUS_M
+    if placement_fraction is None:
+        placement_fraction = INLET_PLACEMENT_FRACTION
+
+    # Placement must fit inside BOTH cylinder and ridge inner radius
+    limiting_radius = min(float(cylinder_radius), float(ridge_inner_radius))
+
     # Maximum radius for inlet center placement
-    # Must stay inside ridge inner edge with margin for inlet radius
-    max_placement_radius = ridge_inner_radius - inlet_radius - wall_margin
-    
+    max_placement_radius = limiting_radius - float(inlet_radius) - float(wall_margin)
+
+    if max_placement_radius <= 0:
+        raise ValueError(
+            f"Cannot place {num_inlets} inlets: max_placement_radius<=0.\n"
+            f"  limiting_radius={limiting_radius:.6f} m\n"
+            f"  inlet_radius={inlet_radius:.6f} m\n"
+            f"  wall_margin={wall_margin:.6f} m\n"
+            f"  (Check RIDGE_THICKNESS_M / inlet radius / wall margin.)"
+        )
+
+    # Choose symmetric layouts
     if num_inlets == 1:
-        # Single inlet at center
         positions = [(0.0, 0.0)]
+
     elif num_inlets == 2:
-        # Two inlets along X axis
-        offset = max_placement_radius * INLET_PLACEMENT_FRACTION  # 70% of max radius
+        offset = max_placement_radius * placement_fraction
         positions = [(offset, 0.0), (-offset, 0.0)]
+
     elif num_inlets == 3:
-        # Three inlets in equilateral triangle
-        offset = max_placement_radius * INLET_PLACEMENT_FRACTION
+        offset = max_placement_radius * placement_fraction
         positions = [
             (0.0, offset),
             (offset * cos(radians(210)), offset * sin(radians(210))),
             (offset * cos(radians(330)), offset * sin(radians(330))),
         ]
+
     elif num_inlets == 4:
-        # Four inlets in square pattern
-        # For a square inscribed in a circle of radius r, the offset from center is r/sqrt(2)
-        offset = max_placement_radius / sqrt(2)
-        positions = [
-            (offset, offset),
-            (-offset, offset),
-            (-offset, -offset),
-            (offset, -offset),
-        ]
+        offset = max_placement_radius / sqrt(2.0)
+        positions = [(offset, offset), (-offset, offset), (-offset, -offset), (offset, -offset)]
+
     else:
-        # N inlets in circular pattern
-        offset = max_placement_radius * INLET_PLACEMENT_FRACTION
+        offset = max_placement_radius * placement_fraction
         positions = []
         for i in range(num_inlets):
-            angle = 2 * pi * i / num_inlets
-            x = offset * cos(angle)
-            y = offset * sin(angle)
-            positions.append((x, y))
-    
+            angle = 2.0 * pi * i / num_inlets
+            positions.append((offset * cos(angle), offset * sin(angle)))
+
     # Add Z coordinate if requested
     if include_z:
         if z_position is None:
-            z_position = TOP_FACE_Z_M
-        positions = [(x, y, z_position) for x, y in positions]
-    
+            # Prefer TOP_FACE_Z_M if available
+            if "TOP_FACE_Z_M" in globals():
+                z_position = TOP_FACE_Z_M
+            else:
+                raise ValueError("include_z=True requires z_position (TOP_FACE_Z_M not available).")
+        positions = [(x, y, float(z_position)) for x, y in positions]
+
     return positions
 
 
@@ -904,15 +901,32 @@ def embed_void_in_cylinder(
         metadata = result.get('metadata', {})
         voxel_counts = metadata.get('voxel_counts', {})
         
-        domain_voxels = voxel_counts.get('domain', 0)
-        void_voxels = voxel_counts.get('void', 0)
-        solid_voxels = voxel_counts.get('solid', 0)
-        
-        # Debug artifact: Print mask counts (Fix 6)
-        print(f"    Voxel counts from embedding:")
-        print(f"      Domain mask: {domain_voxels} voxels")
-        print(f"      Void mask: {void_voxels} voxels")
-        print(f"      Solid mask: {solid_voxels} voxels")
+                # --- Robust carve verification ---
+        voxel_counts = metadata.get("voxel_counts", None)
+
+        if isinstance(voxel_counts, dict) and voxel_counts.get("domain", 0) > 0:
+            domain_voxels = int(voxel_counts.get("domain", 0))
+            void_voxels = int(voxel_counts.get("void", 0))
+            solid_voxels = int(voxel_counts.get("solid", 0))
+
+            print(f"    Voxel counts from embedding:")
+            print(f"      Domain mask: {domain_voxels} voxels")
+            print(f"      Void mask:   {void_voxels} voxels")
+            print(f"      Solid mask:  {solid_voxels} voxels")
+
+            epsilon = max(1, int(0.001 * domain_voxels))  # 0.1% tolerance
+            carving_successful = (void_voxels > 0) and (solid_voxels < (domain_voxels - epsilon))
+
+            if not carving_successful:
+                raise RuntimeError("Void not carved (mask-based check failed)")
+            else:
+                carved = domain_voxels - solid_voxels
+                print(f"    Carving verified: removed ~{carved} voxels ({carved/domain_voxels*100:.2f}%)")
+
+        else:
+            # If voxel_counts not provided, don't falsely fail
+            print("    Warning: embedding did not return voxel_counts; skipping carve verification.")
+
         
         # Save debug artifacts if output_dir provided (Fix 6)
         if output_dir:
@@ -957,54 +971,28 @@ def embed_void_in_cylinder(
         print(f"    embed_tree_as_negative_space failed or void not carved: {e}")
         print(f"    Using direct voxel subtraction fallback...")
         
-        # Fallback: Direct voxel-based subtraction
-        # Create cylinder mesh
-        cylinder = create_cylinder_mesh(
-            radius=CYLINDER_RADIUS_M,
-            height=CYLINDER_HEIGHT_M,
-            center=CYLINDER_CENTER,
-        )
-        
-        # Compute domain bounds with padding
-        domain_min = np.array([
-            CYLINDER_CENTER[0] - CYLINDER_RADIUS_M,
-            CYLINDER_CENTER[1] - CYLINDER_RADIUS_M,
-            CYLINDER_CENTER[2] - CYLINDER_HEIGHT_M / 2
-        ])
-        domain_max = np.array([
-            CYLINDER_CENTER[0] + CYLINDER_RADIUS_M,
-            CYLINDER_CENTER[1] + CYLINDER_RADIUS_M,
-            CYLINDER_CENTER[2] + CYLINDER_HEIGHT_M / 2
-        ])
-        
-        padding = 2
-        grid_shape = np.ceil((domain_max - domain_min) / voxel_pitch).astype(int) + 2 * padding
-        domain_min_padded = domain_min - padding * voxel_pitch
-        
-        print(f"    Voxel grid shape: {grid_shape}")
-        
-        # Voxelize cylinder
+                # Voxelize cylinder (FILLED solid)
         try:
-            cyl_voxels = cylinder.voxelized(voxel_pitch)
-            cyl_matrix = cyl_voxels.matrix
+            cyl_voxels = cylinder.voxelized(voxel_pitch).fill()
+            cyl_matrix = cyl_voxels.matrix.astype(bool)
             cyl_origin = cyl_voxels.transform[:3, 3]
         except Exception as ve:
             print(f"    Cylinder voxelization failed: {ve}")
             raise
-        
-        # Voxelize void
+
+        # Voxelize void (FILLED solid)
         try:
-            void_voxels = void_mesh.voxelized(voxel_pitch)
-            void_matrix = void_voxels.matrix
+            void_voxels = void_mesh.voxelized(voxel_pitch).fill()
+            void_matrix = void_voxels.matrix.astype(bool)
             void_origin = void_voxels.transform[:3, 3]
         except Exception as ve:
             print(f"    Void voxelization failed: {ve}")
             raise
-        
-        # Create aligned grids
+
+        # Align both into a common (x,y,z) grid anchored at domain_min_padded
         aligned_cyl = np.zeros(grid_shape, dtype=bool)
         aligned_void = np.zeros(grid_shape, dtype=bool)
-        
+
         # Copy cylinder voxels to aligned grid
         cyl_offset = np.round((cyl_origin - domain_min_padded) / voxel_pitch).astype(int)
         cyl_shape = np.array(cyl_matrix.shape)
@@ -1012,7 +1000,7 @@ def embed_void_in_cylinder(
         cyl_dst_start = np.maximum(cyl_offset, 0)
         cyl_copy_size = np.minimum(cyl_shape - cyl_src_start, grid_shape - cyl_dst_start)
         cyl_copy_size = np.maximum(cyl_copy_size, 0)
-        
+
         if np.all(cyl_copy_size > 0):
             aligned_cyl[
                 cyl_dst_start[0]:cyl_dst_start[0] + cyl_copy_size[0],
@@ -1023,7 +1011,7 @@ def embed_void_in_cylinder(
                 cyl_src_start[1]:cyl_src_start[1] + cyl_copy_size[1],
                 cyl_src_start[2]:cyl_src_start[2] + cyl_copy_size[2]
             ]
-        
+
         # Copy void voxels to aligned grid
         void_offset = np.round((void_origin - domain_min_padded) / voxel_pitch).astype(int)
         void_shape = np.array(void_matrix.shape)
@@ -1031,7 +1019,7 @@ def embed_void_in_cylinder(
         void_dst_start = np.maximum(void_offset, 0)
         void_copy_size = np.minimum(void_shape - void_src_start, grid_shape - void_dst_start)
         void_copy_size = np.maximum(void_copy_size, 0)
-        
+
         if np.all(void_copy_size > 0):
             aligned_void[
                 void_dst_start[0]:void_dst_start[0] + void_copy_size[0],
@@ -1042,51 +1030,42 @@ def embed_void_in_cylinder(
                 void_src_start[1]:void_src_start[1] + void_copy_size[1],
                 void_src_start[2]:void_src_start[2] + void_copy_size[2]
             ]
-        
-        print(f"    Cylinder voxels: {aligned_cyl.sum()}")
-        print(f"    Void voxels: {aligned_void.sum()}")
-        
-        # Subtract void from cylinder
+
+        print(f"    Cylinder voxels: {int(aligned_cyl.sum())}")
+        print(f"    Void voxels: {int(aligned_void.sum())}")
+
+        # Subtract
         result_mask = aligned_cyl & (~aligned_void)
-        print(f"    Result voxels: {result_mask.sum()}")
-        
-        # NO smoothing to preserve void shape exactly
-        # Binary closing/opening can smooth out void edges, so we skip it
-        
-        # Generate mesh with marching cubes
-        if result_mask.any():
-            verts, faces, _, _ = marching_cubes(
-                volume=result_mask.astype(np.uint8),
-                level=0.5,
-                spacing=(voxel_pitch, voxel_pitch, voxel_pitch),
-                allow_degenerate=False,
-            )
-            
-            # Transform to world coordinates
-            # NOTE: Do NOT swap axes here. The voxel matrix from trimesh.voxelized()
-            # is already in (x, y, z) order, and marching_cubes returns vertices
-            # in the same order. Swapping axes would rotate the cylinder 90 degrees,
-            # making it perpendicular to the ridge and branches.
-            verts += domain_min_padded
-            
-            domain_with_void = trimesh.Trimesh(
-                vertices=verts,
-                faces=faces.astype(np.int64),
-                process=False,
-            )
-            
-            domain_with_void.remove_unreferenced_vertices()
-            if domain_with_void.volume < 0:
-                domain_with_void.invert()
-            trimesh.repair.fix_normals(domain_with_void)
-            
-            if not domain_with_void.is_watertight:
-                trimesh.repair.fill_holes(domain_with_void)
-            
-            print(f"    Fallback complete: {len(domain_with_void.vertices)} vertices, {len(domain_with_void.faces)} faces")
-            print(f"    Watertight: {domain_with_void.is_watertight}")
-        else:
-            raise RuntimeError("Result mask is empty after voxel subtraction")
+        print(f"    Result voxels: {int(result_mask.sum())}")
+
+        # Convert mask to mesh using trimesh VoxelGrid (avoids skimage axis confusion)
+        from trimesh.voxel import VoxelGrid
+
+        # Transform: index -> world coordinate
+        # Here index axes correspond to (x,y,z) because result_mask is built that way
+        T = np.eye(4)
+        T[0, 0] = voxel_pitch
+        T[1, 1] = voxel_pitch
+        T[2, 2] = voxel_pitch
+        T[:3, 3] = domain_min_padded
+
+        vg = VoxelGrid(result_mask, transform=T)
+        domain_with_void = vg.marching_cubes
+
+        # Cleanup / orientation
+        domain_with_void.remove_unreferenced_vertices()
+        domain_with_void.merge_vertices()
+
+        if domain_with_void.volume < 0:
+            domain_with_void.invert()
+
+        trimesh.repair.fix_normals(domain_with_void)
+        if not domain_with_void.is_watertight:
+            trimesh.repair.fill_holes(domain_with_void)
+
+        print(f"    Fallback complete: {len(domain_with_void.vertices)} vertices, {len(domain_with_void.faces)} faces")
+        print(f"    Watertight: {domain_with_void.is_watertight}")
+
     
     # Clean up temp files
     import shutil
@@ -1247,6 +1226,7 @@ def generate_object2_channels(output_dir: Optional[Path] = None) -> trimesh.Trim
         output_dir=output_dir,
         object_name="object2",
         voxel_pitch=VOXEL_PITCH_M,
+        keep_largest_component=False,
     )
     
     # Export intermediate cylinder with void (before ridge)
@@ -1985,6 +1965,7 @@ def generate_object4_turn_bifurcate_merge(
         output_dir=output_dir,
         object_name="object4",
         voxel_pitch=VOXEL_PITCH_M,
+        keep_largest_component=False,
     )
     
     # Export intermediate cylinder with void (before ridge)
@@ -2288,6 +2269,7 @@ def generate_object5_cco_nlp_organic(output_dir: Optional[Path] = None) -> trime
         output_dir=output_dir,
         object_name="object5",
         voxel_pitch=VOXEL_PITCH_M,
+        keep_largest_component=False,
     )
     
     # Export intermediate cylinder with void (before ridge)
