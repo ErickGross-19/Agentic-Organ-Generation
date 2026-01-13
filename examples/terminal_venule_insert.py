@@ -381,6 +381,36 @@ class NLPParameters:
     cleanup_degenerate_segments: bool = True    # Remove degenerate segments
 
 
+@dataclass
+class IterativeGrowthConfig:
+    """
+    Configuration for iterative growth with alternating CCO and NLP optimization rounds.
+    
+    This enables a multi-round growth pattern where the network is grown in stages,
+    with NLP optimization applied after each growth round. This can produce more
+    organic, well-optimized networks by allowing the geometry to be refined before
+    adding more branches.
+    
+    The growth pattern is:
+    Round 1: CCO growth (outlets_per_round) -> NLP optimization
+    Round 2: CCO growth (outlets_per_round) -> NLP optimization
+    ...
+    Round n: CCO growth (remaining outlets) -> NLP optimization
+    
+    Attributes
+    ----------
+    num_rounds : int
+        Number of growth rounds. Default: 1 (single round, backward compatible).
+        Set to higher values (e.g., 3-5) for iterative growth.
+        
+    outlets_per_round : Optional[int]
+        Number of outlets to add per round. If None, total outlets are divided
+        evenly across rounds. Default: None.
+    """
+    num_rounds: int = 1
+    outlets_per_round: Optional[int] = None
+
+
 # =============================================================================
 # DEFAULT PARAMETER INSTANCES
 # =============================================================================
@@ -391,6 +421,7 @@ DEFAULT_CCO_PARAMS = CCOParameters()
 DEFAULT_EMBEDDING_PARAMS = EmbeddingParameters()
 DEFAULT_MULTI_INPUT_CONFIG = MultiInputConfig()
 DEFAULT_NLP_PARAMS = NLPParameters()
+DEFAULT_ITERATIVE_GROWTH_CONFIG = IterativeGrowthConfig()
 
 
 # =============================================================================
@@ -1232,30 +1263,187 @@ def cleanup_degenerate_segments(
 # CUSTOM NETWORK GENERATION (using CCO hybrid backend)
 # =============================================================================
 
+def _add_outlets_to_network(
+    network: VascularNetwork,
+    domain: "DomainSpec",
+    num_outlets_to_add: int,
+    inlet_node_id: int,
+    inlet_radius: float,
+    vessel_type: str,
+    config: CCOConfig,
+    rng: np.random.Generator,
+) -> int:
+    """
+    Add additional outlets to an existing network using CCO insertion.
+    
+    This function continues growing an existing network by adding more terminal
+    outlets using the same CCO algorithm. It's used for iterative growth where
+    the network is grown in stages with NLP optimization between rounds.
+    
+    Parameters
+    ----------
+    network : VascularNetwork
+        Existing network to grow (modified in place)
+    domain : DomainSpec
+        Geometric domain for sampling outlet positions
+    num_outlets_to_add : int
+        Number of new outlets to add
+    inlet_node_id : int
+        ID of the inlet (root) node
+    inlet_radius : float
+        Radius of the inlet vessel (for radius scaling)
+    vessel_type : str
+        Type of vessels ("arterial" or "venous")
+    config : CCOConfig
+        CCO configuration parameters
+    rng : np.random.Generator
+        Random number generator for reproducibility
+        
+    Returns
+    -------
+    int
+        Number of outlets successfully added
+    """
+    from generation.backends.cco_hybrid_backend import ArrayTreeView
+    
+    backend = CCOHybridBackend()
+    tree_view = ArrayTreeView(network, inlet_node_id)
+    
+    consecutive_failures = 0
+    successful_outlets = 0
+    
+    for i in range(num_outlets_to_add):
+        outlet_point = backend._sample_outlet_point(domain, rng, config)
+        
+        if not backend._is_valid_outlet(outlet_point, network, config):
+            consecutive_failures += 1
+            if consecutive_failures >= config.max_consecutive_failures:
+                logger.warning(
+                    f"Could not place outlet after {config.max_consecutive_failures} consecutive attempts. "
+                    f"Added {successful_outlets}/{num_outlets_to_add} outlets this round."
+                )
+                break
+            continue
+        
+        insertion_success = backend._insert_outlet(
+            network, tree_view, outlet_point, inlet_radius, vessel_type, config, rng
+        )
+        
+        if insertion_success:
+            successful_outlets += 1
+            consecutive_failures = 0
+        else:
+            consecutive_failures += 1
+            if consecutive_failures >= config.max_consecutive_failures:
+                logger.warning(
+                    f"Could not insert outlet after {config.max_consecutive_failures} consecutive attempts. "
+                    f"Added {successful_outlets}/{num_outlets_to_add} outlets this round."
+                )
+                break
+    
+    backend._rescale_radii(network, inlet_node_id, inlet_radius, config)
+    
+    return successful_outlets
+
+
+def _run_nlp_optimization(
+    network: VascularNetwork,
+    nlp_params: NLPParameters,
+    round_num: int,
+) -> bool:
+    """
+    Run NLP global geometry optimization on the network.
+    
+    Parameters
+    ----------
+    network : VascularNetwork
+        Network to optimize (modified in place)
+    nlp_params : NLPParameters
+        NLP optimization parameters
+    round_num : int
+        Current round number (for logging)
+        
+    Returns
+    -------
+    bool
+        True if optimization was successful
+    """
+    nlp_config = NLPConfig(
+        murray_exponent=nlp_params.murray_exponent,
+        target_pressure_drop=nlp_params.target_pressure_drop,
+        viscosity=nlp_params.viscosity,
+        fix_terminal_positions=nlp_params.fix_terminal_positions,
+        fix_root_position=nlp_params.fix_root_position,
+        max_iterations=nlp_params.max_iterations,
+        solver_tolerance=nlp_params.solver_tolerance,
+        cleanup_degenerate_segments=nlp_params.cleanup_degenerate_segments,
+    )
+    
+    logger.info(f"  NLP config: murray_exponent={nlp_config.murray_exponent}, "
+               f"target_pressure_drop={nlp_config.target_pressure_drop:.0f}Pa, "
+               f"max_iterations={nlp_config.max_iterations}")
+    
+    nlp_start = time.time()
+    nlp_result = optimize_geometry(network, nlp_config)
+    nlp_time = time.time() - nlp_start
+    
+    if nlp_result.success:
+        logger.info(f"  Round {round_num} NLP optimization successful!")
+        logger.info(f"  Volume reduction: {nlp_result.volume_reduction*100:.1f}%")
+        logger.info(f"  Initial volume: {nlp_result.initial_volume*1e9:.3f} mm^3")
+        logger.info(f"  Final volume: {nlp_result.final_volume*1e9:.3f} mm^3")
+        logger.info(f"  Iterations: {nlp_result.iterations}")
+        logger.info(f"  Optimization time: {nlp_time:.2f}s")
+        
+        if nlp_result.segments_removed > 0:
+            logger.info(f"  Degenerate segments removed: {nlp_result.segments_removed}")
+        if nlp_result.trifurcations_created > 0:
+            logger.info(f"  Trifurcations created: {nlp_result.trifurcations_created}")
+        
+        for warning in nlp_result.warnings:
+            logger.warning(f"  NLP warning: {warning}")
+        return True
+    else:
+        logger.warning(f"  Round {round_num} NLP optimization did not converge")
+        for error in nlp_result.errors:
+            logger.error(f"  NLP error: {error}")
+        for warning in nlp_result.warnings:
+            logger.warning(f"  NLP warning: {warning}")
+        return False
+
+
 def generate_network_from_spec(
     spec: DesignSpec,
     vessels: VesselDimensions = DEFAULT_VESSEL_DIMENSIONS,
     cco_params: CCOParameters = DEFAULT_CCO_PARAMS,
     nlp_params: NLPParameters = DEFAULT_NLP_PARAMS,
+    iterative_config: IterativeGrowthConfig = DEFAULT_ITERATIVE_GROWTH_CONFIG,
 ) -> VascularNetwork:
     """
     Generate vascular network from design specification using CCO hybrid backend
     with optional global NLP geometry optimization.
     
-    This function uses a two-stage approach:
+    This function supports iterative growth where the network is grown in multiple
+    rounds, with NLP optimization applied after each round. This produces more
+    organic, well-optimized networks by allowing the geometry to be refined before
+    adding more branches.
     
-    Stage 1 - CCO Generation:
-    Uses the CCOHybridBackend which implements Sexton et al.'s accelerated CCO
-    algorithm with:
+    The growth pattern for n rounds is:
+    Round 1: CCO growth (outlets_per_round) -> NLP optimization
+    Round 2: CCO growth (outlets_per_round) -> NLP optimization
+    ...
+    Round n: CCO growth (remaining outlets) -> NLP optimization
+    
+    CCO Generation uses the CCOHybridBackend which implements Sexton et al.'s
+    accelerated CCO algorithm with:
     - Partial binding optimization for fast bifurcation optimization
     - Collision avoidance triage (cheap filter then expensive test)
     - Murray's law-based radius scaling with demand-based splitting
     - Local radius-at-split interpolation for correct bifurcation behavior
     
-    Stage 2 - Global NLP Optimization (optional):
-    Applies Jessen-style NLP optimization to refine the network geometry by
-    optimizing node positions, radii, and pressures to minimize total vessel
-    volume while satisfying physiological constraints:
+    NLP Optimization applies Jessen-style optimization to refine the network
+    geometry by optimizing node positions, radii, and pressures to minimize
+    total vessel volume while satisfying physiological constraints:
     - Murray's law at bifurcations
     - Poiseuille pressure drop per segment
     - Kirchhoff flow conservation
@@ -1275,6 +1463,8 @@ def generate_network_from_spec(
         CCO algorithm parameters
     nlp_params : NLPParameters
         NLP global geometry optimization parameters
+    iterative_config : IterativeGrowthConfig
+        Configuration for iterative growth rounds (default: single round)
         
     Returns
     -------
@@ -1340,8 +1530,23 @@ def generate_network_from_spec(
     
     num_inlets = len(tree.inlets)
     
+    # Calculate outlets per round for iterative growth
+    num_rounds = max(1, iterative_config.num_rounds)
+    total_outlets = cco_params.num_outlets
+    
+    if iterative_config.outlets_per_round is not None:
+        outlets_per_round = iterative_config.outlets_per_round
+    else:
+        outlets_per_round = max(1, total_outlets // num_rounds)
+    
+    if num_rounds > 1:
+        logger.info(f"  Iterative growth enabled: {num_rounds} rounds, ~{outlets_per_round} outlets/round")
+    
+    # Initialize RNG for consistent seeding across rounds
+    rng = np.random.default_rng(spec.seed)
+    
     if num_inlets == 1:
-        # Single inlet case - generate one tree
+        # Single inlet case - generate one tree with iterative growth
         inlet_spec = tree.inlets[0]
         inlet_position = np.array(inlet_spec.position)
         inlet_radius = inlet_spec.radius
@@ -1350,19 +1555,79 @@ def generate_network_from_spec(
         logger.info(f"  Single inlet: position=({inlet_position[0]*1000:.2f}, "
                    f"{inlet_position[1]*1000:.2f}, {inlet_position[2]*1000:.2f})mm, "
                    f"radius={inlet_radius*1000:.2f}mm")
-        logger.info(f"  Target outlets: {cco_params.num_outlets}")
+        logger.info(f"  Target outlets: {total_outlets}")
         
-        # Generate network using CCO backend
-        logger.info(f"  Running CCO generation (num_outlets={cco_params.num_outlets})...")
-        network = backend.generate(
-            domain=domain,
-            num_outlets=cco_params.num_outlets,
-            inlet_position=inlet_position,
-            inlet_radius=inlet_radius,
-            vessel_type=vessel_type,
-            config=config,
-            rng_seed=spec.seed,
-        )
+        # Track total outlets added across all rounds
+        total_outlets_added = 0
+        inlet_node_id = None
+        
+        for round_num in range(1, num_rounds + 1):
+            # Calculate outlets for this round
+            remaining_outlets = total_outlets - total_outlets_added
+            if round_num == num_rounds:
+                # Last round: add all remaining outlets
+                round_outlets = remaining_outlets
+            else:
+                round_outlets = min(outlets_per_round, remaining_outlets)
+            
+            if round_outlets <= 0:
+                logger.info(f"  Round {round_num}: No more outlets to add, skipping")
+                continue
+            
+            logger.info("-" * 50)
+            logger.info(f"ROUND {round_num}/{num_rounds}: CCO Growth ({round_outlets} outlets)")
+            logger.info("-" * 50)
+            
+            if round_num == 1:
+                # First round: generate initial network
+                logger.info(f"  Running initial CCO generation...")
+                network = backend.generate(
+                    domain=domain,
+                    num_outlets=round_outlets,
+                    inlet_position=inlet_position,
+                    inlet_radius=inlet_radius,
+                    vessel_type=vessel_type,
+                    config=config,
+                    rng_seed=spec.seed,
+                )
+                
+                # Find inlet node ID for subsequent rounds
+                for node in network.nodes.values():
+                    if node.node_type == "inlet":
+                        inlet_node_id = node.id
+                        break
+                
+                total_outlets_added = round_outlets
+            else:
+                # Subsequent rounds: add outlets to existing network
+                logger.info(f"  Adding {round_outlets} outlets to existing network...")
+                outlets_added = _add_outlets_to_network(
+                    network=network,
+                    domain=domain,
+                    num_outlets_to_add=round_outlets,
+                    inlet_node_id=inlet_node_id,
+                    inlet_radius=inlet_radius,
+                    vessel_type=vessel_type,
+                    config=config,
+                    rng=rng,
+                )
+                total_outlets_added += outlets_added
+                logger.info(f"  Successfully added {outlets_added} outlets")
+            
+            # Log network statistics after CCO growth
+            logger.info(f"  Network after round {round_num}: {len(network.nodes)} nodes, "
+                       f"{len(network.segments)} segments")
+            
+            # Run NLP optimization after each round (if enabled)
+            if nlp_params.enabled:
+                logger.info(f"  Applying NLP optimization for round {round_num}...")
+                _run_nlp_optimization(network, nlp_params, round_num)
+                logger.info(f"  Post-NLP network: {len(network.nodes)} nodes, "
+                           f"{len(network.segments)} segments")
+        
+        logger.info("-" * 50)
+        logger.info(f"ITERATIVE GROWTH COMPLETE: {total_outlets_added} total outlets")
+        logger.info("-" * 50)
     else:
         # Multi-inlet case - generate separate trees and merge
         logger.info(f"  Multi-inlet mode: {num_inlets} inlets")
@@ -1477,9 +1742,9 @@ def generate_network_from_spec(
         if cleanup_result["segments_removed"] > 0:
             logger.info(f"  Post-merge cleanup: removed {cleanup_result['segments_removed']} degenerate segments")
     
-    # Log network statistics
-    logger.info(f"  CCO generation complete!")
-    logger.info(f"  Network: {len(network.nodes)} nodes, {len(network.segments)} segments")
+    # Log final network statistics
+    logger.info(f"  Generation complete!")
+    logger.info(f"  Final network: {len(network.nodes)} nodes, {len(network.segments)} segments")
     
     # Count node types
     node_counts = {"inlet": 0, "outlet": 0, "terminal": 0, "junction": 0}
@@ -1488,59 +1753,14 @@ def generate_network_from_spec(
             node_counts[node.node_type] += 1
     logger.info(f"  Node types: {node_counts}")
     
-    # Stage 2: Apply global NLP geometry optimization (if enabled)
-    if nlp_params.enabled:
+    # For multi-inlet case (which doesn't use iterative growth yet), apply final NLP optimization
+    # Single-inlet case already handles NLP within each round
+    if num_inlets > 1 and nlp_params.enabled:
         logger.info("-" * 50)
-        logger.info("STAGE 2: Applying global NLP geometry optimization...")
+        logger.info("FINAL NLP: Applying global NLP geometry optimization...")
         logger.info("-" * 50)
-        
-        # Create NLP configuration from parameters
-        nlp_config = NLPConfig(
-            murray_exponent=nlp_params.murray_exponent,
-            target_pressure_drop=nlp_params.target_pressure_drop,
-            viscosity=nlp_params.viscosity,
-            fix_terminal_positions=nlp_params.fix_terminal_positions,
-            fix_root_position=nlp_params.fix_root_position,
-            max_iterations=nlp_params.max_iterations,
-            solver_tolerance=nlp_params.solver_tolerance,
-            cleanup_degenerate_segments=nlp_params.cleanup_degenerate_segments,
-        )
-        
-        logger.info(f"  NLP config: murray_exponent={nlp_config.murray_exponent}, "
-                   f"target_pressure_drop={nlp_config.target_pressure_drop:.0f}Pa, "
-                   f"max_iterations={nlp_config.max_iterations}")
-        
-        # Run NLP optimization
-        nlp_start = time.time()
-        nlp_result = optimize_geometry(network, nlp_config)
-        nlp_time = time.time() - nlp_start
-        
-        if nlp_result.success:
-            logger.info(f"  NLP optimization successful!")
-            logger.info(f"  Volume reduction: {nlp_result.volume_reduction*100:.1f}%")
-            logger.info(f"  Initial volume: {nlp_result.initial_volume*1e9:.3f} mm^3")
-            logger.info(f"  Final volume: {nlp_result.final_volume*1e9:.3f} mm^3")
-            logger.info(f"  Iterations: {nlp_result.iterations}")
-            logger.info(f"  Optimization time: {nlp_time:.2f}s")
-            
-            if nlp_result.segments_removed > 0:
-                logger.info(f"  Degenerate segments removed: {nlp_result.segments_removed}")
-            if nlp_result.trifurcations_created > 0:
-                logger.info(f"  Trifurcations created: {nlp_result.trifurcations_created}")
-            
-            for warning in nlp_result.warnings:
-                logger.warning(f"  NLP warning: {warning}")
-        else:
-            logger.warning(f"  NLP optimization did not converge")
-            for error in nlp_result.errors:
-                logger.error(f"  NLP error: {error}")
-            for warning in nlp_result.warnings:
-                logger.warning(f"  NLP warning: {warning}")
-        
-        # Log updated network statistics
+        _run_nlp_optimization(network, nlp_params, round_num=1)
         logger.info(f"  Post-NLP network: {len(network.nodes)} nodes, {len(network.segments)} segments")
-    else:
-        logger.info("  NLP optimization disabled, skipping Stage 2")
     
     return network
 
