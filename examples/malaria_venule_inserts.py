@@ -93,7 +93,7 @@ def compute_inlet_positions(
     inlet_radius: float,
     cylinder_radius: float = CYLINDER_RADIUS_M,
     ridge_inner_radius: float = RIDGE_INNER_RADIUS_M,
-    wall_margin: float = OBJ2_WALL_MARGIN_M,  # 0.5 mm default wall margin
+    wall_margin: float = 0.0005,  # 0.5 mm default wall margin (same as OBJ2_WALL_MARGIN_M)
     include_z: bool = False,
     z_position: float = None,
 ) -> List[Tuple[float, ...]]:
@@ -379,7 +379,7 @@ OBJ4_BRANCH_BASE_LENGTH_M = 0.0005       # Base branch length for bifurcations
 OBJ4_BRANCH_LENGTH_DECAY = 0.2           # Length decay per bifurcation level
 OBJ4_BRANCH_RADIUS_DECAY = 0.8           # Radius decay per bifurcation level
 OBJ4_BASE_ANGLE_DEG = 45                 # Base bifurcation angle in degrees
-OBJ4_ANGLE_DECAY_PER_LEVEL = 10          # Angle reduction per bifurcation level
+OBJ4_ANGLE_DECAY_PER_LEVEL_DEG = 10       # Angle reduction per bifurcation level (degrees)
 OBJ4_MERGE_POINT_X_M = 0.002             # X position of merge point
 OBJ4_OUTLET_X_M = 0.002                  # X position of outlet
 
@@ -1873,7 +1873,7 @@ def generate_object4_turn_bifurcate_merge(
             growth_distance2 = max(growth_distance2, BIFURC_MIN_GROWTH_DISTANCE_M)
             
             # Angle for bifurcation (decreases with level for tighter packing)
-            angle_deg = OBJ4_BASE_ANGLE_DEG - OBJ4_ANGLE_DECAY_PER_LEVEL * level
+            angle_deg = OBJ4_BASE_ANGLE_DEG - OBJ4_ANGLE_DECAY_PER_LEVEL_DEG * level
             
             # Use bifurcate to create two child branches with RNG-based growth lengths
             bifurc_result = bifurcate(
