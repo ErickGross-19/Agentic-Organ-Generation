@@ -639,10 +639,18 @@ def voxel_union_meshes(meshes: List[trimesh.Trimesh], pitch: float) -> trimesh.T
     # Watertightness repair pass: merge close vertices, fill holes, remove degenerates
     # This resolves tiny cracks that can occur after marching cubes
     result.merge_vertices()
-    # Remove degenerate faces (zero-area triangles) using trimesh's nondegenerate mask
-    result.update_faces(result.nondegenerate)
-    # Remove duplicate faces using trimesh's unique_faces indices
-    result.update_faces(result.unique_faces())
+    
+    # Remove duplicate faces (using same pattern as validity/mesh/cleaning.py)
+    unique_faces = result.unique_faces()
+    result.update_faces(unique_faces)
+    result.remove_unreferenced_vertices()
+    
+    # Remove degenerate faces (zero-area triangles) using area threshold
+    # (same approach as validity/mesh/cleaning.py for consistency)
+    areas = result.area_faces
+    keep = areas > 1e-18
+    if keep.sum() > 0:  # Only update if there are faces to keep
+        result.update_faces(keep)
     result.remove_unreferenced_vertices()
     
     # Fill any remaining holes
