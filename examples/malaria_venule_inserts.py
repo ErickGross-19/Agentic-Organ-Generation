@@ -1214,11 +1214,14 @@ def generate_bifurcation_tree_mesh(
     terminal_radius: float,
     bifurcation_depths: List[float],
     base_angle_deg: float = 30.0,
+    rng_seed: Optional[int] = None,
+    growth_fraction_range: Tuple[float, float] = (0.3, 0.7),
 ) -> trimesh.Trimesh:
     """
     Generate a bifurcating tree mesh from a single inlet.
     
     Uses recursive bifurcation with exponential radius taper.
+    Branches grow before bifurcating (grow -> bifurcate -> grow pattern).
     Overlapping branches are merged via voxel union.
     
     Parameters
@@ -1233,6 +1236,13 @@ def generate_bifurcation_tree_mesh(
         Z-depths (from top) where bifurcations occur, in meters
     base_angle_deg : float
         Base bifurcation angle in degrees
+    rng_seed : int, optional
+        Random seed for reproducible growth distances
+    growth_fraction_range : tuple
+        (min, max) fraction of available distance for post-bifurcation growth.
+        Growth distance is calculated as: fraction * distance_to_next_bifurcation
+        This ensures branches separate before the next bifurcation while leaving
+        enough space to bifurcate before reaching the base height or edge.
     
     Returns
     -------
@@ -1241,6 +1251,8 @@ def generate_bifurcation_tree_mesh(
     """
     num_levels = len(bifurcation_depths)
     all_segments = []
+    
+    rng = np.random.default_rng(rng_seed)
     
     # Track current branch tips: list of (position, direction, radius, level)
     # Direction is a unit vector
@@ -1254,6 +1266,16 @@ def generate_bifurcation_tree_mesh(
     for level in range(num_levels):
         depth = bifurcation_depths[level]
         target_z = inlet_position[2] - depth
+        
+        # Calculate distance to next bifurcation level (for growth distance calculation)
+        if level + 1 < num_levels:
+            next_depth = bifurcation_depths[level + 1]
+            distance_between_levels = next_depth - depth
+        else:
+            # Last level: use remaining distance to bottom (with margin)
+            bottom_z = inlet_position[2] - CYLINDER_HEIGHT_M * 0.875  # Leave 12.5% margin
+            distance_between_levels = depth - (inlet_position[2] - bottom_z)
+            distance_between_levels = max(distance_between_levels, 0.0001)
         
         new_tips = []
         
@@ -1310,8 +1332,45 @@ def generate_bifurcation_tree_mesh(
             child2_dir = tip_dir * math.cos(angle_rad) - perp1 * math.sin(angle_rad)
             child2_dir = child2_dir / np.linalg.norm(child2_dir)
             
-            new_tips.append((bifurc_pos.copy(), child1_dir, next_radius, level + 1))
-            new_tips.append((bifurc_pos.copy(), child2_dir, next_radius, level + 1))
+            # Calculate RNG-based growth distance for post-bifurcation growth
+            # This ensures branches grow and separate before the next bifurcation
+            growth_fraction = rng.uniform(growth_fraction_range[0], growth_fraction_range[1])
+            growth_distance = growth_fraction * distance_between_levels
+            
+            # Ensure growth distance doesn't exceed available space
+            # Account for branch direction (not always vertical)
+            max_growth = distance_between_levels * 0.8  # Leave 20% for next bifurcation approach
+            growth_distance = min(growth_distance, max_growth)
+            growth_distance = max(growth_distance, 0.0001)  # Minimum growth
+            
+            # Create post-bifurcation growth segments for each child
+            # Child 1: grow in child1_dir before next bifurcation
+            child1_growth_end = bifurc_pos + child1_dir * growth_distance
+            child1_growth_seg = _create_tapered_cylinder(
+                start=bifurc_pos,
+                end=child1_growth_end,
+                radius_start=next_radius,
+                radius_end=next_radius,
+            )
+            all_segments.append(child1_growth_seg)
+            
+            # Child 2: grow in child2_dir before next bifurcation (with different RNG)
+            growth_fraction2 = rng.uniform(growth_fraction_range[0], growth_fraction_range[1])
+            growth_distance2 = min(growth_fraction2 * distance_between_levels, max_growth)
+            growth_distance2 = max(growth_distance2, 0.0001)
+            
+            child2_growth_end = bifurc_pos + child2_dir * growth_distance2
+            child2_growth_seg = _create_tapered_cylinder(
+                start=bifurc_pos,
+                end=child2_growth_end,
+                radius_start=next_radius,
+                radius_end=next_radius,
+            )
+            all_segments.append(child2_growth_seg)
+            
+            # Add tips at the end of growth segments (not at bifurcation point)
+            new_tips.append((child1_growth_end.copy(), child1_dir, next_radius, level + 1))
+            new_tips.append((child2_growth_end.copy(), child2_dir, next_radius, level + 1))
         
         current_tips = new_tips
     
@@ -1542,7 +1601,11 @@ def generate_object3_bifurcate_512(output_dir: Optional[Path] = None) -> trimesh
     return cylinder_with_void
 
 
-def generate_object4_turn_bifurcate_merge(output_dir: Optional[Path] = None) -> trimesh.Trimesh:
+def generate_object4_turn_bifurcate_merge(
+    output_dir: Optional[Path] = None,
+    rng_seed: Optional[int] = None,
+    growth_fraction_range: Tuple[float, float] = (0.3, 0.7),
+) -> trimesh.Trimesh:
     """
     Generate Object 4: Single inlet, 90-degree turn, bifurcate, merge, return.
     
@@ -1550,7 +1613,7 @@ def generate_object4_turn_bifurcate_merge(output_dir: Optional[Path] = None) -> 
     - Single inlet at center top face, radius 1mm
     - Travel downward 1mm
     - Turn 90 degrees (along +X direction)
-    - Bifurcate in XY plane
+    - Bifurcate in XY plane with grow -> bifurcate -> grow pattern
     - Branches merge by overlapping in space (voxel union)
     - Single trunk returns upward to exit near top face
     - Uses the repo's embed_tree_as_negative_space function for embedding
@@ -1561,10 +1624,19 @@ def generate_object4_turn_bifurcate_merge(output_dir: Optional[Path] = None) -> 
     ----------
     output_dir : Path, optional
         Directory to save intermediate STL files for debugging
+    rng_seed : int, optional
+        Random seed for reproducible growth distances
+    growth_fraction_range : tuple
+        (min, max) fraction of available distance for post-bifurcation growth.
+        Growth distance is calculated as: fraction * branch_length
+        This ensures branches separate before the next bifurcation while leaving
+        enough space to bifurcate before reaching the edge.
     """
     print("\n" + "=" * 60)
     print("Generating Object 4: Turn-Bifurcate-Merge loop")
     print("=" * 60)
+    
+    rng = np.random.default_rng(rng_seed)
     
     z_top = CYLINDER_CENTER[2] + CYLINDER_HEIGHT_M / 2
     z_bottom = CYLINDER_CENTER[2] - CYLINDER_HEIGHT_M / 2
@@ -1590,8 +1662,8 @@ def generate_object4_turn_bifurcate_merge(output_dir: Optional[Path] = None) -> 
     seg2 = _create_tapered_cylinder(down_end, turn_end, OBJ4_INLET_RADIUS_M, OBJ4_INLET_RADIUS_M * 0.9)
     channel_segments.append(seg2)
     
-    # 3. Bifurcate in XY plane
-    print(f"    Bifurcating {OBJ4_NUM_BIFURCATIONS} levels in XY plane")
+    # 3. Bifurcate in XY plane with grow -> bifurcate -> grow pattern
+    print(f"    Bifurcating {OBJ4_NUM_BIFURCATIONS} levels in XY plane (grow-bifurcate-grow)")
     
     # Create bifurcating branches
     branch_tips = [(turn_end.copy(), np.array([1.0, 0.0, 0.0]), OBJ4_INLET_RADIUS_M * 0.9)]
@@ -1601,8 +1673,14 @@ def generate_object4_turn_bifurcate_merge(output_dir: Optional[Path] = None) -> 
         branch_length = 0.0005 * (1.0 - 0.2 * level)  # Decreasing length
         branch_radius = OBJ4_INLET_RADIUS_M * 0.9 * (0.8 ** (level + 1))
         
+        # Calculate distance to next bifurcation level for growth distance
+        if level + 1 < OBJ4_NUM_BIFURCATIONS:
+            next_branch_length = 0.0005 * (1.0 - 0.2 * (level + 1))
+        else:
+            next_branch_length = branch_length * 0.5  # Last level: use half of current
+        
         for tip_pos, tip_dir, tip_r in branch_tips:
-            # Grow forward a bit
+            # Grow forward a bit (pre-bifurcation growth)
             mid_pos = tip_pos + tip_dir * branch_length
             seg = _create_tapered_cylinder(tip_pos, mid_pos, tip_r, branch_radius)
             channel_segments.append(seg)
@@ -1618,8 +1696,44 @@ def generate_object4_turn_bifurcate_merge(output_dir: Optional[Path] = None) -> 
             dir2 = tip_dir * math.cos(angle) + np.array([0, -1, 0]) * math.sin(angle)
             dir2 = dir2 / np.linalg.norm(dir2)
             
-            new_tips.append((mid_pos.copy(), dir1, branch_radius))
-            new_tips.append((mid_pos.copy(), dir2, branch_radius))
+            # Calculate RNG-based growth distance for post-bifurcation growth
+            # This ensures branches grow and separate before the next bifurcation
+            growth_fraction1 = rng.uniform(growth_fraction_range[0], growth_fraction_range[1])
+            growth_distance1 = growth_fraction1 * next_branch_length
+            
+            # Ensure growth distance doesn't exceed available space
+            max_growth = next_branch_length * 0.8  # Leave 20% for next bifurcation approach
+            growth_distance1 = min(growth_distance1, max_growth)
+            growth_distance1 = max(growth_distance1, 0.0001)  # Minimum growth
+            
+            # Create post-bifurcation growth segment for branch 1
+            child1_growth_end = mid_pos + dir1 * growth_distance1
+            child1_growth_seg = _create_tapered_cylinder(
+                start=mid_pos,
+                end=child1_growth_end,
+                radius_start=branch_radius,
+                radius_end=branch_radius,
+            )
+            channel_segments.append(child1_growth_seg)
+            
+            # Calculate growth distance for branch 2 (with different RNG)
+            growth_fraction2 = rng.uniform(growth_fraction_range[0], growth_fraction_range[1])
+            growth_distance2 = min(growth_fraction2 * next_branch_length, max_growth)
+            growth_distance2 = max(growth_distance2, 0.0001)
+            
+            # Create post-bifurcation growth segment for branch 2
+            child2_growth_end = mid_pos + dir2 * growth_distance2
+            child2_growth_seg = _create_tapered_cylinder(
+                start=mid_pos,
+                end=child2_growth_end,
+                radius_start=branch_radius,
+                radius_end=branch_radius,
+            )
+            channel_segments.append(child2_growth_seg)
+            
+            # Add tips at the end of growth segments (not at bifurcation point)
+            new_tips.append((child1_growth_end.copy(), dir1, branch_radius))
+            new_tips.append((child2_growth_end.copy(), dir2, branch_radius))
         
         branch_tips = new_tips
     
