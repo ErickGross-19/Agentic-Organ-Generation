@@ -93,7 +93,7 @@ def compute_inlet_positions(
     inlet_radius: float,
     cylinder_radius: float = CYLINDER_RADIUS_M,
     ridge_inner_radius: float = RIDGE_INNER_RADIUS_M,
-    wall_margin: float = 0.0005,  # 0.5 mm default wall margin
+    wall_margin: float = OBJ2_WALL_MARGIN_M,  # 0.5 mm default wall margin
     include_z: bool = False,
     z_position: float = None,
 ) -> List[Tuple[float, ...]]:
@@ -136,11 +136,11 @@ def compute_inlet_positions(
         positions = [(0.0, 0.0)]
     elif num_inlets == 2:
         # Two inlets along X axis
-        offset = max_placement_radius * 0.7  # 70% of max radius
+        offset = max_placement_radius * INLET_PLACEMENT_FRACTION  # 70% of max radius
         positions = [(offset, 0.0), (-offset, 0.0)]
     elif num_inlets == 3:
         # Three inlets in equilateral triangle
-        offset = max_placement_radius * 0.7
+        offset = max_placement_radius * INLET_PLACEMENT_FRACTION
         positions = [
             (0.0, offset),
             (offset * cos(radians(210)), offset * sin(radians(210))),
@@ -158,7 +158,7 @@ def compute_inlet_positions(
         ]
     else:
         # N inlets in circular pattern
-        offset = max_placement_radius * 0.7
+        offset = max_placement_radius * INLET_PLACEMENT_FRACTION
         positions = []
         for i in range(num_inlets):
             angle = 2 * pi * i / num_inlets
@@ -333,6 +333,61 @@ VOXEL_PITCH_UNION_M = 5.0e-5       # 50 um voxel pitch (for union operations)
 # Using 50um pitch gives 2 voxels across the ridge thickness for proper resolution
 # 25 um pitch on 10mm x 10mm x 2mm domain = ~12.8M voxels
 VOXEL_PITCH_RIDGE_M = 2.5e-5       # 25 um for ridge operations (4 voxels across 0.1mm ridge)
+VOXEL_RETRY_MAX_ATTEMPTS = 4       # Max retry attempts for voxelization
+VOXEL_RETRY_FACTOR = 1.5           # Pitch multiplier on retry
+
+# =============================================================================
+# MESH RESOLUTION PARAMETERS
+# =============================================================================
+CYLINDER_MESH_SECTIONS = 64        # Number of sections for cylinder mesh
+RIDGE_MESH_POINTS = 65             # Number of points for ridge mesh ring
+CHANNEL_MESH_SECTIONS = 32         # Number of sections for channel mesh
+TAPERED_CYLINDER_SECTIONS = 16     # Default sections for tapered cylinders
+
+# =============================================================================
+# BRANCHING CONSTRAINTS (for VascularNetwork operations)
+# =============================================================================
+BRANCH_MIN_SEGMENT_LENGTH_M = 1e-5   # Minimum segment length for branching
+BRANCH_MAX_SEGMENT_LENGTH_M = 0.01   # Maximum segment length for branching
+BRANCH_MIN_RADIUS_M = 1e-5           # Minimum radius for branching
+
+# =============================================================================
+# BIFURCATION TREE PARAMETERS (shared by Objects 3 and 4)
+# =============================================================================
+BIFURC_BOTTOM_MARGIN_FRACTION = 0.125    # 12.5% margin at bottom of cylinder
+BIFURC_HORIZONTAL_STEP_M = 0.0002        # Small step for horizontal branches
+BIFURC_MIN_SEGMENT_LENGTH_M = 0.0001     # Minimum segment length
+BIFURC_MAX_GROWTH_FRACTION = 0.8         # Max growth as fraction of available space (leave 20% for next bifurcation)
+BIFURC_MIN_GROWTH_DISTANCE_M = 0.0001    # Minimum growth distance
+BIFURC_ANGLE_REDUCTION_PER_LEVEL = 0.1   # Angle reduction factor per bifurcation level
+BIFURC_TERMINAL_SEGMENT_LENGTH_M = 0.0001  # Length of terminal segments
+BIFURC_DIRECTION_THRESHOLD = 0.1         # Threshold for detecting vertical vs horizontal direction
+
+# =============================================================================
+# OBJECT 3 ADDITIONAL PARAMETERS
+# =============================================================================
+OBJ3_BASE_ANGLE_DEG = 30.0               # Base bifurcation angle in degrees
+OBJ3_MIN_CHANNEL_DIAMETER_MM = 0.2       # Minimum channel diameter for validation (mm)
+OBJ3_MIN_WALL_THICKNESS_MM = 0.3         # Minimum wall thickness for validation (mm)
+
+# =============================================================================
+# OBJECT 4 ADDITIONAL PARAMETERS
+# =============================================================================
+OBJ4_INLET_OFFSET_M = 0.001              # Offset from center for return path
+OBJ4_TURN_RADIUS_FACTOR = 0.9            # Radius reduction factor after turn
+OBJ4_BRANCH_BASE_LENGTH_M = 0.0005       # Base branch length for bifurcations
+OBJ4_BRANCH_LENGTH_DECAY = 0.2           # Length decay per bifurcation level
+OBJ4_BRANCH_RADIUS_DECAY = 0.8           # Radius decay per bifurcation level
+OBJ4_BASE_ANGLE_DEG = 45                 # Base bifurcation angle in degrees
+OBJ4_ANGLE_DECAY_PER_LEVEL = 10          # Angle reduction per bifurcation level
+OBJ4_MERGE_POINT_X_M = 0.002             # X position of merge point
+OBJ4_OUTLET_X_M = 0.002                  # X position of outlet
+
+# =============================================================================
+# GEOMETRY THRESHOLDS
+# =============================================================================
+DEGENERATE_LENGTH_THRESHOLD = 1e-9       # Threshold for degenerate segment detection
+INLET_PLACEMENT_FRACTION = 0.7           # Fraction of max radius for inlet placement (2-3 inlets)
 
 # =============================================================================
 # OUTPUT PARAMETERS
@@ -391,7 +446,7 @@ def create_cylinder_mesh(radius: float, height: float, center: Tuple[float, floa
     cylinder = trimesh.creation.cylinder(
         radius=radius,
         height=height,
-        sections=64,
+        sections=CYLINDER_MESH_SECTIONS,
     )
     cylinder.apply_translation([center[0], center[1], center[2]])
     return cylinder
@@ -414,7 +469,7 @@ def create_ridge_mesh(
     try:
         # Create ring using direct mesh construction (no Blender dependency)
         # Generate annular cross-section
-        angles = np.linspace(0, 2 * np.pi, 65)
+        angles = np.linspace(0, 2 * np.pi, RIDGE_MESH_POINTS)
         outer_points = np.column_stack([
             outer_radius * np.cos(angles),
             outer_radius * np.sin(angles),
@@ -491,7 +546,7 @@ def create_ridge_mesh(
         disk = trimesh.creation.cylinder(
             radius=outer_radius,
             height=height,
-            sections=64,
+            sections=CYLINDER_MESH_SECTIONS,
         )
         disk.apply_translation([center_xy[0], center_xy[1], z_base + height / 2])
         print("  Ridge: Created solid disk (fallback)")
@@ -508,7 +563,7 @@ def create_channel_mesh(
     channel = trimesh.creation.cylinder(
         radius=radius,
         height=depth,
-        sections=32,
+        sections=CHANNEL_MESH_SECTIONS,
     )
     # Position so top of channel is at z_top
     channel.apply_translation([position_xy[0], position_xy[1], z_top - depth / 2])
@@ -553,8 +608,8 @@ def voxel_union_meshes(meshes: List[trimesh.Trimesh], pitch: float) -> trimesh.T
     voxels = voxelized_with_retry(
         combined, 
         pitch, 
-        max_attempts=4, 
-        factor=1.5,
+        max_attempts=VOXEL_RETRY_MAX_ATTEMPTS, 
+        factor=VOXEL_RETRY_FACTOR,
         log_prefix="[voxel_union_meshes] ",
     )
     
@@ -581,7 +636,17 @@ def voxel_union_meshes(meshes: List[trimesh.Trimesh], pitch: float) -> trimesh.T
         process=False,
     )
     
+    # Watertightness repair pass: merge close vertices, fill holes, remove degenerates
+    # This resolves tiny cracks that can occur after marching cubes
+    result.merge_vertices()
+    result.remove_degenerate_faces()
+    result.remove_duplicate_faces()
     result.remove_unreferenced_vertices()
+    
+    # Fill any remaining holes
+    trimesh.repair.fill_holes(result)
+    
+    # Fix normals and winding
     if result.volume < 0:
         result.invert()
     trimesh.repair.fix_normals(result)
@@ -1265,9 +1330,9 @@ def generate_bifurcation_tree_mesh(
     
     # Set up constraints with relaxed limits for small geometry
     constraints = BranchingConstraints(
-        min_segment_length=1e-5,
-        max_segment_length=0.01,
-        min_radius=1e-5,
+        min_segment_length=BRANCH_MIN_SEGMENT_LENGTH_M,
+        max_segment_length=BRANCH_MAX_SEGMENT_LENGTH_M,
+        min_radius=BRANCH_MIN_RADIUS_M,
     )
     
     # Add inlet node
@@ -1297,9 +1362,9 @@ def generate_bifurcation_tree_mesh(
             distance_between_levels = next_depth - depth
         else:
             # Last level: use remaining distance to bottom (with margin)
-            bottom_z = inlet_position[2] - CYLINDER_HEIGHT_M * 0.875  # Leave 12.5% margin
+            bottom_z = inlet_position[2] - CYLINDER_HEIGHT_M * (1.0 - BIFURC_BOTTOM_MARGIN_FRACTION)  # Leave margin
             distance_between_levels = depth - (inlet_position[2] - bottom_z)
-            distance_between_levels = max(distance_between_levels, 0.0001)
+            distance_between_levels = max(distance_between_levels, BIFURC_MIN_SEGMENT_LENGTH_M)
         
         new_tips = []
         
@@ -1322,12 +1387,12 @@ def generate_bifurcation_tree_mesh(
             next_radius = compute_taper_radius(level + 1, num_levels, inlet_radius, terminal_radius)
             
             # Calculate distance to target z for grow_to_point
-            if abs(tip_dir[2]) > 0.1:
+            if abs(tip_dir[2]) > BIFURC_DIRECTION_THRESHOLD:
                 dist_to_target = abs((target_z - tip_pos[2]) / tip_dir[2])
             else:
-                dist_to_target = 0.0002  # Small step for horizontal branches
+                dist_to_target = BIFURC_HORIZONTAL_STEP_M  # Small step for horizontal branches
             
-            dist_to_target = max(dist_to_target, 0.0001)  # Minimum segment length
+            dist_to_target = max(dist_to_target, BIFURC_MIN_SEGMENT_LENGTH_M)  # Minimum segment length
             
             # Calculate bifurcation point
             bifurc_pos = tip_pos + tip_dir * dist_to_target
@@ -1351,18 +1416,18 @@ def generate_bifurcation_tree_mesh(
             
             # Calculate RNG-based growth distances for child branches
             # This implements the grow -> bifurcate -> grow pattern
-            max_growth = distance_between_levels * 0.8  # Leave 20% for next bifurcation approach
+            max_growth = distance_between_levels * BIFURC_MAX_GROWTH_FRACTION  # Leave room for next bifurcation approach
             
             growth_fraction1 = rng.uniform(growth_fraction_range[0], growth_fraction_range[1])
             growth_distance1 = min(growth_fraction1 * distance_between_levels, max_growth)
-            growth_distance1 = max(growth_distance1, 0.0001)
+            growth_distance1 = max(growth_distance1, BIFURC_MIN_GROWTH_DISTANCE_M)
             
             growth_fraction2 = rng.uniform(growth_fraction_range[0], growth_fraction_range[1])
             growth_distance2 = min(growth_fraction2 * distance_between_levels, max_growth)
-            growth_distance2 = max(growth_distance2, 0.0001)
+            growth_distance2 = max(growth_distance2, BIFURC_MIN_GROWTH_DISTANCE_M)
             
             # Angle for bifurcation (decreases with level for tighter packing)
-            angle_deg = base_angle_deg * (1.0 - 0.1 * level)
+            angle_deg = base_angle_deg * (1.0 - BIFURC_ANGLE_REDUCTION_PER_LEVEL * level)
             
             # Use bifurcate to create two child branches with RNG-based growth lengths
             # The bifurcate function creates growth segments for each child
@@ -1402,7 +1467,7 @@ def generate_bifurcation_tree_mesh(
         tip_dir = np.array([tip_dir_dict.get("dx", 0), tip_dir_dict.get("dy", 0), tip_dir_dict.get("dz", -1)])
         
         # Short terminal segment
-        end_pos = tip_pos + tip_dir * 0.0001
+        end_pos = tip_pos + tip_dir * BIFURC_TERMINAL_SEGMENT_LENGTH_M
         
         grow_result = grow_to_point(
             network,
@@ -1430,13 +1495,13 @@ def _create_tapered_cylinder(
     end: np.ndarray,
     radius_start: float,
     radius_end: float,
-    sections: int = 16,
+    sections: int = TAPERED_CYLINDER_SECTIONS,
 ) -> trimesh.Trimesh:
     """Create a tapered cylinder (frustum) between two points."""
     direction = end - start
     length = np.linalg.norm(direction)
     
-    if length < 1e-9:
+    if length < DEGENERATE_LENGTH_THRESHOLD:
         # Degenerate segment, return small sphere
         sphere = trimesh.creation.icosphere(subdivisions=1, radius=radius_start)
         sphere.apply_translation(start)
@@ -1555,7 +1620,7 @@ def generate_object3_bifurcate_512(output_dir: Optional[Path] = None) -> trimesh
             inlet_radius=OBJ3_INLET_RADIUS_M,
             terminal_radius=OBJ3_TERMINAL_RADIUS_M,
             bifurcation_depths=OBJ3_BIFURCATION_DEPTHS_M,
-            base_angle_deg=30.0,
+            base_angle_deg=OBJ3_BASE_ANGLE_DEG,
         )
         all_trees.append(tree_mesh)
         print(f"      Generated tree with {len(tree_mesh.vertices)} vertices")
@@ -1614,8 +1679,8 @@ def generate_object3_bifurcate_512(output_dir: Optional[Path] = None) -> trimesh
             voxel_pitch_m=VOXEL_PITCH_M,
             expected_outlets=OBJ3_NUM_INLETS,  # 4 inlets, not 512 internal terminals
             manufacturing=ManufacturingConfig(
-                min_channel_diameter=0.2,  # 2 * terminal radius (100µm = 0.1mm)
-                min_wall_thickness=0.3,
+                min_channel_diameter=OBJ3_MIN_CHANNEL_DIAMETER_MM,  # 2 * terminal radius (100µm = 0.1mm)
+                min_wall_thickness=OBJ3_MIN_WALL_THICKNESS_MM,
             ),
         )
         report = run_post_embedding_validation(mesh=cylinder_with_void, config=validation_config)
@@ -1687,13 +1752,13 @@ def generate_object4_turn_bifurcate_merge(
     
     # Set up constraints with relaxed limits for small geometry
     constraints = BranchingConstraints(
-        min_segment_length=1e-5,
-        max_segment_length=0.01,
-        min_radius=1e-5,
+        min_segment_length=BRANCH_MIN_SEGMENT_LENGTH_M,
+        max_segment_length=BRANCH_MAX_SEGMENT_LENGTH_M,
+        min_radius=BRANCH_MIN_RADIUS_M,
     )
     
     # Inlet position (slightly offset from center to allow return path)
-    inlet_x = OBJ4_INLET_POSITION[0] - 0.001  # Offset from center to allow return path
+    inlet_x = OBJ4_INLET_POSITION[0] - OBJ4_INLET_OFFSET_M  # Offset from center to allow return path
     inlet_y = OBJ4_INLET_POSITION[1]
     inlet_pos = (inlet_x, inlet_y, z_top)
     
@@ -1742,7 +1807,7 @@ def generate_object4_turn_bifurcate_merge(
         network,
         from_node_id=current_node_id,
         target_point=turn_end,
-        target_radius=OBJ4_INLET_RADIUS_M * 0.9,
+        target_radius=OBJ4_INLET_RADIUS_M * OBJ4_TURN_RADIUS_FACTOR,
         constraints=constraints,
         check_collisions=False,
         fail_on_collision=False,
@@ -1760,12 +1825,12 @@ def generate_object4_turn_bifurcate_merge(
     
     for level in range(OBJ4_NUM_BIFURCATIONS):
         new_tip_ids = []
-        branch_length = 0.0005 * (1.0 - 0.2 * level)  # Decreasing length
-        branch_radius = OBJ4_INLET_RADIUS_M * 0.9 * (0.8 ** (level + 1))
+        branch_length = OBJ4_BRANCH_BASE_LENGTH_M * (1.0 - OBJ4_BRANCH_LENGTH_DECAY * level)  # Decreasing length
+        branch_radius = OBJ4_INLET_RADIUS_M * OBJ4_TURN_RADIUS_FACTOR * (OBJ4_BRANCH_RADIUS_DECAY ** (level + 1))
         
         # Calculate distance to next bifurcation level for growth distance
         if level + 1 < OBJ4_NUM_BIFURCATIONS:
-            next_branch_length = 0.0005 * (1.0 - 0.2 * (level + 1))
+            next_branch_length = OBJ4_BRANCH_BASE_LENGTH_M * (1.0 - OBJ4_BRANCH_LENGTH_DECAY * (level + 1))
         else:
             next_branch_length = branch_length * 0.5  # Last level: use half of current
         
@@ -1797,18 +1862,18 @@ def generate_object4_turn_bifurcate_merge(
             bifurc_node_id = grow_result.new_ids["node"]
             
             # Calculate RNG-based growth distances for child branches
-            max_growth = next_branch_length * 0.8  # Leave 20% for next bifurcation approach
+            max_growth = next_branch_length * BIFURC_MAX_GROWTH_FRACTION  # Leave room for next bifurcation approach
             
             growth_fraction1 = rng.uniform(growth_fraction_range[0], growth_fraction_range[1])
             growth_distance1 = min(growth_fraction1 * next_branch_length, max_growth)
-            growth_distance1 = max(growth_distance1, 0.0001)
+            growth_distance1 = max(growth_distance1, BIFURC_MIN_GROWTH_DISTANCE_M)
             
             growth_fraction2 = rng.uniform(growth_fraction_range[0], growth_fraction_range[1])
             growth_distance2 = min(growth_fraction2 * next_branch_length, max_growth)
-            growth_distance2 = max(growth_distance2, 0.0001)
+            growth_distance2 = max(growth_distance2, BIFURC_MIN_GROWTH_DISTANCE_M)
             
             # Angle for bifurcation (decreases with level for tighter packing)
-            angle_deg = 45 - 10 * level
+            angle_deg = OBJ4_BASE_ANGLE_DEG - OBJ4_ANGLE_DECAY_PER_LEVEL * level
             
             # Use bifurcate to create two child branches with RNG-based growth lengths
             bifurc_result = bifurcate(
@@ -1839,7 +1904,7 @@ def generate_object4_turn_bifurcate_merge(
     # 4. Merge branches back (overlap-based merge)
     # Route all branch tips toward a common merge point using grow_to_point
     print("    Merging branches (using grow_to_point)")
-    merge_point = (0.002, 0.0, z_top - OBJ4_DOWNWARD_LENGTH_M)  # Merge point at +2mm X
+    merge_point = (OBJ4_MERGE_POINT_X_M, 0.0, z_top - OBJ4_DOWNWARD_LENGTH_M)  # Merge point at +2mm X
     
     merge_node_id = None
     for tip_node_id in branch_tip_ids:
@@ -1861,7 +1926,7 @@ def generate_object4_turn_bifurcate_merge(
     
     # 5. Return upward to top face using grow_to_point
     print("    Segment: Return upward to top face (using grow_to_point)")
-    outlet_pos = (0.002, 0.0, z_top)  # Outlet at +2mm X from center
+    outlet_pos = (OBJ4_OUTLET_X_M, 0.0, z_top)  # Outlet at +2mm X from center
     
     if merge_node_id is not None:
         # Update direction for upward growth
