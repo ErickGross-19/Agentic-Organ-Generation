@@ -351,6 +351,40 @@ def meters_to_mm(value_m: float) -> float:
     return value_m * 1000.0
 
 
+def print_validation_details(report, indent: str = "    "):
+    """
+    Print detailed validation results including failure reasons.
+    
+    Parameters
+    ----------
+    report : ValidationReport
+        The validation report to print details from
+    indent : str
+        Indentation prefix for output lines
+    """
+    print(f"{indent}Validation status: {report.status}")
+    print(f"{indent}Passed: {report.passed}")
+    
+    if not report.passed or report.status != "ok":
+        print(f"{indent}Summary: {report.summary}")
+        
+        for category_name, category_report in report.reports.items():
+            if not category_report.passed:
+                print(f"{indent}  Category '{category_name}' FAILED:")
+                for check in category_report.checks:
+                    if not check.passed:
+                        print(f"{indent}    - {check.check_name}: {check.message}")
+                        if check.details:
+                            for key, value in check.details.items():
+                                print(f"{indent}        {key}: {value}")
+            elif hasattr(category_report, 'checks'):
+                for check in category_report.checks:
+                    if check.warnings:
+                        print(f"{indent}  Category '{category_name}' warnings:")
+                        for warning in check.warnings:
+                            print(f"{indent}    - {check.check_name}: {warning}")
+
+
 def create_cylinder_mesh(radius: float, height: float, center: Tuple[float, float, float]) -> trimesh.Trimesh:
     """Create a solid cylinder mesh centered at the given point."""
     cylinder = trimesh.creation.cylinder(
@@ -730,11 +764,11 @@ def generate_object1_control(output_dir: Optional[Path] = None) -> trimesh.Trime
             expected_outlets=0,  # No outlets for control
         )
         report = run_post_embedding_validation(mesh=combined, config=validation_config)
-        print(f"    Validation status: {report.status}")
-        if not report.passed:
-            print(f"    WARNING: Validation failed - {report.summary}")
+        print_validation_details(report)
     except Exception as e:
         print(f"    Validation error: {e}")
+        import traceback
+        traceback.print_exc()
     
     return combined
 
@@ -794,37 +828,31 @@ def generate_object2_channels(output_dir: Optional[Path] = None) -> trimesh.Trim
         voxel_pitch=VOXEL_PITCH_M,
     )
     
-    # Create ridge mesh and union with the cylinder_with_void
-    print("  Adding ridge to cylinder...")
-    ridge = create_ridge_mesh(
-        outer_radius=CYLINDER_RADIUS_M,
-        inner_radius=CYLINDER_RADIUS_M - RIDGE_THICKNESS_M,
-        height=RIDGE_HEIGHT_M,
-        z_base=z_top,
-        center_xy=(CYLINDER_CENTER[0], CYLINDER_CENTER[1]),
-    )
+    # Export intermediate cylinder with void (before ridge)
+    if output_dir:
+        intermediate_path = output_dir / "intermediate" / "object2_cylinder_with_void.stl"
+        scale_mesh_to_mm(cylinder_with_void).export(str(intermediate_path))
+        print(f"    Exported intermediate cylinder with void: {intermediate_path}")
     
-    # Union cylinder_with_void and ridge using fine pitch for ridge resolution
-    result = voxel_union_meshes([cylinder_with_void, ridge], pitch=VOXEL_PITCH_RIDGE_M)
+    print(f"  Cylinder with void: {len(cylinder_with_void.vertices)} vertices, {len(cylinder_with_void.faces)} faces")
+    print(f"    Watertight: {cylinder_with_void.is_watertight}")
     
-    print(f"  Object 2 complete: {len(result.vertices)} vertices, {len(result.faces)} faces")
-    print(f"    Watertight: {result.is_watertight}")
-    
-    # Run post-embedding validation
-    print("  Running validation...")
+    # Run post-embedding validation on cylinder with void (before adding ridge)
+    print("  Running validation on cylinder with void...")
     try:
         validation_config = ValidationConfig(
             voxel_pitch_m=VOXEL_PITCH_M,
             expected_outlets=OBJ2_NUM_INLETS,
         )
-        report = run_post_embedding_validation(mesh=result, config=validation_config)
-        print(f"    Validation status: {report.status}")
-        if not report.passed:
-            print(f"    WARNING: Validation failed - {report.summary}")
+        report = run_post_embedding_validation(mesh=cylinder_with_void, config=validation_config)
+        print_validation_details(report)
     except Exception as e:
         print(f"    Validation error: {e}")
+        import traceback
+        traceback.print_exc()
     
-    return result
+    # Return cylinder_with_void - ridge will be added at the END in main() to prevent smoothing
+    return cylinder_with_void
 
 
 def generate_bifurcation_tree_mesh(
@@ -1103,9 +1131,11 @@ def generate_object3_bifurcate_512(output_dir: Optional[Path] = None) -> trimesh
     print("  Running pre-embedding validation on tree mesh...")
     try:
         pre_report = run_pre_embedding_validation(mesh=combined_void)
-        print(f"    Pre-embedding validation: {pre_report.status}")
+        print_validation_details(pre_report)
     except Exception as e:
         print(f"    Pre-embedding validation error: {e}")
+        import traceback
+        traceback.print_exc()
     
     # Use the repo's embed_tree_as_negative_space function to carve voids from cylinder
     print("  Carving voids using embed_tree_as_negative_space...")
@@ -1116,37 +1146,31 @@ def generate_object3_bifurcate_512(output_dir: Optional[Path] = None) -> trimesh
         voxel_pitch=VOXEL_PITCH_M,
     )
     
-    # Create ridge mesh and union with the cylinder_with_void
-    print("  Adding ridge to cylinder...")
-    ridge = create_ridge_mesh(
-        outer_radius=CYLINDER_RADIUS_M,
-        inner_radius=CYLINDER_RADIUS_M - RIDGE_THICKNESS_M,
-        height=RIDGE_HEIGHT_M,
-        z_base=z_top,
-        center_xy=(CYLINDER_CENTER[0], CYLINDER_CENTER[1]),
-    )
+    # Export intermediate cylinder with void (before ridge)
+    if output_dir:
+        intermediate_path = output_dir / "intermediate" / "object3_cylinder_with_void.stl"
+        scale_mesh_to_mm(cylinder_with_void).export(str(intermediate_path))
+        print(f"    Exported intermediate cylinder with void: {intermediate_path}")
     
-    # Union cylinder_with_void and ridge using fine pitch for ridge resolution
-    result = voxel_union_meshes([cylinder_with_void, ridge], pitch=VOXEL_PITCH_RIDGE_M)
+    print(f"  Cylinder with void: {len(cylinder_with_void.vertices)} vertices, {len(cylinder_with_void.faces)} faces")
+    print(f"    Watertight: {cylinder_with_void.is_watertight}")
     
-    print(f"  Object 3 complete: {len(result.vertices)} vertices, {len(result.faces)} faces")
-    print(f"    Watertight: {result.is_watertight}")
-    
-    # Run post-embedding validation
-    print("  Running post-embedding validation...")
+    # Run post-embedding validation on cylinder with void (before adding ridge)
+    print("  Running post-embedding validation on cylinder with void...")
     try:
         validation_config = ValidationConfig(
             voxel_pitch_m=VOXEL_PITCH_M,
             expected_outlets=OBJ3_TOTAL_TERMINALS,
         )
-        report = run_post_embedding_validation(mesh=result, config=validation_config)
-        print(f"    Validation status: {report.status}")
-        if not report.passed:
-            print(f"    WARNING: Validation failed - {report.summary}")
+        report = run_post_embedding_validation(mesh=cylinder_with_void, config=validation_config)
+        print_validation_details(report)
     except Exception as e:
         print(f"    Validation error: {e}")
+        import traceback
+        traceback.print_exc()
     
-    return result
+    # Return cylinder_with_void - ridge will be added at the END in main() to prevent smoothing
+    return cylinder_with_void
 
 
 def generate_object4_turn_bifurcate_merge(output_dir: Optional[Path] = None) -> trimesh.Trimesh:
@@ -1261,9 +1285,11 @@ def generate_object4_turn_bifurcate_merge(output_dir: Optional[Path] = None) -> 
     print("  Running pre-embedding validation on channel mesh...")
     try:
         pre_report = run_pre_embedding_validation(mesh=combined_void)
-        print(f"    Pre-embedding validation: {pre_report.status}")
+        print_validation_details(pre_report)
     except Exception as e:
         print(f"    Pre-embedding validation error: {e}")
+        import traceback
+        traceback.print_exc()
     
     # Use the repo's embed_tree_as_negative_space function to carve channels from cylinder
     print("  Carving channels using embed_tree_as_negative_space...")
@@ -1274,37 +1300,31 @@ def generate_object4_turn_bifurcate_merge(output_dir: Optional[Path] = None) -> 
         voxel_pitch=VOXEL_PITCH_M,
     )
     
-    # Create ridge mesh and union with the cylinder_with_void
-    print("  Adding ridge to cylinder...")
-    ridge = create_ridge_mesh(
-        outer_radius=CYLINDER_RADIUS_M,
-        inner_radius=CYLINDER_RADIUS_M - RIDGE_THICKNESS_M,
-        height=RIDGE_HEIGHT_M,
-        z_base=z_top,
-        center_xy=(CYLINDER_CENTER[0], CYLINDER_CENTER[1]),
-    )
+    # Export intermediate cylinder with void (before ridge)
+    if output_dir:
+        intermediate_path = output_dir / "intermediate" / "object4_cylinder_with_void.stl"
+        scale_mesh_to_mm(cylinder_with_void).export(str(intermediate_path))
+        print(f"    Exported intermediate cylinder with void: {intermediate_path}")
     
-    # Union cylinder_with_void and ridge using fine pitch for ridge resolution
-    result = voxel_union_meshes([cylinder_with_void, ridge], pitch=VOXEL_PITCH_RIDGE_M)
+    print(f"  Cylinder with void: {len(cylinder_with_void.vertices)} vertices, {len(cylinder_with_void.faces)} faces")
+    print(f"    Watertight: {cylinder_with_void.is_watertight}")
     
-    print(f"  Object 4 complete: {len(result.vertices)} vertices, {len(result.faces)} faces")
-    print(f"    Watertight: {result.is_watertight}")
-    
-    # Run post-embedding validation
-    print("  Running post-embedding validation...")
+    # Run post-embedding validation on cylinder with void (before adding ridge)
+    print("  Running post-embedding validation on cylinder with void...")
     try:
         validation_config = ValidationConfig(
             voxel_pitch_m=VOXEL_PITCH_M,
             expected_outlets=2,  # 1 inlet + 1 outlet for loop structure
         )
-        report = run_post_embedding_validation(mesh=result, config=validation_config)
-        print(f"    Validation status: {report.status}")
-        if not report.passed:
-            print(f"    WARNING: Validation failed - {report.summary}")
+        report = run_post_embedding_validation(mesh=cylinder_with_void, config=validation_config)
+        print_validation_details(report)
     except Exception as e:
         print(f"    Validation error: {e}")
+        import traceback
+        traceback.print_exc()
     
-    return result
+    # Return cylinder_with_void - ridge will be added at the END in main() to prevent smoothing
+    return cylinder_with_void
 
 
 # =============================================================================
@@ -1568,9 +1588,11 @@ def generate_object5_cco_nlp_organic(output_dir: Optional[Path] = None) -> trime
     print("  Running pre-embedding validation on tree mesh...")
     try:
         pre_report = run_pre_embedding_validation(mesh=tree_mesh)
-        print(f"    Pre-embedding validation: {pre_report.status}")
+        print_validation_details(pre_report)
     except Exception as e:
         print(f"    Pre-embedding validation error: {e}")
+        import traceback
+        traceback.print_exc()
     
     # Use the repo's embed_tree_as_negative_space function to carve voids from cylinder
     print("\n  Carving vascular channels using embed_tree_as_negative_space...")
@@ -1581,35 +1603,28 @@ def generate_object5_cco_nlp_organic(output_dir: Optional[Path] = None) -> trime
         voxel_pitch=VOXEL_PITCH_M,
     )
     
-    # Create ridge mesh and union with the cylinder_with_void
-    print("  Adding ridge to cylinder...")
-    ridge = create_ridge_mesh(
-        outer_radius=CYLINDER_RADIUS_M,
-        inner_radius=CYLINDER_RADIUS_M - RIDGE_THICKNESS_M,
-        height=RIDGE_HEIGHT_M,
-        z_base=z_top,
-        center_xy=(CYLINDER_CENTER[0], CYLINDER_CENTER[1]),
-    )
+    # Export intermediate cylinder with void (before ridge)
+    if output_dir:
+        intermediate_path = output_dir / "intermediate" / "object5_cylinder_with_void.stl"
+        scale_mesh_to_mm(cylinder_with_void).export(str(intermediate_path))
+        print(f"    Exported intermediate cylinder with void: {intermediate_path}")
     
-    # Union cylinder_with_void and ridge using fine pitch for ridge resolution
-    result = voxel_union_meshes([cylinder_with_void, ridge], pitch=VOXEL_PITCH_RIDGE_M)
+    print(f"  Cylinder with void: {len(cylinder_with_void.vertices)} vertices, {len(cylinder_with_void.faces)} faces")
+    print(f"    Watertight: {cylinder_with_void.is_watertight}")
     
-    print(f"\n  Object 5 complete: {len(result.vertices)} vertices, {len(result.faces)} faces")
-    print(f"    Watertight: {result.is_watertight}")
-    
-    # Run post-embedding validation
-    print("  Running post-embedding validation...")
+    # Run post-embedding validation on cylinder with void (before adding ridge)
+    print("  Running post-embedding validation on cylinder with void...")
     try:
         validation_config = ValidationConfig(
             voxel_pitch_m=VOXEL_PITCH_M,
             expected_outlets=total_outlets_achieved,
         )
-        post_report = run_post_embedding_validation(mesh=result, config=validation_config)
-        print(f"    Validation status: {post_report.status}")
-        if not post_report.passed:
-            print(f"    WARNING: Validation failed - {post_report.summary}")
+        post_report = run_post_embedding_validation(mesh=cylinder_with_void, config=validation_config)
+        print_validation_details(post_report)
     except Exception as e:
         print(f"    Validation error: {e}")
+        import traceback
+        traceback.print_exc()
     
     # Generate report
     report = {
@@ -1635,9 +1650,9 @@ def generate_object5_cco_nlp_organic(output_dir: Optional[Path] = None) -> trime
             "voxel_pitch_mm": VOXEL_PITCH_UNION_M * 1000,
         },
         "mesh_stats": {
-            "vertices": len(result.vertices),
-            "faces": len(result.faces),
-            "watertight": result.is_watertight,
+            "vertices": len(cylinder_with_void.vertices),
+            "faces": len(cylinder_with_void.faces),
+            "watertight": cylinder_with_void.is_watertight,
         },
     }
     
@@ -1647,12 +1662,43 @@ def generate_object5_cco_nlp_organic(output_dir: Optional[Path] = None) -> trime
         json.dump(report, f, indent=2)
     print(f"  Report saved: {report_path}")
     
-    return result
+    # Return cylinder_with_void - ridge will be added at the END in main() to prevent smoothing
+    return cylinder_with_void
 
 
 # =============================================================================
 # MAIN EXECUTION
 # =============================================================================
+
+def add_ridge_to_mesh(mesh_m: trimesh.Trimesh) -> trimesh.Trimesh:
+    """
+    Add ridge to a mesh at the END (after all voxel operations) to prevent smoothing.
+    
+    Uses direct mesh concatenation instead of voxel union to preserve sharp ridge edges.
+    
+    Parameters
+    ----------
+    mesh_m : trimesh.Trimesh
+        The mesh to add ridge to (in meters)
+    
+    Returns
+    -------
+    trimesh.Trimesh
+        The mesh with ridge added (in meters)
+    """
+    z_top = CYLINDER_CENTER[2] + CYLINDER_HEIGHT_M / 2
+    
+    ridge = create_ridge_mesh(
+        outer_radius=CYLINDER_RADIUS_M,
+        inner_radius=CYLINDER_RADIUS_M - RIDGE_THICKNESS_M,
+        height=RIDGE_HEIGHT_M,
+        z_base=z_top,
+        center_xy=(CYLINDER_CENTER[0], CYLINDER_CENTER[1]),
+    )
+    
+    combined = trimesh.util.concatenate([mesh_m, ridge])
+    return combined
+
 
 def main():
     """Generate all five objects and export to STL files."""
@@ -1665,6 +1711,7 @@ def main():
     print("  - Object 3 bifurcation: 7 levels, depths 0.25-1.75mm, taper 1mm->100um")
     print("  - Overlap-based merge: Voxel union merges overlapping void volumes")
     print("  - Object 5 CCO-NLP: 4 inlets, 4 rounds CCO + NLP, 512 terminals")
+    print("  - Ridge added at END (after voxel ops) to prevent smoothing")
     print(f"\nVoxel pitch: {meters_to_mm(VOXEL_PITCH_M)*1000:.0f} um (fine)")
     print(f"Voxel pitch (union): {meters_to_mm(VOXEL_PITCH_UNION_M)*1000:.0f} um")
     print(f"Voxel pitch (ridge): {meters_to_mm(VOXEL_PITCH_RIDGE_M)*1000:.0f} um")
@@ -1676,17 +1723,25 @@ def main():
     print(f"Intermediate STLs will be saved to: {OUTPUT_DIR / 'intermediate'}")
     
     # Generate and export each object (pass output_dir for intermediate STL exports)
+    # Objects 2-5 return cylinder_with_void (without ridge) - ridge is added at the END
+    # Object 1 already includes ridge (no voxel operations after ridge)
     objects = [
-        ("object1_control.stl", lambda: generate_object1_control(output_dir=OUTPUT_DIR)),
-        ("object2_channels.stl", lambda: generate_object2_channels(output_dir=OUTPUT_DIR)),
-        ("object3_bifurcate_512.stl", lambda: generate_object3_bifurcate_512(output_dir=OUTPUT_DIR)),
-        ("object4_turn_bifurcate_merge.stl", lambda: generate_object4_turn_bifurcate_merge(output_dir=OUTPUT_DIR)),
-        ("object5_cco_nlp_organic.stl", lambda: generate_object5_cco_nlp_organic(output_dir=OUTPUT_DIR)),
+        ("object1_control.stl", lambda: generate_object1_control(output_dir=OUTPUT_DIR), False),  # Already has ridge
+        ("object2_channels.stl", lambda: generate_object2_channels(output_dir=OUTPUT_DIR), True),  # Needs ridge
+        ("object3_bifurcate_512.stl", lambda: generate_object3_bifurcate_512(output_dir=OUTPUT_DIR), True),  # Needs ridge
+        ("object4_turn_bifurcate_merge.stl", lambda: generate_object4_turn_bifurcate_merge(output_dir=OUTPUT_DIR), True),  # Needs ridge
+        ("object5_cco_nlp_organic.stl", lambda: generate_object5_cco_nlp_organic(output_dir=OUTPUT_DIR), True),  # Needs ridge
     ]
     
-    for filename, generator_func in objects:
+    for filename, generator_func, needs_ridge in objects:
         try:
             mesh_m = generator_func()
+            
+            # Add ridge at the END for objects 2-5 (after all voxel operations)
+            if needs_ridge:
+                print(f"  Adding ridge to {filename} (at END to prevent smoothing)...")
+                mesh_m = add_ridge_to_mesh(mesh_m)
+                print(f"    Final mesh: {len(mesh_m.vertices)} vertices, {len(mesh_m.faces)} faces")
             
             # Scale to millimeters
             mesh_mm = scale_mesh_to_mm(mesh_m)
