@@ -123,6 +123,16 @@ class CCOConfig(BackendConfig):
     enable_trifurcation: bool = False  # Enable 3-way splits during insertion
     trifurcation_cost_threshold: float = 0.8  # Cost ratio threshold to prefer trifurcation
     
+    # Generation control parameters
+    max_consecutive_failures: int = 50  # Max consecutive failed outlet placements before stopping
+    default_inlet_radius: float = 0.002  # Default inlet radius (2mm) for step() method
+    
+    # Documented heuristic values:
+    # - Bifurcation parameter defaults (t=0.5, s=0.5): These are mathematically reasonable
+    #   starting points representing the midpoint of the segment and midpoint toward the outlet.
+    # - Volume feasibility multiplier (0.1): A conservative heuristic that warns when domain
+    #   volume may be too small. The factor accounts for vessel spacing and branching overhead.
+    
     def validate(self) -> None:
         """
         Validate configuration parameters.
@@ -202,6 +212,16 @@ class CCOConfig(BackendConfig):
         if not 0 < self.trifurcation_cost_threshold <= 1:
             raise ValueError(
                 f"trifurcation_cost_threshold must be in (0, 1], got {self.trifurcation_cost_threshold}"
+            )
+        
+        # Validate generation control parameters
+        if self.max_consecutive_failures < 1:
+            raise ValueError(
+                f"max_consecutive_failures must be at least 1, got {self.max_consecutive_failures}"
+            )
+        if self.default_inlet_radius <= 0:
+            raise ValueError(
+                f"default_inlet_radius must be positive, got {self.default_inlet_radius}"
             )
 
 
@@ -589,7 +609,6 @@ class CCOHybridBackend(GenerationBackend):
         tree_view = ArrayTreeView(network, inlet_node.id)
         
         # Graceful degradation: track failed attempts and retry with different samples
-        max_consecutive_failures = 50  # Max consecutive failed outlet placements
         consecutive_failures = 0
         successful_outlets = 1  # Already have the first outlet
         
@@ -598,10 +617,10 @@ class CCOHybridBackend(GenerationBackend):
             
             if not self._is_valid_outlet(outlet_point, network, config):
                 consecutive_failures += 1
-                if consecutive_failures >= max_consecutive_failures:
+                if consecutive_failures >= config.max_consecutive_failures:
                     import warnings
                     warnings.warn(
-                        f"Could not place outlet after {max_consecutive_failures} consecutive attempts. "
+                        f"Could not place outlet after {config.max_consecutive_failures} consecutive attempts. "
                         f"Achieved {successful_outlets}/{num_outlets} outlets. "
                         f"Consider increasing domain size or reducing num_outlets."
                     )
@@ -617,10 +636,10 @@ class CCOHybridBackend(GenerationBackend):
                 consecutive_failures = 0  # Reset on success
             else:
                 consecutive_failures += 1
-                if consecutive_failures >= max_consecutive_failures:
+                if consecutive_failures >= config.max_consecutive_failures:
                     import warnings
                     warnings.warn(
-                        f"Could not insert outlet after {max_consecutive_failures} consecutive attempts. "
+                        f"Could not insert outlet after {config.max_consecutive_failures} consecutive attempts. "
                         f"Achieved {successful_outlets}/{num_outlets} outlets. "
                         f"Consider adjusting collision parameters or domain size."
                     )
@@ -654,7 +673,7 @@ class CCOHybridBackend(GenerationBackend):
                     root_id = state.metadata.get("root_node_id")
                     tree_view = ArrayTreeView(state.network, root_id)
                 
-                inlet_radius = state.metadata.get("inlet_radius", 0.002)
+                inlet_radius = state.metadata.get("inlet_radius", config.default_inlet_radius)
                 vessel_type = state.metadata.get("vessel_type", "arterial")
                 
                 self._insert_outlet(
@@ -678,7 +697,7 @@ class CCOHybridBackend(GenerationBackend):
                     root_id = state.metadata.get("root_node_id")
                     tree_view = ArrayTreeView(state.network, root_id)
                 
-                inlet_radius = state.metadata.get("inlet_radius", 0.002)
+                inlet_radius = state.metadata.get("inlet_radius", config.default_inlet_radius)
                 vessel_type = state.metadata.get("vessel_type", "arterial")
                 
                 self._insert_outlet(
@@ -749,7 +768,6 @@ class CCOHybridBackend(GenerationBackend):
         
         arterial_tree_view = ArrayTreeView(network, arterial_inlet_node.id)
         
-        max_consecutive_failures = 50
         consecutive_failures = 0
         successful_arterial = 1
         
@@ -757,10 +775,10 @@ class CCOHybridBackend(GenerationBackend):
             outlet_point = self._sample_outlet_point(domain, rng, config)
             if not self._is_valid_outlet(outlet_point, network, config, vessel_type="arterial"):
                 consecutive_failures += 1
-                if consecutive_failures >= max_consecutive_failures:
+                if consecutive_failures >= config.max_consecutive_failures:
                     import warnings
                     warnings.warn(
-                        f"Could not place arterial outlet after {max_consecutive_failures} consecutive attempts. "
+                        f"Could not place arterial outlet after {config.max_consecutive_failures} consecutive attempts. "
                         f"Achieved {successful_arterial}/{arterial_outlets} arterial outlets."
                     )
                     break
@@ -776,10 +794,10 @@ class CCOHybridBackend(GenerationBackend):
                 consecutive_failures = 0
             else:
                 consecutive_failures += 1
-                if consecutive_failures >= max_consecutive_failures:
+                if consecutive_failures >= config.max_consecutive_failures:
                     import warnings
                     warnings.warn(
-                        f"Could not insert arterial outlet after {max_consecutive_failures} consecutive attempts. "
+                        f"Could not insert arterial outlet after {config.max_consecutive_failures} consecutive attempts. "
                         f"Achieved {successful_arterial}/{arterial_outlets} arterial outlets."
                     )
                     break
@@ -806,10 +824,10 @@ class CCOHybridBackend(GenerationBackend):
             outlet_point = self._sample_outlet_point(domain, rng, config)
             if not self._is_valid_outlet(outlet_point, network, config, vessel_type="venous"):
                 consecutive_failures += 1
-                if consecutive_failures >= max_consecutive_failures:
+                if consecutive_failures >= config.max_consecutive_failures:
                     import warnings
                     warnings.warn(
-                        f"Could not place venous outlet after {max_consecutive_failures} consecutive attempts. "
+                        f"Could not place venous outlet after {config.max_consecutive_failures} consecutive attempts. "
                         f"Achieved {successful_venous}/{venous_outlets} venous outlets."
                     )
                     break
@@ -825,10 +843,10 @@ class CCOHybridBackend(GenerationBackend):
                 consecutive_failures = 0
             else:
                 consecutive_failures += 1
-                if consecutive_failures >= max_consecutive_failures:
+                if consecutive_failures >= config.max_consecutive_failures:
                     import warnings
                     warnings.warn(
-                        f"Could not insert venous outlet after {max_consecutive_failures} consecutive attempts. "
+                        f"Could not insert venous outlet after {config.max_consecutive_failures} consecutive attempts. "
                         f"Achieved {successful_venous}/{venous_outlets} venous outlets."
                     )
                     break

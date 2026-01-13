@@ -1263,6 +1263,21 @@ def generate_network_from_spec(
         raise ValueError("DesignSpec must have at least one inlet")
     
     # Create CCO configuration
+    #
+    # OPTIMIZATION APPROACHES:
+    # This example uses TWO different optimization stages:
+    #
+    # 1. BIFURCATION POINT OPTIMIZATION (during CCO tree construction):
+    #    - Default: Grid search (use_nlp_optimization=False)
+    #    - Alternative: NLP gradient-based optimization (use_nlp_optimization=True)
+    #    - To enable NLP for bifurcation points, add: use_nlp_optimization=True
+    #    - NLP parameters: nlp_solver="SLSQP", nlp_tolerance=1e-6, max_nlp_iterations=100
+    #
+    # 2. GLOBAL GEOMETRY OPTIMIZATION (post-processing via NLPParameters):
+    #    - Controlled by nlp_params.enabled (passed to this function)
+    #    - Performs Jessen-style optimization on the entire network
+    #    - Optimizes node positions, radii, and pressures globally
+    #
     config = CCOConfig(
         seed=spec.seed,
         murray_exponent=cco_params.murray_exponent,
@@ -1275,6 +1290,11 @@ def generate_network_from_spec(
         collision_check_enabled=True,
         use_partial_binding=True,
         use_collision_triage=True,
+        # To enable NLP-based bifurcation point optimization instead of grid search:
+        # use_nlp_optimization=True,
+        # nlp_solver="SLSQP",  # Options: "SLSQP", "trust-constr", "L-BFGS-B"
+        # nlp_tolerance=1e-6,
+        # max_nlp_iterations=100,
     )
     
     logger.info(f"  CCO config: murray_exponent={config.murray_exponent}, "
