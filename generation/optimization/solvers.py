@@ -296,6 +296,7 @@ def solve_bounded_optimization(
     method: str = "SLSQP",
     tolerance: float = 1e-6,
     max_iterations: int = 100,
+    prefer_ipopt: bool = True,
 ) -> SolverResult:
     """
     Convenience function for bounded optimization without constraints.
@@ -314,30 +315,48 @@ def solve_bounded_optimization(
     upper_bounds : np.ndarray
         Upper bounds for each variable
     method : str
-        Optimization method ("SLSQP", "trust-constr", "L-BFGS-B")
+        Optimization method ("SLSQP", "trust-constr", "L-BFGS-B") for scipy fallback
     tolerance : float
         Convergence tolerance
     max_iterations : int
         Maximum number of iterations
+    prefer_ipopt : bool
+        If True, try IPOPT first before falling back to scipy. Default: True.
+        IPOPT generally provides better convergence for nonlinear problems.
         
     Returns
     -------
     SolverResult
         Optimization result
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    solver_type = "scipy"
+    if prefer_ipopt and is_ipopt_available():
+        solver_type = "ipopt"
+        logger.debug("Using IPOPT solver for bounded optimization")
+    elif prefer_ipopt:
+        logger.warning("NLP warning: IPOPT not available, using scipy fallback")
+    
     config = SolverConfig(
-        solver="scipy",
+        solver=solver_type,
         method=method,
         tolerance=tolerance,
         max_iterations=max_iterations,
     )
     
-    return solve_nlp(
+    result = solve_nlp(
         objective=objective,
         x0=x0,
         bounds=(lower_bounds, upper_bounds),
         config=config,
     )
+    
+    if not result.success and solver_type == "scipy":
+        logger.error("NLP error: Optimization did not converge")
+    
+    return result
 
 
 def is_ipopt_available() -> bool:

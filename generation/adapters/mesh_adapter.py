@@ -573,7 +573,7 @@ def _create_frustum(
 def export_stl(
     network: VascularNetwork,
     output_path: str,
-    mode: Literal["fast", "robust"] = "fast",
+    mode: Literal["fast", "robust", "voxel_repair"] = "voxel_repair",
     repair: bool = True,
     output_units: str = "mm",
     write_metadata: bool = True,
@@ -591,8 +591,12 @@ def export_stl(
         The vascular network to export
     output_path : str
         Path to output STL file
-    mode : {"fast", "robust"}
-        Export mode
+    mode : {"fast", "robust", "voxel_repair"}
+        Export mode. Default: "voxel_repair" which produces smoother meshes
+        without sharp ridges. Options:
+        - "fast": Simple concatenation, may have self-intersections
+        - "robust": Boolean union via Blender (not always available)
+        - "voxel_repair": Voxelize and remesh for watertight, smooth output
     repair : bool
         Whether to repair mesh before export
     output_units : str

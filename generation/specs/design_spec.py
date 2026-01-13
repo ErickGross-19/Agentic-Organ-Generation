@@ -211,7 +211,13 @@ class OutletSpec:
 
 @dataclass
 class ColonizationSpec:
-    """Space colonization parameters specification."""
+    """Space colonization parameters specification.
+    
+    Bifurcation parameters control branching density:
+    - bifurcation_probability: Higher values (0.85) encourage more branching
+    - min_attractions_for_bifurcation: Lower values (2) make it easier to branch
+    - encourage_bifurcation: Set to True for denser tree structures
+    """
     
     tissue_points: Optional[List[List[float]]] = None
     influence_radius: float = 0.015
@@ -225,11 +231,11 @@ class ColonizationSpec:
     directional_bias: float = 0.0
     max_deviation_deg: float = 180.0
     smoothing_weight: float = 0.3
-    encourage_bifurcation: bool = False
-    min_attractions_for_bifurcation: int = 3
+    encourage_bifurcation: bool = True
+    min_attractions_for_bifurcation: int = 2
     max_children_per_node: int = 2
     bifurcation_angle_threshold_deg: float = 40.0
-    bifurcation_probability: float = 0.7
+    bifurcation_probability: float = 0.85
     max_curvature_deg: Optional[float] = None
     min_clearance: Optional[float] = None
     
