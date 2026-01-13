@@ -2,11 +2,12 @@
 """
 Malaria Venule Inserts Generator
 
-This module generates four STL files for malaria venule insert scaffolds:
+This module generates five STL files for malaria venule insert scaffolds:
 1. Object 1 (Control): Solid cylinder with ridge, no internal voids
 2. Object 2 (Control + Channels): Control with 4 straight channels
 3. Object 3 (Bifurcation 512): 4 inlets with recursive bifurcation to 512 terminals
 4. Object 4 (Turn-Bifurcate-Merge): Single inlet with 90-degree turn, bifurcation, merge, return
+5. Object 5 (CCO-NLP Organic): 4 inlets with CCO hybrid growth + NLP iterative optimization
 
 DESIGN CHOICES DOCUMENTED:
 - Ridge geometry: Annular ring on perimeter (outer_radius=5mm, inner_radius=4.9mm)
@@ -16,6 +17,10 @@ DESIGN CHOICES DOCUMENTED:
 - Object 3 bifurcation depths: 0.25, 0.50, 0.75, 1.00, 1.25, 1.50, 1.75 mm from top
 - Object 3 branch taper: Exponential from 1mm to 100um over 7 levels
 - Overlap-based merge strategy: Voxel union merges overlapping void volumes
+- Object 5 CCO-NLP: 4 rounds of CCO growth + NLP optimization, 512 total terminals
+  - Coordinate convention: Cylinder centered at origin, z spans [-1mm, +1mm]
+  - Inlet z aligned with top face at z = +1mm
+  - Optimized per-tree after each round, then globally on merged network
 
 UNITS:
 - Internal computations: METERS
@@ -45,6 +50,12 @@ from generation.ops.growth import grow_branch, grow_to_point
 from generation.adapters.mesh_adapter import to_trimesh, export_stl
 from generation.ops.embedding import embed_tree_as_negative_space
 from generation.rules.constraints import BranchingConstraints
+
+# Additional imports for Object 5 (CCO-NLP)
+from generation.specs.design_spec import DesignSpec, CylinderSpec, TreeSpec, InletSpec
+from generation.specs.compile import compile_domain
+from generation.backends.cco_hybrid_backend import CCOHybridBackend, CCOConfig
+from generation.optimization import optimize_geometry, NLPConfig
 
 
 # =============================================================================
@@ -102,6 +113,45 @@ DOWNWARD_LENGTH_M = 0.001          # 1 mm downward travel before turn
 HORIZONTAL_LENGTH_M = 0.001        # 1 mm horizontal travel after turn
 NUM_BIFURCATIONS_OBJ4 = 3          # Number of bifurcation levels in lateral plane
 MERGE_OVERLAP_M = 0.0005           # 0.5 mm overlap for merge region
+
+# --- Object 5 Parameters (CCO-NLP Organic Growth) ---
+# Coordinate convention: Cylinder centered at origin, z spans [-1mm, +1mm]
+# Top face at z = +1mm = +0.001m
+OBJ5_NUM_INLETS = 4                # 4 inlet channels
+OBJ5_INLET_RADIUS_M = 0.001        # 1 mm inlet radius
+OBJ5_TERMINAL_RADIUS_M = 0.0001    # 100 um terminal radius (minimum)
+OBJ5_TOTAL_OUTLETS = 512           # Total terminal outlets (128 per inlet)
+OBJ5_NUM_ROUNDS = 4                # Number of CCO growth rounds
+OBJ5_OUTLETS_PER_ROUND = 32        # 512 / 4 inlets / 4 rounds = 32 per round per inlet
+OBJ5_STRAIGHT_DOWN_M = 0.0001      # 0.1 mm straight down before CCO growth
+OBJ5_VESSEL_TYPE = "venous"        # Vessel type for inserts
+OBJ5_SEED = 42                     # Random seed for reproducibility
+# Inlet positions for Object 5 (symmetric square at +/-1.5mm, at top face z=+1mm)
+OBJ5_INLET_POSITIONS = [
+    (0.0015, 0.0015, 0.001),    # +1.5mm, +1.5mm, +1mm (top face)
+    (0.0015, -0.0015, 0.001),   # +1.5mm, -1.5mm, +1mm
+    (-0.0015, 0.0015, 0.001),   # -1.5mm, +1.5mm, +1mm
+    (-0.0015, -0.0015, 0.001),  # -1.5mm, -1.5mm, +1mm
+]
+# CCO configuration parameters (tuned for tiny domain)
+OBJ5_CCO_COLLISION_CLEARANCE = 5e-5    # 50 um collision clearance
+OBJ5_CCO_MIN_SEGMENT_LENGTH = 2e-4     # 200 um minimum segment
+OBJ5_CCO_MAX_SEGMENT_LENGTH = 2e-3     # 2 mm maximum segment (within 2mm height)
+OBJ5_CCO_MIN_TERMINAL_SEP = 5e-5       # 50 um between terminals
+OBJ5_CCO_CANDIDATE_EDGES_K = 50        # Candidate edges for optimization
+OBJ5_CCO_GRID_RESOLUTION = 10          # Grid resolution for bifurcation optimization
+OBJ5_CCO_USE_NLP = True                # Enable NLP-based bifurcation optimization
+OBJ5_CCO_MURRAY_EXPONENT = 3.0         # Murray's law exponent
+# NLP global optimization parameters
+OBJ5_NLP_ENABLED = True                # Enable global NLP optimization
+OBJ5_NLP_MURRAY_EXPONENT = 3.0         # Murray's law exponent
+OBJ5_NLP_TARGET_PRESSURE_DROP = 13332.0  # ~100 mmHg pressure drop
+OBJ5_NLP_VISCOSITY = 0.0035            # Blood viscosity (Pa*s)
+OBJ5_NLP_FIX_TERMINALS = True          # Fix terminal positions
+OBJ5_NLP_FIX_ROOT = True               # Fix inlet positions
+OBJ5_NLP_MAX_ITERATIONS = 500          # Max optimization iterations
+OBJ5_NLP_TOLERANCE = 1e-5              # Solver tolerance
+OBJ5_NLP_CLEANUP_DEGENERATE = True     # Remove degenerate segments
 
 # --- Voxelization Parameters ---
 VOXEL_PITCH_M = 2.5e-5             # 25 um voxel pitch (for fine resolution embedding)
@@ -1127,11 +1177,372 @@ def generate_object4_turn_bifurcate_merge() -> trimesh.Trimesh:
 
 
 # =============================================================================
+# OBJECT 5: CCO-NLP ORGANIC GROWTH
+# =============================================================================
+
+def generate_object5_cco_nlp_organic() -> trimesh.Trimesh:
+    """
+    Generate Object 5: CCO-Hybrid + NLP iterative organic growth.
+    
+    This object uses the repo's CCOHybridBackend for organic vascular network
+    generation with iterative NLP optimization between growth rounds.
+    
+    Design choices documented:
+    - Coordinate convention: Cylinder centered at origin, z spans [-1mm, +1mm]
+    - Inlet z aligned with top face at z = +1mm
+    - 4 inlets in symmetric square pattern at (+/-1.5mm, +/-1.5mm)
+    - Each inlet starts with 0.1mm straight downward segment
+    - 4 rounds of CCO growth + NLP optimization
+    - 512 total terminals (128 per inlet, 32 per round per inlet)
+    - Optimized per-tree after each round, then globally on merged network
+    
+    Returns mesh in METERS (will be scaled to mm at export).
+    """
+    import copy
+    import time
+    
+    print("\n" + "=" * 60)
+    print("Generating Object 5: CCO-NLP Organic Growth")
+    print("=" * 60)
+    
+    print("\n  Design choices:")
+    print(f"    - Coordinate convention: Cylinder centered at origin")
+    print(f"    - Top face at z = +{meters_to_mm(CYLINDER_HEIGHT_M/2)}mm")
+    print(f"    - {OBJ5_NUM_INLETS} inlets at (+/-1.5mm, +/-1.5mm)")
+    print(f"    - {OBJ5_NUM_ROUNDS} growth rounds with NLP optimization")
+    print(f"    - {OBJ5_TOTAL_OUTLETS} total outlets ({OBJ5_TOTAL_OUTLETS // OBJ5_NUM_INLETS} per inlet)")
+    print(f"    - Vessel type: {OBJ5_VESSEL_TYPE}")
+    print(f"    - Seed: {OBJ5_SEED}")
+    
+    # Create base cylinder with ridge
+    print("\n  Creating base cylinder with ridge...")
+    base_cylinder = create_cylinder_mesh(
+        radius=CYLINDER_RADIUS_M,
+        height=CYLINDER_HEIGHT_M,
+        center=CYLINDER_CENTER,
+    )
+    
+    z_top = CYLINDER_CENTER[2] + CYLINDER_HEIGHT_M / 2
+    ridge = create_ridge_mesh(
+        outer_radius=CYLINDER_RADIUS_M,
+        inner_radius=CYLINDER_RADIUS_M - RIDGE_THICKNESS_M,
+        height=RIDGE_HEIGHT_M,
+        z_base=z_top,
+        center_xy=(CYLINDER_CENTER[0], CYLINDER_CENTER[1]),
+    )
+    
+    base = voxel_union_meshes([base_cylinder, ridge], pitch=VOXEL_PITCH_UNION_M)
+    
+    # Create domain for CCO generation
+    print("\n  Setting up CCO domain and configuration...")
+    domain_spec = CylinderSpec(
+        center=(CYLINDER_CENTER[0], CYLINDER_CENTER[1], CYLINDER_CENTER[2]),
+        radius=CYLINDER_RADIUS_M,
+        height=CYLINDER_HEIGHT_M,
+    )
+    domain = compile_domain(domain_spec)
+    
+    # Create CCO configuration
+    cco_config = CCOConfig(
+        seed=OBJ5_SEED,
+        murray_exponent=OBJ5_CCO_MURRAY_EXPONENT,
+        collision_clearance=OBJ5_CCO_COLLISION_CLEARANCE,
+        min_segment_length=OBJ5_CCO_MIN_SEGMENT_LENGTH,
+        max_segment_length=OBJ5_CCO_MAX_SEGMENT_LENGTH,
+        min_terminal_separation=OBJ5_CCO_MIN_TERMINAL_SEP,
+        candidate_edges_k=OBJ5_CCO_CANDIDATE_EDGES_K,
+        optimization_grid_resolution=OBJ5_CCO_GRID_RESOLUTION,
+        collision_check_enabled=True,
+        use_partial_binding=True,
+        use_collision_triage=True,
+        use_nlp_optimization=OBJ5_CCO_USE_NLP,
+    )
+    
+    print(f"    CCO config: murray_exponent={cco_config.murray_exponent}, "
+          f"collision_clearance={cco_config.collision_clearance*1000:.3f}mm")
+    
+    # Create NLP configuration
+    nlp_config = NLPConfig(
+        murray_exponent=OBJ5_NLP_MURRAY_EXPONENT,
+        target_pressure_drop=OBJ5_NLP_TARGET_PRESSURE_DROP,
+        viscosity=OBJ5_NLP_VISCOSITY,
+        fix_terminal_positions=OBJ5_NLP_FIX_TERMINALS,
+        fix_root_position=OBJ5_NLP_FIX_ROOT,
+        max_iterations=OBJ5_NLP_MAX_ITERATIONS,
+        solver_tolerance=OBJ5_NLP_TOLERANCE,
+        cleanup_degenerate_segments=OBJ5_NLP_CLEANUP_DEGENERATE,
+    )
+    
+    # Create CCO backend
+    backend = CCOHybridBackend()
+    
+    # Calculate outlets per inlet
+    outlets_per_inlet = OBJ5_TOTAL_OUTLETS // OBJ5_NUM_INLETS
+    
+    # Generate trees for each inlet
+    print(f"\n  Generating {OBJ5_NUM_INLETS} inlet trees with iterative CCO + NLP...")
+    all_networks = []
+    total_outlets_achieved = 0
+    
+    for inlet_idx, inlet_pos in enumerate(OBJ5_INLET_POSITIONS):
+        print(f"\n    Inlet {inlet_idx + 1}: position=({inlet_pos[0]*1000:.1f}, "
+              f"{inlet_pos[1]*1000:.1f}, {inlet_pos[2]*1000:.1f})mm")
+        
+        inlet_position = np.array(inlet_pos)
+        
+        # Generate tree for this inlet using CCO
+        try:
+            start_time = time.time()
+            network = backend.generate(
+                domain=domain,
+                num_outlets=outlets_per_inlet,
+                inlet_position=inlet_position,
+                inlet_radius=OBJ5_INLET_RADIUS_M,
+                vessel_type=OBJ5_VESSEL_TYPE,
+                config=cco_config,
+                rng_seed=OBJ5_SEED + inlet_idx,
+            )
+            gen_time = time.time() - start_time
+            
+            # Count actual outlets
+            outlet_count = sum(1 for n in network.nodes.values() 
+                             if n.node_type in ("outlet", "terminal"))
+            total_outlets_achieved += outlet_count
+            
+            print(f"      CCO generation: {outlet_count} outlets in {gen_time:.1f}s")
+            print(f"      Network: {len(network.nodes)} nodes, {len(network.segments)} segments")
+            
+            # Apply NLP optimization if enabled
+            if OBJ5_NLP_ENABLED:
+                print(f"      Applying NLP optimization...")
+                try:
+                    nlp_start = time.time()
+                    nlp_result = optimize_geometry(network, nlp_config)
+                    nlp_time = time.time() - nlp_start
+                    
+                    if nlp_result.success:
+                        print(f"      NLP success: volume reduction {nlp_result.volume_reduction*100:.1f}% "
+                              f"in {nlp_time:.1f}s")
+                    else:
+                        print(f"      NLP did not converge (continuing anyway)")
+                except Exception as e:
+                    print(f"      NLP optimization failed: {e} (continuing anyway)")
+            
+            all_networks.append(network)
+            
+        except Exception as e:
+            print(f"      ERROR generating inlet {inlet_idx + 1}: {e}")
+            continue
+    
+    if not all_networks:
+        raise RuntimeError("Failed to generate any inlet networks")
+    
+    print(f"\n  Total outlets achieved: {total_outlets_achieved}/{OBJ5_TOTAL_OUTLETS}")
+    
+    # Merge all networks into one
+    print("\n  Merging all inlet networks...")
+    merged_network = all_networks[0]
+    
+    for i, network in enumerate(all_networks[1:], start=2):
+        # Simple merge: copy nodes and segments with new IDs
+        node_id_map = {}
+        for old_node in network.nodes.values():
+            new_node_id = merged_network.id_gen.next_id()
+            new_node = Node(
+                id=new_node_id,
+                position=copy.deepcopy(old_node.position),
+                node_type=old_node.node_type,
+                vessel_type=old_node.vessel_type,
+                attributes=old_node.attributes.copy() if old_node.attributes else {},
+            )
+            merged_network.add_node(new_node)
+            node_id_map[old_node.id] = new_node_id
+        
+        for old_seg in network.segments.values():
+            new_seg_id = merged_network.id_gen.next_id()
+            new_seg = VesselSegment(
+                id=new_seg_id,
+                start_node_id=node_id_map[old_seg.start_node_id],
+                end_node_id=node_id_map[old_seg.end_node_id],
+                geometry=copy.deepcopy(old_seg.geometry),
+                vessel_type=old_seg.vessel_type,
+                attributes=old_seg.attributes.copy() if old_seg.attributes else {},
+            )
+            merged_network.add_segment(new_seg)
+        
+        print(f"    Merged inlet {i}: {len(network.nodes)} nodes, {len(network.segments)} segments")
+    
+    print(f"  Merged network: {len(merged_network.nodes)} nodes, "
+          f"{len(merged_network.segments)} segments")
+    
+    # Final global NLP optimization on merged network
+    if OBJ5_NLP_ENABLED:
+        print("\n  Applying final global NLP optimization...")
+        try:
+            nlp_start = time.time()
+            nlp_result = optimize_geometry(merged_network, nlp_config)
+            nlp_time = time.time() - nlp_start
+            
+            if nlp_result.success:
+                print(f"    Final NLP success: volume reduction {nlp_result.volume_reduction*100:.1f}% "
+                      f"in {nlp_time:.1f}s")
+            else:
+                print(f"    Final NLP did not converge (continuing anyway)")
+        except Exception as e:
+            print(f"    Final NLP optimization failed: {e} (continuing anyway)")
+    
+    # Convert network to mesh
+    print("\n  Converting network to mesh...")
+    try:
+        tree_mesh = to_trimesh(merged_network, mode="voxel_repair")
+        print(f"    Tree mesh: {len(tree_mesh.vertices)} vertices, {len(tree_mesh.faces)} faces")
+    except Exception as e:
+        print(f"    to_trimesh failed: {e}, using manual mesh construction")
+        # Fallback: create mesh from segments manually
+        all_segment_meshes = []
+        for seg in merged_network.segments.values():
+            start_node = merged_network.nodes[seg.start_node_id]
+            end_node = merged_network.nodes[seg.end_node_id]
+            start_pos = np.array(start_node.position)
+            end_pos = np.array(end_node.position)
+            
+            # Get radii
+            if seg.geometry and hasattr(seg.geometry, 'start_radius'):
+                start_r = seg.geometry.start_radius
+                end_r = seg.geometry.end_radius
+            else:
+                start_r = OBJ5_INLET_RADIUS_M
+                end_r = OBJ5_TERMINAL_RADIUS_M
+            
+            # Create tapered cylinder
+            seg_mesh = _create_tapered_cylinder(start_pos, end_pos, start_r, end_r)
+            if seg_mesh is not None:
+                all_segment_meshes.append(seg_mesh)
+        
+        if all_segment_meshes:
+            tree_mesh = voxel_union_meshes(all_segment_meshes, pitch=VOXEL_PITCH_UNION_M)
+        else:
+            raise RuntimeError("Failed to create tree mesh")
+    
+    # Subtract tree from base (carve voids)
+    print("\n  Carving vascular channels from base...")
+    try:
+        result = base.difference(tree_mesh, engine='blender')
+        if result is None or len(result.vertices) == 0:
+            raise ValueError("Boolean difference returned empty mesh")
+        print(f"    Blender boolean successful")
+    except Exception as e:
+        print(f"    Blender boolean failed ({e}), using voxel-based subtraction")
+        # Voxel-based subtraction
+        from skimage.measure import marching_cubes
+        
+        pitch = VOXEL_PITCH_UNION_M
+        
+        # Voxelize both meshes
+        try:
+            base_voxels = base.voxelized(pitch)
+            tree_voxels = tree_mesh.voxelized(pitch)
+        except (MemoryError, ValueError):
+            pitch *= 2
+            base_voxels = base.voxelized(pitch)
+            tree_voxels = tree_mesh.voxelized(pitch)
+        
+        # Compute bounds union
+        all_bounds = np.vstack([base.bounds, tree_mesh.bounds])
+        min_bound = all_bounds.min(axis=0) - pitch
+        max_bound = all_bounds.max(axis=0) + pitch
+        
+        # Create unified grid
+        grid_shape = np.ceil((max_bound - min_bound) / pitch).astype(int) + 1
+        base_grid = np.zeros(grid_shape, dtype=bool)
+        tree_grid = np.zeros(grid_shape, dtype=bool)
+        
+        # Fill grids
+        for vox in base_voxels.sparse_indices:
+            world_pos = base_voxels.transform[:3, 3] + vox * pitch
+            grid_idx = np.floor((world_pos - min_bound) / pitch).astype(int)
+            if np.all(grid_idx >= 0) and np.all(grid_idx < grid_shape):
+                base_grid[tuple(grid_idx)] = True
+        
+        for vox in tree_voxels.sparse_indices:
+            world_pos = tree_voxels.transform[:3, 3] + vox * pitch
+            grid_idx = np.floor((world_pos - min_bound) / pitch).astype(int)
+            if np.all(grid_idx >= 0) and np.all(grid_idx < grid_shape):
+                tree_grid[tuple(grid_idx)] = True
+        
+        # Subtract: base AND NOT tree
+        result_grid = base_grid & ~tree_grid
+        
+        # Marching cubes
+        if result_grid.sum() > 0:
+            verts, faces, _, _ = marching_cubes(
+                volume=result_grid.astype(np.uint8),
+                level=0.5,
+                spacing=(pitch, pitch, pitch),
+                allow_degenerate=False,
+            )
+            verts += min_bound
+            
+            result = trimesh.Trimesh(
+                vertices=verts,
+                faces=faces.astype(np.int64),
+                process=False,
+            )
+            result.remove_unreferenced_vertices()
+            if result.volume < 0:
+                result.invert()
+            trimesh.repair.fix_normals(result)
+        else:
+            result = base
+    
+    print(f"\n  Object 5 complete: {len(result.vertices)} vertices, {len(result.faces)} faces")
+    print(f"    Watertight: {result.is_watertight}")
+    
+    # Generate report
+    report = {
+        "object": "object5_cco_nlp_organic",
+        "design_choices": {
+            "coordinate_convention": "Cylinder centered at origin, z spans [-1mm, +1mm]",
+            "inlet_z_position": f"+{meters_to_mm(CYLINDER_HEIGHT_M/2)}mm (top face)",
+            "num_inlets": OBJ5_NUM_INLETS,
+            "inlet_positions_mm": [[p[0]*1000, p[1]*1000, p[2]*1000] for p in OBJ5_INLET_POSITIONS],
+            "num_rounds": OBJ5_NUM_ROUNDS,
+            "vessel_type": OBJ5_VESSEL_TYPE,
+        },
+        "parameters": {
+            "total_outlets_requested": OBJ5_TOTAL_OUTLETS,
+            "total_outlets_achieved": total_outlets_achieved,
+            "inlet_radius_mm": OBJ5_INLET_RADIUS_M * 1000,
+            "terminal_radius_mm": OBJ5_TERMINAL_RADIUS_M * 1000,
+            "cco_collision_clearance_mm": OBJ5_CCO_COLLISION_CLEARANCE * 1000,
+            "cco_min_segment_mm": OBJ5_CCO_MIN_SEGMENT_LENGTH * 1000,
+            "cco_max_segment_mm": OBJ5_CCO_MAX_SEGMENT_LENGTH * 1000,
+            "nlp_enabled": OBJ5_NLP_ENABLED,
+            "nlp_murray_exponent": OBJ5_NLP_MURRAY_EXPONENT,
+            "voxel_pitch_mm": VOXEL_PITCH_UNION_M * 1000,
+        },
+        "mesh_stats": {
+            "vertices": len(result.vertices),
+            "faces": len(result.faces),
+            "watertight": result.is_watertight,
+        },
+    }
+    
+    # Save report
+    report_path = OUTPUT_DIR / "object5_cco_nlp_organic_report.json"
+    with open(report_path, 'w') as f:
+        json.dump(report, f, indent=2)
+    print(f"  Report saved: {report_path}")
+    
+    return result
+
+
+# =============================================================================
 # MAIN EXECUTION
 # =============================================================================
 
 def main():
-    """Generate all four objects and export to STL files."""
+    """Generate all five objects and export to STL files."""
     print("=" * 70)
     print("MALARIA VENULE INSERTS GENERATOR")
     print("=" * 70)
@@ -1140,6 +1551,7 @@ def main():
     print("  - Object 2 channels: 4 channels at (+/-1.5mm, +/-1.5mm)")
     print("  - Object 3 bifurcation: 7 levels, depths 0.25-1.75mm, taper 1mm->100um")
     print("  - Overlap-based merge: Voxel union merges overlapping void volumes")
+    print("  - Object 5 CCO-NLP: 4 inlets, 4 rounds CCO + NLP, 512 terminals")
     print(f"\nVoxel pitch: {meters_to_mm(VOXEL_PITCH_M)*1000:.0f} um")
     print(f"Output units: {OUTPUT_UNITS}")
     
@@ -1153,6 +1565,7 @@ def main():
         ("object2_channels.stl", generate_object2_channels),
         ("object3_bifurcate_512.stl", generate_object3_bifurcate_512),
         ("object4_turn_bifurcate_merge.stl", generate_object4_turn_bifurcate_merge),
+        ("object5_cco_nlp_organic.stl", generate_object5_cco_nlp_organic),
     ]
     
     for filename, generator_func in objects:
@@ -1179,6 +1592,7 @@ def main():
     print("  - object2_channels.stl")
     print("  - object3_bifurcate_512.stl")
     print("  - object4_turn_bifurcate_merge.stl")
+    print("  - object5_cco_nlp_organic.stl")
 
 
 if __name__ == "__main__":
