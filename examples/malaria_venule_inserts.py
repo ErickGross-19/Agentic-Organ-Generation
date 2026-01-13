@@ -229,38 +229,14 @@ def create_ridge_mesh(
     center_xy: Tuple[float, float],
 ) -> trimesh.Trimesh:
     """
-    Create an annular ring (ridge) mesh.
+    Create an annular ring (ridge) mesh using direct mesh construction (no Blender).
     
     Design choice: Ridge is an annular ring on the perimeter of the top face.
-    If boolean operations fail, falls back to a solid disk.
+    Uses direct vertex/face construction to avoid Blender dependency.
+    Falls back to solid disk only if mesh construction fails.
     """
     try:
-        # Create outer cylinder
-        outer_cyl = trimesh.creation.cylinder(
-            radius=outer_radius,
-            height=height,
-            sections=64,
-        )
-        outer_cyl.apply_translation([center_xy[0], center_xy[1], z_base + height / 2])
-        
-        # Create inner cylinder (to subtract)
-        inner_cyl = trimesh.creation.cylinder(
-            radius=inner_radius,
-            height=height * 1.1,  # Slightly taller to ensure clean subtraction
-            sections=64,
-        )
-        inner_cyl.apply_translation([center_xy[0], center_xy[1], z_base + height / 2])
-        
-        # Try boolean difference
-        try:
-            ring = outer_cyl.difference(inner_cyl, engine='blender')
-            if ring is not None and len(ring.vertices) > 0:
-                print("  Ridge: Created annular ring using boolean difference")
-                return ring
-        except Exception as e:
-            print(f"  Ridge: Boolean difference failed ({e}), using fallback")
-        
-        # Fallback: Create ring using path extrusion
+        # Create ring using direct mesh construction (no Blender dependency)
         # Generate annular cross-section
         angles = np.linspace(0, 2 * np.pi, 65)
         outer_points = np.column_stack([
@@ -330,7 +306,7 @@ def create_ridge_mesh(
         
         ring = trimesh.Trimesh(vertices=vertices, faces=np.array(faces))
         ring.fix_normals()
-        print("  Ridge: Created annular ring using manual mesh construction")
+        print("  Ridge: Created annular ring using direct mesh construction")
         return ring
         
     except Exception as e:
@@ -453,6 +429,95 @@ def export_mesh_with_units(mesh: trimesh.Trimesh, output_path: Path, units: str 
     print(f"  Units sidecar: {sidecar_path}")
 
 
+def embed_void_in_cylinder(
+    void_mesh: trimesh.Trimesh,
+    output_dir: Optional[Path] = None,
+    object_name: str = "object",
+    voxel_pitch: float = VOXEL_PITCH_M,
+) -> trimesh.Trimesh:
+    """
+    Use the repo's embed_tree_as_negative_space function to carve voids from a cylinder domain.
+    
+    This function:
+    1. Exports the void mesh to a temporary STL file (in meters)
+    2. Creates a CylinderDomain matching our base cylinder
+    3. Calls embed_tree_as_negative_space to carve the void
+    4. Returns the domain_with_void mesh (in meters, for consistency with other functions)
+    
+    Parameters
+    ----------
+    void_mesh : trimesh.Trimesh
+        The void/channel mesh to carve from the cylinder (in meters)
+    output_dir : Path, optional
+        Directory to save intermediate STL files
+    object_name : str
+        Name prefix for intermediate files
+    voxel_pitch : float
+        Voxel pitch for embedding (in meters)
+    
+    Returns
+    -------
+    trimesh.Trimesh
+        The cylinder domain with void carved out (in meters)
+    """
+    import tempfile
+    
+    # Create temporary directory for intermediate files
+    temp_dir = Path(tempfile.mkdtemp(prefix=f"embed_{object_name}_"))
+    
+    # Export void mesh to temporary STL (in meters, with units.json sidecar)
+    void_stl_path = temp_dir / f"{object_name}_void.stl"
+    void_mesh.export(str(void_stl_path))
+    
+    # Write units sidecar so embed_tree_as_negative_space knows the units
+    sidecar_path = str(void_stl_path) + ".units.json"
+    with open(sidecar_path, 'w') as f:
+        json.dump({"units": "m"}, f)
+    
+    print(f"    Exported void mesh to: {void_stl_path}")
+    
+    # Also save to output_dir if provided
+    if output_dir:
+        intermediate_path = output_dir / "intermediate" / f"{object_name}_void_for_embedding.stl"
+        intermediate_path.parent.mkdir(parents=True, exist_ok=True)
+        scale_mesh_to_mm(void_mesh).export(str(intermediate_path))
+    
+    # Create CylinderDomain matching our base cylinder
+    domain = CylinderDomain(
+        center=Point3D(CYLINDER_CENTER[0], CYLINDER_CENTER[1], CYLINDER_CENTER[2]),
+        radius=CYLINDER_RADIUS_M,
+        height=CYLINDER_HEIGHT_M,
+    )
+    
+    print(f"    Using embed_tree_as_negative_space with voxel_pitch={voxel_pitch*1000:.1f}um")
+    
+    # Call the repo's embedding function
+    result = embed_tree_as_negative_space(
+        tree_stl_path=void_stl_path,
+        domain=domain,
+        voxel_pitch=voxel_pitch,
+        stl_units="m",  # We exported in meters
+        geometry_units="m",  # Domain is in meters
+        output_units="m",  # Return in meters (we'll scale to mm at final export)
+        output_void=True,
+        smoothing_iters=3,
+    )
+    
+    domain_with_void = result['domain_with_void']
+    
+    if domain_with_void is None:
+        raise RuntimeError(f"embed_tree_as_negative_space returned None for domain_with_void")
+    
+    print(f"    Embedding complete: {len(domain_with_void.vertices)} vertices, {len(domain_with_void.faces)} faces")
+    print(f"    Watertight: {domain_with_void.is_watertight}")
+    
+    # Clean up temp files
+    import shutil
+    shutil.rmtree(temp_dir, ignore_errors=True)
+    
+    return domain_with_void
+
+
 # =============================================================================
 # OBJECT GENERATION FUNCTIONS
 # =============================================================================
@@ -538,6 +603,7 @@ def generate_object2_channels(output_dir: Optional[Path] = None) -> trimesh.Trim
     Generate Object 2: Control + straight channels.
     
     Design choice: 4 channels in a square pattern at (+/-1.5mm, +/-1.5mm).
+    Uses the repo's embed_tree_as_negative_space function for embedding.
     
     Returns mesh in METERS (will be scaled to mm at export).
     
@@ -550,25 +616,7 @@ def generate_object2_channels(output_dir: Optional[Path] = None) -> trimesh.Trim
     print("Generating Object 2: Control + straight channels")
     print("=" * 60)
     
-    # Create base (same as Object 1)
-    print("  Creating base cylinder with ridge...")
-    base_cylinder = create_cylinder_mesh(
-        radius=CYLINDER_RADIUS_M,
-        height=CYLINDER_HEIGHT_M,
-        center=CYLINDER_CENTER,
-    )
-    
     z_top = CYLINDER_CENTER[2] + CYLINDER_HEIGHT_M / 2
-    ridge = create_ridge_mesh(
-        outer_radius=CYLINDER_RADIUS_M,
-        inner_radius=CYLINDER_RADIUS_M - RIDGE_THICKNESS_M,
-        height=RIDGE_HEIGHT_M,
-        z_base=z_top,
-        center_xy=(CYLINDER_CENTER[0], CYLINDER_CENTER[1]),
-    )
-    
-    # Use fine pitch for ridge union (0.1mm ridge needs fine resolution)
-    base = voxel_union_meshes([base_cylinder, ridge], pitch=VOXEL_PITCH_RIDGE_M)
     
     # Create channels
     print(f"  Creating {OBJ2_NUM_INLETS} straight channels...")
@@ -596,84 +644,27 @@ def generate_object2_channels(output_dir: Optional[Path] = None) -> trimesh.Trim
         scale_mesh_to_mm(channel_void).export(str(intermediate_path))
         print(f"    Exported intermediate void: {intermediate_path}")
     
-    # Subtract channels from base using voxel-based subtraction (more reliable than Blender)
-    print("  Carving channels from base (voxel-based subtraction)...")
-    from skimage.measure import marching_cubes
-    
-    # Voxelize both meshes
-    pitch = VOXEL_PITCH_M
-    
-    # Get combined bounds
-    all_bounds = np.vstack([base.bounds, channel_void.bounds])
-    min_bound = all_bounds.min(axis=0) - pitch * 2
-    max_bound = all_bounds.max(axis=0) + pitch * 2
-    
-    grid_shape = np.ceil((max_bound - min_bound) / pitch).astype(int)
-    print(f"    Voxel grid: {grid_shape} at {meters_to_mm(pitch)*1000:.0f}um pitch")
-    
-    # Voxelize base
-    base_vox = base.voxelized(pitch)
-    base_matrix = np.zeros(grid_shape, dtype=bool)
-    base_origin = base_vox.transform[:3, 3]
-    base_offset = np.round((base_origin - min_bound) / pitch).astype(int)
-    
-    bm = base_vox.matrix
-    for i in range(3):
-        if base_offset[i] < 0:
-            bm = bm[-base_offset[i]:]
-            base_offset[i] = 0
-    
-    end_idx = np.minimum(base_offset + np.array(bm.shape), grid_shape)
-    copy_size = end_idx - base_offset
-    copy_size = np.minimum(copy_size, np.array(bm.shape))
-    
-    if np.all(copy_size > 0):
-        base_matrix[
-            base_offset[0]:base_offset[0]+copy_size[0],
-            base_offset[1]:base_offset[1]+copy_size[1],
-            base_offset[2]:base_offset[2]+copy_size[2]
-        ] = bm[:copy_size[0], :copy_size[1], :copy_size[2]]
-    
-    # Voxelize channels
-    chan_vox = channel_void.voxelized(pitch)
-    chan_matrix = np.zeros(grid_shape, dtype=bool)
-    chan_origin = chan_vox.transform[:3, 3]
-    chan_offset = np.round((chan_origin - min_bound) / pitch).astype(int)
-    
-    cm = chan_vox.matrix
-    for i in range(3):
-        if chan_offset[i] < 0:
-            cm = cm[-chan_offset[i]:]
-            chan_offset[i] = 0
-    
-    end_idx = np.minimum(chan_offset + np.array(cm.shape), grid_shape)
-    copy_size = end_idx - chan_offset
-    copy_size = np.minimum(copy_size, np.array(cm.shape))
-    
-    if np.all(copy_size > 0):
-        chan_matrix[
-            chan_offset[0]:chan_offset[0]+copy_size[0],
-            chan_offset[1]:chan_offset[1]+copy_size[1],
-            chan_offset[2]:chan_offset[2]+copy_size[2]
-        ] = cm[:copy_size[0], :copy_size[1], :copy_size[2]]
-    
-    # Subtract
-    result_matrix = base_matrix & ~chan_matrix
-    
-    # Marching cubes
-    verts, faces, _, _ = marching_cubes(
-        volume=result_matrix.astype(np.uint8),
-        level=0.5,
-        spacing=(pitch, pitch, pitch),
-        allow_degenerate=False,
+    # Use the repo's embed_tree_as_negative_space function to carve channels from cylinder
+    print("  Carving channels using embed_tree_as_negative_space...")
+    cylinder_with_void = embed_void_in_cylinder(
+        void_mesh=channel_void,
+        output_dir=output_dir,
+        object_name="object2",
+        voxel_pitch=VOXEL_PITCH_M,
     )
-    verts += min_bound
     
-    result = trimesh.Trimesh(vertices=verts, faces=faces.astype(np.int64), process=False)
-    result.remove_unreferenced_vertices()
-    if result.volume < 0:
-        result.invert()
-    trimesh.repair.fix_normals(result)
+    # Create ridge mesh and union with the cylinder_with_void
+    print("  Adding ridge to cylinder...")
+    ridge = create_ridge_mesh(
+        outer_radius=CYLINDER_RADIUS_M,
+        inner_radius=CYLINDER_RADIUS_M - RIDGE_THICKNESS_M,
+        height=RIDGE_HEIGHT_M,
+        z_base=z_top,
+        center_xy=(CYLINDER_CENTER[0], CYLINDER_CENTER[1]),
+    )
+    
+    # Union cylinder_with_void and ridge using fine pitch for ridge resolution
+    result = voxel_union_meshes([cylinder_with_void, ridge], pitch=VOXEL_PITCH_RIDGE_M)
     
     print(f"  Object 2 complete: {len(result.vertices)} vertices, {len(result.faces)} faces")
     print(f"    Watertight: {result.is_watertight}")
@@ -923,6 +914,7 @@ def generate_object3_bifurcate_512(output_dir: Optional[Path] = None) -> trimesh
     - Exponential radius taper from 1mm to 100um
     - Bifurcation depths at 0.25, 0.50, 0.75, 1.00, 1.25, 1.50, 1.75 mm
     - Overlapping branches merge via voxel union
+    - Uses the repo's embed_tree_as_negative_space function for embedding
     
     Returns mesh in METERS (will be scaled to mm at export).
     
@@ -935,25 +927,7 @@ def generate_object3_bifurcate_512(output_dir: Optional[Path] = None) -> trimesh
     print("Generating Object 3: Recursive bifurcation to 512 terminals")
     print("=" * 60)
     
-    # Create base (same as Object 1)
-    print("  Creating base cylinder with ridge...")
-    base_cylinder = create_cylinder_mesh(
-        radius=CYLINDER_RADIUS_M,
-        height=CYLINDER_HEIGHT_M,
-        center=CYLINDER_CENTER,
-    )
-    
     z_top = CYLINDER_CENTER[2] + CYLINDER_HEIGHT_M / 2
-    ridge = create_ridge_mesh(
-        outer_radius=CYLINDER_RADIUS_M,
-        inner_radius=CYLINDER_RADIUS_M - RIDGE_THICKNESS_M,
-        height=RIDGE_HEIGHT_M,
-        z_base=z_top,
-        center_xy=(CYLINDER_CENTER[0], CYLINDER_CENTER[1]),
-    )
-    
-    # Use fine pitch for ridge union (0.1mm ridge needs fine resolution)
-    base = voxel_union_meshes([base_cylinder, ridge], pitch=VOXEL_PITCH_RIDGE_M)
     
     # Generate bifurcating trees from each inlet
     print(f"  Generating {OBJ3_NUM_INLETS} bifurcating trees...")
@@ -992,80 +966,27 @@ def generate_object3_bifurcate_512(output_dir: Optional[Path] = None) -> trimesh
     except Exception as e:
         print(f"    Pre-embedding validation error: {e}")
     
-    # Subtract from base using voxel-based subtraction (more reliable than Blender)
-    print("  Carving voids from base (voxel-based subtraction)...")
-    from skimage.measure import marching_cubes
+    # Use the repo's embed_tree_as_negative_space function to carve voids from cylinder
+    print("  Carving voids using embed_tree_as_negative_space...")
+    cylinder_with_void = embed_void_in_cylinder(
+        void_mesh=combined_void,
+        output_dir=output_dir,
+        object_name="object3",
+        voxel_pitch=VOXEL_PITCH_M,
+    )
     
-    pitch = VOXEL_PITCH_M * 2  # Coarser for large mesh
-    print(f"    Voxel grid pitch: {meters_to_mm(pitch)*1000:.0f}um")
+    # Create ridge mesh and union with the cylinder_with_void
+    print("  Adding ridge to cylinder...")
+    ridge = create_ridge_mesh(
+        outer_radius=CYLINDER_RADIUS_M,
+        inner_radius=CYLINDER_RADIUS_M - RIDGE_THICKNESS_M,
+        height=RIDGE_HEIGHT_M,
+        z_base=z_top,
+        center_xy=(CYLINDER_CENTER[0], CYLINDER_CENTER[1]),
+    )
     
-    all_bounds = np.vstack([base.bounds, combined_void.bounds])
-    min_bound = all_bounds.min(axis=0) - pitch * 2
-    max_bound = all_bounds.max(axis=0) + pitch * 2
-    
-    grid_shape = np.ceil((max_bound - min_bound) / pitch).astype(int)
-    grid_shape = np.minimum(grid_shape, 500)  # Cap grid size
-    
-    # Voxelize base
-    base_vox = base.voxelized(pitch)
-    base_matrix = np.zeros(grid_shape, dtype=bool)
-    base_origin = base_vox.transform[:3, 3]
-    base_offset = np.round((base_origin - min_bound) / pitch).astype(int)
-    base_offset = np.maximum(base_offset, 0)
-    
-    bm = base_vox.matrix
-    end_idx = np.minimum(base_offset + np.array(bm.shape), grid_shape)
-    copy_size = end_idx - base_offset
-    copy_size = np.minimum(copy_size, np.array(bm.shape))
-    copy_size = np.maximum(copy_size, 0)
-    
-    if np.all(copy_size > 0):
-        base_matrix[
-            base_offset[0]:base_offset[0]+copy_size[0],
-            base_offset[1]:base_offset[1]+copy_size[1],
-            base_offset[2]:base_offset[2]+copy_size[2]
-        ] = bm[:copy_size[0], :copy_size[1], :copy_size[2]]
-    
-    # Voxelize void
-    void_vox = combined_void.voxelized(pitch)
-    void_matrix = np.zeros(grid_shape, dtype=bool)
-    void_origin = void_vox.transform[:3, 3]
-    void_offset = np.round((void_origin - min_bound) / pitch).astype(int)
-    void_offset = np.maximum(void_offset, 0)
-    
-    vm = void_vox.matrix
-    end_idx = np.minimum(void_offset + np.array(vm.shape), grid_shape)
-    copy_size = end_idx - void_offset
-    copy_size = np.minimum(copy_size, np.array(vm.shape))
-    copy_size = np.maximum(copy_size, 0)
-    
-    if np.all(copy_size > 0):
-        void_matrix[
-            void_offset[0]:void_offset[0]+copy_size[0],
-            void_offset[1]:void_offset[1]+copy_size[1],
-            void_offset[2]:void_offset[2]+copy_size[2]
-        ] = vm[:copy_size[0], :copy_size[1], :copy_size[2]]
-    
-    # Subtract
-    result_matrix = base_matrix & ~void_matrix
-    
-    if not result_matrix.any():
-        print("    WARNING: Result matrix is empty, using base mesh")
-        result = base
-    else:
-        verts, faces, _, _ = marching_cubes(
-            volume=result_matrix.astype(np.uint8),
-            level=0.5,
-            spacing=(pitch, pitch, pitch),
-            allow_degenerate=False,
-        )
-        verts += min_bound
-        
-        result = trimesh.Trimesh(vertices=verts, faces=faces.astype(np.int64), process=False)
-        result.remove_unreferenced_vertices()
-        if result.volume < 0:
-            result.invert()
-        trimesh.repair.fix_normals(result)
+    # Union cylinder_with_void and ridge using fine pitch for ridge resolution
+    result = voxel_union_meshes([cylinder_with_void, ridge], pitch=VOXEL_PITCH_RIDGE_M)
     
     print(f"  Object 3 complete: {len(result.vertices)} vertices, {len(result.faces)} faces")
     print(f"    Watertight: {result.is_watertight}")
@@ -1098,6 +1019,7 @@ def generate_object4_turn_bifurcate_merge(output_dir: Optional[Path] = None) -> 
     - Bifurcate in XY plane
     - Branches merge by overlapping in space (voxel union)
     - Single trunk returns upward to exit near top face
+    - Uses the repo's embed_tree_as_negative_space function for embedding
     
     Returns mesh in METERS (will be scaled to mm at export).
     
@@ -1110,26 +1032,8 @@ def generate_object4_turn_bifurcate_merge(output_dir: Optional[Path] = None) -> 
     print("Generating Object 4: Turn-Bifurcate-Merge loop")
     print("=" * 60)
     
-    # Create base (same as Object 1)
-    print("  Creating base cylinder with ridge...")
-    base_cylinder = create_cylinder_mesh(
-        radius=CYLINDER_RADIUS_M,
-        height=CYLINDER_HEIGHT_M,
-        center=CYLINDER_CENTER,
-    )
-    
     z_top = CYLINDER_CENTER[2] + CYLINDER_HEIGHT_M / 2
     z_bottom = CYLINDER_CENTER[2] - CYLINDER_HEIGHT_M / 2
-    ridge = create_ridge_mesh(
-        outer_radius=CYLINDER_RADIUS_M,
-        inner_radius=CYLINDER_RADIUS_M - RIDGE_THICKNESS_M,
-        height=RIDGE_HEIGHT_M,
-        z_base=z_top,
-        center_xy=(CYLINDER_CENTER[0], CYLINDER_CENTER[1]),
-    )
-    
-    # Use fine pitch for ridge union (0.1mm ridge needs fine resolution)
-    base = voxel_union_meshes([base_cylinder, ridge], pitch=VOXEL_PITCH_RIDGE_M)
     
     # Build the channel network
     print("  Building channel network...")
@@ -1220,80 +1124,27 @@ def generate_object4_turn_bifurcate_merge(output_dir: Optional[Path] = None) -> 
     except Exception as e:
         print(f"    Pre-embedding validation error: {e}")
     
-    # Subtract from base using voxel-based subtraction (more reliable than Blender)
-    print("  Carving channels from base (voxel-based subtraction)...")
-    from skimage.measure import marching_cubes
+    # Use the repo's embed_tree_as_negative_space function to carve channels from cylinder
+    print("  Carving channels using embed_tree_as_negative_space...")
+    cylinder_with_void = embed_void_in_cylinder(
+        void_mesh=combined_void,
+        output_dir=output_dir,
+        object_name="object4",
+        voxel_pitch=VOXEL_PITCH_M,
+    )
     
-    pitch = VOXEL_PITCH_M
-    print(f"    Voxel grid pitch: {meters_to_mm(pitch)*1000:.0f}um")
+    # Create ridge mesh and union with the cylinder_with_void
+    print("  Adding ridge to cylinder...")
+    ridge = create_ridge_mesh(
+        outer_radius=CYLINDER_RADIUS_M,
+        inner_radius=CYLINDER_RADIUS_M - RIDGE_THICKNESS_M,
+        height=RIDGE_HEIGHT_M,
+        z_base=z_top,
+        center_xy=(CYLINDER_CENTER[0], CYLINDER_CENTER[1]),
+    )
     
-    all_bounds = np.vstack([base.bounds, combined_void.bounds])
-    min_bound = all_bounds.min(axis=0) - pitch * 2
-    max_bound = all_bounds.max(axis=0) + pitch * 2
-    
-    grid_shape = np.ceil((max_bound - min_bound) / pitch).astype(int)
-    grid_shape = np.minimum(grid_shape, 500)
-    
-    # Voxelize base
-    base_vox = base.voxelized(pitch)
-    base_matrix = np.zeros(grid_shape, dtype=bool)
-    base_origin = base_vox.transform[:3, 3]
-    base_offset = np.round((base_origin - min_bound) / pitch).astype(int)
-    base_offset = np.maximum(base_offset, 0)
-    
-    bm = base_vox.matrix
-    end_idx = np.minimum(base_offset + np.array(bm.shape), grid_shape)
-    copy_size = end_idx - base_offset
-    copy_size = np.minimum(copy_size, np.array(bm.shape))
-    copy_size = np.maximum(copy_size, 0)
-    
-    if np.all(copy_size > 0):
-        base_matrix[
-            base_offset[0]:base_offset[0]+copy_size[0],
-            base_offset[1]:base_offset[1]+copy_size[1],
-            base_offset[2]:base_offset[2]+copy_size[2]
-        ] = bm[:copy_size[0], :copy_size[1], :copy_size[2]]
-    
-    # Voxelize void
-    void_vox = combined_void.voxelized(pitch)
-    void_matrix = np.zeros(grid_shape, dtype=bool)
-    void_origin = void_vox.transform[:3, 3]
-    void_offset = np.round((void_origin - min_bound) / pitch).astype(int)
-    void_offset = np.maximum(void_offset, 0)
-    
-    vm = void_vox.matrix
-    end_idx = np.minimum(void_offset + np.array(vm.shape), grid_shape)
-    copy_size = end_idx - void_offset
-    copy_size = np.minimum(copy_size, np.array(vm.shape))
-    copy_size = np.maximum(copy_size, 0)
-    
-    if np.all(copy_size > 0):
-        void_matrix[
-            void_offset[0]:void_offset[0]+copy_size[0],
-            void_offset[1]:void_offset[1]+copy_size[1],
-            void_offset[2]:void_offset[2]+copy_size[2]
-        ] = vm[:copy_size[0], :copy_size[1], :copy_size[2]]
-    
-    # Subtract
-    result_matrix = base_matrix & ~void_matrix
-    
-    if not result_matrix.any():
-        print("    WARNING: Result matrix is empty, using base mesh")
-        result = base
-    else:
-        verts, faces, _, _ = marching_cubes(
-            volume=result_matrix.astype(np.uint8),
-            level=0.5,
-            spacing=(pitch, pitch, pitch),
-            allow_degenerate=False,
-        )
-        verts += min_bound
-        
-        result = trimesh.Trimesh(vertices=verts, faces=faces.astype(np.int64), process=False)
-        result.remove_unreferenced_vertices()
-        if result.volume < 0:
-            result.invert()
-        trimesh.repair.fix_normals(result)
+    # Union cylinder_with_void and ridge using fine pitch for ridge resolution
+    result = voxel_union_meshes([cylinder_with_void, ridge], pitch=VOXEL_PITCH_RIDGE_M)
     
     print(f"  Object 4 complete: {len(result.vertices)} vertices, {len(result.faces)} faces")
     print(f"    Watertight: {result.is_watertight}")
@@ -1358,25 +1209,7 @@ def generate_object5_cco_nlp_organic(output_dir: Optional[Path] = None) -> trime
     print(f"    - Vessel type: {OBJ5_VESSEL_TYPE}")
     print(f"    - Seed: {OBJ5_SEED}")
     
-    # Create base cylinder with ridge
-    print("\n  Creating base cylinder with ridge...")
-    base_cylinder = create_cylinder_mesh(
-        radius=CYLINDER_RADIUS_M,
-        height=CYLINDER_HEIGHT_M,
-        center=CYLINDER_CENTER,
-    )
-    
     z_top = CYLINDER_CENTER[2] + CYLINDER_HEIGHT_M / 2
-    ridge = create_ridge_mesh(
-        outer_radius=CYLINDER_RADIUS_M,
-        inner_radius=CYLINDER_RADIUS_M - RIDGE_THICKNESS_M,
-        height=RIDGE_HEIGHT_M,
-        z_base=z_top,
-        center_xy=(CYLINDER_CENTER[0], CYLINDER_CENTER[1]),
-    )
-    
-    # Use fine pitch for ridge union (0.1mm ridge needs fine resolution)
-    base = voxel_union_meshes([base_cylinder, ridge], pitch=VOXEL_PITCH_RIDGE_M)
     
     # Create domain for CCO generation
     print("\n  Setting up CCO domain and configuration...")
@@ -1598,76 +1431,27 @@ def generate_object5_cco_nlp_organic(output_dir: Optional[Path] = None) -> trime
     except Exception as e:
         print(f"    Pre-embedding validation error: {e}")
     
-    # Subtract tree from base (carve voids)
-    print("\n  Carving vascular channels from base...")
-    try:
-        result = base.difference(tree_mesh, engine='blender')
-        if result is None or len(result.vertices) == 0:
-            raise ValueError("Boolean difference returned empty mesh")
-        print(f"    Blender boolean successful")
-    except Exception as e:
-        print(f"    Blender boolean failed ({e}), using voxel-based subtraction")
-        # Voxel-based subtraction
-        from skimage.measure import marching_cubes
-        
-        pitch = VOXEL_PITCH_UNION_M
-        
-        # Voxelize both meshes
-        try:
-            base_voxels = base.voxelized(pitch)
-            tree_voxels = tree_mesh.voxelized(pitch)
-        except (MemoryError, ValueError):
-            pitch *= 2
-            base_voxels = base.voxelized(pitch)
-            tree_voxels = tree_mesh.voxelized(pitch)
-        
-        # Compute bounds union
-        all_bounds = np.vstack([base.bounds, tree_mesh.bounds])
-        min_bound = all_bounds.min(axis=0) - pitch
-        max_bound = all_bounds.max(axis=0) + pitch
-        
-        # Create unified grid
-        grid_shape = np.ceil((max_bound - min_bound) / pitch).astype(int) + 1
-        base_grid = np.zeros(grid_shape, dtype=bool)
-        tree_grid = np.zeros(grid_shape, dtype=bool)
-        
-        # Fill grids
-        for vox in base_voxels.sparse_indices:
-            world_pos = base_voxels.transform[:3, 3] + vox * pitch
-            grid_idx = np.floor((world_pos - min_bound) / pitch).astype(int)
-            if np.all(grid_idx >= 0) and np.all(grid_idx < grid_shape):
-                base_grid[tuple(grid_idx)] = True
-        
-        for vox in tree_voxels.sparse_indices:
-            world_pos = tree_voxels.transform[:3, 3] + vox * pitch
-            grid_idx = np.floor((world_pos - min_bound) / pitch).astype(int)
-            if np.all(grid_idx >= 0) and np.all(grid_idx < grid_shape):
-                tree_grid[tuple(grid_idx)] = True
-        
-        # Subtract: base AND NOT tree
-        result_grid = base_grid & ~tree_grid
-        
-        # Marching cubes
-        if result_grid.sum() > 0:
-            verts, faces, _, _ = marching_cubes(
-                volume=result_grid.astype(np.uint8),
-                level=0.5,
-                spacing=(pitch, pitch, pitch),
-                allow_degenerate=False,
-            )
-            verts += min_bound
-            
-            result = trimesh.Trimesh(
-                vertices=verts,
-                faces=faces.astype(np.int64),
-                process=False,
-            )
-            result.remove_unreferenced_vertices()
-            if result.volume < 0:
-                result.invert()
-            trimesh.repair.fix_normals(result)
-        else:
-            result = base
+    # Use the repo's embed_tree_as_negative_space function to carve voids from cylinder
+    print("\n  Carving vascular channels using embed_tree_as_negative_space...")
+    cylinder_with_void = embed_void_in_cylinder(
+        void_mesh=tree_mesh,
+        output_dir=output_dir,
+        object_name="object5",
+        voxel_pitch=VOXEL_PITCH_M,
+    )
+    
+    # Create ridge mesh and union with the cylinder_with_void
+    print("  Adding ridge to cylinder...")
+    ridge = create_ridge_mesh(
+        outer_radius=CYLINDER_RADIUS_M,
+        inner_radius=CYLINDER_RADIUS_M - RIDGE_THICKNESS_M,
+        height=RIDGE_HEIGHT_M,
+        z_base=z_top,
+        center_xy=(CYLINDER_CENTER[0], CYLINDER_CENTER[1]),
+    )
+    
+    # Union cylinder_with_void and ridge using fine pitch for ridge resolution
+    result = voxel_union_meshes([cylinder_with_void, ridge], pitch=VOXEL_PITCH_RIDGE_M)
     
     print(f"\n  Object 5 complete: {len(result.vertices)} vertices, {len(result.faces)} faces")
     print(f"    Watertight: {result.is_watertight}")
