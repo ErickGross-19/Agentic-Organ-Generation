@@ -10,7 +10,11 @@ pymeshfix>=0.16.0
 scikit-image>=0.18.0
 
 # Optional: NLP optimization (IPOPT solver for better convergence)
-cyipopt>=1.2.0
+# cyipopt is NOT installed by default - the code falls back to scipy if unavailable.
+# To install cyipopt:
+#   - Windows/Mac: conda install -c conda-forge cyipopt
+#   - Linux: pip install cyipopt (requires IPOPT library: apt install coinor-libipopt-dev)
+# cyipopt>=1.2.0  # Uncomment if you have IPOPT installed
 
 # Optional: LLM automation
 openai>=1.0.0
