@@ -1393,18 +1393,32 @@ def generate_object5_cco_nlp_organic() -> trimesh.Trimesh:
     
     # Convert network to mesh
     print("\n  Converting network to mesh...")
+    tree_mesh = None
     try:
-        tree_mesh = to_trimesh(merged_network, mode="voxel_repair")
-        print(f"    Tree mesh: {len(tree_mesh.vertices)} vertices, {len(tree_mesh.faces)} faces")
+        mesh_result = to_trimesh(merged_network, mode="voxel_repair")
+        if mesh_result.is_success():
+            tree_mesh = mesh_result.metadata["mesh"]
+            print(f"    Tree mesh: {len(tree_mesh.vertices)} vertices, {len(tree_mesh.faces)} faces")
+        else:
+            print(f"    to_trimesh returned failure: {mesh_result.message}, using manual mesh construction")
     except Exception as e:
         print(f"    to_trimesh failed: {e}, using manual mesh construction")
+    
+    if tree_mesh is None:
         # Fallback: create mesh from segments manually
         all_segment_meshes = []
         for seg in merged_network.segments.values():
             start_node = merged_network.nodes[seg.start_node_id]
             end_node = merged_network.nodes[seg.end_node_id]
-            start_pos = np.array(start_node.position)
-            end_pos = np.array(end_node.position)
+            # Convert Point3D to numpy array
+            if hasattr(start_node.position, 'to_array'):
+                start_pos = start_node.position.to_array()
+            else:
+                start_pos = np.array(start_node.position)
+            if hasattr(end_node.position, 'to_array'):
+                end_pos = end_node.position.to_array()
+            else:
+                end_pos = np.array(end_node.position)
             
             # Get radii
             if seg.geometry and hasattr(seg.geometry, 'start_radius'):
