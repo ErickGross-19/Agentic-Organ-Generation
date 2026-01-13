@@ -664,7 +664,7 @@ def embed_void_in_cylinder(
         height=CYLINDER_HEIGHT_M,
     )
     
-    print(f"    Using embed_tree_as_negative_space with voxel_pitch={voxel_pitch*1000:.1f}um")
+    print(f"    Using embed_tree_as_negative_space with voxel_pitch={voxel_pitch*1000000}um")
     
     # Call the repo's embedding function
     result = embed_tree_as_negative_space(
