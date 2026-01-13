@@ -57,6 +57,9 @@ from generation.specs.compile import compile_domain
 from generation.backends.cco_hybrid_backend import CCOHybridBackend, CCOConfig
 from generation.optimization import optimize_geometry, NLPConfig
 
+# Validity checking imports
+from validity import run_pre_embedding_validation, run_post_embedding_validation, ValidationConfig
+
 
 # =============================================================================
 # HARDCODED PARAMETERS - All dimensions in METERS internally
@@ -185,9 +188,11 @@ OBJ5_NLP_CLEANUP_DEGENERATE = True     # Remove degenerate segments
 # VOXELIZATION PARAMETERS
 # =============================================================================
 VOXEL_PITCH_M = 2.5e-5             # 25 um voxel pitch (for fine resolution embedding)
-VOXEL_PITCH_UNION_M = 1.0e-4       # 100 um voxel pitch (for union operations - coarser to save memory)
-# Note: 25 um pitch on 10mm x 10mm x 2mm domain = ~12.8M voxels
-# For union operations, we use 100 um to reduce memory usage (~200K voxels)
+VOXEL_PITCH_UNION_M = 5.0e-5       # 50 um voxel pitch (for union operations)
+# Note: Ridge is 0.1mm (100um) thick, so we need at least 2 voxels across it
+# Using 50um pitch gives 2 voxels across the ridge thickness for proper resolution
+# 25 um pitch on 10mm x 10mm x 2mm domain = ~12.8M voxels
+VOXEL_PITCH_RIDGE_M = 2.5e-5       # 25 um for ridge operations (4 voxels across 0.1mm ridge)
 
 # =============================================================================
 # OUTPUT PARAMETERS
@@ -452,11 +457,16 @@ def export_mesh_with_units(mesh: trimesh.Trimesh, output_path: Path, units: str 
 # OBJECT GENERATION FUNCTIONS
 # =============================================================================
 
-def generate_object1_control() -> trimesh.Trimesh:
+def generate_object1_control(output_dir: Optional[Path] = None) -> trimesh.Trimesh:
     """
     Generate Object 1: Control cylinder with ridge, no internal voids.
     
     Returns mesh in METERS (will be scaled to mm at export).
+    
+    Parameters
+    ----------
+    output_dir : Path, optional
+        Directory to save intermediate STL files for debugging
     """
     print("\n" + "=" * 60)
     print("Generating Object 1: Control (solid cylinder + ridge)")
@@ -472,6 +482,13 @@ def generate_object1_control() -> trimesh.Trimesh:
     print(f"    Cylinder: radius={meters_to_mm(CYLINDER_RADIUS_M)}mm, "
           f"height={meters_to_mm(CYLINDER_HEIGHT_M)}mm")
     
+    # Export intermediate cylinder mesh
+    if output_dir:
+        intermediate_path = output_dir / "intermediate" / "object1_cylinder.stl"
+        intermediate_path.parent.mkdir(parents=True, exist_ok=True)
+        scale_mesh_to_mm(base_cylinder).export(str(intermediate_path))
+        print(f"    Exported intermediate: {intermediate_path}")
+    
     # Create ridge on top face
     print("  Creating ridge...")
     z_top = CYLINDER_CENTER[2] + CYLINDER_HEIGHT_M / 2  # Top of cylinder
@@ -486,23 +503,48 @@ def generate_object1_control() -> trimesh.Trimesh:
           f"inner_r={meters_to_mm(CYLINDER_RADIUS_M - RIDGE_THICKNESS_M)}mm, "
           f"height={meters_to_mm(RIDGE_HEIGHT_M)}mm")
     
-    # Union cylinder and ridge (use coarser pitch for memory efficiency)
-    print("  Combining cylinder and ridge...")
-    combined = voxel_union_meshes([base_cylinder, ridge], pitch=VOXEL_PITCH_UNION_M)
+    # Export intermediate ridge mesh
+    if output_dir:
+        intermediate_path = output_dir / "intermediate" / "object1_ridge.stl"
+        scale_mesh_to_mm(ridge).export(str(intermediate_path))
+        print(f"    Exported intermediate: {intermediate_path}")
+    
+    # Union cylinder and ridge using FINE pitch for ridge (0.1mm ridge needs fine resolution)
+    print(f"  Combining cylinder and ridge (voxel pitch: {meters_to_mm(VOXEL_PITCH_RIDGE_M)*1000:.0f}um)...")
+    combined = voxel_union_meshes([base_cylinder, ridge], pitch=VOXEL_PITCH_RIDGE_M)
     
     print(f"  Object 1 complete: {len(combined.vertices)} vertices, {len(combined.faces)} faces")
     print(f"    Watertight: {combined.is_watertight}")
     
+    # Run post-embedding validation
+    print("  Running validation...")
+    try:
+        validation_config = ValidationConfig(
+            voxel_pitch_m=VOXEL_PITCH_M,
+            expected_outlets=0,  # No outlets for control
+        )
+        report = run_post_embedding_validation(mesh=combined, config=validation_config)
+        print(f"    Validation status: {report.status}")
+        if not report.passed:
+            print(f"    WARNING: Validation failed - {report.summary}")
+    except Exception as e:
+        print(f"    Validation error: {e}")
+    
     return combined
 
 
-def generate_object2_channels() -> trimesh.Trimesh:
+def generate_object2_channels(output_dir: Optional[Path] = None) -> trimesh.Trimesh:
     """
     Generate Object 2: Control + straight channels.
     
     Design choice: 4 channels in a square pattern at (+/-1.5mm, +/-1.5mm).
     
     Returns mesh in METERS (will be scaled to mm at export).
+    
+    Parameters
+    ----------
+    output_dir : Path, optional
+        Directory to save intermediate STL files for debugging
     """
     print("\n" + "=" * 60)
     print("Generating Object 2: Control + straight channels")
@@ -525,7 +567,8 @@ def generate_object2_channels() -> trimesh.Trimesh:
         center_xy=(CYLINDER_CENTER[0], CYLINDER_CENTER[1]),
     )
     
-    base = voxel_union_meshes([base_cylinder, ridge], pitch=VOXEL_PITCH_UNION_M)
+    # Use fine pitch for ridge union (0.1mm ridge needs fine resolution)
+    base = voxel_union_meshes([base_cylinder, ridge], pitch=VOXEL_PITCH_RIDGE_M)
     
     # Create channels
     print(f"  Creating {OBJ2_NUM_INLETS} straight channels...")
@@ -546,94 +589,108 @@ def generate_object2_channels() -> trimesh.Trimesh:
     print("  Combining channels...")
     channel_void = voxel_union_meshes(channels, pitch=VOXEL_PITCH_UNION_M)
     
-    # Subtract channels from base
-    print("  Carving channels from base...")
-    try:
-        result = base.difference(channel_void, engine='blender')
-        if result is None or len(result.vertices) == 0:
-            raise ValueError("Boolean difference returned empty mesh")
-        print("    Used Blender boolean difference")
-    except Exception as e:
-        print(f"    Blender boolean failed ({e}), using voxel-based subtraction")
-        # Voxel-based subtraction
-        from skimage.measure import marching_cubes
-        
-        # Voxelize both meshes
-        pitch = VOXEL_PITCH_M
-        
-        # Get combined bounds
-        all_bounds = np.vstack([base.bounds, channel_void.bounds])
-        min_bound = all_bounds.min(axis=0) - pitch * 2
-        max_bound = all_bounds.max(axis=0) + pitch * 2
-        
-        grid_shape = np.ceil((max_bound - min_bound) / pitch).astype(int)
-        
-        # Voxelize base
-        base_vox = base.voxelized(pitch)
-        base_matrix = np.zeros(grid_shape, dtype=bool)
-        base_origin = base_vox.transform[:3, 3]
-        base_offset = np.round((base_origin - min_bound) / pitch).astype(int)
-        
-        bm = base_vox.matrix
-        for i in range(3):
-            if base_offset[i] < 0:
-                bm = bm[-base_offset[i]:]
-                base_offset[i] = 0
-        
-        end_idx = np.minimum(base_offset + np.array(bm.shape), grid_shape)
-        copy_size = end_idx - base_offset
-        copy_size = np.minimum(copy_size, np.array(bm.shape))
-        
-        if np.all(copy_size > 0):
-            base_matrix[
-                base_offset[0]:base_offset[0]+copy_size[0],
-                base_offset[1]:base_offset[1]+copy_size[1],
-                base_offset[2]:base_offset[2]+copy_size[2]
-            ] = bm[:copy_size[0], :copy_size[1], :copy_size[2]]
-        
-        # Voxelize channels
-        chan_vox = channel_void.voxelized(pitch)
-        chan_matrix = np.zeros(grid_shape, dtype=bool)
-        chan_origin = chan_vox.transform[:3, 3]
-        chan_offset = np.round((chan_origin - min_bound) / pitch).astype(int)
-        
-        cm = chan_vox.matrix
-        for i in range(3):
-            if chan_offset[i] < 0:
-                cm = cm[-chan_offset[i]:]
-                chan_offset[i] = 0
-        
-        end_idx = np.minimum(chan_offset + np.array(cm.shape), grid_shape)
-        copy_size = end_idx - chan_offset
-        copy_size = np.minimum(copy_size, np.array(cm.shape))
-        
-        if np.all(copy_size > 0):
-            chan_matrix[
-                chan_offset[0]:chan_offset[0]+copy_size[0],
-                chan_offset[1]:chan_offset[1]+copy_size[1],
-                chan_offset[2]:chan_offset[2]+copy_size[2]
-            ] = cm[:copy_size[0], :copy_size[1], :copy_size[2]]
-        
-        # Subtract
-        result_matrix = base_matrix & ~chan_matrix
-        
-        # Marching cubes
-        verts, faces, _, _ = marching_cubes(
-            volume=result_matrix.astype(np.uint8),
-            level=0.5,
-            spacing=(pitch, pitch, pitch),
-            allow_degenerate=False,
-        )
-        verts += min_bound
-        
-        result = trimesh.Trimesh(vertices=verts, faces=faces.astype(np.int64), process=False)
-        result.remove_unreferenced_vertices()
-        if result.volume < 0:
-            result.invert()
-        trimesh.repair.fix_normals(result)
+    # Export intermediate channel void mesh
+    if output_dir:
+        intermediate_path = output_dir / "intermediate" / "object2_channel_void.stl"
+        intermediate_path.parent.mkdir(parents=True, exist_ok=True)
+        scale_mesh_to_mm(channel_void).export(str(intermediate_path))
+        print(f"    Exported intermediate void: {intermediate_path}")
+    
+    # Subtract channels from base using voxel-based subtraction (more reliable than Blender)
+    print("  Carving channels from base (voxel-based subtraction)...")
+    from skimage.measure import marching_cubes
+    
+    # Voxelize both meshes
+    pitch = VOXEL_PITCH_M
+    
+    # Get combined bounds
+    all_bounds = np.vstack([base.bounds, channel_void.bounds])
+    min_bound = all_bounds.min(axis=0) - pitch * 2
+    max_bound = all_bounds.max(axis=0) + pitch * 2
+    
+    grid_shape = np.ceil((max_bound - min_bound) / pitch).astype(int)
+    print(f"    Voxel grid: {grid_shape} at {meters_to_mm(pitch)*1000:.0f}um pitch")
+    
+    # Voxelize base
+    base_vox = base.voxelized(pitch)
+    base_matrix = np.zeros(grid_shape, dtype=bool)
+    base_origin = base_vox.transform[:3, 3]
+    base_offset = np.round((base_origin - min_bound) / pitch).astype(int)
+    
+    bm = base_vox.matrix
+    for i in range(3):
+        if base_offset[i] < 0:
+            bm = bm[-base_offset[i]:]
+            base_offset[i] = 0
+    
+    end_idx = np.minimum(base_offset + np.array(bm.shape), grid_shape)
+    copy_size = end_idx - base_offset
+    copy_size = np.minimum(copy_size, np.array(bm.shape))
+    
+    if np.all(copy_size > 0):
+        base_matrix[
+            base_offset[0]:base_offset[0]+copy_size[0],
+            base_offset[1]:base_offset[1]+copy_size[1],
+            base_offset[2]:base_offset[2]+copy_size[2]
+        ] = bm[:copy_size[0], :copy_size[1], :copy_size[2]]
+    
+    # Voxelize channels
+    chan_vox = channel_void.voxelized(pitch)
+    chan_matrix = np.zeros(grid_shape, dtype=bool)
+    chan_origin = chan_vox.transform[:3, 3]
+    chan_offset = np.round((chan_origin - min_bound) / pitch).astype(int)
+    
+    cm = chan_vox.matrix
+    for i in range(3):
+        if chan_offset[i] < 0:
+            cm = cm[-chan_offset[i]:]
+            chan_offset[i] = 0
+    
+    end_idx = np.minimum(chan_offset + np.array(cm.shape), grid_shape)
+    copy_size = end_idx - chan_offset
+    copy_size = np.minimum(copy_size, np.array(cm.shape))
+    
+    if np.all(copy_size > 0):
+        chan_matrix[
+            chan_offset[0]:chan_offset[0]+copy_size[0],
+            chan_offset[1]:chan_offset[1]+copy_size[1],
+            chan_offset[2]:chan_offset[2]+copy_size[2]
+        ] = cm[:copy_size[0], :copy_size[1], :copy_size[2]]
+    
+    # Subtract
+    result_matrix = base_matrix & ~chan_matrix
+    
+    # Marching cubes
+    verts, faces, _, _ = marching_cubes(
+        volume=result_matrix.astype(np.uint8),
+        level=0.5,
+        spacing=(pitch, pitch, pitch),
+        allow_degenerate=False,
+    )
+    verts += min_bound
+    
+    result = trimesh.Trimesh(vertices=verts, faces=faces.astype(np.int64), process=False)
+    result.remove_unreferenced_vertices()
+    if result.volume < 0:
+        result.invert()
+    trimesh.repair.fix_normals(result)
     
     print(f"  Object 2 complete: {len(result.vertices)} vertices, {len(result.faces)} faces")
     print(f"    Watertight: {result.is_watertight}")
+    
+    # Run post-embedding validation
+    print("  Running validation...")
+    try:
+        validation_config = ValidationConfig(
+            voxel_pitch_m=VOXEL_PITCH_M,
+            expected_outlets=OBJ2_NUM_INLETS,
+        )
+        report = run_post_embedding_validation(mesh=result, config=validation_config)
+        print(f"    Validation status: {report.status}")
+        if not report.passed:
+            print(f"    WARNING: Validation failed - {report.summary}")
+    except Exception as e:
+        print(f"    Validation error: {e}")
     
     return result
 
@@ -856,7 +913,7 @@ def _create_tapered_cylinder(
     return frustum
 
 
-def generate_object3_bifurcate_512() -> trimesh.Trimesh:
+def generate_object3_bifurcate_512(output_dir: Optional[Path] = None) -> trimesh.Trimesh:
     """
     Generate Object 3: Recursive bifurcation to 512 terminals.
     
@@ -868,6 +925,11 @@ def generate_object3_bifurcate_512() -> trimesh.Trimesh:
     - Overlapping branches merge via voxel union
     
     Returns mesh in METERS (will be scaled to mm at export).
+    
+    Parameters
+    ----------
+    output_dir : Path, optional
+        Directory to save intermediate STL files for debugging
     """
     print("\n" + "=" * 60)
     print("Generating Object 3: Recursive bifurcation to 512 terminals")
@@ -890,7 +952,8 @@ def generate_object3_bifurcate_512() -> trimesh.Trimesh:
         center_xy=(CYLINDER_CENTER[0], CYLINDER_CENTER[1]),
     )
     
-    base = voxel_union_meshes([base_cylinder, ridge], pitch=VOXEL_PITCH_UNION_M)
+    # Use fine pitch for ridge union (0.1mm ridge needs fine resolution)
+    base = voxel_union_meshes([base_cylinder, ridge], pitch=VOXEL_PITCH_RIDGE_M)
     
     # Generate bifurcating trees from each inlet
     print(f"  Generating {OBJ3_NUM_INLETS} bifurcating trees...")
@@ -914,95 +977,117 @@ def generate_object3_bifurcate_512() -> trimesh.Trimesh:
     print("  Combining all trees (overlap-based merge)...")
     combined_void = voxel_union_meshes(all_trees, pitch=VOXEL_PITCH_UNION_M)
     
-    # Subtract from base
-    print("  Carving voids from base...")
+    # Export intermediate tree void mesh
+    if output_dir:
+        intermediate_path = output_dir / "intermediate" / "object3_tree_void.stl"
+        intermediate_path.parent.mkdir(parents=True, exist_ok=True)
+        scale_mesh_to_mm(combined_void).export(str(intermediate_path))
+        print(f"    Exported intermediate void: {intermediate_path}")
+    
+    # Run pre-embedding validation on tree mesh
+    print("  Running pre-embedding validation on tree mesh...")
     try:
-        result = base.difference(combined_void, engine='blender')
-        if result is None or len(result.vertices) == 0:
-            raise ValueError("Boolean difference returned empty mesh")
-        print("    Used Blender boolean difference")
+        pre_report = run_pre_embedding_validation(mesh=combined_void)
+        print(f"    Pre-embedding validation: {pre_report.status}")
     except Exception as e:
-        print(f"    Blender boolean failed ({e}), using voxel-based subtraction")
-        # Voxel-based subtraction (same as Object 2)
-        from skimage.measure import marching_cubes
+        print(f"    Pre-embedding validation error: {e}")
+    
+    # Subtract from base using voxel-based subtraction (more reliable than Blender)
+    print("  Carving voids from base (voxel-based subtraction)...")
+    from skimage.measure import marching_cubes
+    
+    pitch = VOXEL_PITCH_M * 2  # Coarser for large mesh
+    print(f"    Voxel grid pitch: {meters_to_mm(pitch)*1000:.0f}um")
+    
+    all_bounds = np.vstack([base.bounds, combined_void.bounds])
+    min_bound = all_bounds.min(axis=0) - pitch * 2
+    max_bound = all_bounds.max(axis=0) + pitch * 2
+    
+    grid_shape = np.ceil((max_bound - min_bound) / pitch).astype(int)
+    grid_shape = np.minimum(grid_shape, 500)  # Cap grid size
+    
+    # Voxelize base
+    base_vox = base.voxelized(pitch)
+    base_matrix = np.zeros(grid_shape, dtype=bool)
+    base_origin = base_vox.transform[:3, 3]
+    base_offset = np.round((base_origin - min_bound) / pitch).astype(int)
+    base_offset = np.maximum(base_offset, 0)
+    
+    bm = base_vox.matrix
+    end_idx = np.minimum(base_offset + np.array(bm.shape), grid_shape)
+    copy_size = end_idx - base_offset
+    copy_size = np.minimum(copy_size, np.array(bm.shape))
+    copy_size = np.maximum(copy_size, 0)
+    
+    if np.all(copy_size > 0):
+        base_matrix[
+            base_offset[0]:base_offset[0]+copy_size[0],
+            base_offset[1]:base_offset[1]+copy_size[1],
+            base_offset[2]:base_offset[2]+copy_size[2]
+        ] = bm[:copy_size[0], :copy_size[1], :copy_size[2]]
+    
+    # Voxelize void
+    void_vox = combined_void.voxelized(pitch)
+    void_matrix = np.zeros(grid_shape, dtype=bool)
+    void_origin = void_vox.transform[:3, 3]
+    void_offset = np.round((void_origin - min_bound) / pitch).astype(int)
+    void_offset = np.maximum(void_offset, 0)
+    
+    vm = void_vox.matrix
+    end_idx = np.minimum(void_offset + np.array(vm.shape), grid_shape)
+    copy_size = end_idx - void_offset
+    copy_size = np.minimum(copy_size, np.array(vm.shape))
+    copy_size = np.maximum(copy_size, 0)
+    
+    if np.all(copy_size > 0):
+        void_matrix[
+            void_offset[0]:void_offset[0]+copy_size[0],
+            void_offset[1]:void_offset[1]+copy_size[1],
+            void_offset[2]:void_offset[2]+copy_size[2]
+        ] = vm[:copy_size[0], :copy_size[1], :copy_size[2]]
+    
+    # Subtract
+    result_matrix = base_matrix & ~void_matrix
+    
+    if not result_matrix.any():
+        print("    WARNING: Result matrix is empty, using base mesh")
+        result = base
+    else:
+        verts, faces, _, _ = marching_cubes(
+            volume=result_matrix.astype(np.uint8),
+            level=0.5,
+            spacing=(pitch, pitch, pitch),
+            allow_degenerate=False,
+        )
+        verts += min_bound
         
-        pitch = VOXEL_PITCH_M * 2  # Coarser for large mesh
-        
-        all_bounds = np.vstack([base.bounds, combined_void.bounds])
-        min_bound = all_bounds.min(axis=0) - pitch * 2
-        max_bound = all_bounds.max(axis=0) + pitch * 2
-        
-        grid_shape = np.ceil((max_bound - min_bound) / pitch).astype(int)
-        grid_shape = np.minimum(grid_shape, 500)  # Cap grid size
-        
-        # Voxelize base
-        base_vox = base.voxelized(pitch)
-        base_matrix = np.zeros(grid_shape, dtype=bool)
-        base_origin = base_vox.transform[:3, 3]
-        base_offset = np.round((base_origin - min_bound) / pitch).astype(int)
-        base_offset = np.maximum(base_offset, 0)
-        
-        bm = base_vox.matrix
-        end_idx = np.minimum(base_offset + np.array(bm.shape), grid_shape)
-        copy_size = end_idx - base_offset
-        copy_size = np.minimum(copy_size, np.array(bm.shape))
-        copy_size = np.maximum(copy_size, 0)
-        
-        if np.all(copy_size > 0):
-            base_matrix[
-                base_offset[0]:base_offset[0]+copy_size[0],
-                base_offset[1]:base_offset[1]+copy_size[1],
-                base_offset[2]:base_offset[2]+copy_size[2]
-            ] = bm[:copy_size[0], :copy_size[1], :copy_size[2]]
-        
-        # Voxelize void
-        void_vox = combined_void.voxelized(pitch)
-        void_matrix = np.zeros(grid_shape, dtype=bool)
-        void_origin = void_vox.transform[:3, 3]
-        void_offset = np.round((void_origin - min_bound) / pitch).astype(int)
-        void_offset = np.maximum(void_offset, 0)
-        
-        vm = void_vox.matrix
-        end_idx = np.minimum(void_offset + np.array(vm.shape), grid_shape)
-        copy_size = end_idx - void_offset
-        copy_size = np.minimum(copy_size, np.array(vm.shape))
-        copy_size = np.maximum(copy_size, 0)
-        
-        if np.all(copy_size > 0):
-            void_matrix[
-                void_offset[0]:void_offset[0]+copy_size[0],
-                void_offset[1]:void_offset[1]+copy_size[1],
-                void_offset[2]:void_offset[2]+copy_size[2]
-            ] = vm[:copy_size[0], :copy_size[1], :copy_size[2]]
-        
-        # Subtract
-        result_matrix = base_matrix & ~void_matrix
-        
-        if not result_matrix.any():
-            print("    WARNING: Result matrix is empty, using base mesh")
-            result = base
-        else:
-            verts, faces, _, _ = marching_cubes(
-                volume=result_matrix.astype(np.uint8),
-                level=0.5,
-                spacing=(pitch, pitch, pitch),
-                allow_degenerate=False,
-            )
-            verts += min_bound
-            
-            result = trimesh.Trimesh(vertices=verts, faces=faces.astype(np.int64), process=False)
-            result.remove_unreferenced_vertices()
-            if result.volume < 0:
-                result.invert()
-            trimesh.repair.fix_normals(result)
+        result = trimesh.Trimesh(vertices=verts, faces=faces.astype(np.int64), process=False)
+        result.remove_unreferenced_vertices()
+        if result.volume < 0:
+            result.invert()
+        trimesh.repair.fix_normals(result)
     
     print(f"  Object 3 complete: {len(result.vertices)} vertices, {len(result.faces)} faces")
     print(f"    Watertight: {result.is_watertight}")
     
+    # Run post-embedding validation
+    print("  Running post-embedding validation...")
+    try:
+        validation_config = ValidationConfig(
+            voxel_pitch_m=VOXEL_PITCH_M,
+            expected_outlets=OBJ3_TOTAL_TERMINALS,
+        )
+        report = run_post_embedding_validation(mesh=result, config=validation_config)
+        print(f"    Validation status: {report.status}")
+        if not report.passed:
+            print(f"    WARNING: Validation failed - {report.summary}")
+    except Exception as e:
+        print(f"    Validation error: {e}")
+    
     return result
 
 
-def generate_object4_turn_bifurcate_merge() -> trimesh.Trimesh:
+def generate_object4_turn_bifurcate_merge(output_dir: Optional[Path] = None) -> trimesh.Trimesh:
     """
     Generate Object 4: Single inlet, 90-degree turn, bifurcate, merge, return.
     
@@ -1015,6 +1100,11 @@ def generate_object4_turn_bifurcate_merge() -> trimesh.Trimesh:
     - Single trunk returns upward to exit near top face
     
     Returns mesh in METERS (will be scaled to mm at export).
+    
+    Parameters
+    ----------
+    output_dir : Path, optional
+        Directory to save intermediate STL files for debugging
     """
     print("\n" + "=" * 60)
     print("Generating Object 4: Turn-Bifurcate-Merge loop")
@@ -1038,7 +1128,8 @@ def generate_object4_turn_bifurcate_merge() -> trimesh.Trimesh:
         center_xy=(CYLINDER_CENTER[0], CYLINDER_CENTER[1]),
     )
     
-    base = voxel_union_meshes([base_cylinder, ridge], pitch=VOXEL_PITCH_UNION_M)
+    # Use fine pitch for ridge union (0.1mm ridge needs fine resolution)
+    base = voxel_union_meshes([base_cylinder, ridge], pitch=VOXEL_PITCH_RIDGE_M)
     
     # Build the channel network
     print("  Building channel network...")
@@ -1114,90 +1205,112 @@ def generate_object4_turn_bifurcate_merge() -> trimesh.Trimesh:
     print(f"  Combining {len(channel_segments)} channel segments...")
     combined_void = voxel_union_meshes(channel_segments, pitch=VOXEL_PITCH_UNION_M)
     
-    # Subtract from base
-    print("  Carving channels from base...")
+    # Export intermediate channel void mesh
+    if output_dir:
+        intermediate_path = output_dir / "intermediate" / "object4_channel_void.stl"
+        intermediate_path.parent.mkdir(parents=True, exist_ok=True)
+        scale_mesh_to_mm(combined_void).export(str(intermediate_path))
+        print(f"    Exported intermediate void: {intermediate_path}")
+    
+    # Run pre-embedding validation on channel mesh
+    print("  Running pre-embedding validation on channel mesh...")
     try:
-        result = base.difference(combined_void, engine='blender')
-        if result is None or len(result.vertices) == 0:
-            raise ValueError("Boolean difference returned empty mesh")
-        print("    Used Blender boolean difference")
+        pre_report = run_pre_embedding_validation(mesh=combined_void)
+        print(f"    Pre-embedding validation: {pre_report.status}")
     except Exception as e:
-        print(f"    Blender boolean failed ({e}), using voxel-based subtraction")
-        # Voxel-based subtraction
-        from skimage.measure import marching_cubes
+        print(f"    Pre-embedding validation error: {e}")
+    
+    # Subtract from base using voxel-based subtraction (more reliable than Blender)
+    print("  Carving channels from base (voxel-based subtraction)...")
+    from skimage.measure import marching_cubes
+    
+    pitch = VOXEL_PITCH_M
+    print(f"    Voxel grid pitch: {meters_to_mm(pitch)*1000:.0f}um")
+    
+    all_bounds = np.vstack([base.bounds, combined_void.bounds])
+    min_bound = all_bounds.min(axis=0) - pitch * 2
+    max_bound = all_bounds.max(axis=0) + pitch * 2
+    
+    grid_shape = np.ceil((max_bound - min_bound) / pitch).astype(int)
+    grid_shape = np.minimum(grid_shape, 500)
+    
+    # Voxelize base
+    base_vox = base.voxelized(pitch)
+    base_matrix = np.zeros(grid_shape, dtype=bool)
+    base_origin = base_vox.transform[:3, 3]
+    base_offset = np.round((base_origin - min_bound) / pitch).astype(int)
+    base_offset = np.maximum(base_offset, 0)
+    
+    bm = base_vox.matrix
+    end_idx = np.minimum(base_offset + np.array(bm.shape), grid_shape)
+    copy_size = end_idx - base_offset
+    copy_size = np.minimum(copy_size, np.array(bm.shape))
+    copy_size = np.maximum(copy_size, 0)
+    
+    if np.all(copy_size > 0):
+        base_matrix[
+            base_offset[0]:base_offset[0]+copy_size[0],
+            base_offset[1]:base_offset[1]+copy_size[1],
+            base_offset[2]:base_offset[2]+copy_size[2]
+        ] = bm[:copy_size[0], :copy_size[1], :copy_size[2]]
+    
+    # Voxelize void
+    void_vox = combined_void.voxelized(pitch)
+    void_matrix = np.zeros(grid_shape, dtype=bool)
+    void_origin = void_vox.transform[:3, 3]
+    void_offset = np.round((void_origin - min_bound) / pitch).astype(int)
+    void_offset = np.maximum(void_offset, 0)
+    
+    vm = void_vox.matrix
+    end_idx = np.minimum(void_offset + np.array(vm.shape), grid_shape)
+    copy_size = end_idx - void_offset
+    copy_size = np.minimum(copy_size, np.array(vm.shape))
+    copy_size = np.maximum(copy_size, 0)
+    
+    if np.all(copy_size > 0):
+        void_matrix[
+            void_offset[0]:void_offset[0]+copy_size[0],
+            void_offset[1]:void_offset[1]+copy_size[1],
+            void_offset[2]:void_offset[2]+copy_size[2]
+        ] = vm[:copy_size[0], :copy_size[1], :copy_size[2]]
+    
+    # Subtract
+    result_matrix = base_matrix & ~void_matrix
+    
+    if not result_matrix.any():
+        print("    WARNING: Result matrix is empty, using base mesh")
+        result = base
+    else:
+        verts, faces, _, _ = marching_cubes(
+            volume=result_matrix.astype(np.uint8),
+            level=0.5,
+            spacing=(pitch, pitch, pitch),
+            allow_degenerate=False,
+        )
+        verts += min_bound
         
-        pitch = VOXEL_PITCH_M
-        
-        all_bounds = np.vstack([base.bounds, combined_void.bounds])
-        min_bound = all_bounds.min(axis=0) - pitch * 2
-        max_bound = all_bounds.max(axis=0) + pitch * 2
-        
-        grid_shape = np.ceil((max_bound - min_bound) / pitch).astype(int)
-        grid_shape = np.minimum(grid_shape, 500)
-        
-        # Voxelize base
-        base_vox = base.voxelized(pitch)
-        base_matrix = np.zeros(grid_shape, dtype=bool)
-        base_origin = base_vox.transform[:3, 3]
-        base_offset = np.round((base_origin - min_bound) / pitch).astype(int)
-        base_offset = np.maximum(base_offset, 0)
-        
-        bm = base_vox.matrix
-        end_idx = np.minimum(base_offset + np.array(bm.shape), grid_shape)
-        copy_size = end_idx - base_offset
-        copy_size = np.minimum(copy_size, np.array(bm.shape))
-        copy_size = np.maximum(copy_size, 0)
-        
-        if np.all(copy_size > 0):
-            base_matrix[
-                base_offset[0]:base_offset[0]+copy_size[0],
-                base_offset[1]:base_offset[1]+copy_size[1],
-                base_offset[2]:base_offset[2]+copy_size[2]
-            ] = bm[:copy_size[0], :copy_size[1], :copy_size[2]]
-        
-        # Voxelize void
-        void_vox = combined_void.voxelized(pitch)
-        void_matrix = np.zeros(grid_shape, dtype=bool)
-        void_origin = void_vox.transform[:3, 3]
-        void_offset = np.round((void_origin - min_bound) / pitch).astype(int)
-        void_offset = np.maximum(void_offset, 0)
-        
-        vm = void_vox.matrix
-        end_idx = np.minimum(void_offset + np.array(vm.shape), grid_shape)
-        copy_size = end_idx - void_offset
-        copy_size = np.minimum(copy_size, np.array(vm.shape))
-        copy_size = np.maximum(copy_size, 0)
-        
-        if np.all(copy_size > 0):
-            void_matrix[
-                void_offset[0]:void_offset[0]+copy_size[0],
-                void_offset[1]:void_offset[1]+copy_size[1],
-                void_offset[2]:void_offset[2]+copy_size[2]
-            ] = vm[:copy_size[0], :copy_size[1], :copy_size[2]]
-        
-        # Subtract
-        result_matrix = base_matrix & ~void_matrix
-        
-        if not result_matrix.any():
-            print("    WARNING: Result matrix is empty, using base mesh")
-            result = base
-        else:
-            verts, faces, _, _ = marching_cubes(
-                volume=result_matrix.astype(np.uint8),
-                level=0.5,
-                spacing=(pitch, pitch, pitch),
-                allow_degenerate=False,
-            )
-            verts += min_bound
-            
-            result = trimesh.Trimesh(vertices=verts, faces=faces.astype(np.int64), process=False)
-            result.remove_unreferenced_vertices()
-            if result.volume < 0:
-                result.invert()
-            trimesh.repair.fix_normals(result)
+        result = trimesh.Trimesh(vertices=verts, faces=faces.astype(np.int64), process=False)
+        result.remove_unreferenced_vertices()
+        if result.volume < 0:
+            result.invert()
+        trimesh.repair.fix_normals(result)
     
     print(f"  Object 4 complete: {len(result.vertices)} vertices, {len(result.faces)} faces")
     print(f"    Watertight: {result.is_watertight}")
+    
+    # Run post-embedding validation
+    print("  Running post-embedding validation...")
+    try:
+        validation_config = ValidationConfig(
+            voxel_pitch_m=VOXEL_PITCH_M,
+            expected_outlets=2,  # 1 inlet + 1 outlet for loop structure
+        )
+        report = run_post_embedding_validation(mesh=result, config=validation_config)
+        print(f"    Validation status: {report.status}")
+        if not report.passed:
+            print(f"    WARNING: Validation failed - {report.summary}")
+    except Exception as e:
+        print(f"    Validation error: {e}")
     
     return result
 
@@ -1206,7 +1319,7 @@ def generate_object4_turn_bifurcate_merge() -> trimesh.Trimesh:
 # OBJECT 5: CCO-NLP ORGANIC GROWTH
 # =============================================================================
 
-def generate_object5_cco_nlp_organic() -> trimesh.Trimesh:
+def generate_object5_cco_nlp_organic(output_dir: Optional[Path] = None) -> trimesh.Trimesh:
     """
     Generate Object 5: CCO-Hybrid + NLP iterative organic growth.
     
@@ -1223,6 +1336,11 @@ def generate_object5_cco_nlp_organic() -> trimesh.Trimesh:
     - Optimized per-tree after each round, then globally on merged network
     
     Returns mesh in METERS (will be scaled to mm at export).
+    
+    Parameters
+    ----------
+    output_dir : Path, optional
+        Directory to save intermediate STL files for debugging
     """
     import copy
     import time
@@ -1257,7 +1375,8 @@ def generate_object5_cco_nlp_organic() -> trimesh.Trimesh:
         center_xy=(CYLINDER_CENTER[0], CYLINDER_CENTER[1]),
     )
     
-    base = voxel_union_meshes([base_cylinder, ridge], pitch=VOXEL_PITCH_UNION_M)
+    # Use fine pitch for ridge union (0.1mm ridge needs fine resolution)
+    base = voxel_union_meshes([base_cylinder, ridge], pitch=VOXEL_PITCH_RIDGE_M)
     
     # Create domain for CCO generation
     print("\n  Setting up CCO domain and configuration...")
@@ -1464,6 +1583,21 @@ def generate_object5_cco_nlp_organic() -> trimesh.Trimesh:
         else:
             raise RuntimeError("Failed to create tree mesh")
     
+    # Export intermediate tree mesh
+    if output_dir and tree_mesh is not None:
+        intermediate_path = output_dir / "intermediate" / "object5_tree_void.stl"
+        intermediate_path.parent.mkdir(parents=True, exist_ok=True)
+        scale_mesh_to_mm(tree_mesh).export(str(intermediate_path))
+        print(f"    Exported intermediate tree: {intermediate_path}")
+    
+    # Run pre-embedding validation on tree mesh
+    print("  Running pre-embedding validation on tree mesh...")
+    try:
+        pre_report = run_pre_embedding_validation(mesh=tree_mesh)
+        print(f"    Pre-embedding validation: {pre_report.status}")
+    except Exception as e:
+        print(f"    Pre-embedding validation error: {e}")
+    
     # Subtract tree from base (carve voids)
     print("\n  Carving vascular channels from base...")
     try:
@@ -1538,6 +1672,20 @@ def generate_object5_cco_nlp_organic() -> trimesh.Trimesh:
     print(f"\n  Object 5 complete: {len(result.vertices)} vertices, {len(result.faces)} faces")
     print(f"    Watertight: {result.is_watertight}")
     
+    # Run post-embedding validation
+    print("  Running post-embedding validation...")
+    try:
+        validation_config = ValidationConfig(
+            voxel_pitch_m=VOXEL_PITCH_M,
+            expected_outlets=total_outlets_achieved,
+        )
+        post_report = run_post_embedding_validation(mesh=result, config=validation_config)
+        print(f"    Validation status: {post_report.status}")
+        if not post_report.passed:
+            print(f"    WARNING: Validation failed - {post_report.summary}")
+    except Exception as e:
+        print(f"    Validation error: {e}")
+    
     # Generate report
     report = {
         "object": "object5_cco_nlp_organic",
@@ -1592,20 +1740,23 @@ def main():
     print("  - Object 3 bifurcation: 7 levels, depths 0.25-1.75mm, taper 1mm->100um")
     print("  - Overlap-based merge: Voxel union merges overlapping void volumes")
     print("  - Object 5 CCO-NLP: 4 inlets, 4 rounds CCO + NLP, 512 terminals")
-    print(f"\nVoxel pitch: {meters_to_mm(VOXEL_PITCH_M)*1000:.0f} um")
+    print(f"\nVoxel pitch: {meters_to_mm(VOXEL_PITCH_M)*1000:.0f} um (fine)")
+    print(f"Voxel pitch (union): {meters_to_mm(VOXEL_PITCH_UNION_M)*1000:.0f} um")
+    print(f"Voxel pitch (ridge): {meters_to_mm(VOXEL_PITCH_RIDGE_M)*1000:.0f} um")
     print(f"Output units: {OUTPUT_UNITS}")
     
     # Create output directory
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     print(f"\nOutput directory: {OUTPUT_DIR}")
+    print(f"Intermediate STLs will be saved to: {OUTPUT_DIR / 'intermediate'}")
     
-    # Generate and export each object
+    # Generate and export each object (pass output_dir for intermediate STL exports)
     objects = [
-        ("object1_control.stl", generate_object1_control),
-        ("object2_channels.stl", generate_object2_channels),
-        ("object3_bifurcate_512.stl", generate_object3_bifurcate_512),
-        ("object4_turn_bifurcate_merge.stl", generate_object4_turn_bifurcate_merge),
-        ("object5_cco_nlp_organic.stl", generate_object5_cco_nlp_organic),
+        ("object1_control.stl", lambda: generate_object1_control(output_dir=OUTPUT_DIR)),
+        ("object2_channels.stl", lambda: generate_object2_channels(output_dir=OUTPUT_DIR)),
+        ("object3_bifurcate_512.stl", lambda: generate_object3_bifurcate_512(output_dir=OUTPUT_DIR)),
+        ("object4_turn_bifurcate_merge.stl", lambda: generate_object4_turn_bifurcate_merge(output_dir=OUTPUT_DIR)),
+        ("object5_cco_nlp_organic.stl", lambda: generate_object5_cco_nlp_organic(output_dir=OUTPUT_DIR)),
     ]
     
     for filename, generator_func in objects:
@@ -1633,6 +1784,7 @@ def main():
     print("  - object3_bifurcate_512.stl")
     print("  - object4_turn_bifurcate_merge.stl")
     print("  - object5_cco_nlp_organic.stl")
+    print(f"\nIntermediate STLs in: {OUTPUT_DIR / 'intermediate'}")
 
 
 if __name__ == "__main__":
