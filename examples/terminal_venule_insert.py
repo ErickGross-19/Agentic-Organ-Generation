@@ -216,6 +216,30 @@ class CCOParameters:
     optimization_grid_resolution : int
         Resolution of grid for bifurcation point optimization.
         Default: 10. Higher = finer optimization.
+        
+    use_nlp_optimization : bool
+        Enable NLP-based bifurcation point optimization instead of grid search.
+        Default: True. NLP provides smoother, more organic branching patterns.
+        
+    nlp_solver : str
+        Solver method for NLP optimization: "SLSQP", "trust-constr", or "L-BFGS-B".
+        Default: "SLSQP". SLSQP is generally fastest for bounded problems.
+        
+    nlp_tolerance : float
+        Convergence tolerance for NLP solver.
+        Default: 1e-6. Smaller = more precise but slower.
+        
+    max_nlp_iterations : int
+        Maximum iterations for NLP solver.
+        Default: 100. Increase for complex networks.
+        
+    nlp_use_grid_initial_guess : bool
+        Use coarse grid search to find initial guess for NLP.
+        Default: True. Improves convergence reliability.
+        
+    nlp_grid_resolution_for_guess : int
+        Grid resolution for initial guess search (if enabled).
+        Default: 5. Higher = better initial guess, slower.
     """
     num_outlets: int = 800                  # TOTAL outlets (increased for density)
     murray_exponent: float = 3.0            # Murray's law exponent
@@ -225,6 +249,14 @@ class CCOParameters:
     min_terminal_separation: float = 2e-5   # 20 micron between terminals
     candidate_edges_k: int = 80             # Candidate edges for optimization
     optimization_grid_resolution: int = 15  # Grid resolution for optimization
+    
+    # NLP (Non-Linear Programming) local optimization parameters
+    use_nlp_optimization: bool = True       # Enable NLP-based bifurcation optimization
+    nlp_solver: str = "SLSQP"               # Solver: "SLSQP", "trust-constr", "L-BFGS-B"
+    nlp_tolerance: float = 1e-6             # Convergence tolerance
+    max_nlp_iterations: int = 100           # Maximum solver iterations
+    nlp_use_grid_initial_guess: bool = True # Use grid search for initial guess
+    nlp_grid_resolution_for_guess: int = 5  # Grid resolution for initial guess
 
 
 @dataclass
@@ -1290,15 +1322,18 @@ def generate_network_from_spec(
         collision_check_enabled=True,
         use_partial_binding=True,
         use_collision_triage=True,
-        # To enable NLP-based bifurcation point optimization instead of grid search:
-        # use_nlp_optimization=True,
-        # nlp_solver="SLSQP",  # Options: "SLSQP", "trust-constr", "L-BFGS-B"
-        # nlp_tolerance=1e-6,
-        # max_nlp_iterations=100,
+        # NLP-based bifurcation point optimization parameters
+        use_nlp_optimization=cco_params.use_nlp_optimization,
+        nlp_solver=cco_params.nlp_solver,
+        nlp_tolerance=cco_params.nlp_tolerance,
+        max_nlp_iterations=cco_params.max_nlp_iterations,
+        nlp_use_grid_initial_guess=cco_params.nlp_use_grid_initial_guess,
+        nlp_grid_resolution_for_guess=cco_params.nlp_grid_resolution_for_guess,
     )
     
     logger.info(f"  CCO config: murray_exponent={config.murray_exponent}, "
-               f"collision_clearance={config.collision_clearance*1000:.3f}mm")
+               f"collision_clearance={config.collision_clearance*1000:.3f}mm, "
+               f"use_nlp_optimization={config.use_nlp_optimization}")
     
     # Create CCO backend
     backend = CCOHybridBackend()
