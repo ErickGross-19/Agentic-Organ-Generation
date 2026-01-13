@@ -1220,9 +1220,9 @@ def generate_bifurcation_tree_mesh(
     """
     Generate a bifurcating tree mesh from a single inlet.
     
-    Uses recursive bifurcation with exponential radius taper.
-    Branches grow before bifurcating (grow -> bifurcate -> grow pattern).
-    Overlapping branches are merged via voxel union.
+    Uses the pre-built grow_to_point and bifurcate tools from the generation library.
+    Implements grow -> bifurcate -> grow pattern where branches grow for an RNG-based
+    distance before bifurcating, ensuring proper separation between branches.
     
     Parameters
     ----------
@@ -1249,19 +1249,43 @@ def generate_bifurcation_tree_mesh(
     trimesh.Trimesh
         Combined mesh of all branches
     """
-    num_levels = len(bifurcation_depths)
-    all_segments = []
+    from generation.ops.growth import grow_to_point, bifurcate
+    from generation.rules.constraints import BranchingConstraints
     
+    num_levels = len(bifurcation_depths)
     rng = np.random.default_rng(rng_seed)
     
-    # Track current branch tips: list of (position, direction, radius, level)
-    # Direction is a unit vector
-    current_tips = [(
-        np.array(inlet_position),
-        np.array([0.0, 0.0, -1.0]),  # Downward
-        inlet_radius,
-        0,
-    )]
+    # Create a VascularNetwork with a cylinder domain for the tree
+    domain = CylinderDomain(
+        center=CYLINDER_CENTER,
+        radius=CYLINDER_RADIUS_M,
+        height=CYLINDER_HEIGHT_M,
+    )
+    network = create_network(domain, seed=rng_seed)
+    
+    # Set up constraints with relaxed limits for small geometry
+    constraints = BranchingConstraints(
+        min_segment_length=1e-5,
+        max_segment_length=0.01,
+        min_radius=1e-5,
+    )
+    
+    # Add inlet node
+    inlet_result = add_inlet(
+        network,
+        position=inlet_position,
+        direction=(0.0, 0.0, -1.0),  # Downward
+        radius=inlet_radius,
+        vessel_type="venous",
+    )
+    if not inlet_result.is_success():
+        print(f"    Warning: Failed to add inlet: {inlet_result.message}")
+        return trimesh.Trimesh()
+    
+    inlet_node_id = inlet_result.new_ids["node"]
+    
+    # Track current branch tips: list of (node_id, level)
+    current_tips = [(inlet_node_id, 0)]
     
     for level in range(num_levels):
         depth = bifurcation_depths[level]
@@ -1279,17 +1303,25 @@ def generate_bifurcation_tree_mesh(
         
         new_tips = []
         
-        for tip_pos, tip_dir, tip_radius, tip_level in current_tips:
+        for tip_node_id, tip_level in current_tips:
             if tip_level != level:
-                new_tips.append((tip_pos, tip_dir, tip_radius, tip_level))
+                new_tips.append((tip_node_id, tip_level))
                 continue
+            
+            # Get current node position and direction
+            tip_node = network.get_node(tip_node_id)
+            if tip_node is None:
+                continue
+            
+            tip_pos = np.array([tip_node.position.x, tip_node.position.y, tip_node.position.z])
+            tip_dir_dict = tip_node.attributes.get("direction", {"dx": 0, "dy": 0, "dz": -1})
+            tip_dir = np.array([tip_dir_dict.get("dx", 0), tip_dir_dict.get("dy", 0), tip_dir_dict.get("dz", -1)])
             
             # Compute radius for this level
             current_radius = compute_taper_radius(level, num_levels, inlet_radius, terminal_radius)
             next_radius = compute_taper_radius(level + 1, num_levels, inlet_radius, terminal_radius)
             
-            # Grow to bifurcation point
-            # Distance to target z
+            # Calculate distance to target z for grow_to_point
             if abs(tip_dir[2]) > 0.1:
                 dist_to_target = abs((target_z - tip_pos[2]) / tip_dir[2])
             else:
@@ -1297,104 +1329,100 @@ def generate_bifurcation_tree_mesh(
             
             dist_to_target = max(dist_to_target, 0.0001)  # Minimum segment length
             
+            # Calculate bifurcation point
             bifurc_pos = tip_pos + tip_dir * dist_to_target
             
-            # Create segment to bifurcation point
-            seg_mesh = _create_tapered_cylinder(
-                start=tip_pos,
-                end=bifurc_pos,
-                radius_start=current_radius,
-                radius_end=current_radius,
+            # Use grow_to_point to grow to bifurcation point
+            grow_result = grow_to_point(
+                network,
+                from_node_id=tip_node_id,
+                target_point=tuple(bifurc_pos),
+                target_radius=current_radius,
+                constraints=constraints,
+                check_collisions=False,
+                fail_on_collision=False,
             )
-            all_segments.append(seg_mesh)
             
-            # Create two child branches
-            # Compute perpendicular directions for bifurcation
-            if abs(tip_dir[2]) > 0.9:
-                # Mostly vertical, use X and Y for lateral spread
-                perp1 = np.array([1.0, 0.0, 0.0])
-                perp2 = np.array([0.0, 1.0, 0.0])
-            else:
-                # Compute perpendicular in XY plane
-                perp1 = np.cross(tip_dir, np.array([0.0, 0.0, 1.0]))
-                perp1 = perp1 / np.linalg.norm(perp1)
-                perp2 = np.cross(tip_dir, perp1)
-                perp2 = perp2 / np.linalg.norm(perp2)
+            if not grow_result.is_success():
+                print(f"    Warning: grow_to_point failed at level {level}: {grow_result.message}")
+                continue
             
-            # Angle for bifurcation (decreases with level for tighter packing)
-            angle_rad = math.radians(base_angle_deg * (1.0 - 0.1 * level))
+            bifurc_node_id = grow_result.new_ids["node"]
             
-            # Child 1: deflect in perp1 direction
-            child1_dir = tip_dir * math.cos(angle_rad) + perp1 * math.sin(angle_rad)
-            child1_dir = child1_dir / np.linalg.norm(child1_dir)
-            
-            # Child 2: deflect in opposite perp1 direction
-            child2_dir = tip_dir * math.cos(angle_rad) - perp1 * math.sin(angle_rad)
-            child2_dir = child2_dir / np.linalg.norm(child2_dir)
-            
-            # Calculate RNG-based growth distance for post-bifurcation growth
-            # This ensures branches grow and separate before the next bifurcation
-            growth_fraction = rng.uniform(growth_fraction_range[0], growth_fraction_range[1])
-            growth_distance = growth_fraction * distance_between_levels
-            
-            # Ensure growth distance doesn't exceed available space
-            # Account for branch direction (not always vertical)
+            # Calculate RNG-based growth distances for child branches
+            # This implements the grow -> bifurcate -> grow pattern
             max_growth = distance_between_levels * 0.8  # Leave 20% for next bifurcation approach
-            growth_distance = min(growth_distance, max_growth)
-            growth_distance = max(growth_distance, 0.0001)  # Minimum growth
             
-            # Create post-bifurcation growth segments for each child
-            # Child 1: grow in child1_dir before next bifurcation
-            child1_growth_end = bifurc_pos + child1_dir * growth_distance
-            child1_growth_seg = _create_tapered_cylinder(
-                start=bifurc_pos,
-                end=child1_growth_end,
-                radius_start=next_radius,
-                radius_end=next_radius,
-            )
-            all_segments.append(child1_growth_seg)
+            growth_fraction1 = rng.uniform(growth_fraction_range[0], growth_fraction_range[1])
+            growth_distance1 = min(growth_fraction1 * distance_between_levels, max_growth)
+            growth_distance1 = max(growth_distance1, 0.0001)
             
-            # Child 2: grow in child2_dir before next bifurcation (with different RNG)
             growth_fraction2 = rng.uniform(growth_fraction_range[0], growth_fraction_range[1])
             growth_distance2 = min(growth_fraction2 * distance_between_levels, max_growth)
             growth_distance2 = max(growth_distance2, 0.0001)
             
-            child2_growth_end = bifurc_pos + child2_dir * growth_distance2
-            child2_growth_seg = _create_tapered_cylinder(
-                start=bifurc_pos,
-                end=child2_growth_end,
-                radius_start=next_radius,
-                radius_end=next_radius,
-            )
-            all_segments.append(child2_growth_seg)
+            # Angle for bifurcation (decreases with level for tighter packing)
+            angle_deg = base_angle_deg * (1.0 - 0.1 * level)
             
-            # Add tips at the end of growth segments (not at bifurcation point)
-            new_tips.append((child1_growth_end.copy(), child1_dir, next_radius, level + 1))
-            new_tips.append((child2_growth_end.copy(), child2_dir, next_radius, level + 1))
+            # Use bifurcate to create two child branches with RNG-based growth lengths
+            # The bifurcate function creates growth segments for each child
+            bifurc_result = bifurcate(
+                network,
+                at_node_id=bifurc_node_id,
+                child_lengths=(growth_distance1, growth_distance2),
+                angle_deg=angle_deg,
+                constraints=constraints,
+                check_collisions=False,
+                seed=rng_seed,
+            )
+            
+            if not bifurc_result.is_success():
+                print(f"    Warning: bifurcate failed at level {level}: {bifurc_result.message}")
+                continue
+            
+            # Get the child node IDs from bifurcation result
+            child_node_ids = bifurc_result.new_ids.get("nodes", [])
+            for child_node_id in child_node_ids:
+                # Update child node radius for next level
+                child_node = network.get_node(child_node_id)
+                if child_node:
+                    child_node.attributes["radius"] = next_radius
+                new_tips.append((child_node_id, level + 1))
         
         current_tips = new_tips
     
-    # Add final segments for terminal tips
-    for tip_pos, tip_dir, tip_radius, tip_level in current_tips:
+    # Add final short terminal segments for remaining tips
+    for tip_node_id, tip_level in current_tips:
+        tip_node = network.get_node(tip_node_id)
+        if tip_node is None:
+            continue
+        
+        tip_pos = np.array([tip_node.position.x, tip_node.position.y, tip_node.position.z])
+        tip_dir_dict = tip_node.attributes.get("direction", {"dx": 0, "dy": 0, "dz": -1})
+        tip_dir = np.array([tip_dir_dict.get("dx", 0), tip_dir_dict.get("dy", 0), tip_dir_dict.get("dz", -1)])
+        
         # Short terminal segment
         end_pos = tip_pos + tip_dir * 0.0001
-        seg_mesh = _create_tapered_cylinder(
-            start=tip_pos,
-            end=end_pos,
-            radius_start=tip_radius,
-            radius_end=terminal_radius,
+        
+        grow_result = grow_to_point(
+            network,
+            from_node_id=tip_node_id,
+            target_point=tuple(end_pos),
+            target_radius=terminal_radius,
+            constraints=constraints,
+            check_collisions=False,
+            fail_on_collision=False,
         )
-        all_segments.append(seg_mesh)
     
-    # Concatenate all segments (preserves individual branch geometry)
-    # NOTE: We use mesh concatenation instead of voxel union here to preserve
-    # the fine branch structure. Voxel union at 50um pitch would merge branches
-    # that are close together (terminal radius is only 100um = 2 voxels).
-    # The embedding operation will handle the union at the appropriate resolution.
-    print(f"    Concatenating {len(all_segments)} branch segments (preserving geometry)...")
-    combined = trimesh.util.concatenate(all_segments)
+    # Convert network to mesh using the mesh adapter
+    print(f"    Converting network to mesh ({len(network.segments)} segments)...")
+    mesh_result = to_trimesh(network, mode="fast", include_caps=True, include_node_spheres=False)
     
-    return combined
+    if mesh_result.is_success():
+        return mesh_result.metadata["mesh"]
+    else:
+        print(f"    Warning: to_trimesh failed: {mesh_result.message}")
+        return trimesh.Trimesh()
 
 
 def _create_tapered_cylinder(
@@ -1609,6 +1637,10 @@ def generate_object4_turn_bifurcate_merge(
     """
     Generate Object 4: Single inlet, 90-degree turn, bifurcate, merge, return.
     
+    Uses the pre-built grow_to_point and bifurcate tools from the generation library.
+    Implements grow -> bifurcate -> grow pattern where branches grow for an RNG-based
+    distance before bifurcating, ensuring proper separation between branches.
+    
     Design choices:
     - Single inlet at center top face, radius 1mm
     - Travel downward 1mm
@@ -1632,6 +1664,10 @@ def generate_object4_turn_bifurcate_merge(
         This ensures branches separate before the next bifurcation while leaving
         enough space to bifurcate before reaching the edge.
     """
+    from generation.ops.growth import grow_to_point, grow_branch, bifurcate
+    from generation.rules.constraints import BranchingConstraints
+    from generation.core.types import Direction3D
+    
     print("\n" + "=" * 60)
     print("Generating Object 4: Turn-Bifurcate-Merge loop")
     print("=" * 60)
@@ -1641,35 +1677,89 @@ def generate_object4_turn_bifurcate_merge(
     z_top = CYLINDER_CENTER[2] + CYLINDER_HEIGHT_M / 2
     z_bottom = CYLINDER_CENTER[2] - CYLINDER_HEIGHT_M / 2
     
-    # Build the channel network
-    print("  Building channel network...")
-    channel_segments = []
+    # Create a VascularNetwork with a cylinder domain
+    domain = CylinderDomain(
+        center=CYLINDER_CENTER,
+        radius=CYLINDER_RADIUS_M,
+        height=CYLINDER_HEIGHT_M,
+    )
+    network = create_network(domain, seed=rng_seed)
+    
+    # Set up constraints with relaxed limits for small geometry
+    constraints = BranchingConstraints(
+        min_segment_length=1e-5,
+        max_segment_length=0.01,
+        min_radius=1e-5,
+    )
     
     # Inlet position (slightly offset from center to allow return path)
     inlet_x = OBJ4_INLET_POSITION[0] - 0.001  # Offset from center to allow return path
     inlet_y = OBJ4_INLET_POSITION[1]
-    inlet_pos = np.array([inlet_x, inlet_y, z_top])
+    inlet_pos = (inlet_x, inlet_y, z_top)
     
-    # 1. Downward segment (1mm)
-    print("    Segment 1: Downward 1mm")
-    down_end = inlet_pos + np.array([0, 0, -OBJ4_DOWNWARD_LENGTH_M])
-    seg1 = _create_tapered_cylinder(inlet_pos, down_end, OBJ4_INLET_RADIUS_M, OBJ4_INLET_RADIUS_M)
-    channel_segments.append(seg1)
+    # Add inlet node
+    print("  Building channel network using pre-built tools...")
+    inlet_result = add_inlet(
+        network,
+        position=inlet_pos,
+        direction=(0.0, 0.0, -1.0),  # Downward
+        radius=OBJ4_INLET_RADIUS_M,
+        vessel_type="venous",
+    )
+    if not inlet_result.is_success():
+        print(f"    Warning: Failed to add inlet: {inlet_result.message}")
+        return trimesh.Trimesh()
     
-    # 2. 90-degree turn (horizontal along +X)
-    print("    Segment 2: Horizontal turn (+X direction)")
-    turn_end = down_end + np.array([OBJ4_HORIZONTAL_LENGTH_M, 0, 0])
-    seg2 = _create_tapered_cylinder(down_end, turn_end, OBJ4_INLET_RADIUS_M, OBJ4_INLET_RADIUS_M * 0.9)
-    channel_segments.append(seg2)
+    current_node_id = inlet_result.new_ids["node"]
+    
+    # 1. Downward segment (1mm) using grow_to_point
+    print("    Segment 1: Downward 1mm (using grow_to_point)")
+    down_end = (inlet_x, inlet_y, z_top - OBJ4_DOWNWARD_LENGTH_M)
+    grow_result = grow_to_point(
+        network,
+        from_node_id=current_node_id,
+        target_point=down_end,
+        target_radius=OBJ4_INLET_RADIUS_M,
+        constraints=constraints,
+        check_collisions=False,
+        fail_on_collision=False,
+    )
+    if not grow_result.is_success():
+        print(f"    Warning: grow_to_point failed: {grow_result.message}")
+        return trimesh.Trimesh()
+    current_node_id = grow_result.new_ids["node"]
+    
+    # 2. 90-degree turn (horizontal along +X) using grow_to_point
+    print("    Segment 2: Horizontal turn (+X direction) (using grow_to_point)")
+    turn_end = (inlet_x + OBJ4_HORIZONTAL_LENGTH_M, inlet_y, z_top - OBJ4_DOWNWARD_LENGTH_M)
+    
+    # Update direction for horizontal growth
+    turn_node = network.get_node(current_node_id)
+    if turn_node:
+        turn_node.attributes["direction"] = {"dx": 1.0, "dy": 0.0, "dz": 0.0}
+    
+    grow_result = grow_to_point(
+        network,
+        from_node_id=current_node_id,
+        target_point=turn_end,
+        target_radius=OBJ4_INLET_RADIUS_M * 0.9,
+        constraints=constraints,
+        check_collisions=False,
+        fail_on_collision=False,
+    )
+    if not grow_result.is_success():
+        print(f"    Warning: grow_to_point failed: {grow_result.message}")
+        return trimesh.Trimesh()
+    current_node_id = grow_result.new_ids["node"]
     
     # 3. Bifurcate in XY plane with grow -> bifurcate -> grow pattern
-    print(f"    Bifurcating {OBJ4_NUM_BIFURCATIONS} levels in XY plane (grow-bifurcate-grow)")
+    print(f"    Bifurcating {OBJ4_NUM_BIFURCATIONS} levels in XY plane (using bifurcate)")
     
-    # Create bifurcating branches
-    branch_tips = [(turn_end.copy(), np.array([1.0, 0.0, 0.0]), OBJ4_INLET_RADIUS_M * 0.9)]
+    # Track current branch tips: list of node_ids
+    branch_tip_ids = [current_node_id]
     
     for level in range(OBJ4_NUM_BIFURCATIONS):
-        new_tips = []
+        new_tip_ids = []
         branch_length = 0.0005 * (1.0 - 0.2 * level)  # Decreasing length
         branch_radius = OBJ4_INLET_RADIUS_M * 0.9 * (0.8 ** (level + 1))
         
@@ -1679,79 +1769,125 @@ def generate_object4_turn_bifurcate_merge(
         else:
             next_branch_length = branch_length * 0.5  # Last level: use half of current
         
-        for tip_pos, tip_dir, tip_r in branch_tips:
-            # Grow forward a bit (pre-bifurcation growth)
+        for tip_node_id in branch_tip_ids:
+            tip_node = network.get_node(tip_node_id)
+            if tip_node is None:
+                continue
+            
+            tip_pos = np.array([tip_node.position.x, tip_node.position.y, tip_node.position.z])
+            tip_dir_dict = tip_node.attributes.get("direction", {"dx": 1, "dy": 0, "dz": 0})
+            tip_dir = np.array([tip_dir_dict.get("dx", 1), tip_dir_dict.get("dy", 0), tip_dir_dict.get("dz", 0)])
+            
+            # Grow forward a bit (pre-bifurcation growth) using grow_branch
             mid_pos = tip_pos + tip_dir * branch_length
-            seg = _create_tapered_cylinder(tip_pos, mid_pos, tip_r, branch_radius)
-            channel_segments.append(seg)
-            
-            # Bifurcate: one branch goes +Y, one goes -Y (with some forward component)
-            angle = math.radians(45 - 10 * level)
-            
-            # Branch 1: +Y deflection
-            dir1 = tip_dir * math.cos(angle) + np.array([0, 1, 0]) * math.sin(angle)
-            dir1 = dir1 / np.linalg.norm(dir1)
-            
-            # Branch 2: -Y deflection
-            dir2 = tip_dir * math.cos(angle) + np.array([0, -1, 0]) * math.sin(angle)
-            dir2 = dir2 / np.linalg.norm(dir2)
-            
-            # Calculate RNG-based growth distance for post-bifurcation growth
-            # This ensures branches grow and separate before the next bifurcation
-            growth_fraction1 = rng.uniform(growth_fraction_range[0], growth_fraction_range[1])
-            growth_distance1 = growth_fraction1 * next_branch_length
-            
-            # Ensure growth distance doesn't exceed available space
-            max_growth = next_branch_length * 0.8  # Leave 20% for next bifurcation approach
-            growth_distance1 = min(growth_distance1, max_growth)
-            growth_distance1 = max(growth_distance1, 0.0001)  # Minimum growth
-            
-            # Create post-bifurcation growth segment for branch 1
-            child1_growth_end = mid_pos + dir1 * growth_distance1
-            child1_growth_seg = _create_tapered_cylinder(
-                start=mid_pos,
-                end=child1_growth_end,
-                radius_start=branch_radius,
-                radius_end=branch_radius,
+            grow_result = grow_to_point(
+                network,
+                from_node_id=tip_node_id,
+                target_point=tuple(mid_pos),
+                target_radius=branch_radius,
+                constraints=constraints,
+                check_collisions=False,
+                fail_on_collision=False,
             )
-            channel_segments.append(child1_growth_seg)
             
-            # Calculate growth distance for branch 2 (with different RNG)
+            if not grow_result.is_success():
+                print(f"    Warning: grow_to_point failed at level {level}: {grow_result.message}")
+                continue
+            
+            bifurc_node_id = grow_result.new_ids["node"]
+            
+            # Calculate RNG-based growth distances for child branches
+            max_growth = next_branch_length * 0.8  # Leave 20% for next bifurcation approach
+            
+            growth_fraction1 = rng.uniform(growth_fraction_range[0], growth_fraction_range[1])
+            growth_distance1 = min(growth_fraction1 * next_branch_length, max_growth)
+            growth_distance1 = max(growth_distance1, 0.0001)
+            
             growth_fraction2 = rng.uniform(growth_fraction_range[0], growth_fraction_range[1])
             growth_distance2 = min(growth_fraction2 * next_branch_length, max_growth)
             growth_distance2 = max(growth_distance2, 0.0001)
             
-            # Create post-bifurcation growth segment for branch 2
-            child2_growth_end = mid_pos + dir2 * growth_distance2
-            child2_growth_seg = _create_tapered_cylinder(
-                start=mid_pos,
-                end=child2_growth_end,
-                radius_start=branch_radius,
-                radius_end=branch_radius,
-            )
-            channel_segments.append(child2_growth_seg)
+            # Angle for bifurcation (decreases with level for tighter packing)
+            angle_deg = 45 - 10 * level
             
-            # Add tips at the end of growth segments (not at bifurcation point)
-            new_tips.append((child1_growth_end.copy(), dir1, branch_radius))
-            new_tips.append((child2_growth_end.copy(), dir2, branch_radius))
+            # Use bifurcate to create two child branches with RNG-based growth lengths
+            bifurc_result = bifurcate(
+                network,
+                at_node_id=bifurc_node_id,
+                child_lengths=(growth_distance1, growth_distance2),
+                angle_deg=angle_deg,
+                constraints=constraints,
+                check_collisions=False,
+                seed=rng_seed,
+            )
+            
+            if not bifurc_result.is_success():
+                print(f"    Warning: bifurcate failed at level {level}: {bifurc_result.message}")
+                continue
+            
+            # Get the child node IDs from bifurcation result
+            child_node_ids = bifurc_result.new_ids.get("nodes", [])
+            for child_node_id in child_node_ids:
+                # Update child node radius for next level
+                child_node = network.get_node(child_node_id)
+                if child_node:
+                    child_node.attributes["radius"] = branch_radius
+                new_tip_ids.append(child_node_id)
         
-        branch_tips = new_tips
+        branch_tip_ids = new_tip_ids
     
     # 4. Merge branches back (overlap-based merge)
-    # Route all branch tips toward a common merge point
-    print("    Merging branches (overlap-based)")
-    merge_point = np.array([0.002, 0.0, down_end[2]])  # Merge point at +2mm X
+    # Route all branch tips toward a common merge point using grow_to_point
+    print("    Merging branches (using grow_to_point)")
+    merge_point = (0.002, 0.0, z_top - OBJ4_DOWNWARD_LENGTH_M)  # Merge point at +2mm X
     
-    for tip_pos, tip_dir, tip_r in branch_tips:
-        # Create segment toward merge point
-        seg = _create_tapered_cylinder(tip_pos, merge_point, tip_r, OBJ4_TERMINAL_RADIUS_M)
-        channel_segments.append(seg)
+    merge_node_id = None
+    for tip_node_id in branch_tip_ids:
+        tip_node = network.get_node(tip_node_id)
+        if tip_node is None:
+            continue
+        
+        grow_result = grow_to_point(
+            network,
+            from_node_id=tip_node_id,
+            target_point=merge_point,
+            target_radius=OBJ4_TERMINAL_RADIUS_M,
+            constraints=constraints,
+            check_collisions=False,
+            fail_on_collision=False,
+        )
+        if grow_result.is_success():
+            merge_node_id = grow_result.new_ids["node"]
     
-    # 5. Return upward to top face
-    print("    Segment: Return upward to top face")
-    outlet_pos = np.array([0.002, 0.0, z_top])  # Outlet at +2mm X from center
-    seg_return = _create_tapered_cylinder(merge_point, outlet_pos, OBJ4_TERMINAL_RADIUS_M, OBJ4_TERMINAL_RADIUS_M)
-    channel_segments.append(seg_return)
+    # 5. Return upward to top face using grow_to_point
+    print("    Segment: Return upward to top face (using grow_to_point)")
+    outlet_pos = (0.002, 0.0, z_top)  # Outlet at +2mm X from center
+    
+    if merge_node_id is not None:
+        # Update direction for upward growth
+        merge_node = network.get_node(merge_node_id)
+        if merge_node:
+            merge_node.attributes["direction"] = {"dx": 0.0, "dy": 0.0, "dz": 1.0}
+        
+        grow_result = grow_to_point(
+            network,
+            from_node_id=merge_node_id,
+            target_point=outlet_pos,
+            target_radius=OBJ4_TERMINAL_RADIUS_M,
+            constraints=constraints,
+            check_collisions=False,
+            fail_on_collision=False,
+        )
+    
+    # Convert network to mesh using the mesh adapter
+    print(f"    Converting network to mesh ({len(network.segments)} segments)...")
+    mesh_result = to_trimesh(network, mode="fast", include_caps=True, include_node_spheres=False)
+    
+    if not mesh_result.is_success():
+        print(f"    Warning: to_trimesh failed: {mesh_result.message}")
+        return trimesh.Trimesh()
+    
+    channel_segments = [mesh_result.metadata["mesh"]]
     
     # Union all channel segments
     print(f"  Combining {len(channel_segments)} channel segments...")
