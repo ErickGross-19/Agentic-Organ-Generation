@@ -557,6 +557,11 @@ def voxel_union_meshes(meshes: List[trimesh.Trimesh], pitch: float) -> trimesh.T
         factor=1.5,
         log_prefix="[voxel_union_meshes] ",
     )
+    
+    # IMPORTANT: Fill the voxel grid to get solid volumes, not just surface shells
+    # Without .fill(), voxelized() returns surface occupancy which produces fragile
+    # non-manifold results and nonsense volumes when passed to marching cubes
+    voxels = voxels.fill()
     voxel_matrix = voxels.matrix
     
     # Marching cubes
@@ -609,7 +614,11 @@ def export_mesh_with_units(mesh: trimesh.Trimesh, output_path: Path, units: str 
     print(f"  Units sidecar: {sidecar_path}")
 
 
-def repair_mesh_for_embedding(mesh: trimesh.Trimesh, name: str = "mesh") -> trimesh.Trimesh:
+def repair_mesh_for_embedding(
+    mesh: trimesh.Trimesh, 
+    name: str = "mesh",
+    keep_largest_component: bool = True,
+) -> trimesh.Trimesh:
     """
     Repair a mesh to ensure it is watertight before embedding.
     
@@ -622,6 +631,10 @@ def repair_mesh_for_embedding(mesh: trimesh.Trimesh, name: str = "mesh") -> trim
         The mesh to repair
     name : str
         Name for logging purposes
+    keep_largest_component : bool
+        If True, keep only the largest connected component (default).
+        Set to False for meshes with multiple disconnected parts that should
+        all be preserved (e.g., Object 3's 4 separate inlet trees).
     
     Returns
     -------
@@ -636,8 +649,8 @@ def repair_mesh_for_embedding(mesh: trimesh.Trimesh, name: str = "mesh") -> trim
     # Primary repair method: Use validity library's meshfix_repair
     try:
         from validity.mesh.repair import meshfix_repair
-        print(f"    Using validity library's meshfix_repair...")
-        repaired = meshfix_repair(repaired, keep_largest_component=True)
+        print(f"    Using validity library's meshfix_repair (keep_largest_component={keep_largest_component})...")
+        repaired = meshfix_repair(repaired, keep_largest_component=keep_largest_component)
         print(f"    meshfix_repair complete")
     except ImportError:
         print(f"    meshfix_repair not available (pymeshfix not installed)")
@@ -712,6 +725,7 @@ def embed_void_in_cylinder(
     output_dir: Optional[Path] = None,
     object_name: str = "object",
     voxel_pitch: float = VOXEL_PITCH_M,
+    keep_largest_component: bool = True,
 ) -> trimesh.Trimesh:
     """
     Use the repo's embed_tree_as_negative_space function to carve voids from a cylinder domain.
@@ -735,6 +749,10 @@ def embed_void_in_cylinder(
         Name prefix for intermediate files
     voxel_pitch : float
         Voxel pitch for embedding (in meters)
+    keep_largest_component : bool
+        If True, keep only the largest connected component during repair (default).
+        Set to False for meshes with multiple disconnected parts that should
+        all be preserved (e.g., Object 3's 4 separate inlet trees).
     
     Returns
     -------
@@ -746,7 +764,11 @@ def embed_void_in_cylinder(
     from scipy import ndimage
     
     # Repair the void mesh before embedding to ensure watertightness
-    void_mesh = repair_mesh_for_embedding(void_mesh, name=f"{object_name}_void")
+    void_mesh = repair_mesh_for_embedding(
+        void_mesh, 
+        name=f"{object_name}_void",
+        keep_largest_component=keep_largest_component,
+    )
     
     # Print diagnostic info about the void mesh
     void_bounds = void_mesh.bounds
@@ -810,24 +832,58 @@ def embed_void_in_cylinder(
         if domain_with_void is None:
             raise RuntimeError("embed_tree_as_negative_space returned None for domain_with_void")
         
-        # Check if the void was actually carved (compare volumes)
-        cylinder_volume = pi * CYLINDER_RADIUS_M**2 * CYLINDER_HEIGHT_M
-        result_volume = abs(domain_with_void.volume)
-        void_volume = abs(void_mesh.volume)
-        expected_volume = cylinder_volume - void_volume
+        # FIX 1 & 6: Use mask-based test instead of volume comparison
+        # Void meshes often have unreliable/zero volume (uncapped tubes, self-intersections)
+        # so volume comparison is unreliable. Use voxel counts from metadata instead.
+        metadata = result.get('metadata', {})
+        voxel_counts = metadata.get('voxel_counts', {})
         
-        print(f"    Expected cylinder volume: {cylinder_volume:.9f} m^3")
-        print(f"    Expected void volume: {void_volume:.9f} m^3")
-        print(f"    Expected result volume: {expected_volume:.9f} m^3")
-        print(f"    Actual result volume: {result_volume:.9f} m^3")
+        domain_voxels = voxel_counts.get('domain', 0)
+        void_voxels = voxel_counts.get('void', 0)
+        solid_voxels = voxel_counts.get('solid', 0)
         
-        # If the result volume is too close to the cylinder volume, the void wasn't carved
-        volume_ratio = result_volume / cylinder_volume
-        if volume_ratio > 0.99:
-            print(f"    WARNING: Result volume is {volume_ratio*100:.1f}% of cylinder - void may not have been carved!")
+        # Debug artifact: Print mask counts (Fix 6)
+        print(f"    Voxel counts from embedding:")
+        print(f"      Domain mask: {domain_voxels} voxels")
+        print(f"      Void mask: {void_voxels} voxels")
+        print(f"      Solid mask: {solid_voxels} voxels")
+        
+        # Save debug artifacts if output_dir provided (Fix 6)
+        if output_dir:
+            debug_path = output_dir / "intermediate" / f"{object_name}_embedding_debug.json"
+            debug_path.parent.mkdir(parents=True, exist_ok=True)
+            debug_info = {
+                "voxel_counts": voxel_counts,
+                "void_bounds": void_bounds.tolist() if hasattr(void_bounds, 'tolist') else list(void_bounds),
+                "domain_bounds": {
+                    "center": list(CYLINDER_CENTER),
+                    "radius": CYLINDER_RADIUS_M,
+                    "height": CYLINDER_HEIGHT_M,
+                },
+                "voxel_pitch": voxel_pitch,
+                "metadata": {k: v for k, v in metadata.items() if k != 'voxel_counts'},
+            }
+            with open(debug_path, 'w') as f:
+                json.dump(debug_info, f, indent=2, default=str)
+            print(f"    Saved debug info: {debug_path}")
+        
+        # Mask-based carving check (Fix 1):
+        # Carving is successful if:
+        # 1. void_mask.sum() > 0 (void was voxelized)
+        # 2. solid_mask.sum() < domain_mask.sum() - epsilon (material was removed)
+        epsilon = max(1, int(domain_voxels * 0.001))  # 0.1% tolerance
+        
+        carving_successful = (void_voxels > 0) and (solid_voxels < domain_voxels - epsilon)
+        
+        if not carving_successful:
+            if void_voxels == 0:
+                print(f"    WARNING: Void mask is empty - void was not voxelized!")
+            elif solid_voxels >= domain_voxels - epsilon:
+                print(f"    WARNING: Solid mask ({solid_voxels}) ≈ domain mask ({domain_voxels}) - void may not have been carved!")
             print(f"    Falling back to direct voxel subtraction...")
-            raise RuntimeError("Void not carved - falling back to direct subtraction")
+            raise RuntimeError("Void not carved (mask-based check failed) - falling back to direct subtraction")
         
+        print(f"    Carving verified: {domain_voxels - solid_voxels} voxels removed ({(domain_voxels - solid_voxels) / domain_voxels * 100:.1f}%)")
         print(f"    Embedding complete: {len(domain_with_void.vertices)} vertices, {len(domain_with_void.faces)} faces")
         print(f"    Watertight: {domain_with_void.is_watertight}")
         
@@ -1439,12 +1495,15 @@ def generate_object3_bifurcate_512(output_dir: Optional[Path] = None) -> trimesh
         traceback.print_exc()
     
     # Use the repo's embed_tree_as_negative_space function to carve voids from cylinder
+    # NOTE: keep_largest_component=False to preserve all 4 inlet trees
+    # (they are disconnected and would otherwise be dropped by meshfix_repair)
     print("  Carving voids using embed_tree_as_negative_space...")
     cylinder_with_void = embed_void_in_cylinder(
         void_mesh=combined_void,
         output_dir=output_dir,
         object_name="object3",
         voxel_pitch=VOXEL_PITCH_M,
+        keep_largest_component=False,  # Preserve all 4 inlet trees
     )
     
     # Export intermediate cylinder with void (before ridge)
