@@ -634,7 +634,22 @@ def voxel_union_meshes(meshes: List[trimesh.Trimesh], pitch: float) -> trimesh.T
     # This avoids the seam/gap bugs that occur when manually applying
     # voxels.transform[:3, 3] to skimage marching_cubes output.
     result = voxels.marching_cubes
-    
+
+    # -------------------------------------------------------------------------
+    try:
+        in_extent = float(np.max(combined.extents))
+        out_extent = float(np.max(result.extents))
+        if in_extent > 0:
+            ratio = out_extent / in_extent
+            if ratio > 50.0:
+                print(
+                    f"[voxel_union_meshes] Detected marching_cubes in voxel coordinates "
+                    f"(out/in={ratio:.1f}). Applying voxels.transform to convert to meters."
+                )
+                result.apply_transform(voxels.transform)
+    except Exception as e:
+        print(f"[voxel_union_meshes] Warning: unit sanity-check/transform failed: {e}")
+
     # Light cleanup pass: merge vertices and fill holes
     # Avoid aggressive face filtering that can open seams
     result.merge_vertices()
@@ -2323,7 +2338,22 @@ def add_ridge_to_mesh(mesh_m: trimesh.Trimesh) -> trimesh.Trimesh:
     
     # Perform voxel union
     combined = voxel_union_meshes([mesh_m, ridge], pitch=VOXEL_PITCH_RIDGE_M)
-    
+    # Fail fast if something is still in voxel-index coordinates.
+    # (If this triggers, the ridge check will falsely "succeed" because 100 >> 0.0011.)
+    try:
+        in_extent = float(np.max(mesh_m.extents))
+        out_extent = float(np.max(combined.extents))
+        if in_extent > 0:
+            ratio = out_extent / in_extent
+            if ratio > 50.0:
+                raise RuntimeError(
+                    f"voxel_union_meshes returned a mesh that looks like voxel-index coordinates "
+                    f"(out/in={ratio:.1f}). Expected meters. "
+                    f"Check voxel_union_meshes() transform handling."
+                )
+    except Exception:
+        raise
+
     # Print diagnostic info about combined mesh
     print(f"    Combined mesh: {len(combined.vertices)} vertices, {len(combined.faces)} faces")
     print(f"    Combined mesh bounds: {combined.bounds}")
