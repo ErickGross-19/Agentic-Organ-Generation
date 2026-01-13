@@ -106,6 +106,19 @@ class CCOConfig(BackendConfig):
     min_terminal_separation_cross_type: Optional[float] = None  # A-V separation (if None, no cross-type check)
     encourage_av_proximity: bool = False  # If True, prefer outlets near opposite vessel type terminals
     
+    # NLP (Non-Linear Programming) optimization parameters
+    # When enabled, uses gradient-based optimization instead of grid search for bifurcation points
+    use_nlp_optimization: bool = False  # Enable NLP-based bifurcation point optimization
+    nlp_solver: str = "SLSQP"  # Solver method: "SLSQP", "trust-constr", or "L-BFGS-B"
+    nlp_tolerance: float = 1e-6  # Convergence tolerance for NLP solver
+    max_nlp_iterations: int = 100  # Maximum iterations for NLP solver
+    nlp_use_grid_initial_guess: bool = True  # Use coarse grid search for initial guess
+    nlp_grid_resolution_for_guess: int = 5  # Grid resolution for initial guess (if enabled)
+    
+    # Trifurcation support (3-way splits)
+    enable_trifurcation: bool = False  # Enable 3-way splits during insertion
+    trifurcation_cost_threshold: float = 0.8  # Cost ratio threshold to prefer trifurcation
+    
     def validate(self) -> None:
         """
         Validate configuration parameters.
@@ -165,6 +178,27 @@ class CCOConfig(BackendConfig):
             raise ValueError(f"min_radius must be positive, got {self.min_radius}")
         if self.min_terminal_separation < 0:
             raise ValueError(f"min_terminal_separation must be non-negative, got {self.min_terminal_separation}")
+        
+        # Validate NLP optimization parameters
+        valid_nlp_solvers = {"SLSQP", "trust-constr", "L-BFGS-B"}
+        if self.nlp_solver not in valid_nlp_solvers:
+            raise ValueError(
+                f"nlp_solver must be one of {valid_nlp_solvers}, got '{self.nlp_solver}'"
+            )
+        if self.nlp_tolerance <= 0:
+            raise ValueError(f"nlp_tolerance must be positive, got {self.nlp_tolerance}")
+        if self.max_nlp_iterations < 1:
+            raise ValueError(f"max_nlp_iterations must be at least 1, got {self.max_nlp_iterations}")
+        if self.nlp_grid_resolution_for_guess < 1:
+            raise ValueError(
+                f"nlp_grid_resolution_for_guess must be at least 1, got {self.nlp_grid_resolution_for_guess}"
+            )
+        
+        # Validate trifurcation parameters
+        if not 0 < self.trifurcation_cost_threshold <= 1:
+            raise ValueError(
+                f"trifurcation_cost_threshold must be in (0, 1], got {self.trifurcation_cost_threshold}"
+            )
 
 
 @dataclass
@@ -922,6 +956,10 @@ class CCOHybridBackend(GenerationBackend):
         Insert a new outlet into the tree by splitting an existing edge.
         
         Uses partial binding optimization for efficient cost evaluation.
+        
+        When config.enable_trifurcation is True, also considers inserting at
+        existing junction nodes to create 3-way splits (trifurcations) instead
+        of always creating new bifurcation points.
         """
         candidate_edges = self._select_candidate_edges(
             network, tree_view, outlet_point, config
@@ -947,12 +985,195 @@ class CCOHybridBackend(GenerationBackend):
         if best_edge is None or best_bifurcation is None:
             return False
         
-        self._perform_insertion(
-            network, tree_view, best_edge, best_bifurcation,
-            outlet_point, vessel_type, config
+        best_trifurcation_node = None
+        best_trifurcation_cost = float('inf')
+        
+        if config.enable_trifurcation:
+            trifurcation_node, trifurcation_cost = self._find_best_trifurcation_point(
+                network, tree_view, outlet_point, config
+            )
+            if trifurcation_node is not None:
+                best_trifurcation_node = trifurcation_node
+                best_trifurcation_cost = trifurcation_cost
+        
+        use_trifurcation = (
+            config.enable_trifurcation and
+            best_trifurcation_node is not None and
+            best_trifurcation_cost < best_cost * config.trifurcation_cost_threshold
         )
         
+        if use_trifurcation:
+            self._perform_trifurcation_insertion(
+                network, tree_view, best_trifurcation_node,
+                outlet_point, vessel_type, config
+            )
+        else:
+            self._perform_insertion(
+                network, tree_view, best_edge, best_bifurcation,
+                outlet_point, vessel_type, config
+            )
+        
         return True
+    
+    def _find_best_trifurcation_point(
+        self,
+        network: VascularNetwork,
+        tree_view: ArrayTreeView,
+        outlet_point: Point3D,
+        config: CCOConfig,
+    ) -> Tuple[Optional[int], float]:
+        """
+        Find the best existing junction node for creating a trifurcation.
+        
+        Searches for junction nodes that are close to the outlet point and
+        would result in a low-cost trifurcation (3-way split).
+        
+        Returns
+        -------
+        tuple
+            (node_id, cost) of best trifurcation point, or (None, inf) if none found
+        """
+        best_node_id = None
+        best_cost = float('inf')
+        
+        junction_nodes = [
+            n for n in network.nodes.values()
+            if n.node_type == "junction"
+        ]
+        
+        for node in junction_nodes:
+            connected_segs = network.get_connected_segment_ids(node.id)
+            if len(connected_segs) != 2:
+                continue
+            
+            dist = outlet_point.distance_to(node.position)
+            
+            if dist > config.candidate_search_radius:
+                continue
+            
+            if dist < config.min_segment_length:
+                continue
+            
+            node_radius = node.attributes.get("radius", config.min_radius)
+            gamma = config.murray_exponent
+            
+            existing_radii = []
+            for seg_id in connected_segs:
+                seg = network.segments[seg_id]
+                if seg.start_node_id == node.id:
+                    existing_radii.append(seg.geometry.radius_start)
+                else:
+                    existing_radii.append(seg.geometry.radius_end)
+            
+            seg_record = tree_view.segments.get(connected_segs[0])
+            existing_demand = seg_record.subtree_terminal_count if seg_record else 1
+            new_demand = 1
+            total_demand = existing_demand + new_demand
+            
+            if total_demand > 0:
+                f_new = new_demand / total_demand
+                r_new = node_radius * (f_new ** (1.0 / gamma))
+            else:
+                r_new = node_radius * config.fallback_murray_split_ratio
+            
+            cost = (
+                config.cost_radius_weight * (r_new ** gamma * dist) +
+                config.cost_length_weight * dist
+            )
+            
+            boundary_dist = network.domain.distance_to_boundary(node.position)
+            if boundary_dist < config.boundary_penalty_threshold:
+                cost += config.boundary_penalty_weight * (config.boundary_penalty_threshold - boundary_dist)
+            
+            if config.collision_check_enabled:
+                T = outlet_point.to_array()
+                X = node.position.to_array()
+                
+                has_collision = False
+                for seg in network.segments.values():
+                    if seg.start_node_id == node.id or seg.end_node_id == node.id:
+                        continue
+                    
+                    seg_start = network.nodes[seg.start_node_id].position.to_array()
+                    seg_end = network.nodes[seg.end_node_id].position.to_array()
+                    
+                    min_dist = self._segment_to_polyline_distance(
+                        X, T, seg_start, seg_end
+                    )
+                    
+                    clearance = r_new + seg.geometry.mean_radius() + config.collision_clearance
+                    if min_dist < clearance:
+                        has_collision = True
+                        break
+                
+                if has_collision:
+                    continue
+            
+            if cost < best_cost:
+                best_cost = cost
+                best_node_id = node.id
+        
+        return best_node_id, best_cost
+    
+    def _perform_trifurcation_insertion(
+        self,
+        network: VascularNetwork,
+        tree_view: ArrayTreeView,
+        junction_node_id: int,
+        outlet_point: Point3D,
+        vessel_type: str,
+        config: CCOConfig,
+    ) -> None:
+        """
+        Perform insertion by adding a new outlet to an existing junction node.
+        
+        This creates a trifurcation (3-way split) at the junction node.
+        """
+        junction_node = network.nodes[junction_node_id]
+        
+        node_radius = junction_node.attributes.get("radius", config.min_radius)
+        gamma = config.murray_exponent
+        
+        connected_segs = network.get_connected_segment_ids(junction_node_id)
+        seg_record = tree_view.segments.get(connected_segs[0]) if connected_segs else None
+        existing_demand = seg_record.subtree_terminal_count if seg_record else 1
+        new_demand = 1
+        total_demand = existing_demand + new_demand
+        
+        if total_demand > 0:
+            f_new = new_demand / total_demand
+            r_new = node_radius * (f_new ** (1.0 / gamma))
+        else:
+            r_new = node_radius * config.fallback_murray_split_ratio
+        
+        outlet_node = Node(
+            id=network.id_gen.next_id(),
+            position=outlet_point,
+            node_type="terminal",
+            vessel_type=vessel_type,
+            attributes={
+                "radius": r_new,
+                "branch_order": junction_node.attributes.get("branch_order", 0) + 1,
+            },
+        )
+        network.add_node(outlet_node)
+        
+        seg_geometry = TubeGeometry(
+            start=junction_node.position,
+            end=outlet_point,
+            radius_start=r_new,
+            radius_end=r_new * config.outlet_end_radius_taper,
+        )
+        new_segment = VesselSegment(
+            id=network.id_gen.next_id(),
+            start_node_id=junction_node_id,
+            end_node_id=outlet_node.id,
+            geometry=seg_geometry,
+            vessel_type=vessel_type,
+        )
+        network.add_segment(new_segment)
+        
+        tree_view.update_after_insertion(-1, [new_segment.id], junction_node_id)
     
     def _select_candidate_edges(
         self,
@@ -1011,6 +1232,10 @@ class CCOHybridBackend(GenerationBackend):
         A and B are edge endpoints and T is the outlet point.
         
         Uses partial binding cache for efficient cost evaluation.
+        
+        When config.use_nlp_optimization is True, uses gradient-based NLP
+        optimization (scipy.optimize) instead of grid search for more
+        natural, organic branching patterns and faster convergence.
         """
         seg = network.segments[seg_id]
         A = network.nodes[seg.start_node_id].position.to_array()
@@ -1030,10 +1255,163 @@ class CCOHybridBackend(GenerationBackend):
                 network, tree_view, seg_id, Point3D.from_array(X_opt), outlet_point, config
             )
         
+        if config.use_nlp_optimization:
+            return self._optimize_bifurcation_point_nlp(
+                network, tree_view, seg_id, outlet_point, config, A, B, T, AB
+            )
+        else:
+            return self._optimize_bifurcation_point_grid(
+                network, tree_view, seg_id, outlet_point, config, A, B, T, AB
+            )
+    
+    def _optimize_bifurcation_point_nlp(
+        self,
+        network: VascularNetwork,
+        tree_view: ArrayTreeView,
+        seg_id: int,
+        outlet_point: Point3D,
+        config: CCOConfig,
+        A: np.ndarray,
+        B: np.ndarray,
+        T: np.ndarray,
+        AB: np.ndarray,
+    ) -> Tuple[Point3D, float]:
+        """
+        NLP-based bifurcation point optimization using scipy.optimize.
+        
+        Uses gradient-based optimization to find the optimal bifurcation point
+        in the 2D parameter space (t, s) where:
+        - t: position along segment AB (0 to 1)
+        - s: position from point on AB toward outlet T (0 to 1)
+        
+        The bifurcation point X is computed as:
+        X = A + t * AB + s * (T - (A + t * AB))
+        
+        This enables more natural, organic branching patterns compared to
+        discrete grid search.
+        """
+        from scipy.optimize import minimize, Bounds
+        
+        def params_to_point(params: np.ndarray) -> np.ndarray:
+            t, s = params[0], params[1]
+            X_on_AB = A + t * AB
+            return X_on_AB + s * (T - X_on_AB)
+        
+        def objective(params: np.ndarray) -> float:
+            X = params_to_point(params)
+            X_point = Point3D.from_array(X)
+            
+            if not network.domain.contains(X_point):
+                return 1e10
+            
+            cost = self._compute_insertion_cost(
+                network, tree_view, seg_id, X_point, outlet_point, config
+            )
+            return cost if cost < float('inf') else 1e10
+        
+        def objective_with_gradient(params: np.ndarray) -> Tuple[float, np.ndarray]:
+            eps = 1e-7
+            f0 = objective(params)
+            grad = np.zeros(2)
+            for i in range(2):
+                params_plus = params.copy()
+                params_plus[i] += eps
+                grad[i] = (objective(params_plus) - f0) / eps
+            return f0, grad
+        
+        initial_guess = np.array([0.5, 0.5])
+        
+        if config.nlp_use_grid_initial_guess:
+            best_cost = float('inf')
+            n_grid = config.nlp_grid_resolution_for_guess
+            for i in range(n_grid + 1):
+                t = i / n_grid
+                for j in range(n_grid + 1):
+                    s = j / n_grid
+                    cost = objective(np.array([t, s]))
+                    if cost < best_cost:
+                        best_cost = cost
+                        initial_guess = np.array([t, s])
+        
+        bounds = Bounds([0.0, 0.0], [1.0, 1.0])
+        
+        solver_options = {
+            'maxiter': config.max_nlp_iterations,
+            'ftol': config.nlp_tolerance,
+        }
+        
+        if config.nlp_solver == "SLSQP":
+            result = minimize(
+                objective,
+                initial_guess,
+                method='SLSQP',
+                bounds=bounds,
+                options=solver_options,
+            )
+        elif config.nlp_solver == "trust-constr":
+            result = minimize(
+                objective,
+                initial_guess,
+                method='trust-constr',
+                bounds=bounds,
+                options={
+                    'maxiter': config.max_nlp_iterations,
+                    'gtol': config.nlp_tolerance,
+                },
+            )
+        elif config.nlp_solver == "L-BFGS-B":
+            result = minimize(
+                objective,
+                initial_guess,
+                method='L-BFGS-B',
+                bounds=bounds,
+                options={
+                    'maxiter': config.max_nlp_iterations,
+                    'ftol': config.nlp_tolerance,
+                },
+            )
+        else:
+            result = minimize(
+                objective,
+                initial_guess,
+                method='SLSQP',
+                bounds=bounds,
+                options=solver_options,
+            )
+        
+        if result.success or result.fun < 1e9:
+            X_opt = params_to_point(result.x)
+            X_point = Point3D.from_array(X_opt)
+            final_cost = self._compute_insertion_cost(
+                network, tree_view, seg_id, X_point, outlet_point, config
+            )
+            return X_point, final_cost
+        else:
+            return self._optimize_bifurcation_point_grid(
+                network, tree_view, seg_id, outlet_point, config, A, B, T, AB
+            )
+    
+    def _optimize_bifurcation_point_grid(
+        self,
+        network: VascularNetwork,
+        tree_view: ArrayTreeView,
+        seg_id: int,
+        outlet_point: Point3D,
+        config: CCOConfig,
+        A: np.ndarray,
+        B: np.ndarray,
+        T: np.ndarray,
+        AB: np.ndarray,
+    ) -> Tuple[Point3D, float]:
+        """
+        Grid search-based bifurcation point optimization (original method).
+        
+        Uses discrete grid search with adaptive refinement to find the
+        optimal bifurcation point.
+        """
         best_X = None
         best_cost = float('inf')
         
-        # Coarse grid search first
         n_grid = config.optimization_grid_resolution
         best_t, best_s = 0.5, 0.5
         
@@ -1059,10 +1437,9 @@ class CCOHybridBackend(GenerationBackend):
                     best_X = X_point
                     best_t, best_s = t, s
         
-        # Adaptive refinement around best point (if found)
         if best_X is not None and n_grid >= 2:
             step = 1.0 / n_grid
-            refine_steps = 3  # Number of refinement iterations
+            refine_steps = 3
             
             for _ in range(refine_steps):
                 step /= 2
@@ -1093,7 +1470,6 @@ class CCOHybridBackend(GenerationBackend):
                             best_t, best_s = t_new, s_new
                             improved = True
                 
-                # Early termination if no improvement in this refinement step
                 if not improved:
                     break
         
