@@ -686,9 +686,17 @@ def repair_mesh_for_embedding(mesh: trimesh.Trimesh, name: str = "mesh") -> trim
             except Exception as e2:
                 print(f"    Warning: fill_holes failed: {e2}")
     
-    # Final cleanup: Remove degenerate faces
+    # Final cleanup: Remove degenerate faces (version-safe)
     try:
-        repaired.remove_degenerate_faces()
+        # Try the method name used in newer trimesh versions
+        if hasattr(repaired, 'remove_degenerate_faces'):
+            repaired.remove_degenerate_faces()
+        elif hasattr(repaired, 'update_faces'):
+            # Older versions use update_faces with a mask
+            # Remove faces with zero area
+            face_areas = repaired.area_faces
+            valid_faces = face_areas > 0
+            repaired.update_faces(valid_faces)
         repaired.remove_unreferenced_vertices()
         print(f"    Removed degenerate faces")
     except Exception as e:
@@ -933,7 +941,10 @@ def embed_void_in_cylinder(
             )
             
             # Transform to world coordinates
-            verts = verts[:, [2, 1, 0]]  # Swap axes for correct orientation
+            # NOTE: Do NOT swap axes here. The voxel matrix from trimesh.voxelized()
+            # is already in (x, y, z) order, and marching_cubes returns vertices
+            # in the same order. Swapping axes would rotate the cylinder 90 degrees,
+            # making it perpendicular to the ridge and branches.
             verts += domain_min_padded
             
             domain_with_void = trimesh.Trimesh(
@@ -1446,11 +1457,20 @@ def generate_object3_bifurcate_512(output_dir: Optional[Path] = None) -> trimesh
     print(f"    Watertight: {cylinder_with_void.is_watertight}")
     
     # Run post-embedding validation on cylinder with void (before adding ridge)
+    # NOTE: Validation thresholds are adjusted for Object 3's design:
+    # - expected_outlets = OBJ3_NUM_INLETS (4), not OBJ3_TOTAL_TERMINALS (512)
+    #   because the 512 terminals are internal, not external openings
+    # - min_channel_diameter = 0.2mm to match the terminal diameter (2 * 100µm)
     print("  Running post-embedding validation on cylinder with void...")
     try:
+        from validity.post_embedding.printability_checks import ManufacturingConfig
         validation_config = ValidationConfig(
             voxel_pitch_m=VOXEL_PITCH_M,
-            expected_outlets=OBJ3_TOTAL_TERMINALS,
+            expected_outlets=OBJ3_NUM_INLETS,  # 4 inlets, not 512 internal terminals
+            manufacturing=ManufacturingConfig(
+                min_channel_diameter=0.2,  # 2 * terminal radius (100µm = 0.1mm)
+                min_wall_thickness=0.3,
+            ),
         )
         report = run_post_embedding_validation(mesh=cylinder_with_void, config=validation_config)
         print_validation_details(report)
