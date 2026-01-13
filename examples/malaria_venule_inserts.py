@@ -1133,30 +1133,11 @@ def generate_object1_control(output_dir: Optional[Path] = None) -> trimesh.Trime
     # IMPORTANT: For voxel union to work correctly, the ridge must OVERLAP with the
     # cylinder (not just touch at z_top). We extend the ridge slightly INTO the cylinder.
     print("  Creating ridge...")
-    z_top = CYLINDER_CENTER[2] + CYLINDER_HEIGHT_M / 2  # Top of cylinder
-    ridge_z_base = z_top - RIDGE_OVERLAP_M  # Start ridge slightly INSIDE cylinder for overlap
-    ridge_total_height = RIDGE_HEIGHT_M + RIDGE_OVERLAP_M  # Total height includes overlap
-    ridge = create_ridge_mesh(
-        outer_radius=CYLINDER_RADIUS_M,
-        inner_radius=CYLINDER_RADIUS_M - RIDGE_THICKNESS_M,
-        height=ridge_total_height,
-        z_base=ridge_z_base,
-        center_xy=(CYLINDER_CENTER[0], CYLINDER_CENTER[1]),
-    )
-    print(f"    Ridge: outer_r={meters_to_mm(CYLINDER_RADIUS_M)}mm, "
-          f"inner_r={meters_to_mm(CYLINDER_RADIUS_M - RIDGE_THICKNESS_M)}mm, "
-          f"height={meters_to_mm(RIDGE_HEIGHT_M)}mm (visible), "
-          f"overlap={meters_to_mm(RIDGE_OVERLAP_M)}mm")
-    
-    # Export intermediate ridge mesh
-    if output_dir:
-        intermediate_path = output_dir / "intermediate" / "object1_ridge.stl"
-        scale_mesh_to_mm(ridge).export(str(intermediate_path))
-        print(f"    Exported intermediate: {intermediate_path}")
+    add_ridge_to_mesh(base_cylinder)
     
     # Union cylinder and ridge using FINE pitch for ridge (0.1mm ridge needs fine resolution)
     print(f"  Combining cylinder and ridge (voxel pitch: {meters_to_mm(VOXEL_PITCH_RIDGE_M)*1000:.0f}um)...")
-    combined = voxel_union_meshes([base_cylinder, ridge], pitch=VOXEL_PITCH_RIDGE_M)
+    combined = voxel_union_meshes([base_cylinder], pitch=VOXEL_PITCH_RIDGE_M)
     
     print(f"  Object 1 complete: {len(combined.vertices)} vertices, {len(combined.faces)} faces")
     print(f"    Watertight: {combined.is_watertight}")
