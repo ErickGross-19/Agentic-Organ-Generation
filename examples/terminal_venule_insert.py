@@ -137,8 +137,8 @@ class InsertGeometry:
         Margin from insert edge where channels should not extend, in meters.
         Default: 0.0003m (0.3mm). Ensures structural integrity at edges.
     """
-    radius: float = 0.004          # 4mm radius = 8mm diameter insert
-    height: float = 0.003          # 3mm height
+    radius: float = 0.005          # 5mm radius = 10mm diameter well
+    height: float = 0.002          # 2mm print height
     wall_margin: float = 0.0003    # 0.3mm margin from walls
 
 
@@ -167,9 +167,9 @@ class VesselDimensions:
         Default: 0.9. Each child branch is 90% of parent radius.
         Range: 0.7-0.95. Lower = faster tapering, more generations.
     """
-    inlet_radius: float = 0.0004            # 400µm - peripheral inlets (must be > BranchingConstraints.min_radius=0.3mm)
-    sinusoid_min_radius: float = 0.0003     # 300µm - minimum branch radius (must be >= BranchingConstraints.min_radius)
-    taper_factor: float = 0.9               # Radius decay per generation (higher to avoid hitting min_radius too fast)
+    inlet_radius: float = 5e-4               # 1mm diameter inlet (radius=0.5mm)
+    sinusoid_min_radius: float = 5e-5       # 100µm diameter terminals (radius=50µm)
+    taper_factor: float = 0.9               # Radius decay per generation
 
 
 @dataclass
@@ -217,14 +217,14 @@ class CCOParameters:
         Resolution of grid for bifurcation point optimization.
         Default: 10. Higher = finer optimization.
     """
-    num_outlets: int = 20                   # Target number of terminal outlets
+    num_outlets: int = 800                  # TOTAL outlets (increased for density)
     murray_exponent: float = 3.0            # Murray's law exponent
-    collision_clearance: float = 0.0001     # 0.1mm minimum clearance
-    min_segment_length: float = 0.0005      # 0.5mm minimum segment
-    max_segment_length: float = 0.010       # 10mm maximum segment
-    min_terminal_separation: float = 0.0005 # 0.5mm between terminals
-    candidate_edges_k: int = 50             # Candidate edges for optimization
-    optimization_grid_resolution: int = 10  # Grid resolution for optimization
+    collision_clearance: float = 2e-5       # 20 micron (reduced to allow denser packing)
+    min_segment_length: float = 2e-5        # 20 micron (reduced to enable finer branching)
+    max_segment_length: float = 0.01        # 10mm maximum segment
+    min_terminal_separation: float = 2e-5   # 20 micron between terminals
+    candidate_edges_k: int = 80             # Candidate edges for optimization
+    optimization_grid_resolution: int = 15  # Grid resolution for optimization
 
 
 @dataclass
@@ -254,8 +254,8 @@ class EmbeddingParameters:
         Number of voxels to dilate channel volumes.
         Default: 1. Ensures channels are fully open after boolean ops.
     """
-    voxel_pitch: float = 0.0001             # 100µm voxel resolution
-    shell_thickness: float = 0.0003         # 300µm wall thickness
+    voxel_pitch: float = 1e-5               # 10 micron voxel resolution (higher res for smoother surfaces)
+    shell_thickness: float = 3e-4           # 300µm wall thickness
     smoothing_iterations: int = 3           # Surface smoothing passes
     dilation_voxels: int = 1                # Channel dilation
 
@@ -280,9 +280,9 @@ class MultiInputConfig:
         Default: 0.85. Inlets at 85% of radius from center.
         Range: 0.7-0.95. Higher = closer to edge.
     """
-    num_inlets: int = 6                     # Number of peripheral inlets
-    inlet_z_offset: float = 0.0005          # 0.5mm below top
-    radial_position_fraction: float = 0.85  # 85% of radius from center
+    num_inlets: int = 4                     # Number of peripheral inlets
+    inlet_z_offset: float = 0               # At top surface
+    radial_position_fraction: float = 0.85  # 85% of radius from center (near rim)
 
 
 @dataclass
@@ -338,14 +338,14 @@ class NLPParameters:
         Whether to remove degenerate segments (length < diameter) after optimization.
         Default: True. May create trifurcations.
     """
-    enabled: bool = True                        # Enable NLP optimization
+    enabled: bool = True                        # Enable NLP optimization (set to False if IPOPT not available)
     murray_exponent: float = 3.0                # Murray's law exponent
     target_pressure_drop: float = 13332.0       # ~100 mmHg pressure drop
     viscosity: float = 0.0035                   # Blood viscosity (Pa*s)
     fix_terminal_positions: bool = True         # Fix terminal positions
     fix_root_position: bool = True              # Fix inlet position
-    max_iterations: int = 500                   # Max optimization iterations
-    solver_tolerance: float = 1e-6              # Solver convergence tolerance
+    max_iterations: int = 1000                  # Max optimization iterations (increased for better convergence)
+    solver_tolerance: float = 1e-5              # Solver convergence tolerance
     cleanup_degenerate_segments: bool = True    # Remove degenerate segments
 
 
