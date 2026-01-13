@@ -711,13 +711,40 @@ class CCOHybridBackend(GenerationBackend):
         
         arterial_tree_view = ArrayTreeView(network, arterial_inlet_node.id)
         
+        max_consecutive_failures = 50
+        consecutive_failures = 0
+        successful_arterial = 1
+        
         for i in range(arterial_outlets - 1):
             outlet_point = self._sample_outlet_point(domain, rng, config)
-            if self._is_valid_outlet(outlet_point, network, config, vessel_type="arterial"):
-                self._insert_outlet(
-                    network, arterial_tree_view, outlet_point,
-                    arterial_radius, "arterial", config, rng
-                )
+            if not self._is_valid_outlet(outlet_point, network, config, vessel_type="arterial"):
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    import warnings
+                    warnings.warn(
+                        f"Could not place arterial outlet after {max_consecutive_failures} consecutive attempts. "
+                        f"Achieved {successful_arterial}/{arterial_outlets} arterial outlets."
+                    )
+                    break
+                continue
+            
+            insertion_success = self._insert_outlet(
+                network, arterial_tree_view, outlet_point,
+                arterial_radius, "arterial", config, rng
+            )
+            
+            if insertion_success:
+                successful_arterial += 1
+                consecutive_failures = 0
+            else:
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    import warnings
+                    warnings.warn(
+                        f"Could not insert arterial outlet after {max_consecutive_failures} consecutive attempts. "
+                        f"Achieved {successful_arterial}/{arterial_outlets} arterial outlets."
+                    )
+                    break
         
         venous_outlet_point = Point3D.from_array(venous_outlet)
         venous_outlet_node = Node(
@@ -734,13 +761,39 @@ class CCOHybridBackend(GenerationBackend):
         
         venous_tree_view = ArrayTreeView(network, venous_outlet_node.id)
         
+        consecutive_failures = 0
+        successful_venous = 1
+        
         for i in range(venous_outlets - 1):
             outlet_point = self._sample_outlet_point(domain, rng, config)
-            if self._is_valid_outlet(outlet_point, network, config, vessel_type="venous"):
-                self._insert_outlet(
-                    network, venous_tree_view, outlet_point,
-                    venous_radius, "venous", config, rng
-                )
+            if not self._is_valid_outlet(outlet_point, network, config, vessel_type="venous"):
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    import warnings
+                    warnings.warn(
+                        f"Could not place venous outlet after {max_consecutive_failures} consecutive attempts. "
+                        f"Achieved {successful_venous}/{venous_outlets} venous outlets."
+                    )
+                    break
+                continue
+            
+            insertion_success = self._insert_outlet(
+                network, venous_tree_view, outlet_point,
+                venous_radius, "venous", config, rng
+            )
+            
+            if insertion_success:
+                successful_venous += 1
+                consecutive_failures = 0
+            else:
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    import warnings
+                    warnings.warn(
+                        f"Could not insert venous outlet after {max_consecutive_failures} consecutive attempts. "
+                        f"Achieved {successful_venous}/{venous_outlets} venous outlets."
+                    )
+                    break
         
         self._rescale_radii(network, arterial_inlet_node.id, arterial_radius, config)
         self._rescale_radii(network, venous_outlet_node.id, venous_radius, config)
