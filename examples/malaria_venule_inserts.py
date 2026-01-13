@@ -62,12 +62,12 @@ from generation.optimization import optimize_geometry, NLPConfig
 # HARDCODED PARAMETERS - All dimensions in METERS internally
 # =============================================================================
 
-# --- Base Cylinder Parameters ---
+# --- Base Cylinder Parameters (shared by all objects) ---
 CYLINDER_RADIUS_M = 0.005          # 5 mm radius = 10 mm diameter
 CYLINDER_HEIGHT_M = 0.002          # 2 mm height
 CYLINDER_CENTER = (0.0, 0.0, 0.0)  # Centered at origin
 
-# --- Ridge Parameters ---
+# --- Ridge Parameters (shared by all objects) ---
 RIDGE_HEIGHT_M = 0.0001            # 0.1 mm ridge height
 RIDGE_THICKNESS_M = 0.0001         # 0.1 mm ridge thickness (annular ring width)
 # Ridge interpretation: Annular ring on perimeter
@@ -75,22 +75,42 @@ RIDGE_THICKNESS_M = 0.0001         # 0.1 mm ridge thickness (annular ring width)
 # - Inner radius = CYLINDER_RADIUS_M - RIDGE_THICKNESS_M (4.9 mm)
 # - Z range = [+1.0 mm, +1.1 mm] (top of cylinder to top of ridge)
 
-# --- Channel Parameters (Object 2) ---
-CHANNEL_RADIUS_M = 0.001           # 1 mm channel radius
-CHANNEL_DEPTH_M = 0.001            # 1 mm channel depth (extends downward from top)
-NUM_CHANNELS = 4                   # Number of straight channels (4-9 range, using minimum)
-CHANNEL_OFFSET_M = 0.0015          # 1.5 mm offset from center for channel placement
-WALL_MARGIN_M = 0.0005             # 0.5 mm minimum wall margin from cylinder edge
+# =============================================================================
+# OBJECT 1: Control (solid cylinder + ridge, no channels)
+# =============================================================================
+# Object 1 has no inlets or terminals - it's a solid control sample
+OBJ1_NUM_INLETS = 0                # No inlets (solid control)
+OBJ1_INLET_RADIUS_M = None         # N/A for solid control
+OBJ1_TERMINAL_RADIUS_M = None      # N/A for solid control
 
-# --- Bifurcation Parameters (Object 3) ---
-NUM_INLETS_OBJ3 = 4                # 4 inlet channels
-INLET_RADIUS_M = 0.001             # 1 mm inlet radius
-TERMINAL_RADIUS_M = 0.0001         # 100 um terminal radius
-TOTAL_TERMINALS = 512              # Total terminal count
-TERMINALS_PER_INLET = 128          # 512 / 4 = 128 terminals per inlet
-BIFURCATION_LEVELS = 7             # 2^7 = 128 terminals per inlet
+# =============================================================================
+# OBJECT 2: Straight Channels
+# =============================================================================
+OBJ2_NUM_INLETS = 4                # 4 straight channels (range 4-9, using minimum)
+OBJ2_INLET_RADIUS_M = 0.001        # 1 mm channel/inlet radius
+OBJ2_TERMINAL_RADIUS_M = 0.001     # 1 mm (same as inlet - no taper for straight channels)
+OBJ2_CHANNEL_DEPTH_M = 0.001       # 1 mm channel depth (extends downward from top)
+OBJ2_CHANNEL_OFFSET_M = 0.0015     # 1.5 mm offset from center for channel placement
+OBJ2_WALL_MARGIN_M = 0.0005        # 0.5 mm minimum wall margin from cylinder edge
+# Inlet positions for Object 2 (symmetric near center)
+OBJ2_INLET_POSITIONS = [
+    (0.0015, 0.0015),   # +1.5mm, +1.5mm
+    (-0.0015, 0.0015),  # -1.5mm, +1.5mm
+    (-0.0015, -0.0015), # -1.5mm, -1.5mm
+    (0.0015, -0.0015),  # +1.5mm, -1.5mm
+]
+
+# =============================================================================
+# OBJECT 3: Recursive Bifurcation (512 terminals)
+# =============================================================================
+OBJ3_NUM_INLETS = 4                # 4 inlet channels
+OBJ3_INLET_RADIUS_M = 0.001        # 1 mm inlet radius
+OBJ3_TERMINAL_RADIUS_M = 0.0001    # 100 um terminal radius
+OBJ3_TOTAL_TERMINALS = 512         # Total terminal count
+OBJ3_TERMINALS_PER_INLET = 128     # 512 / 4 = 128 terminals per inlet
+OBJ3_BIFURCATION_LEVELS = 7        # 2^7 = 128 terminals per inlet
 # Bifurcation depth schedule (mm from top face, converted to meters)
-BIFURCATION_DEPTHS_M = [
+OBJ3_BIFURCATION_DEPTHS_M = [
     0.00025,  # 0.25 mm
     0.00050,  # 0.50 mm
     0.00075,  # 0.75 mm
@@ -100,21 +120,29 @@ BIFURCATION_DEPTHS_M = [
     0.00175,  # 1.75 mm
 ]
 # Inlet positions for Object 3 (symmetric near center)
-INLET_POSITIONS_OBJ3 = [
+OBJ3_INLET_POSITIONS = [
     (0.0015, 0.0015),   # +1.5mm, +1.5mm
     (-0.0015, 0.0015),  # -1.5mm, +1.5mm
     (-0.0015, -0.0015), # -1.5mm, -1.5mm
     (0.0015, -0.0015),  # +1.5mm, -1.5mm
 ]
 
-# --- Object 4 Parameters (Turn-Bifurcate-Merge) ---
-INLET_RADIUS_OBJ4_M = 0.001        # 1 mm inlet radius
-DOWNWARD_LENGTH_M = 0.001          # 1 mm downward travel before turn
-HORIZONTAL_LENGTH_M = 0.001        # 1 mm horizontal travel after turn
-NUM_BIFURCATIONS_OBJ4 = 3          # Number of bifurcation levels in lateral plane
-MERGE_OVERLAP_M = 0.0005           # 0.5 mm overlap for merge region
+# =============================================================================
+# OBJECT 4: Turn-Bifurcate-Merge Loop
+# =============================================================================
+OBJ4_NUM_INLETS = 1                # Single inlet for loop structure
+OBJ4_INLET_RADIUS_M = 0.001        # 1 mm inlet radius
+OBJ4_TERMINAL_RADIUS_M = 0.0005    # 500 um terminal radius (before merge back)
+OBJ4_DOWNWARD_LENGTH_M = 0.001     # 1 mm downward travel before turn
+OBJ4_HORIZONTAL_LENGTH_M = 0.001   # 1 mm horizontal travel after turn
+OBJ4_NUM_BIFURCATIONS = 3          # Number of bifurcation levels in lateral plane
+OBJ4_MERGE_OVERLAP_M = 0.0005      # 0.5 mm overlap for merge region
+# Inlet position for Object 4 (center of top face)
+OBJ4_INLET_POSITION = (0.0, 0.0)   # Center of cylinder
 
-# --- Object 5 Parameters (CCO-NLP Organic Growth) ---
+# =============================================================================
+# OBJECT 5: CCO-NLP Organic Growth
+# =============================================================================
 # Coordinate convention: Cylinder centered at origin, z spans [-1mm, +1mm]
 # Top face at z = +1mm = +0.001m
 OBJ5_NUM_INLETS = 4                # 4 inlet channels
@@ -153,13 +181,17 @@ OBJ5_NLP_MAX_ITERATIONS = 500          # Max optimization iterations
 OBJ5_NLP_TOLERANCE = 1e-5              # Solver tolerance
 OBJ5_NLP_CLEANUP_DEGENERATE = True     # Remove degenerate segments
 
-# --- Voxelization Parameters ---
+# =============================================================================
+# VOXELIZATION PARAMETERS
+# =============================================================================
 VOXEL_PITCH_M = 2.5e-5             # 25 um voxel pitch (for fine resolution embedding)
 VOXEL_PITCH_UNION_M = 1.0e-4       # 100 um voxel pitch (for union operations - coarser to save memory)
 # Note: 25 um pitch on 10mm x 10mm x 2mm domain = ~12.8M voxels
 # For union operations, we use 100 um to reduce memory usage (~200K voxels)
 
-# --- Output Parameters ---
+# =============================================================================
+# OUTPUT PARAMETERS
+# =============================================================================
 OUTPUT_UNITS = "mm"                # Output STL files in millimeters
 OUTPUT_DIR = Path(__file__).parent / "Malaria Venule Inserts"
 
@@ -496,25 +528,19 @@ def generate_object2_channels() -> trimesh.Trimesh:
     base = voxel_union_meshes([base_cylinder, ridge], pitch=VOXEL_PITCH_UNION_M)
     
     # Create channels
-    print(f"  Creating {NUM_CHANNELS} straight channels...")
-    channel_positions = [
-        (CHANNEL_OFFSET_M, CHANNEL_OFFSET_M),
-        (-CHANNEL_OFFSET_M, CHANNEL_OFFSET_M),
-        (-CHANNEL_OFFSET_M, -CHANNEL_OFFSET_M),
-        (CHANNEL_OFFSET_M, -CHANNEL_OFFSET_M),
-    ]
+    print(f"  Creating {OBJ2_NUM_INLETS} straight channels...")
     
     channels = []
-    for i, pos in enumerate(channel_positions[:NUM_CHANNELS]):
+    for i, pos in enumerate(OBJ2_INLET_POSITIONS[:OBJ2_NUM_INLETS]):
         channel = create_channel_mesh(
             position_xy=pos,
             z_top=z_top,
-            radius=CHANNEL_RADIUS_M,
-            depth=CHANNEL_DEPTH_M,
+            radius=OBJ2_INLET_RADIUS_M,
+            depth=OBJ2_CHANNEL_DEPTH_M,
         )
         channels.append(channel)
         print(f"    Channel {i+1}: position=({meters_to_mm(pos[0]):.1f}, {meters_to_mm(pos[1]):.1f})mm, "
-              f"radius={meters_to_mm(CHANNEL_RADIUS_M)}mm, depth={meters_to_mm(CHANNEL_DEPTH_M)}mm")
+              f"radius={meters_to_mm(OBJ2_INLET_RADIUS_M)}mm, depth={meters_to_mm(OBJ2_CHANNEL_DEPTH_M)}mm")
     
     # Union all channels
     print("  Combining channels...")
@@ -867,18 +893,18 @@ def generate_object3_bifurcate_512() -> trimesh.Trimesh:
     base = voxel_union_meshes([base_cylinder, ridge], pitch=VOXEL_PITCH_UNION_M)
     
     # Generate bifurcating trees from each inlet
-    print(f"  Generating {NUM_INLETS_OBJ3} bifurcating trees...")
+    print(f"  Generating {OBJ3_NUM_INLETS} bifurcating trees...")
     all_trees = []
     
-    for i, (x, y) in enumerate(INLET_POSITIONS_OBJ3):
+    for i, (x, y) in enumerate(OBJ3_INLET_POSITIONS):
         print(f"    Tree {i+1}: inlet at ({meters_to_mm(x):.1f}, {meters_to_mm(y):.1f})mm")
         inlet_pos = (x, y, z_top)
         
         tree_mesh = generate_bifurcation_tree_mesh(
             inlet_position=inlet_pos,
-            inlet_radius=INLET_RADIUS_M,
-            terminal_radius=TERMINAL_RADIUS_M,
-            bifurcation_depths=BIFURCATION_DEPTHS_M,
+            inlet_radius=OBJ3_INLET_RADIUS_M,
+            terminal_radius=OBJ3_TERMINAL_RADIUS_M,
+            bifurcation_depths=OBJ3_BIFURCATION_DEPTHS_M,
             base_angle_deg=30.0,
         )
         all_trees.append(tree_mesh)
@@ -1019,32 +1045,32 @@ def generate_object4_turn_bifurcate_merge() -> trimesh.Trimesh:
     channel_segments = []
     
     # Inlet position (slightly offset from center to allow return path)
-    inlet_x = -0.001  # -1mm from center
-    inlet_y = 0.0
+    inlet_x = OBJ4_INLET_POSITION[0] - 0.001  # Offset from center to allow return path
+    inlet_y = OBJ4_INLET_POSITION[1]
     inlet_pos = np.array([inlet_x, inlet_y, z_top])
     
     # 1. Downward segment (1mm)
     print("    Segment 1: Downward 1mm")
-    down_end = inlet_pos + np.array([0, 0, -DOWNWARD_LENGTH_M])
-    seg1 = _create_tapered_cylinder(inlet_pos, down_end, INLET_RADIUS_OBJ4_M, INLET_RADIUS_OBJ4_M)
+    down_end = inlet_pos + np.array([0, 0, -OBJ4_DOWNWARD_LENGTH_M])
+    seg1 = _create_tapered_cylinder(inlet_pos, down_end, OBJ4_INLET_RADIUS_M, OBJ4_INLET_RADIUS_M)
     channel_segments.append(seg1)
     
     # 2. 90-degree turn (horizontal along +X)
     print("    Segment 2: Horizontal turn (+X direction)")
-    turn_end = down_end + np.array([HORIZONTAL_LENGTH_M, 0, 0])
-    seg2 = _create_tapered_cylinder(down_end, turn_end, INLET_RADIUS_OBJ4_M, INLET_RADIUS_OBJ4_M * 0.9)
+    turn_end = down_end + np.array([OBJ4_HORIZONTAL_LENGTH_M, 0, 0])
+    seg2 = _create_tapered_cylinder(down_end, turn_end, OBJ4_INLET_RADIUS_M, OBJ4_INLET_RADIUS_M * 0.9)
     channel_segments.append(seg2)
     
     # 3. Bifurcate in XY plane
-    print(f"    Bifurcating {NUM_BIFURCATIONS_OBJ4} levels in XY plane")
+    print(f"    Bifurcating {OBJ4_NUM_BIFURCATIONS} levels in XY plane")
     
     # Create bifurcating branches
-    branch_tips = [(turn_end.copy(), np.array([1.0, 0.0, 0.0]), INLET_RADIUS_OBJ4_M * 0.9)]
+    branch_tips = [(turn_end.copy(), np.array([1.0, 0.0, 0.0]), OBJ4_INLET_RADIUS_M * 0.9)]
     
-    for level in range(NUM_BIFURCATIONS_OBJ4):
+    for level in range(OBJ4_NUM_BIFURCATIONS):
         new_tips = []
         branch_length = 0.0005 * (1.0 - 0.2 * level)  # Decreasing length
-        branch_radius = INLET_RADIUS_OBJ4_M * 0.9 * (0.8 ** (level + 1))
+        branch_radius = OBJ4_INLET_RADIUS_M * 0.9 * (0.8 ** (level + 1))
         
         for tip_pos, tip_dir, tip_r in branch_tips:
             # Grow forward a bit
@@ -1075,13 +1101,13 @@ def generate_object4_turn_bifurcate_merge() -> trimesh.Trimesh:
     
     for tip_pos, tip_dir, tip_r in branch_tips:
         # Create segment toward merge point
-        seg = _create_tapered_cylinder(tip_pos, merge_point, tip_r, INLET_RADIUS_OBJ4_M * 0.5)
+        seg = _create_tapered_cylinder(tip_pos, merge_point, tip_r, OBJ4_TERMINAL_RADIUS_M)
         channel_segments.append(seg)
     
     # 5. Return upward to top face
     print("    Segment: Return upward to top face")
     outlet_pos = np.array([0.002, 0.0, z_top])  # Outlet at +2mm X from center
-    seg_return = _create_tapered_cylinder(merge_point, outlet_pos, INLET_RADIUS_OBJ4_M * 0.5, INLET_RADIUS_OBJ4_M * 0.5)
+    seg_return = _create_tapered_cylinder(merge_point, outlet_pos, OBJ4_TERMINAL_RADIUS_M, OBJ4_TERMINAL_RADIUS_M)
     channel_segments.append(seg_return)
     
     # Union all channel segments
