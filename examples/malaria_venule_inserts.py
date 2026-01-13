@@ -366,7 +366,9 @@ def print_validation_details(report, indent: str = "    "):
     print(f"{indent}Passed: {report.passed}")
     
     if not report.passed or report.status != "ok":
-        print(f"{indent}Summary: {report.summary}")
+        summary = report.summary
+        print(f"{indent}Summary: {summary.get('passed_checks', '?')}/{summary.get('total_checks', '?')} checks passed, "
+              f"{summary.get('failed_checks', '?')} failed, {summary.get('total_warnings', '?')} warnings")
         
         for category_name, category_report in report.reports.items():
             if not category_report.passed:
@@ -1674,7 +1676,9 @@ def add_ridge_to_mesh(mesh_m: trimesh.Trimesh) -> trimesh.Trimesh:
     """
     Add ridge to a mesh at the END (after all voxel operations) to prevent smoothing.
     
-    Uses direct mesh concatenation instead of voxel union to preserve sharp ridge edges.
+    Uses voxel union with fine pitch (VOXEL_PITCH_RIDGE_M = 25um) to preserve ridge detail
+    while maintaining watertightness. The ridge is 0.1mm (100um) thick, so at 25um pitch
+    it will be 4 voxels thick, which is sufficient to preserve the geometry.
     
     Parameters
     ----------
@@ -1696,7 +1700,14 @@ def add_ridge_to_mesh(mesh_m: trimesh.Trimesh) -> trimesh.Trimesh:
         center_xy=(CYLINDER_CENTER[0], CYLINDER_CENTER[1]),
     )
     
-    combined = trimesh.util.concatenate([mesh_m, ridge])
+    print(f"    Ridge mesh: {len(ridge.vertices)} vertices, {len(ridge.faces)} faces")
+    print(f"    Using voxel union with fine pitch ({VOXEL_PITCH_RIDGE_M*1e6:.0f}um) to preserve ridge detail")
+    
+    combined = voxel_union_meshes([mesh_m, ridge], pitch=VOXEL_PITCH_RIDGE_M)
+    
+    print(f"    Combined mesh: {len(combined.vertices)} vertices, {len(combined.faces)} faces")
+    print(f"    Watertight: {combined.is_watertight}")
+    
     return combined
 
 
