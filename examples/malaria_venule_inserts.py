@@ -933,7 +933,10 @@ def embed_void_in_cylinder(
             )
             
             # Transform to world coordinates
-            verts = verts[:, [2, 1, 0]]  # Swap axes for correct orientation
+            # NOTE: Do NOT swap axes here. The voxel matrix from trimesh.voxelized()
+            # is already in (x, y, z) order, and marching_cubes returns vertices
+            # in the same order. Swapping axes would rotate the cylinder 90 degrees,
+            # making it perpendicular to the ridge and branches.
             verts += domain_min_padded
             
             domain_with_void = trimesh.Trimesh(
