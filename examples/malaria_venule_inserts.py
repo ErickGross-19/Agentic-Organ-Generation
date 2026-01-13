@@ -78,6 +78,146 @@ RIDGE_THICKNESS_M = 0.0001         # 0.1 mm ridge thickness (annular ring width)
 # - Inner radius = CYLINDER_RADIUS_M - RIDGE_THICKNESS_M (4.9 mm)
 # - Z range = [+1.0 mm, +1.1 mm] (top of cylinder to top of ridge)
 
+# --- Derived Parameters ---
+RIDGE_INNER_RADIUS_M = CYLINDER_RADIUS_M - RIDGE_THICKNESS_M  # 4.9 mm
+TOP_FACE_Z_M = CYLINDER_CENTER[2] + CYLINDER_HEIGHT_M / 2     # +1.0 mm
+
+
+# =============================================================================
+# HELPER FUNCTIONS FOR PARAMETER INFERENCE
+# =============================================================================
+
+def compute_inlet_positions(
+    num_inlets: int,
+    inlet_radius: float,
+    cylinder_radius: float = CYLINDER_RADIUS_M,
+    ridge_inner_radius: float = RIDGE_INNER_RADIUS_M,
+    wall_margin: float = 0.0005,  # 0.5 mm default wall margin
+    include_z: bool = False,
+    z_position: float = None,
+) -> List[Tuple[float, ...]]:
+    """
+    Compute inlet positions based on geometry parameters.
+    
+    Inlets are placed in a symmetric pattern inside the ridge, leaving enough
+    margin from the ridge inner edge and between adjacent inlets.
+    
+    Parameters
+    ----------
+    num_inlets : int
+        Number of inlets to place
+    inlet_radius : float
+        Radius of each inlet (in meters)
+    cylinder_radius : float
+        Radius of the cylinder (in meters)
+    ridge_inner_radius : float
+        Inner radius of the ridge (in meters)
+    wall_margin : float
+        Minimum margin from ridge inner edge (in meters)
+    include_z : bool
+        If True, return 3D positions (x, y, z); if False, return 2D (x, y)
+    z_position : float
+        Z coordinate for 3D positions (required if include_z=True)
+    
+    Returns
+    -------
+    List of tuples with inlet positions
+    """
+    if num_inlets == 0:
+        return []
+    
+    # Maximum radius for inlet center placement
+    # Must stay inside ridge inner edge with margin for inlet radius
+    max_placement_radius = ridge_inner_radius - inlet_radius - wall_margin
+    
+    if num_inlets == 1:
+        # Single inlet at center
+        positions = [(0.0, 0.0)]
+    elif num_inlets == 2:
+        # Two inlets along X axis
+        offset = max_placement_radius * 0.7  # 70% of max radius
+        positions = [(offset, 0.0), (-offset, 0.0)]
+    elif num_inlets == 3:
+        # Three inlets in equilateral triangle
+        offset = max_placement_radius * 0.7
+        import math
+        positions = [
+            (0.0, offset),
+            (offset * math.cos(math.radians(210)), offset * math.sin(math.radians(210))),
+            (offset * math.cos(math.radians(330)), offset * math.sin(math.radians(330))),
+        ]
+    elif num_inlets == 4:
+        # Four inlets in square pattern
+        # For a square inscribed in a circle of radius r, the offset from center is r/sqrt(2)
+        offset = max_placement_radius / math.sqrt(2)
+        positions = [
+            (offset, offset),
+            (-offset, offset),
+            (-offset, -offset),
+            (offset, -offset),
+        ]
+    else:
+        # N inlets in circular pattern
+        import math
+        offset = max_placement_radius * 0.7
+        positions = []
+        for i in range(num_inlets):
+            angle = 2 * math.pi * i / num_inlets
+            x = offset * math.cos(angle)
+            y = offset * math.sin(angle)
+            positions.append((x, y))
+    
+    # Add Z coordinate if requested
+    if include_z:
+        if z_position is None:
+            z_position = TOP_FACE_Z_M
+        positions = [(x, y, z_position) for x, y in positions]
+    
+    return positions
+
+
+def compute_bifurcation_depths(
+    num_bifurcations: int,
+    cylinder_height: float = CYLINDER_HEIGHT_M,
+    top_margin_fraction: float = 0.0,
+    bottom_margin_fraction: float = 0.125,
+) -> List[float]:
+    """
+    Compute bifurcation depths based on number of bifurcations and object height.
+    
+    Depths are evenly spaced from near the top to near the bottom of the cylinder.
+    
+    Parameters
+    ----------
+    num_bifurcations : int
+        Number of bifurcation levels
+    cylinder_height : float
+        Height of the cylinder (in meters)
+    top_margin_fraction : float
+        Fraction of height to leave as margin at top (default 0)
+    bottom_margin_fraction : float
+        Fraction of height to leave as margin at bottom (default 0.125 = 1/8)
+    
+    Returns
+    -------
+    List of depths (in meters) from the top face
+    """
+    if num_bifurcations == 0:
+        return []
+    
+    # Usable height for bifurcations
+    usable_height = cylinder_height * (1 - top_margin_fraction - bottom_margin_fraction)
+    start_depth = cylinder_height * top_margin_fraction
+    
+    # Evenly space bifurcations
+    # depth[i] = start_depth + (i + 1) / (num_bifurcations + 1) * usable_height
+    depths = []
+    for i in range(num_bifurcations):
+        depth = start_depth + (i + 1) / (num_bifurcations + 1) * usable_height
+        depths.append(depth)
+    
+    return depths
+
 # =============================================================================
 # OBJECT 1: Control (solid cylinder + ridge, no channels)
 # =============================================================================
@@ -93,15 +233,13 @@ OBJ2_NUM_INLETS = 4                # 4 straight channels (range 4-9, using minim
 OBJ2_INLET_RADIUS_M = 0.001        # 1 mm channel/inlet radius
 OBJ2_TERMINAL_RADIUS_M = 0.001     # 1 mm (same as inlet - no taper for straight channels)
 OBJ2_CHANNEL_DEPTH_M = 0.001       # 1 mm channel depth (extends downward from top)
-OBJ2_CHANNEL_OFFSET_M = 0.0015     # 1.5 mm offset from center for channel placement
 OBJ2_WALL_MARGIN_M = 0.0005        # 0.5 mm minimum wall margin from cylinder edge
-# Inlet positions for Object 2 (symmetric near center)
-OBJ2_INLET_POSITIONS = [
-    (0.0015, 0.0015),   # +1.5mm, +1.5mm
-    (-0.0015, 0.0015),  # -1.5mm, +1.5mm
-    (-0.0015, -0.0015), # -1.5mm, -1.5mm
-    (0.0015, -0.0015),  # +1.5mm, -1.5mm
-]
+# Inlet positions for Object 2 - INFERRED from geometry
+OBJ2_INLET_POSITIONS = compute_inlet_positions(
+    num_inlets=OBJ2_NUM_INLETS,
+    inlet_radius=OBJ2_INLET_RADIUS_M,
+    wall_margin=OBJ2_WALL_MARGIN_M,
+)
 
 # =============================================================================
 # OBJECT 3: Recursive Bifurcation (512 terminals)
@@ -112,23 +250,18 @@ OBJ3_TERMINAL_RADIUS_M = 0.0001    # 100 um terminal radius
 OBJ3_TOTAL_TERMINALS = 512         # Total terminal count
 OBJ3_TERMINALS_PER_INLET = 128     # 512 / 4 = 128 terminals per inlet
 OBJ3_BIFURCATION_LEVELS = 7        # 2^7 = 128 terminals per inlet
-# Bifurcation depth schedule (mm from top face, converted to meters)
-OBJ3_BIFURCATION_DEPTHS_M = [
-    0.00025,  # 0.25 mm
-    0.00050,  # 0.50 mm
-    0.00075,  # 0.75 mm
-    0.00100,  # 1.00 mm
-    0.00125,  # 1.25 mm
-    0.00150,  # 1.50 mm
-    0.00175,  # 1.75 mm
-]
-# Inlet positions for Object 3 (symmetric near center)
-OBJ3_INLET_POSITIONS = [
-    (0.0015, 0.0015),   # +1.5mm, +1.5mm
-    (-0.0015, 0.0015),  # -1.5mm, +1.5mm
-    (-0.0015, -0.0015), # -1.5mm, -1.5mm
-    (0.0015, -0.0015),  # +1.5mm, -1.5mm
-]
+OBJ3_WALL_MARGIN_M = 0.0005        # 0.5 mm minimum wall margin from cylinder edge
+# Bifurcation depth schedule - INFERRED from number of bifurcations and object height
+OBJ3_BIFURCATION_DEPTHS_M = compute_bifurcation_depths(
+    num_bifurcations=OBJ3_BIFURCATION_LEVELS,
+    cylinder_height=CYLINDER_HEIGHT_M,
+)
+# Inlet positions for Object 3 - INFERRED from geometry
+OBJ3_INLET_POSITIONS = compute_inlet_positions(
+    num_inlets=OBJ3_NUM_INLETS,
+    inlet_radius=OBJ3_INLET_RADIUS_M,
+    wall_margin=OBJ3_WALL_MARGIN_M,
+)
 
 # =============================================================================
 # OBJECT 4: Turn-Bifurcate-Merge Loop
@@ -140,8 +273,14 @@ OBJ4_DOWNWARD_LENGTH_M = 0.001     # 1 mm downward travel before turn
 OBJ4_HORIZONTAL_LENGTH_M = 0.001   # 1 mm horizontal travel after turn
 OBJ4_NUM_BIFURCATIONS = 3          # Number of bifurcation levels in lateral plane
 OBJ4_MERGE_OVERLAP_M = 0.0005      # 0.5 mm overlap for merge region
-# Inlet position for Object 4 (center of top face)
-OBJ4_INLET_POSITION = (0.0, 0.0)   # Center of cylinder
+OBJ4_WALL_MARGIN_M = 0.0005        # 0.5 mm minimum wall margin from cylinder edge
+# Inlet position for Object 4 - INFERRED from geometry (single inlet at center)
+_obj4_positions = compute_inlet_positions(
+    num_inlets=OBJ4_NUM_INLETS,
+    inlet_radius=OBJ4_INLET_RADIUS_M,
+    wall_margin=OBJ4_WALL_MARGIN_M,
+)
+OBJ4_INLET_POSITION = _obj4_positions[0] if _obj4_positions else (0.0, 0.0)
 
 # =============================================================================
 # OBJECT 5: CCO-NLP Organic Growth
@@ -157,13 +296,15 @@ OBJ5_OUTLETS_PER_ROUND = 32        # 512 / 4 inlets / 4 rounds = 32 per round pe
 OBJ5_STRAIGHT_DOWN_M = 0.0001      # 0.1 mm straight down before CCO growth
 OBJ5_VESSEL_TYPE = "venous"        # Vessel type for inserts
 OBJ5_SEED = 42                     # Random seed for reproducibility
-# Inlet positions for Object 5 (symmetric square at +/-1.5mm, at top face z=+1mm)
-OBJ5_INLET_POSITIONS = [
-    (0.0015, 0.0015, 0.001),    # +1.5mm, +1.5mm, +1mm (top face)
-    (0.0015, -0.0015, 0.001),   # +1.5mm, -1.5mm, +1mm
-    (-0.0015, 0.0015, 0.001),   # -1.5mm, +1.5mm, +1mm
-    (-0.0015, -0.0015, 0.001),  # -1.5mm, -1.5mm, +1mm
-]
+OBJ5_WALL_MARGIN_M = 0.0005        # 0.5 mm minimum wall margin from cylinder edge
+# Inlet positions for Object 5 - INFERRED from geometry (with Z coordinate at top face)
+OBJ5_INLET_POSITIONS = compute_inlet_positions(
+    num_inlets=OBJ5_NUM_INLETS,
+    inlet_radius=OBJ5_INLET_RADIUS_M,
+    wall_margin=OBJ5_WALL_MARGIN_M,
+    include_z=True,
+    z_position=TOP_FACE_Z_M,
+)
 # CCO configuration parameters (tuned for tiny domain)
 OBJ5_CCO_COLLISION_CLEARANCE = 5e-5    # 50 um collision clearance
 OBJ5_CCO_MIN_SEGMENT_LENGTH = 2e-4     # 200 um minimum segment
