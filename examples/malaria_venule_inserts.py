@@ -591,8 +591,11 @@ def voxel_union_meshes(meshes: List[trimesh.Trimesh], pitch: float) -> trimesh.T
     
     Uses the repo's voxelized_with_retry() function for robust voxelization
     with automatic retry on memory errors.
+    
+    IMPORTANT: Uses trimesh's native VoxelGrid.marching_cubes property instead of
+    skimage.measure.marching_cubes to avoid axis/transform seam bugs that can
+    create disconnected mesh components.
     """
-    from skimage.measure import marching_cubes
     from validity.mesh.voxel_utils import voxelized_with_retry
     
     if not meshes:
@@ -617,40 +620,16 @@ def voxel_union_meshes(meshes: List[trimesh.Trimesh], pitch: float) -> trimesh.T
     # Without .fill(), voxelized() returns surface occupancy which produces fragile
     # non-manifold results and nonsense volumes when passed to marching cubes
     voxels = voxels.fill()
-    voxel_matrix = voxels.matrix
     
-    # Marching cubes
-    verts, faces, _, _ = marching_cubes(
-        volume=voxel_matrix.astype(np.uint8),
-        level=0.5,
-        spacing=(pitch, pitch, pitch),
-        allow_degenerate=False,
-    )
+    # Use trimesh's native marching_cubes property which correctly handles
+    # the voxel grid transform (axis order + translation + scaling).
+    # This avoids the seam/gap bugs that occur when manually applying
+    # voxels.transform[:3, 3] to skimage marching_cubes output.
+    result = voxels.marching_cubes
     
-    # Transform back to world coordinates
-    verts += voxels.transform[:3, 3]
-    
-    result = trimesh.Trimesh(
-        vertices=verts,
-        faces=faces.astype(np.int64),
-        process=False,
-    )
-    
-    # Watertightness repair pass: merge close vertices, fill holes, remove degenerates
-    # This resolves tiny cracks that can occur after marching cubes
+    # Light cleanup pass: merge vertices and fill holes
+    # Avoid aggressive face filtering that can open seams
     result.merge_vertices()
-    
-    # Remove duplicate faces (using same pattern as validity/mesh/cleaning.py)
-    unique_faces = result.unique_faces()
-    result.update_faces(unique_faces)
-    result.remove_unreferenced_vertices()
-    
-    # Remove degenerate faces (zero-area triangles) using area threshold
-    # (same approach as validity/mesh/cleaning.py for consistency)
-    areas = result.area_faces
-    keep = areas > 1e-18
-    if keep.sum() > 0:  # Only update if there are faces to keep
-        result.update_faces(keep)
     result.remove_unreferenced_vertices()
     
     # Fill any remaining holes
@@ -1174,19 +1153,23 @@ def generate_object1_control(output_dir: Optional[Path] = None) -> trimesh.Trime
     print(f"  Object 1 complete: {len(combined.vertices)} vertices, {len(combined.faces)} faces")
     print(f"    Watertight: {combined.is_watertight}")
     
-    # Run post-embedding validation
-    print("  Running validation...")
-    try:
-        validation_config = ValidationConfig(
-            voxel_pitch_m=VOXEL_PITCH_M,
-            expected_outlets=0,  # No outlets for control
-        )
-        report = run_post_embedding_validation(mesh=combined, config=validation_config)
-        print_validation_details(report)
-    except Exception as e:
-        print(f"    Validation error: {e}")
-        import traceback
-        traceback.print_exc()
+    # Object 1 is a solid control with NO channels - skip post-embedding validation
+    # because channel-related checks (min_channel_diameter, channel continuity, etc.)
+    # are not applicable and produce misleading failures.
+    # Instead, just verify basic mesh properties:
+    print("  Validating mesh properties (Object 1 has no channels)...")
+    print(f"    Volume: {combined.volume * 1e9:.2f} mm³")
+    print(f"    Surface area: {combined.area * 1e6:.2f} mm²")
+    print(f"    Is watertight: {combined.is_watertight}")
+    print(f"    Is volume positive: {combined.volume > 0}")
+    
+    # Check for disconnected components (should be 1 for a solid cylinder+ridge)
+    components = combined.split(only_watertight=False)
+    print(f"    Number of components: {len(components)}")
+    if len(components) > 1:
+        print(f"    WARNING: Mesh has {len(components)} disconnected components (expected 1)")
+        for i, comp in enumerate(components):
+            print(f"      Component {i+1}: {len(comp.vertices)} vertices, {len(comp.faces)} faces")
     
     return combined
 
