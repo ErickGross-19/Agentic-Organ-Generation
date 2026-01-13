@@ -507,13 +507,25 @@ def embed_tree_as_negative_space(
         center = np.array([domain.center.x, domain.center.y, domain.center.z])
         radii = np.array([domain.semi_axis_a, domain.semi_axis_b, domain.semi_axis_c])
         
+        # Apply margin to ellipsoid radii so the domain shape expands with margin
+        if margin > 0:
+            radii = radii + margin
+        
         domain_mask = _compute_ellipsoid_mask_slicewise(
             grid_shape_padded, domain_min_padded, voxel_pitch, center, radii
         )
     elif isinstance(domain, CylinderDomain):
         center = np.array([domain.center.x, domain.center.y, domain.center.z])
+        
+        # Apply margin to cylinder dimensions so the domain shape expands with margin
+        cylinder_radius = domain.radius
+        cylinder_height = domain.height
+        if margin > 0:
+            cylinder_radius = cylinder_radius + margin
+            cylinder_height = cylinder_height + 2 * margin
+        
         domain_mask = _compute_cylinder_mask_slicewise(
-            grid_shape_padded, domain_min_padded, voxel_pitch, center, domain.radius, domain.height
+            grid_shape_padded, domain_min_padded, voxel_pitch, center, cylinder_radius, cylinder_height
         )
     
     print(f"Domain mask: {domain_mask.sum()} voxels ({100 * domain_mask.sum() / domain_mask.size:.1f}%)")

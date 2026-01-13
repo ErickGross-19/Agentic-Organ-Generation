@@ -63,6 +63,10 @@ class NLPConfig:
     cleanup_degenerate_segments: bool = True
     degenerate_length_factor: float = 2.0
     
+    # Convergence improvement options
+    scale_constraints: bool = True  # Scale constraints to improve conditioning
+    position_margin_factor: float = 0.5  # Margin factor for position bounds (0.5 = 50% of network size)
+    
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
         return {
@@ -224,10 +228,24 @@ class NLPProblem:
         lb = np.full(self._n_vars, -np.inf)
         ub = np.full(self._n_vars, np.inf)
         
+        # Compute network bounding box for position bounds
+        all_positions = np.array([
+            node.position.to_array() for node in self.network.nodes.values()
+        ])
+        network_min = all_positions.min(axis=0)
+        network_max = all_positions.max(axis=0)
+        network_size = network_max - network_min
+        
+        # Add margin to allow node movement during optimization
+        # Use config.position_margin_factor (default 0.5 = 50% of network size)
+        margin = np.maximum(network_size * self.config.position_margin_factor, 0.01)  # At least 1cm margin
+        pos_lb = network_min - margin
+        pos_ub = network_max + margin
+        
         for node_id in self._variable_node_ids:
             idx = self._node_to_pos_idx[node_id]
-            lb[idx:idx + 3] = -1.0
-            ub[idx:idx + 3] = 1.0
+            lb[idx:idx + 3] = pos_lb
+            ub[idx:idx + 3] = pos_ub
         
         for seg_id in self._segment_ids:
             idx = self._seg_to_radius_idx[seg_id]
