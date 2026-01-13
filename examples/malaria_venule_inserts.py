@@ -104,8 +104,10 @@ NUM_BIFURCATIONS_OBJ4 = 3          # Number of bifurcation levels in lateral pla
 MERGE_OVERLAP_M = 0.0005           # 0.5 mm overlap for merge region
 
 # --- Voxelization Parameters ---
-VOXEL_PITCH_M = 2.5e-5             # 25 um voxel pitch (for fine resolution)
-# Note: 25 um pitch on 10mm x 10mm x 2mm domain = ~12.8M voxels (feasible)
+VOXEL_PITCH_M = 2.5e-5             # 25 um voxel pitch (for fine resolution embedding)
+VOXEL_PITCH_UNION_M = 1.0e-4       # 100 um voxel pitch (for union operations - coarser to save memory)
+# Note: 25 um pitch on 10mm x 10mm x 2mm domain = ~12.8M voxels
+# For union operations, we use 100 um to reduce memory usage (~200K voxels)
 
 # --- Output Parameters ---
 OUTPUT_UNITS = "mm"                # Output STL files in millimeters
@@ -402,9 +404,9 @@ def generate_object1_control() -> trimesh.Trimesh:
           f"inner_r={meters_to_mm(CYLINDER_RADIUS_M - RIDGE_THICKNESS_M)}mm, "
           f"height={meters_to_mm(RIDGE_HEIGHT_M)}mm")
     
-    # Union cylinder and ridge
+    # Union cylinder and ridge (use coarser pitch for memory efficiency)
     print("  Combining cylinder and ridge...")
-    combined = voxel_union_meshes([base_cylinder, ridge], pitch=VOXEL_PITCH_M)
+    combined = voxel_union_meshes([base_cylinder, ridge], pitch=VOXEL_PITCH_UNION_M)
     
     print(f"  Object 1 complete: {len(combined.vertices)} vertices, {len(combined.faces)} faces")
     print(f"    Watertight: {combined.is_watertight}")
@@ -441,7 +443,7 @@ def generate_object2_channels() -> trimesh.Trimesh:
         center_xy=(CYLINDER_CENTER[0], CYLINDER_CENTER[1]),
     )
     
-    base = voxel_union_meshes([base_cylinder, ridge], pitch=VOXEL_PITCH_M)
+    base = voxel_union_meshes([base_cylinder, ridge], pitch=VOXEL_PITCH_UNION_M)
     
     # Create channels
     print(f"  Creating {NUM_CHANNELS} straight channels...")
@@ -466,7 +468,7 @@ def generate_object2_channels() -> trimesh.Trimesh:
     
     # Union all channels
     print("  Combining channels...")
-    channel_void = voxel_union_meshes(channels, pitch=VOXEL_PITCH_M)
+    channel_void = voxel_union_meshes(channels, pitch=VOXEL_PITCH_UNION_M)
     
     # Subtract channels from base
     print("  Carving channels from base...")
@@ -681,7 +683,7 @@ def generate_bifurcation_tree_mesh(
     
     # Union all segments (overlap-based merge)
     print(f"    Combining {len(all_segments)} branch segments...")
-    combined = voxel_union_meshes(all_segments, pitch=VOXEL_PITCH_M * 2)  # Coarser for speed
+    combined = voxel_union_meshes(all_segments, pitch=VOXEL_PITCH_UNION_M)
     
     return combined
 
@@ -812,7 +814,7 @@ def generate_object3_bifurcate_512() -> trimesh.Trimesh:
         center_xy=(CYLINDER_CENTER[0], CYLINDER_CENTER[1]),
     )
     
-    base = voxel_union_meshes([base_cylinder, ridge], pitch=VOXEL_PITCH_M)
+    base = voxel_union_meshes([base_cylinder, ridge], pitch=VOXEL_PITCH_UNION_M)
     
     # Generate bifurcating trees from each inlet
     print(f"  Generating {NUM_INLETS_OBJ3} bifurcating trees...")
@@ -834,7 +836,7 @@ def generate_object3_bifurcate_512() -> trimesh.Trimesh:
     
     # Union all trees (overlapping branches merge)
     print("  Combining all trees (overlap-based merge)...")
-    combined_void = voxel_union_meshes(all_trees, pitch=VOXEL_PITCH_M * 2)
+    combined_void = voxel_union_meshes(all_trees, pitch=VOXEL_PITCH_UNION_M)
     
     # Subtract from base
     print("  Carving voids from base...")
@@ -960,7 +962,7 @@ def generate_object4_turn_bifurcate_merge() -> trimesh.Trimesh:
         center_xy=(CYLINDER_CENTER[0], CYLINDER_CENTER[1]),
     )
     
-    base = voxel_union_meshes([base_cylinder, ridge], pitch=VOXEL_PITCH_M)
+    base = voxel_union_meshes([base_cylinder, ridge], pitch=VOXEL_PITCH_UNION_M)
     
     # Build the channel network
     print("  Building channel network...")
@@ -1034,7 +1036,7 @@ def generate_object4_turn_bifurcate_merge() -> trimesh.Trimesh:
     
     # Union all channel segments
     print(f"  Combining {len(channel_segments)} channel segments...")
-    combined_void = voxel_union_meshes(channel_segments, pitch=VOXEL_PITCH_M)
+    combined_void = voxel_union_meshes(channel_segments, pitch=VOXEL_PITCH_UNION_M)
     
     # Subtract from base
     print("  Carving channels from base...")
