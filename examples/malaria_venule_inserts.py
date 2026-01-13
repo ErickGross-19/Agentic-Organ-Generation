@@ -140,7 +140,6 @@ def compute_inlet_positions(
     elif num_inlets == 3:
         # Three inlets in equilateral triangle
         offset = max_placement_radius * 0.7
-        import math
         positions = [
             (0.0, offset),
             (offset * math.cos(math.radians(210)), offset * math.sin(math.radians(210))),
@@ -158,7 +157,6 @@ def compute_inlet_positions(
         ]
     else:
         # N inlets in circular pattern
-        import math
         offset = max_placement_radius * 0.7
         positions = []
         for i in range(num_inlets):
