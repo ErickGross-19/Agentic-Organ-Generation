@@ -23,7 +23,7 @@ from typing import Optional, Dict, Tuple, Union
 from scipy import ndimage
 from skimage.measure import marching_cubes
 
-from ..core.domain import DomainSpec, BoxDomain, EllipsoidDomain
+from ..core.domain import DomainSpec, BoxDomain, EllipsoidDomain, CylinderDomain
 from ..utils.units import detect_unit, warn_if_legacy_units, INTERNAL_UNIT, DEFAULT_OUTPUT_UNIT
 
 
@@ -122,6 +122,68 @@ def _compute_ellipsoid_mask_slicewise(
         x_val = domain_min_padded[0] + i * voxel_pitch
         x_term = ((x_val - center[0]) / radii[0]) ** 2
         mask[i, :, :] = (x_term + yz_sum) <= 1.0
+    
+    return mask
+
+
+def _compute_cylinder_mask_slicewise(
+    grid_shape: np.ndarray,
+    domain_min_padded: np.ndarray,
+    voxel_pitch: float,
+    center: np.ndarray,
+    radius: float,
+    height: float,
+) -> np.ndarray:
+    """
+    Compute cylinder mask slice-by-slice to avoid allocating full meshgrid arrays.
+    
+    The cylinder is aligned with the Z-axis, centered at the given center point.
+    
+    Parameters
+    ----------
+    grid_shape : np.ndarray
+        Shape of the output mask (nx, ny, nz)
+    domain_min_padded : np.ndarray
+        Lower corner of the padded domain
+    voxel_pitch : float
+        Voxel size
+    center : np.ndarray
+        Center of cylinder (x, y, z)
+    radius : float
+        Radius of cylinder in XY plane
+    height : float
+        Height of cylinder along Z-axis
+        
+    Returns
+    -------
+    np.ndarray
+        Boolean mask where True indicates inside cylinder
+    """
+    mask = np.zeros(grid_shape, dtype=bool)
+    
+    x = np.linspace(
+        domain_min_padded[0],
+        domain_min_padded[0] + grid_shape[0] * voxel_pitch,
+        grid_shape[0]
+    )
+    y = np.linspace(
+        domain_min_padded[1],
+        domain_min_padded[1] + grid_shape[1] * voxel_pitch,
+        grid_shape[1]
+    )
+    
+    x_term = (x - center[0]) ** 2
+    y_term = (y - center[1]) ** 2
+    xy_dist_sq = x_term[:, np.newaxis] + y_term[np.newaxis, :]
+    xy_inside = xy_dist_sq <= radius ** 2
+    
+    z_min = center[2] - height / 2
+    z_max = center[2] + height / 2
+    
+    for k in range(grid_shape[2]):
+        z_val = domain_min_padded[2] + k * voxel_pitch
+        if z_min <= z_val <= z_max:
+            mask[:, :, k] = xy_inside
     
     return mask
 
@@ -366,6 +428,18 @@ def embed_tree_as_negative_space(
         radii = np.array([domain.semi_axis_a, domain.semi_axis_b, domain.semi_axis_c])
         domain_min = center - radii
         domain_max = center + radii
+    elif isinstance(domain, CylinderDomain):
+        center = np.array([domain.center.x, domain.center.y, domain.center.z])
+        domain_min = np.array([
+            center[0] - domain.radius,
+            center[1] - domain.radius,
+            center[2] - domain.height / 2
+        ])
+        domain_max = np.array([
+            center[0] + domain.radius,
+            center[1] + domain.radius,
+            center[2] + domain.height / 2
+        ])
     else:
         raise ValueError(f"Unsupported domain type: {type(domain)}")
     
@@ -435,6 +509,11 @@ def embed_tree_as_negative_space(
         
         domain_mask = _compute_ellipsoid_mask_slicewise(
             grid_shape_padded, domain_min_padded, voxel_pitch, center, radii
+        )
+    elif isinstance(domain, CylinderDomain):
+        center = np.array([domain.center.x, domain.center.y, domain.center.z])
+        domain_mask = _compute_cylinder_mask_slicewise(
+            grid_shape_padded, domain_min_padded, voxel_pitch, center, domain.radius, domain.height
         )
     
     print(f"Domain mask: {domain_mask.sum()} voxels ({100 * domain_mask.sum() / domain_mask.size:.1f}%)")

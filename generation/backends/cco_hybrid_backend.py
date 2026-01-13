@@ -23,7 +23,61 @@ from ..core.types import Point3D, TubeGeometry
 
 @dataclass
 class CCOConfig(BackendConfig):
-    """Configuration for CCO hybrid backend."""
+    """Configuration for CCO hybrid backend.
+    
+    All spatial parameters are in METERS (SI units) unless otherwise noted.
+    
+    Attributes
+    ----------
+    murray_exponent : float
+        Exponent for Murray's law radius calculations (default: 3.0)
+    cost_length_weight : float
+        Weight for length term in insertion cost function (default: 1.0)
+    cost_radius_weight : float
+        Weight for radius term in insertion cost function (default: 1.0)
+    boundary_penalty_weight : float
+        Weight for boundary proximity penalty (default: 10.0)
+    optimization_grid_resolution : int
+        Grid resolution for bifurcation point optimization (default: 10)
+    candidate_edges_k : int
+        Maximum number of candidate edges to consider for insertion (default: 50)
+    use_partial_binding : bool
+        Enable partial binding optimization for faster cost evaluation (default: True)
+    use_collision_triage : bool
+        Enable collision triage for faster candidate selection (default: True)
+    collision_clearance : float
+        Minimum clearance between vessels in meters (default: 0.0001 = 0.1mm)
+    collision_check_enabled : bool
+        Enable collision prevention during insertion (default: True)
+    
+    Geometry Parameters (extracted from hardcoded values)
+    ----------------------------------------------------
+    candidate_search_radius : float
+        Search radius for finding nearby segments during candidate selection (default: 0.05m = 50mm)
+    boundary_penalty_threshold : float
+        Distance threshold for boundary penalty in cost calculation (default: 0.002m = 2mm)
+    initial_radius_taper : float
+        Taper ratio for initial segment radius (default: 0.8)
+    fallback_murray_split_ratio : float
+        Fallback ratio for Murray split when demand is zero (default: 0.8)
+    outlet_end_radius_taper : float
+        Taper ratio for outlet segment end radius (default: 0.9)
+    single_child_taper : float
+        Taper ratio for single child in radius rescaling (default: 0.9)
+    anastomosis_max_length : float
+        Maximum length for anastomosis connections in meters (default: 0.015m = 15mm)
+    
+    Dual-tree Parameters
+    --------------------
+    min_terminal_separation_same_type : float, optional
+        Minimum separation between terminals of same vessel type.
+        If None, uses min_terminal_separation from base config.
+    min_terminal_separation_cross_type : float, optional
+        Minimum separation between arterial and venous terminals.
+        If None, no cross-type separation check is performed.
+    encourage_av_proximity : bool
+        If True, prefer outlets near opposite vessel type terminals (default: False)
+    """
     
     murray_exponent: float = 3.0
     cost_length_weight: float = 1.0
@@ -38,10 +92,79 @@ class CCOConfig(BackendConfig):
     collision_clearance: float = 0.0001  # 0.1mm minimum clearance between vessels
     collision_check_enabled: bool = True  # Enable actual collision prevention during insertion
     
+    # Geometry parameters (previously hardcoded)
+    candidate_search_radius: float = 0.05  # 50mm search radius for candidate selection
+    boundary_penalty_threshold: float = 0.002  # 2mm threshold for boundary penalty
+    initial_radius_taper: float = 0.8  # Taper ratio for initial segment
+    fallback_murray_split_ratio: float = 0.8  # Fallback ratio when demand is zero
+    outlet_end_radius_taper: float = 0.9  # Taper ratio for outlet segment end
+    single_child_taper: float = 0.9  # Taper ratio for single child in rescaling
+    anastomosis_max_length: float = 0.015  # 15mm max length for anastomoses
+    
     # Dual-tree outlet validation parameters
     min_terminal_separation_same_type: Optional[float] = None  # If None, uses min_terminal_separation
     min_terminal_separation_cross_type: Optional[float] = None  # A-V separation (if None, no cross-type check)
     encourage_av_proximity: bool = False  # If True, prefer outlets near opposite vessel type terminals
+    
+    def validate(self) -> None:
+        """
+        Validate configuration parameters.
+        
+        Raises
+        ------
+        ValueError
+            If any parameter is out of valid range
+        """
+        # Validate positive parameters
+        if self.murray_exponent <= 0:
+            raise ValueError(f"murray_exponent must be positive, got {self.murray_exponent}")
+        if self.cost_length_weight < 0:
+            raise ValueError(f"cost_length_weight must be non-negative, got {self.cost_length_weight}")
+        if self.cost_radius_weight < 0:
+            raise ValueError(f"cost_radius_weight must be non-negative, got {self.cost_radius_weight}")
+        if self.boundary_penalty_weight < 0:
+            raise ValueError(f"boundary_penalty_weight must be non-negative, got {self.boundary_penalty_weight}")
+        if self.optimization_grid_resolution < 1:
+            raise ValueError(f"optimization_grid_resolution must be at least 1, got {self.optimization_grid_resolution}")
+        if self.candidate_edges_k < 1:
+            raise ValueError(f"candidate_edges_k must be at least 1, got {self.candidate_edges_k}")
+        
+        # Validate collision parameters
+        if self.collision_clearance < 0:
+            raise ValueError(f"collision_clearance must be non-negative, got {self.collision_clearance}")
+        
+        # Validate geometry parameters
+        if self.candidate_search_radius <= 0:
+            raise ValueError(f"candidate_search_radius must be positive, got {self.candidate_search_radius}")
+        if self.boundary_penalty_threshold <= 0:
+            raise ValueError(f"boundary_penalty_threshold must be positive, got {self.boundary_penalty_threshold}")
+        
+        # Validate taper ratios (should be between 0 and 1)
+        if not 0 < self.initial_radius_taper <= 1:
+            raise ValueError(f"initial_radius_taper must be in (0, 1], got {self.initial_radius_taper}")
+        if not 0 < self.fallback_murray_split_ratio <= 1:
+            raise ValueError(f"fallback_murray_split_ratio must be in (0, 1], got {self.fallback_murray_split_ratio}")
+        if not 0 < self.outlet_end_radius_taper <= 1:
+            raise ValueError(f"outlet_end_radius_taper must be in (0, 1], got {self.outlet_end_radius_taper}")
+        if not 0 < self.single_child_taper <= 1:
+            raise ValueError(f"single_child_taper must be in (0, 1], got {self.single_child_taper}")
+        
+        # Validate anastomosis parameters
+        if self.anastomosis_max_length <= 0:
+            raise ValueError(f"anastomosis_max_length must be positive, got {self.anastomosis_max_length}")
+        
+        # Validate base class parameters
+        if self.min_segment_length <= 0:
+            raise ValueError(f"min_segment_length must be positive, got {self.min_segment_length}")
+        if self.max_segment_length <= self.min_segment_length:
+            raise ValueError(
+                f"max_segment_length ({self.max_segment_length}) must be greater than "
+                f"min_segment_length ({self.min_segment_length})"
+            )
+        if self.min_radius <= 0:
+            raise ValueError(f"min_radius must be positive, got {self.min_radius}")
+        if self.min_terminal_separation < 0:
+            raise ValueError(f"min_terminal_separation must be non-negative, got {self.min_terminal_separation}")
 
 
 @dataclass
@@ -284,6 +407,81 @@ class CCOHybridBackend(GenerationBackend):
     def supports_closed_loop(self) -> bool:
         return True
     
+    def _validate_generate_inputs(
+        self,
+        domain: DomainSpec,
+        num_outlets: int,
+        inlet_position: np.ndarray,
+        inlet_radius: float,
+        vessel_type: str,
+    ) -> None:
+        """
+        Validate inputs for generate method.
+        
+        Parameters
+        ----------
+        domain : DomainSpec
+            Geometric domain for the network
+        num_outlets : int
+            Target number of terminal outlets
+        inlet_position : np.ndarray
+            Position of the inlet node (x, y, z) in meters
+        inlet_radius : float
+            Radius of the inlet vessel in meters
+        vessel_type : str
+            Type of vessels ("arterial" or "venous")
+            
+        Raises
+        ------
+        ValueError
+            If any input parameter is invalid
+        """
+        # Validate num_outlets
+        if num_outlets < 1:
+            raise ValueError(f"num_outlets must be at least 1, got {num_outlets}")
+        
+        # Validate inlet_position
+        if inlet_position is None:
+            raise ValueError("inlet_position cannot be None")
+        inlet_position = np.asarray(inlet_position)
+        if inlet_position.shape != (3,):
+            raise ValueError(f"inlet_position must be a 3D point, got shape {inlet_position.shape}")
+        
+        # Validate inlet_radius
+        if inlet_radius <= 0:
+            raise ValueError(f"inlet_radius must be positive, got {inlet_radius}")
+        
+        # Validate vessel_type
+        valid_vessel_types = {"arterial", "venous"}
+        if vessel_type not in valid_vessel_types:
+            raise ValueError(f"vessel_type must be one of {valid_vessel_types}, got '{vessel_type}'")
+        
+        # Validate domain bounds
+        inlet_point = Point3D.from_array(inlet_position)
+        if not domain.contains(inlet_point):
+            bounds = domain.get_bounds()
+            raise ValueError(
+                f"inlet_position {inlet_position} is outside domain bounds. "
+                f"Domain bounds: x=[{bounds[0]:.4f}, {bounds[1]:.4f}], "
+                f"y=[{bounds[2]:.4f}, {bounds[3]:.4f}], z=[{bounds[4]:.4f}, {bounds[5]:.4f}]"
+            )
+        
+        # Check for infeasible geometry (domain too small for requested outlets)
+        domain_bounds = domain.get_bounds()
+        domain_volume = (
+            (domain_bounds[1] - domain_bounds[0]) *
+            (domain_bounds[3] - domain_bounds[2]) *
+            (domain_bounds[5] - domain_bounds[4])
+        )
+        # Rough estimate: each outlet needs some minimum volume
+        min_volume_per_outlet = (inlet_radius * 10) ** 3  # Very rough estimate
+        if domain_volume < num_outlets * min_volume_per_outlet * 0.1:
+            import warnings
+            warnings.warn(
+                f"Domain volume ({domain_volume:.6f} m³) may be too small for "
+                f"{num_outlets} outlets. Generation may not achieve target outlet count."
+            )
+    
     def generate(
         self,
         domain: DomainSpec,
@@ -318,9 +516,20 @@ class CCOHybridBackend(GenerationBackend):
         -------
         VascularNetwork
             Generated vascular network
+            
+        Raises
+        ------
+        ValueError
+            If input parameters are invalid or infeasible
         """
         if config is None:
             config = CCOConfig()
+        
+        # Validate configuration parameters
+        config.validate()
+        
+        # Validate input parameters
+        self._validate_generate_inputs(domain, num_outlets, inlet_position, inlet_radius, vessel_type)
         
         rng = np.random.default_rng(rng_seed if rng_seed is not None else config.seed)
         
@@ -337,19 +546,47 @@ class CCOHybridBackend(GenerationBackend):
         network.add_node(inlet_node)
         
         first_outlet = self._sample_outlet_point(domain, rng, config)
-        self._add_initial_segment(network, inlet_node, first_outlet, inlet_radius, vessel_type)
+        self._add_initial_segment(network, inlet_node, first_outlet, inlet_radius, vessel_type, config)
         
         tree_view = ArrayTreeView(network, inlet_node.id)
+        
+        # Graceful degradation: track failed attempts and retry with different samples
+        max_consecutive_failures = 50  # Max consecutive failed outlet placements
+        consecutive_failures = 0
+        successful_outlets = 1  # Already have the first outlet
         
         for i in range(num_outlets - 1):
             outlet_point = self._sample_outlet_point(domain, rng, config)
             
             if not self._is_valid_outlet(outlet_point, network, config):
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    import warnings
+                    warnings.warn(
+                        f"Could not place outlet after {max_consecutive_failures} consecutive attempts. "
+                        f"Achieved {successful_outlets}/{num_outlets} outlets. "
+                        f"Consider increasing domain size or reducing num_outlets."
+                    )
+                    break
                 continue
             
-            self._insert_outlet(
+            insertion_success = self._insert_outlet(
                 network, tree_view, outlet_point, inlet_radius, vessel_type, config, rng
             )
+            
+            if insertion_success:
+                successful_outlets += 1
+                consecutive_failures = 0  # Reset on success
+            else:
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    import warnings
+                    warnings.warn(
+                        f"Could not insert outlet after {max_consecutive_failures} consecutive attempts. "
+                        f"Achieved {successful_outlets}/{num_outlets} outlets. "
+                        f"Consider adjusting collision parameters or domain size."
+                    )
+                    break
         
         self._rescale_radii(network, inlet_node.id, inlet_radius, config)
         
@@ -433,9 +670,27 @@ class CCOHybridBackend(GenerationBackend):
     ) -> VascularNetwork:
         """
         Generate a dual arterial-venous network with optional anastomoses.
+        
+        Raises
+        ------
+        ValueError
+            If input parameters are invalid or infeasible
         """
         if config is None:
             config = CCOConfig()
+        
+        # Validate configuration parameters
+        config.validate()
+        
+        # Validate arterial inputs
+        self._validate_generate_inputs(domain, arterial_outlets, arterial_inlet, arterial_radius, "arterial")
+        
+        # Validate venous inputs
+        self._validate_generate_inputs(domain, venous_outlets, venous_outlet, venous_radius, "venous")
+        
+        # Validate anastomosis parameters
+        if create_anastomoses and num_anastomoses < 0:
+            raise ValueError(f"num_anastomoses must be non-negative, got {num_anastomoses}")
         
         rng = np.random.default_rng(rng_seed if rng_seed is not None else config.seed)
         
@@ -452,17 +707,44 @@ class CCOHybridBackend(GenerationBackend):
         network.add_node(arterial_inlet_node)
         
         first_arterial = self._sample_outlet_point(domain, rng, config)
-        self._add_initial_segment(network, arterial_inlet_node, first_arterial, arterial_radius, "arterial")
+        self._add_initial_segment(network, arterial_inlet_node, first_arterial, arterial_radius, "arterial", config)
         
         arterial_tree_view = ArrayTreeView(network, arterial_inlet_node.id)
         
+        max_consecutive_failures = 50
+        consecutive_failures = 0
+        successful_arterial = 1
+        
         for i in range(arterial_outlets - 1):
             outlet_point = self._sample_outlet_point(domain, rng, config)
-            if self._is_valid_outlet(outlet_point, network, config, vessel_type="arterial"):
-                self._insert_outlet(
-                    network, arterial_tree_view, outlet_point,
-                    arterial_radius, "arterial", config, rng
-                )
+            if not self._is_valid_outlet(outlet_point, network, config, vessel_type="arterial"):
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    import warnings
+                    warnings.warn(
+                        f"Could not place arterial outlet after {max_consecutive_failures} consecutive attempts. "
+                        f"Achieved {successful_arterial}/{arterial_outlets} arterial outlets."
+                    )
+                    break
+                continue
+            
+            insertion_success = self._insert_outlet(
+                network, arterial_tree_view, outlet_point,
+                arterial_radius, "arterial", config, rng
+            )
+            
+            if insertion_success:
+                successful_arterial += 1
+                consecutive_failures = 0
+            else:
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    import warnings
+                    warnings.warn(
+                        f"Could not insert arterial outlet after {max_consecutive_failures} consecutive attempts. "
+                        f"Achieved {successful_arterial}/{arterial_outlets} arterial outlets."
+                    )
+                    break
         
         venous_outlet_point = Point3D.from_array(venous_outlet)
         venous_outlet_node = Node(
@@ -475,17 +757,43 @@ class CCOHybridBackend(GenerationBackend):
         network.add_node(venous_outlet_node)
         
         first_venous = self._sample_outlet_point(domain, rng, config)
-        self._add_initial_segment(network, venous_outlet_node, first_venous, venous_radius, "venous")
+        self._add_initial_segment(network, venous_outlet_node, first_venous, venous_radius, "venous", config)
         
         venous_tree_view = ArrayTreeView(network, venous_outlet_node.id)
         
+        consecutive_failures = 0
+        successful_venous = 1
+        
         for i in range(venous_outlets - 1):
             outlet_point = self._sample_outlet_point(domain, rng, config)
-            if self._is_valid_outlet(outlet_point, network, config, vessel_type="venous"):
-                self._insert_outlet(
-                    network, venous_tree_view, outlet_point,
-                    venous_radius, "venous", config, rng
-                )
+            if not self._is_valid_outlet(outlet_point, network, config, vessel_type="venous"):
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    import warnings
+                    warnings.warn(
+                        f"Could not place venous outlet after {max_consecutive_failures} consecutive attempts. "
+                        f"Achieved {successful_venous}/{venous_outlets} venous outlets."
+                    )
+                    break
+                continue
+            
+            insertion_success = self._insert_outlet(
+                network, venous_tree_view, outlet_point,
+                venous_radius, "venous", config, rng
+            )
+            
+            if insertion_success:
+                successful_venous += 1
+                consecutive_failures = 0
+            else:
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    import warnings
+                    warnings.warn(
+                        f"Could not insert venous outlet after {max_consecutive_failures} consecutive attempts. "
+                        f"Achieved {successful_venous}/{venous_outlets} venous outlets."
+                    )
+                    break
         
         self._rescale_radii(network, arterial_inlet_node.id, arterial_radius, config)
         self._rescale_radii(network, venous_outlet_node.id, venous_radius, config)
@@ -571,14 +879,16 @@ class CCOHybridBackend(GenerationBackend):
         outlet_point: Point3D,
         radius: float,
         vessel_type: str,
+        config: CCOConfig,
     ) -> None:
         """Add the first segment from inlet to first outlet."""
+        end_radius = radius * config.initial_radius_taper
         outlet_node = Node(
             id=network.id_gen.next_id(),
             position=outlet_point,
             node_type="terminal",
             vessel_type=vessel_type,
-            attributes={"radius": radius * 0.8, "branch_order": 1},
+            attributes={"radius": end_radius, "branch_order": 1},
         )
         network.add_node(outlet_node)
         
@@ -586,7 +896,7 @@ class CCOHybridBackend(GenerationBackend):
             start=inlet_node.position,
             end=outlet_point,
             radius_start=radius,
-            radius_end=radius * 0.8,
+            radius_end=end_radius,
         )
         
         segment = VesselSegment(
@@ -658,8 +968,9 @@ class CCOHybridBackend(GenerationBackend):
         """
         if config.use_collision_triage:
             spatial_index = network.get_spatial_index()
-            search_radius = 0.05
-            nearby_segments = spatial_index.query_nearby_segments(outlet_point, search_radius)
+            nearby_segments = spatial_index.query_nearby_segments(
+                outlet_point, config.candidate_search_radius
+            )
             
             if nearby_segments:
                 candidates = [seg.id for seg in nearby_segments]
@@ -722,7 +1033,10 @@ class CCOHybridBackend(GenerationBackend):
         best_X = None
         best_cost = float('inf')
         
+        # Coarse grid search first
         n_grid = config.optimization_grid_resolution
+        best_t, best_s = 0.5, 0.5
+        
         for i in range(n_grid + 1):
             t = i / n_grid
             X_on_AB = A + t * AB
@@ -743,6 +1057,45 @@ class CCOHybridBackend(GenerationBackend):
                 if cost < best_cost:
                     best_cost = cost
                     best_X = X_point
+                    best_t, best_s = t, s
+        
+        # Adaptive refinement around best point (if found)
+        if best_X is not None and n_grid >= 2:
+            step = 1.0 / n_grid
+            refine_steps = 3  # Number of refinement iterations
+            
+            for _ in range(refine_steps):
+                step /= 2
+                improved = False
+                
+                for dt in [-step, 0, step]:
+                    for ds in [-step, 0, step]:
+                        if dt == 0 and ds == 0:
+                            continue
+                        
+                        t_new = max(0, min(1, best_t + dt))
+                        s_new = max(0, min(1, best_s + ds))
+                        
+                        X_on_AB = A + t_new * AB
+                        X = X_on_AB + s_new * (T - X_on_AB)
+                        X_point = Point3D.from_array(X)
+                        
+                        if not network.domain.contains(X_point):
+                            continue
+                        
+                        cost = self._compute_insertion_cost(
+                            network, tree_view, seg_id, X_point, outlet_point, config
+                        )
+                        
+                        if cost < best_cost:
+                            best_cost = cost
+                            best_X = X_point
+                            best_t, best_s = t_new, s_new
+                            improved = True
+                
+                # Early termination if no improvement in this refinement step
+                if not improved:
+                    break
         
         if best_X is None:
             t_opt = 0.5
@@ -804,9 +1157,9 @@ class CCOHybridBackend(GenerationBackend):
             r_child1 = r_parent * (f_existing ** (1.0 / gamma))  # Existing subtree
             r_child2 = r_parent * (f_new ** (1.0 / gamma))  # New outlet
         else:
-            # Fallback to equal split
-            r_child1 = r_parent * 0.8
-            r_child2 = r_parent * 0.8
+            # Fallback to configurable split ratio
+            r_child1 = r_parent * config.fallback_murray_split_ratio
+            r_child2 = r_parent * config.fallback_murray_split_ratio
         
         # Collision check: verify proposed new segments don't collide with existing segments
         if config.collision_check_enabled:
@@ -823,8 +1176,8 @@ class CCOHybridBackend(GenerationBackend):
         )
         
         boundary_dist = network.domain.distance_to_boundary(X)
-        if boundary_dist < 0.002:
-            cost += config.boundary_penalty_weight * (0.002 - boundary_dist)
+        if boundary_dist < config.boundary_penalty_threshold:
+            cost += config.boundary_penalty_weight * (config.boundary_penalty_threshold - boundary_dist)
         
         return cost
     
@@ -844,9 +1197,10 @@ class CCOHybridBackend(GenerationBackend):
         P0-7: Tests all three new segments (A→X, X→B, X→T) for collisions,
         not assuming segment orientation.
         
-        Uses 2-stage method:
-        1. Cheap spatial query to find nearby segments
-        2. Exact segment-segment distance check for candidates
+        Uses optimized 2-stage hierarchical method:
+        1. Cheap spatial query to find nearby segments (broad-phase)
+        2. Exact segment-segment distance check for candidates (narrow-phase)
+        3. Early termination on first collision detected
         
         Parameters
         ----------
@@ -1054,9 +1408,9 @@ class CCOHybridBackend(GenerationBackend):
             r_child_existing = r_parent * (f_existing ** (1.0 / gamma))  # Existing subtree
             r_child_new = r_parent * (f_new ** (1.0 / gamma))  # New outlet
         else:
-            # Fallback to equal split
-            r_child_existing = r_parent * 0.8
-            r_child_new = r_parent * 0.8
+            # Fallback to configurable split ratio
+            r_child_existing = r_parent * config.fallback_murray_split_ratio
+            r_child_new = r_parent * config.fallback_murray_split_ratio
         
         outlet_node = Node(
             id=network.id_gen.next_id(),
@@ -1102,7 +1456,7 @@ class CCOHybridBackend(GenerationBackend):
             start=bifurcation_point,
             end=outlet_point,
             radius_start=r_child_new,
-            radius_end=r_child_new * 0.9,
+            radius_end=r_child_new * config.outlet_end_radius_taper,
         )
         seg3 = VesselSegment(
             id=network.id_gen.next_id(),
@@ -1182,8 +1536,8 @@ class CCOHybridBackend(GenerationBackend):
             
             n_children = len(child_segs)
             if n_children == 1:
-                # Single child: slight taper
-                child_radius = parent_radius * 0.9
+                # Single child: configurable taper
+                child_radius = parent_radius * config.single_child_taper
                 seg_id, child_node_id = child_segs[0]
                 seg = network.segments[seg_id]
                 
@@ -1268,7 +1622,7 @@ class CCOHybridBackend(GenerationBackend):
             if a_id in used_arterial or v_id in used_venous:
                 continue
             
-            result = create_anastomosis(network, a_id, v_id, max_length=0.015)
+            result = create_anastomosis(network, a_id, v_id, max_length=config.anastomosis_max_length)
             if result.is_success():
                 created += 1
                 used_arterial.add(a_id)
