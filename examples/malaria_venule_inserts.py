@@ -386,8 +386,7 @@ OBJ4_OUTLET_X_M = 0.002                  # X position of outlet
 # =============================================================================
 # GEOMETRY THRESHOLDS
 # =============================================================================
-DEGENERATE_LENGTH_THRESHOLD = 1e-9       # Threshold for degenerate segment detection
-INLET_PLACEMENT_FRACTION = 0.7           # Fraction of max radius for inlet placement (2-3 inlets)
+DEGENERATE_LENGTH_THRESHOLD = 1e-9       # Threshold for degenerate segment detection          # Fraction of max radius for inlet placement (2-3 inlets)
 
 # =============================================================================
 # OUTPUT PARAMETERS
@@ -791,274 +790,211 @@ def embed_void_in_cylinder(
     keep_largest_component: bool = True,
 ) -> trimesh.Trimesh:
     """
-    Use the repo's embed_tree_as_negative_space function to carve voids from a cylinder domain.
-    
-    This function:
-    1. Exports the void mesh to a temporary STL file (in meters)
-    2. Creates a CylinderDomain matching our base cylinder
-    3. Calls embed_tree_as_negative_space to carve the void
-    4. Returns the domain_with_void mesh (in meters, for consistency with other functions)
-    
-    If the repo's embedding function fails or returns an empty result, falls back to
-    direct voxel-based subtraction.
-    
-    Parameters
-    ----------
-    void_mesh : trimesh.Trimesh
-        The void/channel mesh to carve from the cylinder (in meters)
-    output_dir : Path, optional
-        Directory to save intermediate STL files
-    object_name : str
-        Name prefix for intermediate files
-    voxel_pitch : float
-        Voxel pitch for embedding (in meters)
-    keep_largest_component : bool
-        If True, keep only the largest connected component during repair (default).
-        Set to False for meshes with multiple disconnected parts that should
-        all be preserved (e.g., Object 3's 4 separate inlet trees).
-    
-    Returns
-    -------
-    trimesh.Trimesh
-        The cylinder domain with void carved out (in meters)
+    Carve void_mesh out of the base cylinder using the repo's embed_tree_as_negative_space.
+    If embedding fails, fall back to direct voxel subtraction.
+
+    This version fixes:
+      - removes skimage/scipy dependency in this function
+      - removes duplicated / mis-indented carve checks
+      - uses a single, robust fallback path
+      - uses FILLED voxel grids (not surface shells)
+      - uses trimesh VoxelGrid.marching_cubes (avoids axis/transform bugs)
     """
     import tempfile
-    from skimage.measure import marching_cubes
-    from scipy import ndimage
-    
-    # Repair the void mesh before embedding to ensure watertightness
+    import shutil
+    from trimesh.voxel import VoxelGrid
+
+    temp_dir = None
+
+    # Repair void mesh (critical before embedding)
     void_mesh = repair_mesh_for_embedding(
-        void_mesh, 
+        void_mesh,
         name=f"{object_name}_void",
         keep_largest_component=keep_largest_component,
     )
-    
-    # Print diagnostic info about the void mesh
+
     void_bounds = void_mesh.bounds
     print(f"    Void mesh bounds: min={void_bounds[0]}, max={void_bounds[1]}")
-    print(f"    Void mesh volume: {void_mesh.volume:.9f} m^3")
+    # NOTE: volume can be unreliable for tube-like meshes; keep as informational only
+    try:
+        print(f"    Void mesh volume: {void_mesh.volume:.9f} m^3")
+    except Exception:
+        print("    Void mesh volume: (unavailable)")
     print(f"    Void mesh watertight: {void_mesh.is_watertight}")
-    
-    # Print diagnostic info about the cylinder domain
+
     cyl_z_min = CYLINDER_CENTER[2] - CYLINDER_HEIGHT_M / 2
     cyl_z_max = CYLINDER_CENTER[2] + CYLINDER_HEIGHT_M / 2
     print(f"    Cylinder domain: center={CYLINDER_CENTER}, radius={CYLINDER_RADIUS_M}m, height={CYLINDER_HEIGHT_M}m")
     print(f"    Cylinder Z range: [{cyl_z_min}, {cyl_z_max}]")
-    
-    # Create temporary directory for intermediate files
-    temp_dir = Path(tempfile.mkdtemp(prefix=f"embed_{object_name}_"))
-    
-    # Export void mesh to temporary STL (in meters, with units.json sidecar)
-    void_stl_path = temp_dir / f"{object_name}_void.stl"
-    void_mesh.export(str(void_stl_path))
-    
-    # Write units sidecar so embed_tree_as_negative_space knows the units
-    sidecar_path = str(void_stl_path) + ".units.json"
-    with open(sidecar_path, 'w') as f:
-        json.dump({"units": "m"}, f)
-    
-    print(f"    Exported void mesh to: {void_stl_path}")
-    
-    # Also save to output_dir if provided
-    if output_dir:
-        intermediate_path = output_dir / "intermediate" / f"{object_name}_void_for_embedding.stl"
-        intermediate_path.parent.mkdir(parents=True, exist_ok=True)
-        scale_mesh_to_mm(void_mesh).export(str(intermediate_path))
-        print(f"    Saved intermediate void mesh: {intermediate_path}")
-    
-    # Create CylinderDomain matching our base cylinder
-    domain = CylinderDomain(
-        center=Point3D(CYLINDER_CENTER[0], CYLINDER_CENTER[1], CYLINDER_CENTER[2]),
-        radius=CYLINDER_RADIUS_M,
-        height=CYLINDER_HEIGHT_M,
-    )
-    
-    print(f"    Using embed_tree_as_negative_space with voxel_pitch={voxel_pitch*1e6:.1f}um")
-    
+
     try:
-        # Call the repo's embedding function
-        # IMPORTANT: smoothing_iters=0 to prevent voxelization from smoothing over the embedding
-        # The embedding function applies binary closing/opening which can smooth out void edges
+        # Temp dir + STL export for repo embed function
+        temp_dir = Path(tempfile.mkdtemp(prefix=f"embed_{object_name}_"))
+        void_stl_path = temp_dir / f"{object_name}_void.stl"
+        void_mesh.export(str(void_stl_path))
+
+        # Units sidecar (embed_tree_as_negative_space checks it)
+        sidecar_path = str(void_stl_path) + ".units.json"
+        with open(sidecar_path, "w") as f:
+            json.dump({"units": "m"}, f)
+
+        print(f"    Exported void mesh to: {void_stl_path}")
+
+        if output_dir:
+            intermediate_path = output_dir / "intermediate" / f"{object_name}_void_for_embedding.stl"
+            intermediate_path.parent.mkdir(parents=True, exist_ok=True)
+            scale_mesh_to_mm(void_mesh).export(str(intermediate_path))
+            print(f"    Saved intermediate void mesh: {intermediate_path}")
+
+        # Domain
+        domain = CylinderDomain(
+            center=Point3D(CYLINDER_CENTER[0], CYLINDER_CENTER[1], CYLINDER_CENTER[2]),
+            radius=CYLINDER_RADIUS_M,
+            height=CYLINDER_HEIGHT_M,
+        )
+
+        print(f"    Using embed_tree_as_negative_space with voxel_pitch={voxel_pitch*1e6:.1f}um")
+
+        # --- Primary path: repo embedding ---
         result = embed_tree_as_negative_space(
             tree_stl_path=void_stl_path,
             domain=domain,
             voxel_pitch=voxel_pitch,
-            stl_units="m",  # We exported in meters
-            geometry_units="m",  # Domain is in meters
-            output_units="m",  # Return in meters (we'll scale to mm at final export)
+            stl_units="m",
+            geometry_units="m",
+            output_units="m",
             output_void=True,
-            smoothing_iters=0,  # NO smoothing to preserve void shape exactly
+            smoothing_iters=0,  # preserve void edges
         )
-        
-        domain_with_void = result['domain_with_void']
-        
+
+        domain_with_void = result.get("domain_with_void", None)
         if domain_with_void is None:
             raise RuntimeError("embed_tree_as_negative_space returned None for domain_with_void")
-        
-        # FIX 1 & 6: Use mask-based test instead of volume comparison
-        # Void meshes often have unreliable/zero volume (uncapped tubes, self-intersections)
-        # so volume comparison is unreliable. Use voxel counts from metadata instead.
-        metadata = result.get('metadata', {})
-        voxel_counts = metadata.get('voxel_counts', {})
-        
-                # --- Robust carve verification ---
+
+        # --- Single, robust carve verification (mask-based if available) ---
+        metadata = result.get("metadata", {}) or {}
         voxel_counts = metadata.get("voxel_counts", None)
 
         if isinstance(voxel_counts, dict) and voxel_counts.get("domain", 0) > 0:
             domain_voxels = int(voxel_counts.get("domain", 0))
             void_voxels = int(voxel_counts.get("void", 0))
-            solid_voxels = int(voxel_counts.get("solid", 0))
+            solid_voxels = int(voxel_counts.get("solid", domain_voxels))
 
-            print(f"    Voxel counts from embedding:")
+            print("    Voxel counts from embedding:")
             print(f"      Domain mask: {domain_voxels} voxels")
             print(f"      Void mask:   {void_voxels} voxels")
             print(f"      Solid mask:  {solid_voxels} voxels")
 
             epsilon = max(1, int(0.001 * domain_voxels))  # 0.1% tolerance
-            carving_successful = (void_voxels > 0) and (solid_voxels < (domain_voxels - epsilon))
+            carving_ok = (void_voxels > 0) and (solid_voxels < (domain_voxels - epsilon))
 
-            if not carving_successful:
+            if not carving_ok:
                 raise RuntimeError("Void not carved (mask-based check failed)")
-            else:
-                carved = domain_voxels - solid_voxels
-                print(f"    Carving verified: removed ~{carved} voxels ({carved/domain_voxels*100:.2f}%)")
 
+            carved = domain_voxels - solid_voxels
+            print(f"    Carving verified: removed ~{carved} voxels ({carved/domain_voxels*100:.2f}%)")
         else:
-            # If voxel_counts not provided, don't falsely fail
             print("    Warning: embedding did not return voxel_counts; skipping carve verification.")
 
-        
-        # Save debug artifacts if output_dir provided (Fix 6)
+        # Save debug JSON (optional)
         if output_dir:
             debug_path = output_dir / "intermediate" / f"{object_name}_embedding_debug.json"
             debug_path.parent.mkdir(parents=True, exist_ok=True)
             debug_info = {
                 "voxel_counts": voxel_counts,
-                "void_bounds": void_bounds.tolist() if hasattr(void_bounds, 'tolist') else list(void_bounds),
-                "domain_bounds": {
-                    "center": list(CYLINDER_CENTER),
-                    "radius": CYLINDER_RADIUS_M,
-                    "height": CYLINDER_HEIGHT_M,
-                },
+                "void_bounds": void_bounds.tolist() if hasattr(void_bounds, "tolist") else list(void_bounds),
+                "domain": {"center": list(CYLINDER_CENTER), "radius": CYLINDER_RADIUS_M, "height": CYLINDER_HEIGHT_M},
                 "voxel_pitch": voxel_pitch,
-                "metadata": {k: v for k, v in metadata.items() if k != 'voxel_counts'},
             }
-            with open(debug_path, 'w') as f:
+            with open(debug_path, "w") as f:
                 json.dump(debug_info, f, indent=2, default=str)
             print(f"    Saved debug info: {debug_path}")
-        
-        # Mask-based carving check (Fix 1):
-        # Carving is successful if:
-        # 1. void_mask.sum() > 0 (void was voxelized)
-        # 2. solid_mask.sum() < domain_mask.sum() - epsilon (material was removed)
-        epsilon = max(1, int(domain_voxels * 0.001))  # 0.1% tolerance
-        
-        carving_successful = (void_voxels > 0) and (solid_voxels < domain_voxels - epsilon)
-        
-        if not carving_successful:
-            if void_voxels == 0:
-                print(f"    WARNING: Void mask is empty - void was not voxelized!")
-            elif solid_voxels >= domain_voxels - epsilon:
-                print(f"    WARNING: Solid mask ({solid_voxels}) ≈ domain mask ({domain_voxels}) - void may not have been carved!")
-            print(f"    Falling back to direct voxel subtraction...")
-            raise RuntimeError("Void not carved (mask-based check failed) - falling back to direct subtraction")
-        
-        print(f"    Carving verified: {domain_voxels - solid_voxels} voxels removed ({(domain_voxels - solid_voxels) / domain_voxels * 100:.1f}%)")
-        print(f"    Embedding complete: {len(domain_with_void.vertices)} vertices, {len(domain_with_void.faces)} faces")
-        print(f"    Watertight: {domain_with_void.is_watertight}")
-        
+
+        # Export intermediate cylinder-with-void
+        if output_dir:
+            intermediate_path = output_dir / "intermediate" / f"{object_name}_cylinder_with_void.stl"
+            intermediate_path.parent.mkdir(parents=True, exist_ok=True)
+            scale_mesh_to_mm(domain_with_void).export(str(intermediate_path))
+            print(f"    Saved intermediate cylinder with void: {intermediate_path}")
+
+        return domain_with_void
+
     except Exception as e:
         print(f"    embed_tree_as_negative_space failed or void not carved: {e}")
         print(f"    Using direct voxel subtraction fallback...")
-        
-                # Voxelize cylinder (FILLED solid)
-        try:
-            cyl_voxels = cylinder.voxelized(voxel_pitch).fill()
-            cyl_matrix = cyl_voxels.matrix.astype(bool)
-            cyl_origin = cyl_voxels.transform[:3, 3]
-        except Exception as ve:
-            print(f"    Cylinder voxelization failed: {ve}")
-            raise
 
-        # Voxelize void (FILLED solid)
-        try:
-            void_voxels = void_mesh.voxelized(voxel_pitch).fill()
-            void_matrix = void_voxels.matrix.astype(bool)
-            void_origin = void_voxels.transform[:3, 3]
-        except Exception as ve:
-            print(f"    Void voxelization failed: {ve}")
-            raise
+        # --- Fallback: direct voxel subtraction in a common padded grid (X,Y,Z) ---
+        cylinder = create_cylinder_mesh(CYLINDER_RADIUS_M, CYLINDER_HEIGHT_M, CYLINDER_CENTER)
 
-        # Align both into a common (x,y,z) grid anchored at domain_min_padded
+        # Domain bounds (cylinder) and padding (2 voxels)
+        pad = 2 * float(voxel_pitch)
+        domain_min = np.array([-CYLINDER_RADIUS_M, -CYLINDER_RADIUS_M, CYLINDER_CENTER[2] - CYLINDER_HEIGHT_M / 2], dtype=float)
+        domain_max = np.array([ CYLINDER_RADIUS_M,  CYLINDER_RADIUS_M, CYLINDER_CENTER[2] + CYLINDER_HEIGHT_M / 2], dtype=float)
+        domain_min_padded = domain_min - pad
+        domain_max_padded = domain_max + pad
+
+        grid_shape = np.ceil((domain_max_padded - domain_min_padded) / float(voxel_pitch)).astype(int) + 1
+        print(f"    Voxel grid shape: {grid_shape.tolist()}")
+
+        # Voxelize (FILLED!)
+        cyl_vox = cylinder.voxelized(float(voxel_pitch)).fill()
+        cyl_matrix = cyl_vox.matrix.astype(bool)      # (X,Y,Z)
+        cyl_origin = cyl_vox.transform[:3, 3].astype(float)
+
+        void_vox = void_mesh.voxelized(float(voxel_pitch)).fill()
+        void_matrix = void_vox.matrix.astype(bool)    # (X,Y,Z)
+        void_origin = void_vox.transform[:3, 3].astype(float)
+
         aligned_cyl = np.zeros(grid_shape, dtype=bool)
         aligned_void = np.zeros(grid_shape, dtype=bool)
 
-        # Copy cylinder voxels to aligned grid
-        cyl_offset = np.round((cyl_origin - domain_min_padded) / voxel_pitch).astype(int)
-        cyl_shape = np.array(cyl_matrix.shape)
-        cyl_src_start = np.maximum(-cyl_offset, 0)
-        cyl_dst_start = np.maximum(cyl_offset, 0)
-        cyl_copy_size = np.minimum(cyl_shape - cyl_src_start, grid_shape - cyl_dst_start)
-        cyl_copy_size = np.maximum(cyl_copy_size, 0)
+        def paste_into(dst, src, src_origin):
+            offset = np.round((src_origin - domain_min_padded) / float(voxel_pitch)).astype(int)
+            src_shape = np.array(src.shape, dtype=int)
 
-        if np.all(cyl_copy_size > 0):
-            aligned_cyl[
-                cyl_dst_start[0]:cyl_dst_start[0] + cyl_copy_size[0],
-                cyl_dst_start[1]:cyl_dst_start[1] + cyl_copy_size[1],
-                cyl_dst_start[2]:cyl_dst_start[2] + cyl_copy_size[2]
-            ] = cyl_matrix[
-                cyl_src_start[0]:cyl_src_start[0] + cyl_copy_size[0],
-                cyl_src_start[1]:cyl_src_start[1] + cyl_copy_size[1],
-                cyl_src_start[2]:cyl_src_start[2] + cyl_copy_size[2]
-            ]
+            src_start = np.maximum(-offset, 0)
+            dst_start = np.maximum(offset, 0)
+            copy_size = np.minimum(src_shape - src_start, grid_shape - dst_start)
+            copy_size = np.maximum(copy_size, 0)
 
-        # Copy void voxels to aligned grid
-        void_offset = np.round((void_origin - domain_min_padded) / voxel_pitch).astype(int)
-        void_shape = np.array(void_matrix.shape)
-        void_src_start = np.maximum(-void_offset, 0)
-        void_dst_start = np.maximum(void_offset, 0)
-        void_copy_size = np.minimum(void_shape - void_src_start, grid_shape - void_dst_start)
-        void_copy_size = np.maximum(void_copy_size, 0)
+            if np.all(copy_size > 0):
+                dst[
+                    dst_start[0]:dst_start[0] + copy_size[0],
+                    dst_start[1]:dst_start[1] + copy_size[1],
+                    dst_start[2]:dst_start[2] + copy_size[2],
+                ] = src[
+                    src_start[0]:src_start[0] + copy_size[0],
+                    src_start[1]:src_start[1] + copy_size[1],
+                    src_start[2]:src_start[2] + copy_size[2],
+                ]
 
-        if np.all(void_copy_size > 0):
-            aligned_void[
-                void_dst_start[0]:void_dst_start[0] + void_copy_size[0],
-                void_dst_start[1]:void_dst_start[1] + void_copy_size[1],
-                void_dst_start[2]:void_dst_start[2] + void_copy_size[2]
-            ] = void_matrix[
-                void_src_start[0]:void_src_start[0] + void_copy_size[0],
-                void_src_start[1]:void_src_start[1] + void_copy_size[1],
-                void_src_start[2]:void_src_start[2] + void_copy_size[2]
-            ]
+        paste_into(aligned_cyl, cyl_matrix, cyl_origin)
+        paste_into(aligned_void, void_matrix, void_origin)
 
         print(f"    Cylinder voxels: {int(aligned_cyl.sum())}")
         print(f"    Void voxels: {int(aligned_void.sum())}")
 
-        # Subtract
         result_mask = aligned_cyl & (~aligned_void)
         print(f"    Result voxels: {int(result_mask.sum())}")
 
-        # Convert mask to mesh using trimesh VoxelGrid (avoids skimage axis confusion)
-        from trimesh.voxel import VoxelGrid
+        if not result_mask.any():
+            raise RuntimeError("Result mask is empty after voxel subtraction")
 
-        # Transform: index -> world coordinate
-        # Here index axes correspond to (x,y,z) because result_mask is built that way
-        T = np.eye(4)
-        T[0, 0] = voxel_pitch
-        T[1, 1] = voxel_pitch
-        T[2, 2] = voxel_pitch
+        # Convert voxel mask -> mesh using VoxelGrid transform
+        T = np.eye(4, dtype=float)
+        T[0, 0] = float(voxel_pitch)
+        T[1, 1] = float(voxel_pitch)
+        T[2, 2] = float(voxel_pitch)
         T[:3, 3] = domain_min_padded
 
         vg = VoxelGrid(result_mask, transform=T)
         domain_with_void = vg.marching_cubes
 
-        # Cleanup / orientation
+        # Cleanup + orientation
         domain_with_void.remove_unreferenced_vertices()
         domain_with_void.merge_vertices()
-
         if domain_with_void.volume < 0:
             domain_with_void.invert()
-
         trimesh.repair.fix_normals(domain_with_void)
         if not domain_with_void.is_watertight:
             trimesh.repair.fill_holes(domain_with_void)
@@ -1066,19 +1002,18 @@ def embed_void_in_cylinder(
         print(f"    Fallback complete: {len(domain_with_void.vertices)} vertices, {len(domain_with_void.faces)} faces")
         print(f"    Watertight: {domain_with_void.is_watertight}")
 
-    
-    # Clean up temp files
-    import shutil
-    shutil.rmtree(temp_dir, ignore_errors=True)
-    
-    # Export intermediate result if output_dir provided
-    if output_dir:
-        intermediate_path = output_dir / "intermediate" / f"{object_name}_cylinder_with_void.stl"
-        intermediate_path.parent.mkdir(parents=True, exist_ok=True)
-        scale_mesh_to_mm(domain_with_void).export(str(intermediate_path))
-        print(f"    Saved intermediate cylinder with void: {intermediate_path}")
-    
-    return domain_with_void
+        if output_dir:
+            intermediate_path = output_dir / "intermediate" / f"{object_name}_cylinder_with_void.stl"
+            intermediate_path.parent.mkdir(parents=True, exist_ok=True)
+            scale_mesh_to_mm(domain_with_void).export(str(intermediate_path))
+            print(f"    Saved intermediate cylinder with void: {intermediate_path}")
+
+        return domain_with_void
+
+    finally:
+        if temp_dir is not None:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
 
 
 # =============================================================================
