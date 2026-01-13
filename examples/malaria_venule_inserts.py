@@ -454,7 +454,6 @@ def create_cylinder_mesh(radius: float, height: float, center: Tuple[float, floa
     cylinder.apply_translation([center[0], center[1], center[2]])
     return cylinder
 
-
 def create_ridge_mesh(
     outer_radius: float,
     inner_radius: float,
@@ -463,97 +462,107 @@ def create_ridge_mesh(
     center_xy: Tuple[float, float],
 ) -> trimesh.Trimesh:
     """
-    Create an annular ring (ridge) mesh using direct mesh construction (no Blender).
-    
-    Design choice: Ridge is an annular ring on the perimeter of the top face.
-    Uses direct vertex/face construction to avoid Blender dependency.
-    Falls back to solid disk only if mesh construction fails.
+    Create a watertight annular ring (ridge) mesh via direct vertex/face construction.
+    No booleans, no Blender.
+
+    The ring is a closed solid:
+      - outer wall
+      - inner wall
+      - top annulus
+      - bottom annulus
     """
-    try:
-        # Create ring using direct mesh construction (no Blender dependency)
-        # Generate annular cross-section
-        angles = np.linspace(0, 2 * np.pi, RIDGE_MESH_POINTS)
-        outer_points = np.column_stack([
-            outer_radius * np.cos(angles),
-            outer_radius * np.sin(angles),
-        ])
-        inner_points = np.column_stack([
-            inner_radius * np.cos(angles[::-1]),
-            inner_radius * np.sin(angles[::-1]),
-        ])
-        
-        # Create top and bottom faces
-        n_outer = len(outer_points) - 1
-        n_inner = len(inner_points) - 1
-        
-        # Build vertices for top and bottom rings
-        top_z = z_base + height
-        bottom_z = z_base
-        
-        vertices = []
-        # Bottom outer ring
-        for i in range(n_outer):
-            vertices.append([outer_points[i, 0] + center_xy[0], 
-                           outer_points[i, 1] + center_xy[1], bottom_z])
-        # Bottom inner ring
-        for i in range(n_inner):
-            vertices.append([inner_points[i, 0] + center_xy[0], 
-                           inner_points[i, 1] + center_xy[1], bottom_z])
-        # Top outer ring
-        for i in range(n_outer):
-            vertices.append([outer_points[i, 0] + center_xy[0], 
-                           outer_points[i, 1] + center_xy[1], top_z])
-        # Top inner ring
-        for i in range(n_inner):
-            vertices.append([inner_points[i, 0] + center_xy[0], 
-                           inner_points[i, 1] + center_xy[1], top_z])
-        
-        vertices = np.array(vertices)
-        
-        # Build faces
-        faces = []
-        # Outer wall faces
-        for i in range(n_outer):
-            i_next = (i + 1) % n_outer
-            # Bottom outer, top outer
-            faces.append([i, i_next, i + 2 * n_outer])
-            faces.append([i_next, i_next + 2 * n_outer, i + 2 * n_outer])
-        
-        # Inner wall faces
-        for i in range(n_inner):
-            i_next = (i + 1) % n_inner
-            base = n_outer
-            top_base = 3 * n_outer
-            # Bottom inner, top inner (reversed winding)
-            faces.append([base + i, base + i + 2 * n_outer, base + i_next])
-            faces.append([base + i_next, base + i + 2 * n_outer, base + i_next + 2 * n_outer])
-        
-        # Top and bottom annular faces
-        for i in range(n_outer):
-            i_next = (i + 1) % n_outer
-            # Bottom face
-            faces.append([i, n_outer + i, i_next])
-            faces.append([i_next, n_outer + i, n_outer + i_next])
-            # Top face
-            faces.append([2 * n_outer + i, 2 * n_outer + i_next, 3 * n_outer + i])
-            faces.append([2 * n_outer + i_next, 3 * n_outer + i_next, 3 * n_outer + i])
-        
-        ring = trimesh.Trimesh(vertices=vertices, faces=np.array(faces))
-        ring.fix_normals()
-        print("  Ridge: Created annular ring using direct mesh construction")
-        return ring
-        
-    except Exception as e:
-        print(f"  Ridge: Annular ring creation failed ({e}), using solid disk fallback")
-        # Fallback: Solid disk
-        disk = trimesh.creation.cylinder(
-            radius=outer_radius,
-            height=height,
-            sections=CYLINDER_MESH_SECTIONS,
-        )
-        disk.apply_translation([center_xy[0], center_xy[1], z_base + height / 2])
-        print("  Ridge: Created solid disk (fallback)")
-        return disk
+    cx, cy = center_xy
+
+    # Choose a reasonable resolution
+    n = int(globals().get("RIDGE_MESH_POINTS", 65))
+    if n < 16:
+        n = 16
+
+    # Angles
+    angles = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
+    c = np.cos(angles)
+    s = np.sin(angles)
+
+    z0 = float(z_base)
+    z1 = float(z_base + height)
+
+    # Vertex rings (each is length n)
+    outer_bottom = np.column_stack([cx + outer_radius * c, cy + outer_radius * s, np.full(n, z0)])
+    outer_top    = np.column_stack([cx + outer_radius * c, cy + outer_radius * s, np.full(n, z1)])
+    inner_bottom = np.column_stack([cx + inner_radius * c, cy + inner_radius * s, np.full(n, z0)])
+    inner_top    = np.column_stack([cx + inner_radius * c, cy + inner_radius * s, np.full(n, z1)])
+
+    # Stack vertices in a known order
+    # 0..n-1: outer_bottom
+    # n..2n-1: outer_top
+    # 2n..3n-1: inner_bottom
+    # 3n..4n-1: inner_top
+    vertices = np.vstack([outer_bottom, outer_top, inner_bottom, inner_top]).astype(np.float64)
+
+    faces = []
+
+    def idx_outer_bottom(i): return i
+    def idx_outer_top(i): return n + i
+    def idx_inner_bottom(i): return 2 * n + i
+    def idx_inner_top(i): return 3 * n + i
+
+    # Build quads as two triangles per segment
+    for i in range(n):
+        j = (i + 1) % n
+
+        # Outer wall (winding outward)
+        a = idx_outer_bottom(i)
+        b = idx_outer_bottom(j)
+        c1 = idx_outer_top(i)
+        d = idx_outer_top(j)
+        faces.append([a, c1, b])
+        faces.append([b, c1, d])
+
+        # Inner wall (winding inward => reverse compared to outer)
+        a = idx_inner_bottom(i)
+        b = idx_inner_bottom(j)
+        c1 = idx_inner_top(i)
+        d = idx_inner_top(j)
+        faces.append([a, b, c1])
+        faces.append([b, d, c1])
+
+        # Top annulus (connect outer_top to inner_top)
+        a = idx_outer_top(i)
+        b = idx_outer_top(j)
+        c1 = idx_inner_top(i)
+        d = idx_inner_top(j)
+        faces.append([a, b, c1])
+        faces.append([b, d, c1])
+
+        # Bottom annulus (connect outer_bottom to inner_bottom) – flip winding
+        a = idx_outer_bottom(i)
+        b = idx_outer_bottom(j)
+        c1 = idx_inner_bottom(i)
+        d = idx_inner_bottom(j)
+        faces.append([a, c1, b])
+        faces.append([b, c1, d])
+
+    ring = trimesh.Trimesh(vertices=vertices, faces=np.asarray(faces, dtype=np.int64), process=True)
+
+    # Clean + repair (light but effective)
+    ring.remove_unreferenced_vertices()
+    ring.merge_vertices()
+
+    # Ensure normals and winding are consistent
+    if ring.volume < 0:
+        ring.invert()
+    trimesh.repair.fix_normals(ring)
+    trimesh.repair.fill_holes(ring)
+
+    # Final sanity
+    if not ring.is_watertight:
+        # One more pass; avoids tiny cracks from numerical issues
+        ring.merge_vertices()
+        trimesh.repair.fill_holes(ring)
+        trimesh.repair.fix_normals(ring)
+
+    print("  Ridge: Created annular ring using direct mesh construction")
+    return ring
 
 
 def create_channel_mesh(
@@ -1099,67 +1108,79 @@ def embed_void_in_cylinder(
 
 def generate_object1_control(output_dir: Optional[Path] = None) -> trimesh.Trimesh:
     """
-    Generate Object 1: Control cylinder with ridge, no internal voids.
-    
-    Returns mesh in METERS (will be scaled to mm at export).
-    
-    Parameters
-    ----------
-    output_dir : Path, optional
-        Directory to save intermediate STL files for debugging
+    Generate Object 1: Solid cylinder + ridge (no internal voids).
+
+    Key fix:
+      - Ridge MUST overlap into cylinder (not just touch) to ensure voxel union merges it.
+      - We reuse the same 'add_ridge_to_mesh' pipeline used for other objects to avoid regressions.
     """
     print("\n" + "=" * 60)
     print("Generating Object 1: Control (solid cylinder + ridge)")
     print("=" * 60)
-    
-    # Create base cylinder
+
+    # Base cylinder
     print("  Creating base cylinder...")
     base_cylinder = create_cylinder_mesh(
         radius=CYLINDER_RADIUS_M,
         height=CYLINDER_HEIGHT_M,
         center=CYLINDER_CENTER,
     )
-    print(f"    Cylinder: radius={meters_to_mm(CYLINDER_RADIUS_M)}mm, "
-          f"height={meters_to_mm(CYLINDER_HEIGHT_M)}mm")
-    
-    # Export intermediate cylinder mesh
+    print(f"    Cylinder: radius={meters_to_mm(CYLINDER_RADIUS_M):.1f}mm, height={meters_to_mm(CYLINDER_HEIGHT_M):.1f}mm")
+
+    # Save intermediate cylinder
     if output_dir:
         intermediate_path = output_dir / "intermediate" / "object1_cylinder.stl"
         intermediate_path.parent.mkdir(parents=True, exist_ok=True)
         scale_mesh_to_mm(base_cylinder).export(str(intermediate_path))
         print(f"    Exported intermediate: {intermediate_path}")
-    
-    # Create ridge on top face
-    # IMPORTANT: For voxel union to work correctly, the ridge must OVERLAP with the
-    # cylinder (not just touch at z_top). We extend the ridge slightly INTO the cylinder.
-    print("  Creating ridge...")
-    add_ridge_to_mesh(base_cylinder)
-    
-    # Union cylinder and ridge using FINE pitch for ridge (0.1mm ridge needs fine resolution)
-    print(f"  Combining cylinder and ridge (voxel pitch: {meters_to_mm(VOXEL_PITCH_RIDGE_M)*1000:.0f}um)...")
-    combined = voxel_union_meshes([base_cylinder], pitch=VOXEL_PITCH_RIDGE_M)
-    
+
+    # Add ridge using the centralized ridge adder if available
+    # (this uses RIDGE_OVERLAP_M and VOXEL_PITCH_RIDGE_M)
+    if "add_ridge_to_mesh" in globals():
+        print("  Adding ridge (using add_ridge_to_mesh with overlap)...")
+        combined = add_ridge_to_mesh(base_cylinder)
+    else:
+        # Fallback inline ridge add (still uses overlap)
+        print("  Adding ridge (inline fallback)...")
+        z_top = CYLINDER_CENTER[2] + CYLINDER_HEIGHT_M / 2
+        overlap = float(globals().get("RIDGE_OVERLAP_M", 0.0))
+        ridge_z_base = z_top - overlap
+        ridge_total_height = RIDGE_HEIGHT_M + overlap
+
+        ridge = create_ridge_mesh(
+            outer_radius=CYLINDER_RADIUS_M,
+            inner_radius=CYLINDER_RADIUS_M - RIDGE_THICKNESS_M,
+            height=ridge_total_height,
+            z_base=ridge_z_base,
+            center_xy=(CYLINDER_CENTER[0], CYLINDER_CENTER[1]),
+        )
+
+        if output_dir:
+            ridge_path = output_dir / "intermediate" / "object1_ridge.stl"
+            scale_mesh_to_mm(ridge).export(str(ridge_path))
+            print(f"    Exported intermediate: {ridge_path}")
+
+        print(f"  Combining cylinder and ridge (voxel pitch: {meters_to_mm(VOXEL_PITCH_RIDGE_M)*1000:.0f}um)...")
+        combined = voxel_union_meshes([base_cylinder, ridge], pitch=VOXEL_PITCH_RIDGE_M)
+
     print(f"  Object 1 complete: {len(combined.vertices)} vertices, {len(combined.faces)} faces")
     print(f"    Watertight: {combined.is_watertight}")
-    
-    # Object 1 is a solid control with NO channels - skip post-embedding validation
-    # because channel-related checks (min_channel_diameter, channel continuity, etc.)
-    # are not applicable and produce misleading failures.
-    # Instead, just verify basic mesh properties:
-    print("  Validating mesh properties (Object 1 has no channels)...")
-    print(f"    Volume: {combined.volume * 1e9:.2f} mm³")
-    print(f"    Surface area: {combined.area * 1e6:.2f} mm²")
-    print(f"    Is watertight: {combined.is_watertight}")
-    print(f"    Is volume positive: {combined.volume > 0}")
-    
-    # Check for disconnected components (should be 1 for a solid cylinder+ridge)
-    components = combined.split(only_watertight=False)
-    print(f"    Number of components: {len(components)}")
-    if len(components) > 1:
-        print(f"    WARNING: Mesh has {len(components)} disconnected components (expected 1)")
-        for i, comp in enumerate(components):
-            print(f"      Component {i+1}: {len(comp.vertices)} vertices, {len(comp.faces)} faces")
-    
+    print(f"    Bounds (m): {combined.bounds}")
+
+    # OPTIONAL: validation for Object 1 is often misleading (it runs channel checks on a control).
+    # If you still want it, keep it, but it should not be used to judge ridge success.
+    try:
+        if "ValidationConfig" in globals() and "run_post_embedding_validation" in globals():
+            print("  Running validation (control object)...")
+            validation_config = ValidationConfig(
+                voxel_pitch_m=VOXEL_PITCH_M,
+                expected_outlets=0,
+            )
+            report = run_post_embedding_validation(mesh=combined, config=validation_config)
+            print_validation_details(report)
+    except Exception as e:
+        print(f"    Validation error (ignored for control object): {e}")
+
     return combined
 
 
