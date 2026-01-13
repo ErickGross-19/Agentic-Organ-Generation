@@ -1260,9 +1260,13 @@ def generate_bifurcation_tree_mesh(
         )
         all_segments.append(seg_mesh)
     
-    # Union all segments (overlap-based merge)
-    print(f"    Combining {len(all_segments)} branch segments...")
-    combined = voxel_union_meshes(all_segments, pitch=VOXEL_PITCH_UNION_M)
+    # Concatenate all segments (preserves individual branch geometry)
+    # NOTE: We use mesh concatenation instead of voxel union here to preserve
+    # the fine branch structure. Voxel union at 50um pitch would merge branches
+    # that are close together (terminal radius is only 100um = 2 voxels).
+    # The embedding operation will handle the union at the appropriate resolution.
+    print(f"    Concatenating {len(all_segments)} branch segments (preserving geometry)...")
+    combined = trimesh.util.concatenate(all_segments)
     
     return combined
 
