@@ -714,110 +714,81 @@ def export_mesh_with_units(mesh: trimesh.Trimesh, output_path: Path, units: str 
     print(f"  Units sidecar: {sidecar_path}")
 
 
-def repair_mesh_for_embedding(
-    mesh: trimesh.Trimesh, 
+
+  
+ def repair_mesh_for_embedding(
+    mesh: trimesh.Trimesh,
     name: str = "mesh",
     keep_largest_component: bool = True,
 ) -> trimesh.Trimesh:
-    """
-    Repair a mesh to ensure it is watertight before embedding.
-    
-    Uses the validity library's meshfix_repair function as the primary repair method.
-    Falls back to trimesh's built-in repair functions if pymeshfix is not installed.
-    
-    Parameters
-    ----------
-    mesh : trimesh.Trimesh
-        The mesh to repair
-    name : str
-        Name for logging purposes
-    keep_largest_component : bool
-        If True, keep only the largest connected component (default).
-        Set to False for meshes with multiple disconnected parts that should
-        all be preserved (e.g., Object 3's 4 separate inlet trees).
-    
-    Returns
-    -------
-    trimesh.Trimesh
-        The repaired mesh
-    """
     repaired = mesh.copy()
-    
+
     print(f"    Repairing {name} for embedding...")
     print(f"    Before repair: {len(repaired.vertices)} vertices, {len(repaired.faces)} faces, watertight={repaired.is_watertight}")
-    
-    # Primary repair method: Use validity library's meshfix_repair
-    try:
-        from validity.mesh.repair import meshfix_repair
-        print(f"    Using validity library's meshfix_repair (keep_largest_component={keep_largest_component})...")
-        repaired = meshfix_repair(repaired, keep_largest_component=keep_largest_component)
-        print(f"    meshfix_repair complete")
-    except ImportError:
-        print(f"    meshfix_repair not available (pymeshfix not installed)")
-        print(f"    Falling back to trimesh repair functions...")
-        
-        # Fallback: Use trimesh's built-in repair functions
+
+    # If we must preserve disconnected parts (Object 2, 3, etc),
+    # DO NOT run one global meshfix pass; it can silently drop components.
+    if not keep_largest_component:
+        parts = repaired.split(only_watertight=False)
+        print(f"    Detected {len(parts)} connected component(s); repairing each without dropping any...")
+
+        repaired_parts = []
         try:
-            trimesh.repair.fix_normals(repaired)
-            print(f"    Fixed normals")
+            from validity.mesh.repair import meshfix_repair
+            for i, p in enumerate(parts):
+                rp = meshfix_repair(p, keep_largest_component=True)  # safe within one component
+                repaired_parts.append(rp)
         except Exception as e:
-            print(f"    Warning: fix_normals failed: {e}")
-        
+            print(f"    meshfix_repair unavailable/failed for per-component repair: {e}")
+            print(f"    Falling back to trimesh per-component cleanup...")
+            for p in parts:
+                rp = p.copy()
+                try:
+                    trimesh.repair.fix_normals(rp)
+                    trimesh.repair.fix_winding(rp)
+                    if not rp.is_watertight:
+                        trimesh.repair.fill_holes(rp)
+                except Exception:
+                    pass
+                repaired_parts.append(rp)
+
+        repaired = trimesh.util.concatenate(repaired_parts)
+
+    else:
+        # Original behavior: single-component repair is fine
         try:
-            trimesh.repair.fix_winding(repaired)
-            print(f"    Fixed winding")
+            from validity.mesh.repair import meshfix_repair
+            print(f"    Using validity library's meshfix_repair (keep_largest_component={keep_largest_component})...")
+            repaired = meshfix_repair(repaired, keep_largest_component=True)
+            print(f"    meshfix_repair complete")
         except Exception as e:
-            print(f"    Warning: fix_winding failed: {e}")
-        
-        if not repaired.is_watertight:
+            print(f"    Warning: meshfix_repair failed: {e}")
+            print(f"    Falling back to trimesh repair functions...")
             try:
-                trimesh.repair.fill_holes(repaired)
-                print(f"    Filled holes")
-            except Exception as e:
-                print(f"    Warning: fill_holes failed: {e}")
-    except Exception as e:
-        print(f"    Warning: meshfix_repair failed: {e}")
-        print(f"    Falling back to trimesh repair functions...")
-        
-        # Fallback: Use trimesh's built-in repair functions
-        try:
-            trimesh.repair.fix_normals(repaired)
-            print(f"    Fixed normals")
-        except Exception as e2:
-            print(f"    Warning: fix_normals failed: {e2}")
-        
-        try:
-            trimesh.repair.fix_winding(repaired)
-            print(f"    Fixed winding")
-        except Exception as e2:
-            print(f"    Warning: fix_winding failed: {e2}")
-        
-        if not repaired.is_watertight:
-            try:
-                trimesh.repair.fill_holes(repaired)
-                print(f"    Filled holes")
-            except Exception as e2:
-                print(f"    Warning: fill_holes failed: {e2}")
-    
-    # Final cleanup: Remove degenerate faces (version-safe)
+                trimesh.repair.fix_normals(repaired)
+                trimesh.repair.fix_winding(repaired)
+                if not repaired.is_watertight:
+                    trimesh.repair.fill_holes(repaired)
+            except Exception:
+                pass
+
+    # Final cleanup (version-safe)
     try:
-        # Try the method name used in newer trimesh versions
-        if hasattr(repaired, 'remove_degenerate_faces'):
+        if hasattr(repaired, "remove_degenerate_faces"):
             repaired.remove_degenerate_faces()
-        elif hasattr(repaired, 'update_faces'):
-            # Older versions use update_faces with a mask
-            # Remove faces with zero area
+        elif hasattr(repaired, "update_faces"):
             face_areas = repaired.area_faces
-            valid_faces = face_areas > 0
-            repaired.update_faces(valid_faces)
+            repaired.update_faces(face_areas > 0)
+
         repaired.remove_unreferenced_vertices()
-        print(f"    Removed degenerate faces")
+        repaired.merge_vertices()
+        trimesh.repair.fix_normals(repaired)
     except Exception as e:
-        print(f"    Warning: remove_degenerate_faces failed: {e}")
-    
+        print(f"    Warning: cleanup failed: {e}")
+
     print(f"    After repair: {len(repaired.vertices)} vertices, {len(repaired.faces)} faces, watertight={repaired.is_watertight}")
-    
     return repaired
+
 
 
 def embed_void_in_cylinder(
@@ -1226,18 +1197,23 @@ def generate_object2_channels(output_dir: Optional[Path] = None) -> trimesh.Trim
     print(f"    Watertight: {cylinder_with_void.is_watertight}")
     
     # Run post-embedding validation on cylinder with void (before adding ridge)
+    # Run post-embedding validation on cylinder with void (before adding ridge)
     print("  Running validation on cylinder with void...")
     try:
         validation_config = ValidationConfig(
-            voxel_pitch_m=VOXEL_PITCH_M,
+            voxel_pitch_m=VOXEL_PITCH_M * 1000.0,  # convert meters -> millimeters for validator
             expected_outlets=OBJ2_NUM_INLETS,
         )
-        report = run_post_embedding_validation(mesh=cylinder_with_void, config=validation_config)
+        report = run_post_embedding_validation(
+            mesh=scale_mesh_to_mm(cylinder_with_void),  # validate in mm
+            config=validation_config
+        )
         print_validation_details(report)
     except Exception as e:
         print(f"    Validation error: {e}")
         import traceback
         traceback.print_exc()
+
     
     # Return cylinder_with_void - ridge will be added at the END in main() to prevent smoothing
     return cylinder_with_void
@@ -1965,18 +1941,23 @@ def generate_object4_turn_bifurcate_merge(
     print(f"    Watertight: {cylinder_with_void.is_watertight}")
     
     # Run post-embedding validation on cylinder with void (before adding ridge)
-    print("  Running post-embedding validation on cylinder with void...")
+    # Run post-embedding validation on cylinder with void (before adding ridge)
+    print("  Running validation on cylinder with void...")
     try:
         validation_config = ValidationConfig(
-            voxel_pitch_m=VOXEL_PITCH_M,
-            expected_outlets=2,  # 1 inlet + 1 outlet for loop structure
+            voxel_pitch_m=VOXEL_PITCH_M * 1000.0,  # convert meters -> millimeters for validator
+            expected_outlets=OBJ2_NUM_INLETS,
         )
-        report = run_post_embedding_validation(mesh=cylinder_with_void, config=validation_config)
+        report = run_post_embedding_validation(
+            mesh=scale_mesh_to_mm(cylinder_with_void),  # validate in mm
+            config=validation_config
+        )
         print_validation_details(report)
     except Exception as e:
         print(f"    Validation error: {e}")
         import traceback
         traceback.print_exc()
+
     
     # Return cylinder_with_void - ridge will be added at the END in main() to prevent smoothing
     return cylinder_with_void
@@ -2269,18 +2250,23 @@ def generate_object5_cco_nlp_organic(output_dir: Optional[Path] = None) -> trime
     print(f"    Watertight: {cylinder_with_void.is_watertight}")
     
     # Run post-embedding validation on cylinder with void (before adding ridge)
-    print("  Running post-embedding validation on cylinder with void...")
+    # Run post-embedding validation on cylinder with void (before adding ridge)
+    print("  Running validation on cylinder with void...")
     try:
         validation_config = ValidationConfig(
-            voxel_pitch_m=VOXEL_PITCH_M,
-            expected_outlets=total_outlets_achieved,
+            voxel_pitch_m=VOXEL_PITCH_M * 1000.0,  # convert meters -> millimeters for validator
+            expected_outlets=OBJ2_NUM_INLETS,
         )
-        post_report = run_post_embedding_validation(mesh=cylinder_with_void, config=validation_config)
-        print_validation_details(post_report)
+        report = run_post_embedding_validation(
+            mesh=scale_mesh_to_mm(cylinder_with_void),  # validate in mm
+            config=validation_config
+        )
+        print_validation_details(report)
     except Exception as e:
         print(f"    Validation error: {e}")
         import traceback
         traceback.print_exc()
+
     
     # Generate report
     report = {
