@@ -609,8 +609,8 @@ def repair_mesh_for_embedding(mesh: trimesh.Trimesh, name: str = "mesh") -> trim
     """
     Repair a mesh to ensure it is watertight before embedding.
     
-    Uses trimesh's built-in repair functions and optionally the validity library's
-    meshfix_repair if available.
+    Uses the validity library's meshfix_repair function as the primary repair method.
+    Falls back to trimesh's built-in repair functions if pymeshfix is not installed.
     
     Parameters
     ----------
@@ -629,41 +629,60 @@ def repair_mesh_for_embedding(mesh: trimesh.Trimesh, name: str = "mesh") -> trim
     print(f"    Repairing {name} for embedding...")
     print(f"    Before repair: {len(repaired.vertices)} vertices, {len(repaired.faces)} faces, watertight={repaired.is_watertight}")
     
-    # Step 1: Fix normals
+    # Primary repair method: Use validity library's meshfix_repair
     try:
-        trimesh.repair.fix_normals(repaired)
-        print(f"    Fixed normals")
-    except Exception as e:
-        print(f"    Warning: fix_normals failed: {e}")
-    
-    # Step 2: Fix winding
-    try:
-        trimesh.repair.fix_winding(repaired)
-        print(f"    Fixed winding")
-    except Exception as e:
-        print(f"    Warning: fix_winding failed: {e}")
-    
-    # Step 3: Fill holes
-    if not repaired.is_watertight:
+        from validity.mesh.repair import meshfix_repair
+        print(f"    Using validity library's meshfix_repair...")
+        repaired = meshfix_repair(repaired, keep_largest_component=True)
+        print(f"    meshfix_repair complete")
+    except ImportError:
+        print(f"    meshfix_repair not available (pymeshfix not installed)")
+        print(f"    Falling back to trimesh repair functions...")
+        
+        # Fallback: Use trimesh's built-in repair functions
         try:
-            trimesh.repair.fill_holes(repaired)
-            print(f"    Filled holes")
+            trimesh.repair.fix_normals(repaired)
+            print(f"    Fixed normals")
         except Exception as e:
-            print(f"    Warning: fill_holes failed: {e}")
-    
-    # Step 4: Try validity library's meshfix_repair if available and still not watertight
-    if not repaired.is_watertight:
+            print(f"    Warning: fix_normals failed: {e}")
+        
         try:
-            from validity.mesh.repair import meshfix_repair
-            print(f"    Attempting meshfix_repair from validity library...")
-            repaired = meshfix_repair(repaired, keep_largest_component=True)
-            print(f"    meshfix_repair complete")
-        except ImportError:
-            print(f"    meshfix_repair not available (pymeshfix not installed)")
+            trimesh.repair.fix_winding(repaired)
+            print(f"    Fixed winding")
         except Exception as e:
-            print(f"    Warning: meshfix_repair failed: {e}")
+            print(f"    Warning: fix_winding failed: {e}")
+        
+        if not repaired.is_watertight:
+            try:
+                trimesh.repair.fill_holes(repaired)
+                print(f"    Filled holes")
+            except Exception as e:
+                print(f"    Warning: fill_holes failed: {e}")
+    except Exception as e:
+        print(f"    Warning: meshfix_repair failed: {e}")
+        print(f"    Falling back to trimesh repair functions...")
+        
+        # Fallback: Use trimesh's built-in repair functions
+        try:
+            trimesh.repair.fix_normals(repaired)
+            print(f"    Fixed normals")
+        except Exception as e2:
+            print(f"    Warning: fix_normals failed: {e2}")
+        
+        try:
+            trimesh.repair.fix_winding(repaired)
+            print(f"    Fixed winding")
+        except Exception as e2:
+            print(f"    Warning: fix_winding failed: {e2}")
+        
+        if not repaired.is_watertight:
+            try:
+                trimesh.repair.fill_holes(repaired)
+                print(f"    Filled holes")
+            except Exception as e2:
+                print(f"    Warning: fill_holes failed: {e2}")
     
-    # Step 5: Remove degenerate faces
+    # Final cleanup: Remove degenerate faces
     try:
         repaired.remove_degenerate_faces()
         repaired.remove_unreferenced_vertices()
