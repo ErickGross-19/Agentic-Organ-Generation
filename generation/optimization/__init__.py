@@ -7,6 +7,7 @@ discrete topology optimization with subtree swaps.
 This module implements:
 1. Global geometry NLP optimization (node positions, radii, pressures)
 2. Discrete topology optimization via subtree swapping with SA acceptance
+3. Shared NLP solver utilities (scipy, IPOPT)
 
 Note: The library uses METERS internally for all geometry.
 """
@@ -30,6 +31,13 @@ from .refine import (
     RefinementConfig,
     RefinementResult,
 )
+from .solvers import (
+    SolverConfig,
+    SolverResult,
+    solve_nlp,
+    solve_bounded_optimization,
+    is_ipopt_available,
+)
 
 __all__ = [
     "NLPConfig",
@@ -45,4 +53,9 @@ __all__ = [
     "refine_network",
     "RefinementConfig",
     "RefinementResult",
+    "SolverConfig",
+    "SolverResult",
+    "solve_nlp",
+    "solve_bounded_optimization",
+    "is_ipopt_available",
 ]

@@ -464,11 +464,30 @@ def optimize_geometry(
     x0 = problem.get_initial_x()
     lb, ub = problem.get_bounds()
     
-    try:
-        x_opt, success, iterations = _solve_with_ipopt(problem, x0, lb, ub, config)
-    except ImportError:
+    from .solvers import solve_nlp, SolverConfig, is_ipopt_available
+    
+    solver_config = SolverConfig(
+        solver="ipopt" if is_ipopt_available() else "scipy",
+        method="SLSQP",
+        tolerance=config.solver_tolerance,
+        max_iterations=config.max_iterations,
+    )
+    
+    if not is_ipopt_available():
         result.warnings.append("IPOPT not available, using scipy fallback")
-        x_opt, success, iterations = _solve_with_scipy(problem, x0, lb, ub, config)
+    
+    try:
+        solver_result = solve_nlp(
+            objective=problem.objective,
+            x0=x0,
+            bounds=(lb, ub),
+            gradient=problem.objective_gradient,
+            constraints=problem.constraints,
+            config=solver_config,
+        )
+        x_opt = solver_result.x
+        success = solver_result.success
+        iterations = solver_result.iterations
     except Exception as e:
         result.errors.append(f"Optimization failed: {e}")
         return result
@@ -491,105 +510,6 @@ def optimize_geometry(
         result.errors.append("Optimization did not converge")
     
     return result
-
-
-def _solve_with_ipopt(
-    problem: NLPProblem,
-    x0: np.ndarray,
-    lb: np.ndarray,
-    ub: np.ndarray,
-    config: NLPConfig,
-) -> Tuple[np.ndarray, bool, int]:
-    """Solve NLP using IPOPT via cyipopt."""
-    import cyipopt
-    
-    class IPOPTProblem:
-        def __init__(self, nlp_problem):
-            self.problem = nlp_problem
-        
-        def objective(self, x):
-            return self.problem.objective(x)
-        
-        def gradient(self, x):
-            return self.problem.objective_gradient(x)
-        
-        def constraints(self, x):
-            return self.problem.constraints(x)
-        
-        def jacobian(self, x):
-            n_constraints = len(self.problem.constraints(x))
-            n_vars = len(x)
-            jac = np.zeros((n_constraints, n_vars))
-            
-            eps = 1e-8
-            c0 = self.problem.constraints(x)
-            for i in range(n_vars):
-                x_pert = x.copy()
-                x_pert[i] += eps
-                c1 = self.problem.constraints(x_pert)
-                jac[:, i] = (c1 - c0) / eps
-            
-            return jac.flatten()
-    
-    ipopt_problem = IPOPTProblem(problem)
-    
-    n_constraints = len(problem.constraints(x0))
-    cl = np.zeros(n_constraints)
-    cu = np.zeros(n_constraints)
-    
-    nlp = cyipopt.Problem(
-        n=len(x0),
-        m=n_constraints,
-        problem_obj=ipopt_problem,
-        lb=lb,
-        ub=ub,
-        cl=cl,
-        cu=cu,
-    )
-    
-    nlp.add_option('tol', config.solver_tolerance)
-    nlp.add_option('max_iter', config.max_iterations)
-    nlp.add_option('print_level', 0)
-    
-    x_opt, info = nlp.solve(x0)
-    
-    success = info['status'] == 0
-    iterations = info.get('iter_count', 0)
-    
-    return x_opt, success, iterations
-
-
-def _solve_with_scipy(
-    problem: NLPProblem,
-    x0: np.ndarray,
-    lb: np.ndarray,
-    ub: np.ndarray,
-    config: NLPConfig,
-) -> Tuple[np.ndarray, bool, int]:
-    """Solve NLP using scipy.optimize."""
-    from scipy.optimize import minimize, Bounds
-    
-    bounds = Bounds(lb, ub)
-    
-    constraints = {
-        'type': 'eq',
-        'fun': problem.constraints,
-    }
-    
-    result = minimize(
-        problem.objective,
-        x0,
-        method='SLSQP',
-        jac=problem.objective_gradient,
-        bounds=bounds,
-        constraints=constraints,
-        options={
-            'maxiter': config.max_iterations,
-            'ftol': config.solver_tolerance,
-        },
-    )
-    
-    return result.x, result.success, result.nit
 
 
 def _compute_total_volume(network: VascularNetwork) -> float:
