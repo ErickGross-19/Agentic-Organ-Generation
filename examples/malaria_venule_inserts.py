@@ -992,7 +992,7 @@ def embed_void_in_cylinder(
                 if expected_void_vox is not None and expected_void_vox > 0:
                     ratio = void_voxels / expected_void_vox
                     print(f"    Void voxel sanity: void_vox={void_voxels}, expected~{int(expected_void_vox)}, ratio={ratio:.4f}")
-                    if ratio < 0.35:
+                    if ratio < 0.50:
                         raise RuntimeError("Embedding produced surface-only void mask (outline). Forcing fallback.")
 
             # Volume sanity: reject shells or uncarved outputs
