@@ -740,6 +740,48 @@ def voxel_union_meshes(meshes: List[trimesh.Trimesh], pitch: float) -> trimesh.T
     
     return result
 
+def remove_small_components(mesh: trimesh.Trimesh,
+                            min_faces: int = 500,
+                            min_diag_m: float = None,
+                            keep_largest: bool = True) -> trimesh.Trimesh:
+    """
+    Remove tiny disconnected components ("floaters") caused by voxelization + marching cubes.
+    Keeps the largest component and any other component above thresholds.
+    """
+    if min_diag_m is None:
+        min_diag_m = 8.0 * VOXEL_PITCH_M  # ~8 voxels across
+
+    parts = mesh.split(only_watertight=False)
+    if len(parts) <= 1:
+        return mesh
+
+    scored = []
+    for p in parts:
+        diag = float(np.linalg.norm(p.extents))
+        scored.append((len(p.faces), diag, p))
+
+    # Sort by size (faces, then diag)
+    scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
+
+    kept = []
+    for idx, (faces, diag, p) in enumerate(scored):
+        if idx == 0 and keep_largest:
+            kept.append(p)
+            continue
+        if faces >= min_faces and diag >= min_diag_m:
+            kept.append(p)
+
+    if not kept:
+        return scored[0][2]  # fallback: largest
+
+    out = trimesh.util.concatenate(kept)
+    out.merge_vertices()
+    out.remove_unreferenced_vertices()
+    if out.volume < 0:
+        out.invert()
+    trimesh.repair.fix_normals(out)
+    return out
+
 
 def scale_mesh_to_mm(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
     """Scale mesh from meters to millimeters."""
@@ -1400,8 +1442,8 @@ def generate_bifurcation_tree_mesh(
 
     K = 4  # always 4 children per split
     # ---- "Tree-like" shaping knobs ----
-    OBJ3_TRUNK_LENGTH_M = 0.0003      # 0.35 mm straight trunk before any branching
-    OBJ3_TRUNK_RADIUS_FACTOR = 0.75      # trunk radius = 0.55 * inlet_radius (quick neck-down)
+    OBJ3_TRUNK_LENGTH_M = 0.00015      # 0.35 mm straight trunk before any branching
+    OBJ3_TRUNK_RADIUS_FACTOR = 0.55      # trunk radius = 0.55 * inlet_radius (quick neck-down)
     OBJ3_TAPER_ALPHA = 0.35              # <1.0 shrinks faster early (more tree-like, less bulb)
 
 
@@ -1590,7 +1632,9 @@ def generate_bifurcation_tree_mesh(
 
             # Clamp this pre-split step to remain inside cylinder (account for vessel radius)
             r_eff_pre = max(CYLINDER_RADIUS_M - wall_margin - current_radius, 1e-6)
-            tmax_pre = _max_step_inside_cylinder(tip_pos, tip_dir, r_eff_pre, zmin_eff, zmax_eff)
+            zmin_eff_pre = z_bottom + z_margin + current_radius
+            zmax_eff_pre = z_top   - z_margin - current_radius
+            tmax_pre = _max_step_inside_cylinder(tip_pos, tip_dir, r_eff_pre, zmin_eff_pre, zmax_eff_pre)
             if tmax_pre != float("inf"):
                 dist_to_target = min(dist_to_target, 0.95 * float(tmax_pre))
 
@@ -1673,7 +1717,10 @@ def generate_bifurcation_tree_mesh(
                 L = max(L, float(BIFURC_MIN_GROWTH_DISTANCE_M))
 
                 # Clamp to cylinder boundary
-                tmax = _max_step_inside_cylinder(start, child_dir, r_eff_child, zmin_eff, zmax_eff)
+                zmin_eff_child = z_bottom + z_margin + next_radius
+                zmax_eff_child = z_top   - z_margin - next_radius
+
+                tmax = _max_step_inside_cylinder(start, child_dir, r_eff_child, zmin_eff_child, zmax_eff_child)
                 if tmax != float("inf"):
                     L = min(L, 0.95 * float(tmax))
 
@@ -1739,7 +1786,9 @@ def generate_bifurcation_tree_mesh(
         zmax_eff = z_top - z_margin
 
         L = float(BIFURC_TERMINAL_SEGMENT_LENGTH_M)
-        tmax = _max_step_inside_cylinder(tip_pos, tip_dir, r_eff_term, zmin_eff, zmax_eff)
+        zmin_eff_term = z_bottom + z_margin + terminal_radius
+        zmax_eff_term = z_top   - z_margin - terminal_radius
+        tmax = _max_step_inside_cylinder(tip_pos, tip_dir, r_eff_term, zmin_eff_term, zmax_eff_term)
         if tmax != float("inf"):
             L = min(L, 0.95 * float(tmax))
 
@@ -1906,7 +1955,13 @@ def generate_object3_bifurcate_512(output_dir: Optional[Path] = None) -> trimesh
     # Union all trees (overlapping branches merge)
     print("  Combining all trees (overlap-based merge)...")
     combined_void = voxel_union_meshes(all_trees, pitch=VOXEL_PITCH_UNION_M)
-    
+    combined_void = remove_small_components(
+        combined_void,
+        min_faces=500,
+        min_diag_m=8.0 * VOXEL_PITCH_M,
+        keep_largest=True
+    )
+
     # Export intermediate tree void mesh
     if output_dir:
         intermediate_path = output_dir / "intermediate" / "object3_tree_void.stl"
