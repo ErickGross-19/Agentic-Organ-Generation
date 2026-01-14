@@ -872,7 +872,7 @@ def embed_void_in_cylinder(
             output_units="m",
             output_void=True,
             output_shell=False,      # <-- CRITICAL: don't return a thin shell
-            smoothing_iters=0,       # preserve void edges
+            smoothing_iters=2,       # preserve void edges
         )
 
         domain_with_void = result.get("domain_with_void", None)
