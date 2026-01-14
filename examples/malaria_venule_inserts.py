@@ -1532,25 +1532,150 @@ def generate_bifurcation_tree_mesh(
 
             angle_deg = float(base_angle_deg) * (1.0 - BIFURC_ANGLE_REDUCTION_PER_LEVEL * level)
 
-            bifurc_result = bifurcate(
+            # ---------------------------------------------------------------------
+        # REPLACEMENT: manual 3D bifurcation (strict geometry + 360° azimuth)
+        # ---------------------------------------------------------------------
+        
+        # Angle for bifurcation (decreases with level for tighter packing)
+        angle_deg = float(base_angle_deg) * (1.0 - BIFURC_ANGLE_REDUCTION_PER_LEVEL * level)
+        theta = math.radians(angle_deg)
+        
+        # Parent direction at the bifurcation node
+        bnode = network.get_node(bifurc_node_id)
+        if bnode is None:
+            continue
+        
+        parent_dir_dict = bnode.attributes.get("direction", {"dx": 0.0, "dy": 0.0, "dz": -1.0})
+        d = np.array([float(parent_dir_dict.get("dx", 0.0)),
+                      float(parent_dir_dict.get("dy", 0.0)),
+                      float(parent_dir_dict.get("dz", -1.0))], dtype=float)
+        dn = float(np.linalg.norm(d))
+        if dn < 1e-12:
+            d = np.array([0.0, 0.0, -1.0], dtype=float)
+        else:
+            d = d / dn
+        
+        # Build an orthonormal basis (a, b) perpendicular to d
+        ref = np.array([0.0, 0.0, 1.0], dtype=float)
+        if abs(float(np.dot(d, ref))) > 0.95:
+            ref = np.array([1.0, 0.0, 0.0], dtype=float)
+        
+        a = np.cross(d, ref)
+        an = float(np.linalg.norm(a))
+        if an < 1e-12:
+            # extremely degenerate, pick any perpendicular
+            a = np.array([1.0, 0.0, 0.0], dtype=float)
+        else:
+            a = a / an
+        b = np.cross(d, a)  # already unit if d and a are unit & orthogonal
+        
+        # Random azimuth -> true 360° branching (not a fixed plane)
+        phi = float(rng.uniform(0.0, 2.0 * math.pi))
+        u = math.cos(phi) * a + math.sin(phi) * b  # random unit vector around axis d
+        
+        # Two symmetric child directions at +/- theta around d in the plane spanned by (d, u)
+        child_dir1 = math.cos(theta) * d + math.sin(theta) * u
+        child_dir2 = math.cos(theta) * d - math.sin(theta) * u
+        
+        # Enforce "mostly downward" so children don't go up and hit the top cap
+        # (strict geometry: if they still don't fit after clamping, we skip them)
+        def _force_downward(v: np.ndarray) -> np.ndarray:
+            v = v.astype(float)
+            if v[2] > -0.05:   # too horizontal or upward
+                v[2] = -abs(v[2]) - 1e-6
+            vn = float(np.linalg.norm(v))
+            return v / vn if vn > 1e-12 else np.array([0.0, 0.0, -1.0], dtype=float)
+        
+        child_dir1 = _force_downward(child_dir1)
+        child_dir2 = _force_downward(child_dir2)
+        
+        # Start point of children = bifurcation node position
+        start = np.array([bnode.position.x, bnode.position.y, bnode.position.z], dtype=float)
+        
+        # Clamp child lengths to stay inside cylinder (same intersection logic as your pre-bifurc clamp)
+        wall_margin = float(globals().get("OBJ3_WALL_MARGIN_M", 0.0))
+        r_eff = CYLINDER_RADIUS_M - wall_margin - next_radius
+        r_eff = max(r_eff, 1e-6)
+        
+        z_margin = 2.0 * float(globals().get("VOXEL_PITCH_M", 2.5e-5))
+        zmin_eff = (CYLINDER_CENTER[2] - CYLINDER_HEIGHT_M / 2) + z_margin
+        zmax_eff = (CYLINDER_CENTER[2] + CYLINDER_HEIGHT_M / 2) - z_margin
+        
+        # NOTE: _max_step_inside_cylinder(...) must already exist in this function (from your earlier clamp)
+        tmax1 = _max_step_inside_cylinder(start, child_dir1, r_eff, zmin_eff, zmax_eff)
+        tmax2 = _max_step_inside_cylinder(start, child_dir2, r_eff, zmin_eff, zmax_eff)
+        
+        safety = 0.95
+        L1 = float(growth_distance1)
+        L2 = float(growth_distance2)
+        
+        if tmax1 != float("inf"):
+            L1 = min(L1, safety * float(tmax1))
+        if tmax2 != float("inf"):
+            L2 = min(L2, safety * float(tmax2))
+        
+        # Strict geometry: if a child can't fit a meaningful segment, skip it
+        min_len = max(BIFURC_MIN_GROWTH_DISTANCE_M, BRANCH_MIN_SEGMENT_LENGTH_M)
+        
+        child_node_ids = []
+        
+        if L1 >= min_len:
+            end1 = start + child_dir1 * L1
+            grow_child1 = grow_to_point(
                 network,
-                at_node_id=bifurc_node_id,
-                child_lengths=(growth_distance1, growth_distance2),
-                angle_deg=angle_deg,
+                from_node_id=bifurc_node_id,
+                target_point=tuple(end1),
+                target_radius=next_radius,
                 constraints=constraints,
                 check_collisions=False,
-                seed=rng_seed,
+                fail_on_collision=False,
             )
-            if not bifurc_result.is_success():
-                print(f"    Warning: bifurcate failed at level {level}: {bifurc_result.message}")
-                continue
-
-            child_node_ids = bifurc_result.new_ids.get("nodes", [])
-            for child_node_id in child_node_ids:
-                child_node = network.get_node(child_node_id)
-                if child_node:
-                    child_node.attributes["radius"] = next_radius
-                new_tips.append((child_node_id, level + 1))
+            if grow_child1.is_success():
+                nid1 = grow_child1.new_ids.get("node", None)
+                if nid1 is not None:
+                    n1 = network.get_node(nid1)
+                    if n1:
+                        n1.attributes["radius"] = next_radius
+                        n1.attributes["direction"] = {"dx": float(child_dir1[0]), "dy": float(child_dir1[1]), "dz": float(child_dir1[2])}
+                    child_node_ids.append(nid1)
+            else:
+                print(f"    Warning: grow_to_point failed at level {level+1} (child1): {grow_child1.message}")
+        
+        else:
+            print(f"    Warning: insufficient room to grow at level {level+1} from bifurcation (child1); skipping branch.")
+        
+        if L2 >= min_len:
+            end2 = start + child_dir2 * L2
+            grow_child2 = grow_to_point(
+                network,
+                from_node_id=bifurc_node_id,
+                target_point=tuple(end2),
+                target_radius=next_radius,
+                constraints=constraints,
+                check_collisions=False,
+                fail_on_collision=False,
+            )
+            if grow_child2.is_success():
+                nid2 = grow_child2.new_ids.get("node", None)
+                if nid2 is not None:
+                    n2 = network.get_node(nid2)
+                    if n2:
+                        n2.attributes["radius"] = next_radius
+                        n2.attributes["direction"] = {"dx": float(child_dir2[0]), "dy": float(child_dir2[1]), "dz": float(child_dir2[2])}
+                    child_node_ids.append(nid2)
+            else:
+                print(f"    Warning: grow_to_point failed at level {level+1} (child2): {grow_child2.message}")
+        
+        else:
+            print(f"    Warning: insufficient room to grow at level {level+1} from bifurcation (child2); skipping branch.")
+        
+        # Add resulting tips for next level
+        for child_node_id in child_node_ids:
+            new_tips.append((child_node_id, level + 1))
+        
+        # ---------------------------------------------------------------------
+        # End replacement block
+        # ---------------------------------------------------------------------
 
         current_tips = new_tips
 
