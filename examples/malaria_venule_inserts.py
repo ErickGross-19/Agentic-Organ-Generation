@@ -1353,6 +1353,11 @@ def generate_bifurcation_tree_mesh(
         return trimesh.Trimesh()
 
     K = 4  # always 4 children per split
+    # ---- "Tree-like" shaping knobs ----
+    OBJ3_TRUNK_LENGTH_M = 0.00035        # 0.35 mm straight trunk before any branching
+    OBJ3_TRUNK_RADIUS_FACTOR = 0.55      # trunk radius = 0.55 * inlet_radius (quick neck-down)
+    OBJ3_TAPER_ALPHA = 0.55              # <1.0 shrinks faster early (more tree-like, less bulb)
+
 
     # Cylinder bounds
     z_top = CYLINDER_CENTER[2] + CYLINDER_HEIGHT_M / 2.0
@@ -1388,6 +1393,32 @@ def generate_bifurcation_tree_mesh(
     root_node = network.get_node(root_id)
     if root_node:
         root_node.attributes["direction"] = {"dx": 0.0, "dy": 0.0, "dz": -1.0}
+
+    # ---- Grow a short trunk straight down and neck the radius down quickly ----
+    trunk_end = (float(inlet_position[0]),
+                 float(inlet_position[1]),
+                 float(inlet_position[2]) - OBJ3_TRUNK_LENGTH_M)
+    
+    trunk_radius = float(inlet_radius) * float(OBJ3_TRUNK_RADIUS_FACTOR)
+    
+    trunk_grow = grow_to_point(
+        network,
+        from_node_id=root_id,
+        target_point=trunk_end,
+        target_radius=trunk_radius,
+        constraints=constraints,
+        check_collisions=False,
+        fail_on_collision=False,
+    )
+    
+    if trunk_grow.is_success():
+        root_id = trunk_grow.new_ids["node"]
+        trunk_node = network.get_node(root_id)
+        if trunk_node:
+            trunk_node.attributes["direction"] = {"dx": 0.0, "dy": 0.0, "dz": -1.0}
+    else:
+        print(f"    Warning: trunk grow failed: {trunk_grow.message} (continuing without trunk)")
+
 
     # Helper: maximum step t>=0 so p + t*d stays inside cylinder (side + caps)
     def _max_step_inside_cylinder(p: np.ndarray, d: np.ndarray, r_eff: float, zmin: float, zmax: float) -> float:
@@ -1486,8 +1517,17 @@ def generate_bifurcation_tree_mesh(
             tip_dir = _normalize(tip_dir)
 
             # Taper radii
-            current_radius = float(compute_taper_radius(level, num_levels, inlet_radius, terminal_radius))
-            next_radius = float(compute_taper_radius(min(level + 1, num_levels), num_levels, inlet_radius, terminal_radius))
+            # ---- Faster-early taper (reduces bulb at top junctions) ----
+            def _taper(level_idx: int) -> float:
+                if num_levels <= 0:
+                    return float(inlet_radius)
+                frac = (float(level_idx) / float(num_levels)) ** float(OBJ3_TAPER_ALPHA)
+                ratio = float(terminal_radius) / float(inlet_radius)
+                return float(inlet_radius) * (ratio ** frac)
+            
+            current_radius = _taper(level)
+            next_radius = _taper(min(level + 1, num_levels))
+
 
             # --- Step A: grow to a bifurcation point near target_z along current tip_dir ---
             if abs(float(tip_dir[2])) > BIFURC_DIRECTION_THRESHOLD:
