@@ -220,13 +220,15 @@ def compute_inlet_positions(
 def compute_bifurcation_depths(
     num_bifurcations: int,
     cylinder_height: float = CYLINDER_HEIGHT_M,
-    top_margin_fraction: float = 0.0,
+    top_margin_fraction: float = 0.15,
     bottom_margin_fraction: float = 0.125,
+    depth_power: float = 1.6,
 ) -> List[float]:
     """
     Compute bifurcation depths based on number of bifurcations and object height.
     
-    Depths are evenly spaced from near the top to near the bottom of the cylinder.
+    Uses convex spacing (power > 1) so later bifurcations get more vertical room,
+    combined with a top margin that acts as a trunk before the first split.
     
     Parameters
     ----------
@@ -235,9 +237,13 @@ def compute_bifurcation_depths(
     cylinder_height : float
         Height of the cylinder (in meters)
     top_margin_fraction : float
-        Fraction of height to leave as margin at top (default 0)
+        Fraction of height to leave as margin at top (default 0.15 = ~0.3mm trunk)
+        This acts as a trunk before the first split.
     bottom_margin_fraction : float
         Fraction of height to leave as margin at bottom (default 0.125 = 1/8)
+    depth_power : float
+        Power for convex spacing (default 1.6). Values > 1 give later levels more
+        vertical room. Values < 1 would compress later levels (not recommended).
     
     Returns
     -------
@@ -250,11 +256,15 @@ def compute_bifurcation_depths(
     usable_height = cylinder_height * (1 - top_margin_fraction - bottom_margin_fraction)
     start_depth = cylinder_height * top_margin_fraction
     
-    # Evenly space bifurcations
-    # depth[i] = start_depth + (i + 1) / (num_bifurcations + 1) * usable_height
+    # Convex spacing: depth[i] = start + usable * ((i+1)/(n+1))^p with p > 1
+    # This gives later bifurcations more room (increments grow with i)
     depths = []
     for i in range(num_bifurcations):
-        depth = start_depth + (i + 1) / (num_bifurcations + 1) * usable_height
+        # Normalized position in [0, 1] range
+        t = (i + 1) / (num_bifurcations + 1)
+        # Apply power for convex spacing
+        t_powered = t ** depth_power
+        depth = start_depth + t_powered * usable_height
         depths.append(depth)
     
     return depths
@@ -608,16 +618,51 @@ def create_channel_mesh(
     return channel
 
 
-def compute_taper_radius(level: int, total_levels: int, r_start: float, r_end: float) -> float:
+def compute_taper_radius(
+    level: int,
+    total_levels: int,
+    r_start: float,
+    r_end: float,
+    taper_power: float = 0.8,
+) -> float:
     """
-    Compute radius at a given bifurcation level using exponential taper.
+    Compute radius at a given bifurcation level using shifted exponential taper.
     
-    r_k = r_0 * (r_end/r_0)^(k/total_levels)
+    Uses shifted mapping (level+1)/(total_levels+1) so level 0 is already thinner
+    than the inlet radius. This prevents the first (thick) level from dominating
+    visually in small domains.
+    
+    Parameters
+    ----------
+    level : int
+        Current bifurcation level (0-indexed)
+    total_levels : int
+        Total number of bifurcation levels
+    r_start : float
+        Starting (inlet) radius
+    r_end : float
+        Terminal radius
+    taper_power : float
+        Power < 1 makes radius shrink faster early (default 0.8).
+        Power > 1 would delay shrinking (not recommended for this use case).
+    
+    Returns
+    -------
+    float
+        Radius at the given level
     """
     if total_levels == 0:
         return r_start
+    
+    # Shifted mapping: (level+1)/(total_levels+1) so level 0 is already thinner
+    # This means level 0 gets fraction 1/(total_levels+1), not 0
+    frac = (level + 1) / (total_levels + 1)
+    
+    # Apply power < 1 to shrink faster early
+    frac_powered = frac ** taper_power
+    
     ratio = r_end / r_start
-    return r_start * (ratio ** (level / total_levels))
+    return r_start * (ratio ** frac_powered)
 
 
 def voxel_union_meshes(meshes: List[trimesh.Trimesh], pitch: float) -> trimesh.Trimesh:
@@ -1518,13 +1563,18 @@ def generate_bifurcation_tree_mesh(
             tip_dir = _normalize(tip_dir)
 
             # Taper radii
-            # ---- Faster-early taper (reduces bulb at top junctions) ----
+            # ---- Shifted taper with faster-early shrinking ----
+            # Uses (level+1)/(num_levels+1) so level 0 is already thinner than inlet
+            # This prevents the first (thick) level from dominating visually
             def _taper(level_idx: int) -> float:
                 if num_levels <= 0:
                     return float(inlet_radius)
-                frac = (float(level_idx) / float(num_levels)) ** float(OBJ3_TAPER_ALPHA)
+                # Shifted mapping: level 0 gets fraction 1/(num_levels+1), not 0
+                frac = (float(level_idx) + 1.0) / (float(num_levels) + 1.0)
+                # Apply power < 1 to shrink faster early
+                frac_powered = frac ** float(OBJ3_TAPER_ALPHA)
                 ratio = float(terminal_radius) / float(inlet_radius)
-                return float(inlet_radius) * (ratio ** frac)
+                return float(inlet_radius) * (ratio ** frac_powered)
             
             current_radius = _taper(level)
             next_radius = _taper(min(level + 1, num_levels))
@@ -1596,8 +1646,16 @@ def generate_bifurcation_tree_mesh(
             # Effective radius for children
             r_eff_child = max(CYLINDER_RADIUS_M - wall_margin - next_radius, 1e-6)
 
-            # Length scale this level
-            max_growth = float(distance_between_levels) * float(BIFURC_MAX_GROWTH_FRACTION)
+            # Level-weighted length scaling: early branches shorter, later branches longer
+            # This makes later levels more visually present by giving them longer segments
+            # lerp(0.6, 1.0, level/(num_levels-1)) when num_levels > 1
+            if num_levels > 1:
+                length_scale = 0.6 + 0.4 * (float(level) / float(num_levels - 1))
+            else:
+                length_scale = 1.0
+
+            # Length scale this level (with level-weighted adjustment)
+            max_growth = float(distance_between_levels) * float(BIFURC_MAX_GROWTH_FRACTION) * length_scale
             min_len = max(float(BIFURC_MIN_GROWTH_DISTANCE_M), float(BRANCH_MIN_SEGMENT_LENGTH_M))
 
             # Random phase so not planar, but evenly spaced around 360°
