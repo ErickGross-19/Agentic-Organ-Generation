@@ -291,7 +291,7 @@ OBJ3_TERMINAL_RADIUS_M = 0.0001    # 100 um terminal radius
 OBJ3_TOTAL_TERMINALS = 512         # Total terminal count
 OBJ3_TERMINALS_PER_INLET = 128     # 512 / 4 = 128 terminals per inlet
 OBJ3_BIFURCATION_LEVELS = 7        # 2^7 = 128 terminals per inlet
-OBJ3_WALL_MARGIN_M = max(2 * VOXEL_PITCH_M, terminal_radius)       # 0.5 mm minimum wall margin from cylinder edge
+OBJ3_WALL_MARGIN_M = max(2 * VOXEL_PITCH_M, OBJ3_TERMINAL_RADIUS_M)       # 0.5 mm minimum wall margin from cylinder edge
 # Bifurcation depth schedule - INFERRED from number of bifurcations and object height
 OBJ3_BIFURCATION_DEPTHS_M = compute_bifurcation_depths(
     num_bifurcations=OBJ3_BIFURCATION_LEVELS,
