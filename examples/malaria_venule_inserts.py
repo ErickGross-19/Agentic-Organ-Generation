@@ -219,6 +219,88 @@ def compute_inlet_positions(
     return positions
 
 
+def compute_inlet_positions_center_rings(
+    num_inlets: int,
+    inlet_radius: float,
+    cylinder_radius: float = None,
+    ridge_inner_radius: float = None,
+    wall_margin: float = 0.0005,
+    spacing_factor: float = 0.2,
+) -> List[Tuple[float, float]]:
+    """
+    Compute inlet positions using center + concentric rings layout.
+    
+    Places 1 channel at the center first, then fills outward in concentric rings
+    until the requested number of inlets is reached.
+    
+    Parameters
+    ----------
+    num_inlets : int
+        Total number of inlets to place
+    inlet_radius : float
+        Radius of each inlet channel (meters)
+    cylinder_radius : float, optional
+        Radius of the cylinder domain (defaults to CYLINDER_RADIUS_M)
+    ridge_inner_radius : float, optional
+        Inner radius of the ridge (defaults to RIDGE_INNER_RADIUS_M)
+    wall_margin : float
+        Minimum margin from cylinder edge (meters)
+    spacing_factor : float
+        Extra gap between channels as fraction of diameter (0.2 = 20% extra spacing)
+    
+    Returns
+    -------
+    List of (x, y) tuples for inlet center positions
+    """
+    if num_inlets == 0:
+        return []
+    
+    if cylinder_radius is None:
+        cylinder_radius = CYLINDER_RADIUS_M
+    if ridge_inner_radius is None:
+        ridge_inner_radius = RIDGE_INNER_RADIUS_M
+    
+    limiting_radius = min(float(cylinder_radius), float(ridge_inner_radius))
+    max_placement_radius = limiting_radius - float(inlet_radius) - float(wall_margin)
+    
+    if max_placement_radius <= 0:
+        raise ValueError(
+            f"Cannot place inlets: max_placement_radius<=0.\n"
+            f"  limiting_radius={limiting_radius:.6f} m\n"
+            f"  inlet_radius={inlet_radius:.6f} m\n"
+            f"  wall_margin={wall_margin:.6f} m"
+        )
+    
+    positions = [(0.0, 0.0)]
+    
+    if num_inlets == 1:
+        return positions
+    
+    pitch = 2.0 * inlet_radius * (1.0 + spacing_factor)
+    
+    ring_k = 1
+    while len(positions) < num_inlets:
+        ring_radius = ring_k * pitch
+        
+        if ring_radius > max_placement_radius:
+            break
+        
+        circumference = 2.0 * pi * ring_radius
+        n_on_ring = max(6, int(round(circumference / pitch)))
+        
+        for i in range(n_on_ring):
+            if len(positions) >= num_inlets:
+                break
+            angle = 2.0 * pi * i / n_on_ring
+            x = ring_radius * cos(angle)
+            y = ring_radius * sin(angle)
+            positions.append((x, y))
+        
+        ring_k += 1
+    
+    return positions[:num_inlets]
+
+
 def compute_bifurcation_depths(
     num_bifurcations: int,
     cylinder_height: float = CYLINDER_HEIGHT_M,
@@ -280,14 +362,31 @@ OBJ1_INLET_RADIUS_M = None         # N/A for solid control
 OBJ1_TERMINAL_RADIUS_M = None      # N/A for solid control
 
 # =============================================================================
-# OBJECT 2: Straight Channels
+# OBJECT 2: Straight Channels (with layout and profile options)
 # =============================================================================
 OBJ2_NUM_INLETS = 4                # 4 straight channels (range 4-9, using minimum)
 OBJ2_INLET_RADIUS_M = 0.001        # 1 mm channel/inlet radius
 OBJ2_TERMINAL_RADIUS_M = 0.001     # 1 mm (same as inlet - no taper for straight channels)
 OBJ2_CHANNEL_DEPTH_M = 0.001       # 1 mm channel depth (extends downward from top)
 OBJ2_WALL_MARGIN_M = 0.0005        # 0.5 mm minimum wall margin from cylinder edge
-# Inlet positions for Object 2 - INFERRED from geometry
+
+# --- Object 2 Layout Options ---
+OBJ2_LAYOUT_MODE = "center_rings"  # "center_rings" (1 center + concentric rings) or "legacy" (old compute_inlet_positions)
+OBJ2_RING_SPACING_FACTOR = 0.2     # Extra gap between channels as fraction of diameter (0.2 = 20% extra spacing)
+
+# --- Object 2 Channel Profile Options ---
+OBJ2_CHANNEL_PROFILE = "cylinder"  # "cylinder" (straight), "taper" (frustum), or "fang" (teardrop)
+OBJ2_TAPER_END_RADIUS_FACTOR = 0.6 # For taper profile: bottom radius = factor * top radius (0.6 = 60%)
+
+# --- Object 2 Fang Profile Parameters ---
+OBJ2_FANG_POINTINESS = 0.7         # How pointed the fang tip is (0.0 = blunt, 1.0 = very sharp)
+OBJ2_FANG_FLATNESS = 0.3           # How flat the back of the fang is (0.0 = circular, 1.0 = flat)
+OBJ2_FANG_ROTATION_MODE = "radial" # "radial" (points outward from center) or "fixed" (all point +X)
+OBJ2_FANG_NUM_POINTS = 32          # Number of points in fang cross-section polygon
+OBJ2_FANG_NUM_SLICES = 16          # Number of z-slices for fang extrusion
+
+# Inlet positions for Object 2 - computed based on layout mode
+# For legacy mode, use the old compute_inlet_positions function
 OBJ2_INLET_POSITIONS = compute_inlet_positions(
     num_inlets=OBJ2_NUM_INLETS,
     inlet_radius=OBJ2_INLET_RADIUS_M,
@@ -618,6 +717,271 @@ def create_channel_mesh(
     # Position so top of channel is at z_top
     channel.apply_translation([position_xy[0], position_xy[1], z_top - depth / 2])
     return channel
+
+
+def create_fang_cross_section(
+    radius: float,
+    pointiness: float = 0.7,
+    flatness: float = 0.3,
+    num_points: int = 32,
+) -> np.ndarray:
+    """
+    Create a teardrop/fang cross-section polygon in the XY plane.
+    
+    The fang shape has:
+    - A rounded back (circular arc)
+    - A pointed tip (triangle-like)
+    
+    Parameters
+    ----------
+    radius : float
+        Approximate radius of the fang (distance from center to back)
+    pointiness : float
+        How pointed the tip is (0.0 = blunt, 1.0 = very sharp)
+    flatness : float
+        How flat the back is (0.0 = circular, 1.0 = flat)
+    num_points : int
+        Number of points in the polygon
+    
+    Returns
+    -------
+    np.ndarray
+        Array of shape (num_points, 2) with XY coordinates
+    """
+    points = []
+    
+    back_points = int(num_points * 0.6)
+    tip_points = num_points - back_points
+    
+    back_radius = radius * (1.0 - 0.3 * flatness)
+    
+    for i in range(back_points):
+        t = i / (back_points - 1) if back_points > 1 else 0.5
+        angle = pi * 0.5 + pi * t
+        x = back_radius * cos(angle) - radius * 0.2
+        y = back_radius * sin(angle)
+        points.append((x, y))
+    
+    tip_x = radius * (1.0 + 0.5 * pointiness)
+    back_top = points[-1]
+    back_bottom = points[0]
+    
+    for i in range(tip_points // 2):
+        t = (i + 1) / (tip_points // 2 + 1)
+        x = back_top[0] + t * (tip_x - back_top[0])
+        y = back_top[1] * (1.0 - t ** (1.0 + pointiness))
+        points.append((x, y))
+    
+    points.append((tip_x, 0.0))
+    
+    for i in range(tip_points // 2):
+        t = 1.0 - (i + 1) / (tip_points // 2 + 1)
+        x = back_bottom[0] + (1.0 - t) * (tip_x - back_bottom[0])
+        y = back_bottom[1] * t ** (1.0 + pointiness)
+        points.append((x, y))
+    
+    return np.array(points)
+
+
+def create_fang_channel_mesh(
+    position_xy: Tuple[float, float],
+    z_top: float,
+    radius_top: float,
+    radius_bottom: float,
+    depth: float,
+    rotation_angle: float = 0.0,
+    pointiness: float = 0.7,
+    flatness: float = 0.3,
+    num_points: int = 32,
+    num_slices: int = 16,
+) -> trimesh.Trimesh:
+    """
+    Create a fang-shaped (teardrop) channel mesh with taper.
+    
+    The fang has a rounded back and pointed tip, extruded downward with
+    z-dependent scaling for taper effect.
+    
+    Parameters
+    ----------
+    position_xy : tuple
+        (x, y) position of the channel center
+    z_top : float
+        Z coordinate of the top of the channel
+    radius_top : float
+        Radius at the top of the channel
+    radius_bottom : float
+        Radius at the bottom of the channel (for taper)
+    depth : float
+        Depth of the channel (extends downward from z_top)
+    rotation_angle : float
+        Rotation angle in radians (0 = tip points +X, pi/2 = tip points +Y)
+    pointiness : float
+        How pointed the fang tip is (0.0 = blunt, 1.0 = very sharp)
+    flatness : float
+        How flat the back of the fang is (0.0 = circular, 1.0 = flat)
+    num_points : int
+        Number of points in the cross-section polygon
+    num_slices : int
+        Number of z-slices for extrusion
+    
+    Returns
+    -------
+    trimesh.Trimesh
+        The fang channel mesh
+    """
+    base_cross_section = create_fang_cross_section(
+        radius=1.0,
+        pointiness=pointiness,
+        flatness=flatness,
+        num_points=num_points,
+    )
+    
+    cos_rot = cos(rotation_angle)
+    sin_rot = sin(rotation_angle)
+    rotated_cross_section = np.zeros_like(base_cross_section)
+    rotated_cross_section[:, 0] = base_cross_section[:, 0] * cos_rot - base_cross_section[:, 1] * sin_rot
+    rotated_cross_section[:, 1] = base_cross_section[:, 0] * sin_rot + base_cross_section[:, 1] * cos_rot
+    
+    vertices = []
+    faces = []
+    
+    n_pts = len(rotated_cross_section)
+    
+    for slice_idx in range(num_slices + 1):
+        t = slice_idx / num_slices
+        z = z_top - t * depth
+        scale = radius_top * (1.0 - t) + radius_bottom * t
+        
+        for pt in rotated_cross_section:
+            x = position_xy[0] + pt[0] * scale
+            y = position_xy[1] + pt[1] * scale
+            vertices.append([x, y, z])
+    
+    for slice_idx in range(num_slices):
+        base_idx = slice_idx * n_pts
+        next_base_idx = (slice_idx + 1) * n_pts
+        
+        for i in range(n_pts):
+            i_next = (i + 1) % n_pts
+            
+            v0 = base_idx + i
+            v1 = base_idx + i_next
+            v2 = next_base_idx + i_next
+            v3 = next_base_idx + i
+            
+            faces.append([v0, v2, v1])
+            faces.append([v0, v3, v2])
+    
+    top_center_idx = len(vertices)
+    vertices.append([position_xy[0], position_xy[1], z_top])
+    
+    for i in range(n_pts):
+        i_next = (i + 1) % n_pts
+        faces.append([top_center_idx, i, i_next])
+    
+    bottom_center_idx = len(vertices)
+    z_bottom = z_top - depth
+    vertices.append([position_xy[0], position_xy[1], z_bottom])
+    
+    bottom_base_idx = num_slices * n_pts
+    for i in range(n_pts):
+        i_next = (i + 1) % n_pts
+        faces.append([bottom_center_idx, bottom_base_idx + i_next, bottom_base_idx + i])
+    
+    mesh = trimesh.Trimesh(vertices=np.array(vertices), faces=np.array(faces))
+    mesh.fix_normals()
+    
+    return mesh
+
+
+def create_channel_void_mesh(
+    position_xy: Tuple[float, float],
+    z_top: float,
+    radius: float,
+    depth: float,
+    profile: str = "cylinder",
+    taper_end_factor: float = 0.6,
+    rotation_angle: float = 0.0,
+    fang_pointiness: float = 0.7,
+    fang_flatness: float = 0.3,
+    fang_num_points: int = 32,
+    fang_num_slices: int = 16,
+) -> trimesh.Trimesh:
+    """
+    Create a channel void mesh with the specified profile.
+    
+    This is a wrapper that switches between different channel profiles:
+    - "cylinder": straight cylindrical channel
+    - "taper": tapered cylinder (frustum) with smaller bottom
+    - "fang": teardrop/pointed cross-section with taper
+    
+    Parameters
+    ----------
+    position_xy : tuple
+        (x, y) position of the channel center
+    z_top : float
+        Z coordinate of the top of the channel
+    radius : float
+        Radius at the top of the channel
+    depth : float
+        Depth of the channel (extends downward from z_top)
+    profile : str
+        Channel profile type: "cylinder", "taper", or "fang"
+    taper_end_factor : float
+        For taper/fang: bottom radius = factor * top radius
+    rotation_angle : float
+        For fang: rotation angle in radians
+    fang_pointiness : float
+        For fang: how pointed the tip is
+    fang_flatness : float
+        For fang: how flat the back is
+    fang_num_points : int
+        For fang: number of cross-section polygon points
+    fang_num_slices : int
+        For fang: number of z-slices for extrusion
+    
+    Returns
+    -------
+    trimesh.Trimesh
+        The channel void mesh
+    """
+    if profile == "cylinder":
+        return create_channel_mesh(
+            position_xy=position_xy,
+            z_top=z_top,
+            radius=radius,
+            depth=depth,
+        )
+    
+    elif profile == "taper":
+        start = np.array([position_xy[0], position_xy[1], z_top])
+        end = np.array([position_xy[0], position_xy[1], z_top - depth])
+        radius_end = radius * taper_end_factor
+        return _create_tapered_cylinder(
+            start=start,
+            end=end,
+            radius_start=radius,
+            radius_end=radius_end,
+            sections=CHANNEL_MESH_SECTIONS,
+        )
+    
+    elif profile == "fang":
+        radius_bottom = radius * taper_end_factor
+        return create_fang_channel_mesh(
+            position_xy=position_xy,
+            z_top=z_top,
+            radius_top=radius,
+            radius_bottom=radius_bottom,
+            depth=depth,
+            rotation_angle=rotation_angle,
+            pointiness=fang_pointiness,
+            flatness=fang_flatness,
+            num_points=fang_num_points,
+            num_slices=fang_num_slices,
+        )
+    
+    else:
+        raise ValueError(f"Unknown channel profile: {profile}. Use 'cylinder', 'taper', or 'fang'.")
 
 
 def compute_taper_radius(
@@ -1189,9 +1553,17 @@ def generate_object1_control(output_dir: Optional[Path] = None) -> trimesh.Trime
 
 def generate_object2_channels(output_dir: Optional[Path] = None) -> trimesh.Trimesh:
     """
-    Generate Object 2: Control + straight channels.
+    Generate Object 2: Control + channels with configurable layout and profile.
     
-    Design choice: 4 channels in a square pattern at (+/-1.5mm, +/-1.5mm).
+    Layout options (OBJ2_LAYOUT_MODE):
+    - "center_rings": 1 channel at center, then concentric rings outward
+    - "legacy": original square/circular pattern from compute_inlet_positions
+    
+    Profile options (OBJ2_CHANNEL_PROFILE):
+    - "cylinder": straight cylindrical channels
+    - "taper": tapered channels (frustum, smaller at bottom)
+    - "fang": teardrop/pointed cross-section with taper
+    
     Uses the repo's embed_tree_as_negative_space function for embedding.
     
     Returns mesh in METERS (will be scaled to mm at export).
@@ -1202,25 +1574,58 @@ def generate_object2_channels(output_dir: Optional[Path] = None) -> trimesh.Trim
         Directory to save intermediate STL files for debugging
     """
     print("\n" + "=" * 60)
-    print("Generating Object 2: Control + straight channels")
+    print("Generating Object 2: Control + channels")
     print("=" * 60)
+    print(f"  Layout mode: {OBJ2_LAYOUT_MODE}")
+    print(f"  Channel profile: {OBJ2_CHANNEL_PROFILE}")
     
     z_top = CYLINDER_CENTER[2] + CYLINDER_HEIGHT_M / 2
     
-    # Create channels
-    print(f"  Creating {OBJ2_NUM_INLETS} straight channels...")
+    if OBJ2_LAYOUT_MODE == "center_rings":
+        inlet_positions = compute_inlet_positions_center_rings(
+            num_inlets=OBJ2_NUM_INLETS,
+            inlet_radius=OBJ2_INLET_RADIUS_M,
+            wall_margin=OBJ2_WALL_MARGIN_M,
+            spacing_factor=OBJ2_RING_SPACING_FACTOR,
+        )
+    else:
+        inlet_positions = OBJ2_INLET_POSITIONS[:OBJ2_NUM_INLETS]
+    
+    print(f"  Creating {len(inlet_positions)} channels...")
     
     channels = []
-    for i, pos in enumerate(OBJ2_INLET_POSITIONS[:OBJ2_NUM_INLETS]):
-        channel = create_channel_mesh(
+    for i, pos in enumerate(inlet_positions):
+        if OBJ2_CHANNEL_PROFILE == "fang" and OBJ2_FANG_ROTATION_MODE == "radial":
+            if pos[0] == 0.0 and pos[1] == 0.0:
+                rotation_angle = 0.0
+            else:
+                rotation_angle = math.atan2(pos[1], pos[0])
+        else:
+            rotation_angle = 0.0
+        
+        channel = create_channel_void_mesh(
             position_xy=pos,
             z_top=z_top,
             radius=OBJ2_INLET_RADIUS_M,
             depth=OBJ2_CHANNEL_DEPTH_M,
+            profile=OBJ2_CHANNEL_PROFILE,
+            taper_end_factor=OBJ2_TAPER_END_RADIUS_FACTOR,
+            rotation_angle=rotation_angle,
+            fang_pointiness=OBJ2_FANG_POINTINESS,
+            fang_flatness=OBJ2_FANG_FLATNESS,
+            fang_num_points=OBJ2_FANG_NUM_POINTS,
+            fang_num_slices=OBJ2_FANG_NUM_SLICES,
         )
         channels.append(channel)
-        print(f"    Channel {i+1}: position=({meters_to_mm(pos[0]):.1f}, {meters_to_mm(pos[1]):.1f})mm, "
-              f"radius={meters_to_mm(OBJ2_INLET_RADIUS_M)}mm, depth={meters_to_mm(OBJ2_CHANNEL_DEPTH_M)}mm")
+        
+        profile_info = f"profile={OBJ2_CHANNEL_PROFILE}"
+        if OBJ2_CHANNEL_PROFILE in ("taper", "fang"):
+            profile_info += f", taper={OBJ2_TAPER_END_RADIUS_FACTOR:.0%}"
+        if OBJ2_CHANNEL_PROFILE == "fang":
+            profile_info += f", rot={math.degrees(rotation_angle):.0f}°"
+        
+        print(f"    Channel {i+1}: pos=({meters_to_mm(pos[0]):.1f}, {meters_to_mm(pos[1]):.1f})mm, "
+              f"r={meters_to_mm(OBJ2_INLET_RADIUS_M)}mm, d={meters_to_mm(OBJ2_CHANNEL_DEPTH_M)}mm, {profile_info}")
     
     # Union all channels
     print("  Combining channels...")
