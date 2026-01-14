@@ -1990,7 +1990,7 @@ def generate_object3_bifurcate_512(output_dir: Optional[Path] = None) -> trimesh
     # where z_margin accounts for voxel discretization and extra_cap_margin
     # provides additional safety margin for mesh generation artifacts.
     z_margin = 2 * VOXEL_PITCH_M  # 2 voxels of margin (z_margin_voxels default)
-    extra_cap_margin = OBJ3_INLET_RADIUS_M  # Extra margin since caps may still appear
+    extra_cap_margin = 0.0001  # Extra margin since caps may still appear
     inlet_z_inset = OBJ3_INLET_RADIUS_M + z_margin + extra_cap_margin
     inlet_z = z_top - inlet_z_inset
     print(f"  Inlet Z inset: {meters_to_mm(inlet_z_inset):.3f}mm below top face")
