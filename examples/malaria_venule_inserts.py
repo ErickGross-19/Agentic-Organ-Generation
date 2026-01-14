@@ -53,10 +53,12 @@ from generation.core.domain import CylinderDomain
 from generation.core.types import Point3D, Direction3D, TubeGeometry
 from generation.core.network import VascularNetwork, Node, VesselSegment
 from generation.ops.build import create_network, add_inlet
-from generation.ops.growth import grow_branch, grow_to_point
+from generation.ops.growth import grow_branch, grow_to_point, grow_kary_tree_to_depths
 from generation.adapters.mesh_adapter import to_trimesh, export_stl
 from generation.ops.embedding import embed_tree_as_negative_space
+from generation.ops.features import add_raised_ridge, RidgeSpec, FaceId
 from generation.rules.constraints import BranchingConstraints
+from validity.mesh.voxel_utils import voxel_union_meshes, remove_small_components
 
 # Additional imports for Object 5 (CCO-NLP)
 from generation.specs.design_spec import DesignSpec, CylinderSpec, TreeSpec, InletSpec
@@ -665,124 +667,6 @@ def compute_taper_radius(
     return r_start * (ratio ** frac_powered)
 
 
-def voxel_union_meshes(meshes: List[trimesh.Trimesh], pitch: float) -> trimesh.Trimesh:
-    """
-    Union multiple meshes using voxelization and marching cubes.
-    
-    This is the overlap-based merge strategy: overlapping volumes are
-    automatically merged during voxelization.
-    
-    Uses the repo's voxelized_with_retry() function for robust voxelization
-    with automatic retry on memory errors.
-    
-    IMPORTANT: Uses trimesh's native VoxelGrid.marching_cubes property instead of
-    skimage.measure.marching_cubes to avoid axis/transform seam bugs that can
-    create disconnected mesh components.
-    """
-    from validity.mesh.voxel_utils import voxelized_with_retry
-    
-    if not meshes:
-        raise ValueError("No meshes to union")
-    
-    if len(meshes) == 1:
-        return meshes[0]
-    
-    # Concatenate all meshes
-    combined = trimesh.util.concatenate(meshes)
-    
-    # Voxelize using repo's voxelized_with_retry for robust handling of memory errors
-    voxels = voxelized_with_retry(
-        combined, 
-        pitch, 
-        max_attempts=VOXEL_RETRY_MAX_ATTEMPTS, 
-        factor=VOXEL_RETRY_FACTOR,
-        log_prefix="[voxel_union_meshes] ",
-    )
-    
-    # IMPORTANT: Fill the voxel grid to get solid volumes, not just surface shells
-    # Without .fill(), voxelized() returns surface occupancy which produces fragile
-    # non-manifold results and nonsense volumes when passed to marching cubes
-    voxels = voxels.fill()
-    
-    # Use trimesh's native marching_cubes property which correctly handles
-    # the voxel grid transform (axis order + translation + scaling).
-    # This avoids the seam/gap bugs that occur when manually applying
-    # voxels.transform[:3, 3] to skimage marching_cubes output.
-    result = voxels.marching_cubes
-
-    # -------------------------------------------------------------------------
-    try:
-        in_extent = float(np.max(combined.extents))
-        out_extent = float(np.max(result.extents))
-        if in_extent > 0:
-            ratio = out_extent / in_extent
-            if ratio > 50.0:
-                print(
-                    f"[voxel_union_meshes] Detected marching_cubes in voxel coordinates "
-                    f"(out/in={ratio:.1f}). Applying voxels.transform to convert to meters."
-                )
-                result.apply_transform(voxels.transform)
-    except Exception as e:
-        print(f"[voxel_union_meshes] Warning: unit sanity-check/transform failed: {e}")
-
-    # Light cleanup pass: merge vertices and fill holes
-    # Avoid aggressive face filtering that can open seams
-    result.merge_vertices()
-    result.remove_unreferenced_vertices()
-    
-    # Fill any remaining holes
-    trimesh.repair.fill_holes(result)
-    
-    # Fix normals and winding
-    if result.volume < 0:
-        result.invert()
-    trimesh.repair.fix_normals(result)
-    
-    return result
-
-def remove_small_components(mesh: trimesh.Trimesh,
-                            min_faces: int = 500,
-                            min_diag_m: float = None,
-                            keep_largest: bool = True) -> trimesh.Trimesh:
-    """
-    Remove tiny disconnected components ("floaters") caused by voxelization + marching cubes.
-    Keeps the largest component and any other component above thresholds.
-    """
-    if min_diag_m is None:
-        min_diag_m = 8.0 * VOXEL_PITCH_M  # ~8 voxels across
-
-    parts = mesh.split(only_watertight=False)
-    if len(parts) <= 1:
-        return mesh
-
-    scored = []
-    for p in parts:
-        diag = float(np.linalg.norm(p.extents))
-        scored.append((len(p.faces), diag, p))
-
-    # Sort by size (faces, then diag)
-    scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
-
-    kept = []
-    for idx, (faces, diag, p) in enumerate(scored):
-        if idx == 0 and keep_largest:
-            kept.append(p)
-            continue
-        if faces >= min_faces and diag >= min_diag_m:
-            kept.append(p)
-
-    if not kept:
-        return scored[0][2]  # fallback: largest
-
-    out = trimesh.util.concatenate(kept)
-    out.merge_vertices()
-    out.remove_unreferenced_vertices()
-    if out.volume < 0:
-        out.invert()
-    trimesh.repair.fix_normals(out)
-    return out
-
-
 def scale_mesh_to_mm(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
     """Scale mesh from meters to millimeters."""
     scaled = mesh.copy()
@@ -1019,6 +903,7 @@ def embed_void_in_cylinder(
                 tree_stl_path=str(void_stl_path),
                 domain=domain,
                 voxel_pitch=voxel_pitch,
+                method="voxel_subtraction",
                 stl_units="m",
                 geometry_units="m",
                 output_units="m",
@@ -2706,9 +2591,8 @@ def add_ridge_to_mesh(mesh_m: trimesh.Trimesh) -> trimesh.Trimesh:
     """
     Add ridge to a mesh at the END (after all voxel operations) to prevent smoothing.
     
-    Uses voxel union with fine pitch (VOXEL_PITCH_RIDGE_M = 25um) to preserve ridge detail
-    while maintaining watertightness. The ridge is 0.1mm (100um) thick, so at 25um pitch
-    it will be 4 voxels thick, which is sufficient to preserve the geometry.
+    Uses the core library's add_raised_ridge function with voxel union to preserve
+    ridge detail while maintaining watertightness.
     
     Parameters
     ----------
@@ -2720,61 +2604,40 @@ def add_ridge_to_mesh(mesh_m: trimesh.Trimesh) -> trimesh.Trimesh:
     trimesh.Trimesh
         The mesh with ridge added (in meters)
     """
-    z_top = CYLINDER_CENTER[2] + CYLINDER_HEIGHT_M / 2
-    
-    # Print diagnostic info about input mesh
     print(f"    Input mesh: {len(mesh_m.vertices)} vertices, {len(mesh_m.faces)} faces")
     print(f"    Input mesh bounds: {mesh_m.bounds}")
     print(f"    Input mesh watertight: {mesh_m.is_watertight}")
     
-    # IMPORTANT: For voxel union to work correctly, the ridge must OVERLAP with the
-    # mesh (not just touch at z_top). We extend the ridge slightly INTO the mesh.
-    ridge_z_base = z_top - RIDGE_OVERLAP_M  # Start ridge slightly INSIDE for overlap
-    ridge_total_height = RIDGE_HEIGHT_M + RIDGE_OVERLAP_M  # Total height includes overlap
-    
-    ridge = create_ridge_mesh(
-        outer_radius=CYLINDER_RADIUS_M,
-        inner_radius=CYLINDER_RADIUS_M - RIDGE_THICKNESS_M,
-        height=ridge_total_height,
-        z_base=ridge_z_base,
-        center_xy=(CYLINDER_CENTER[0], CYLINDER_CENTER[1]),
+    domain = CylinderDomain(
+        center=Point3D(CYLINDER_CENTER[0], CYLINDER_CENTER[1], CYLINDER_CENTER[2]),
+        radius=CYLINDER_RADIUS_M,
+        height=CYLINDER_HEIGHT_M,
     )
     
-    # Print diagnostic info about ridge mesh
-    print(f"    Ridge mesh: {len(ridge.vertices)} vertices, {len(ridge.faces)} faces")
-    print(f"    Ridge mesh bounds: {ridge.bounds}")
-    print(f"    Ridge mesh watertight: {ridge.is_watertight}")
-    print(f"    Ridge Z range: [{ridge_z_base}, {ridge_z_base + ridge_total_height}] (overlaps into mesh by {RIDGE_OVERLAP_M*1e6:.0f}um)")
+    ridge_spec = RidgeSpec(
+        height=RIDGE_HEIGHT_M,
+        thickness=RIDGE_THICKNESS_M,
+        overlap=RIDGE_OVERLAP_M,
+        voxel_pitch=VOXEL_PITCH_RIDGE_M,
+    )
     
-    print(f"    Using voxel union with fine pitch ({VOXEL_PITCH_RIDGE_M*1e6:.0f}um) to preserve ridge detail")
-    print(f"    Ridge thickness ({RIDGE_THICKNESS_M*1e6:.0f}um) / voxel pitch ({VOXEL_PITCH_RIDGE_M*1e6:.0f}um) = {RIDGE_THICKNESS_M/VOXEL_PITCH_RIDGE_M:.1f} voxels")
+    print(f"    Using core library add_raised_ridge with pitch ({VOXEL_PITCH_RIDGE_M*1e6:.0f}um)")
+    print(f"    Ridge: height={RIDGE_HEIGHT_M*1e6:.0f}um, thickness={RIDGE_THICKNESS_M*1e6:.0f}um, overlap={RIDGE_OVERLAP_M*1e6:.0f}um")
     
-    # Perform voxel union
-    combined = voxel_union_meshes([mesh_m, ridge], pitch=VOXEL_PITCH_RIDGE_M)
-    # Fail fast if something is still in voxel-index coordinates.
-    # (If this triggers, the ridge check will falsely "succeed" because 100 >> 0.0011.)
-    try:
-        in_extent = float(np.max(mesh_m.extents))
-        out_extent = float(np.max(combined.extents))
-        if in_extent > 0:
-            ratio = out_extent / in_extent
-            if ratio > 50.0:
-                raise RuntimeError(
-                    f"voxel_union_meshes returned a mesh that looks like voxel-index coordinates "
-                    f"(out/in={ratio:.1f}). Expected meters. "
-                    f"Check voxel_union_meshes() transform handling."
-                )
-    except Exception:
-        raise
-
-    # Print diagnostic info about combined mesh
+    combined = add_raised_ridge(
+        base_mesh=mesh_m,
+        domain=domain,
+        face=FaceId.TOP,
+        ridge_spec=ridge_spec,
+    )
+    
     print(f"    Combined mesh: {len(combined.vertices)} vertices, {len(combined.faces)} faces")
     print(f"    Combined mesh bounds: {combined.bounds}")
     print(f"    Combined mesh watertight: {combined.is_watertight}")
     
-    # Verify the ridge was added by checking Z bounds
     input_z_max = mesh_m.bounds[1][2]
     combined_z_max = combined.bounds[1][2]
+    z_top = CYLINDER_CENTER[2] + CYLINDER_HEIGHT_M / 2
     expected_z_max = z_top + RIDGE_HEIGHT_M
     
     if combined_z_max < expected_z_max - VOXEL_PITCH_RIDGE_M:

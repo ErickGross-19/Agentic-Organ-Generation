@@ -787,6 +787,142 @@ def _compute_polyline_route(
     return []
 
 
+def _compute_tube_safe_step_length(
+    start: np.ndarray,
+    direction: np.ndarray,
+    tube_radius: float,
+    domain: "DomainSpec",
+    requested_length: float,
+) -> float:
+    """
+    Compute the maximum step length that keeps the entire tube inside the domain.
+    
+    This performs ray-domain intersection with radius margins to ensure the tube
+    surface (not just centerline) stays inside the domain boundaries.
+    
+    Parameters
+    ----------
+    start : np.ndarray
+        Starting point [x, y, z]
+    direction : np.ndarray
+        Normalized direction vector [dx, dy, dz]
+    tube_radius : float
+        Radius of the tube (vessel)
+    domain : DomainSpec
+        Domain to check against
+    requested_length : float
+        Desired step length
+        
+    Returns
+    -------
+    float
+        Maximum safe step length (may be less than requested_length)
+    """
+    from ..core.domain import CylinderDomain, BoxDomain
+    
+    if isinstance(domain, CylinderDomain):
+        cx = domain.center.x
+        cy = domain.center.y
+        cz = domain.center.z
+        R = domain.radius
+        H = domain.height
+        half_h = H / 2.0
+        
+        effective_radius = R - tube_radius
+        if effective_radius <= 0:
+            return 0.0
+        
+        z_min = cz - half_h + tube_radius
+        z_max = cz + half_h - tube_radius
+        
+        max_t = requested_length
+        
+        dx, dy, dz = direction[0], direction[1], direction[2]
+        px, py, pz = start[0], start[1], start[2]
+        
+        ox = px - cx
+        oy = py - cy
+        
+        a = dx * dx + dy * dy
+        b = 2.0 * (ox * dx + oy * dy)
+        c = ox * ox + oy * oy - effective_radius * effective_radius
+        
+        if a > 1e-12:
+            discriminant = b * b - 4.0 * a * c
+            if discriminant >= 0:
+                sqrt_disc = np.sqrt(discriminant)
+                t1 = (-b - sqrt_disc) / (2.0 * a)
+                t2 = (-b + sqrt_disc) / (2.0 * a)
+                
+                if t2 > 0 and t2 < max_t:
+                    max_t = max(t2, 0.0)
+        
+        if abs(dz) > 1e-12:
+            if dz < 0:
+                t_bottom = (z_min - pz) / dz
+                if t_bottom > 0 and t_bottom < max_t:
+                    max_t = t_bottom
+            else:
+                t_top = (z_max - pz) / dz
+                if t_top > 0 and t_top < max_t:
+                    max_t = t_top
+        
+        return max(max_t, 0.0)
+    
+    elif isinstance(domain, BoxDomain):
+        effective_x_min = domain.x_min + tube_radius
+        effective_x_max = domain.x_max - tube_radius
+        effective_y_min = domain.y_min + tube_radius
+        effective_y_max = domain.y_max - tube_radius
+        effective_z_min = domain.z_min + tube_radius
+        effective_z_max = domain.z_max - tube_radius
+        
+        if (effective_x_min >= effective_x_max or 
+            effective_y_min >= effective_y_max or 
+            effective_z_min >= effective_z_max):
+            return 0.0
+        
+        max_t = requested_length
+        dx, dy, dz = direction[0], direction[1], direction[2]
+        px, py, pz = start[0], start[1], start[2]
+        
+        if abs(dx) > 1e-12:
+            if dx > 0:
+                t = (effective_x_max - px) / dx
+            else:
+                t = (effective_x_min - px) / dx
+            if t > 0 and t < max_t:
+                max_t = t
+        
+        if abs(dy) > 1e-12:
+            if dy > 0:
+                t = (effective_y_max - py) / dy
+            else:
+                t = (effective_y_min - py) / dy
+            if t > 0 and t < max_t:
+                max_t = t
+        
+        if abs(dz) > 1e-12:
+            if dz > 0:
+                t = (effective_z_max - pz) / dz
+            else:
+                t = (effective_z_min - pz) / dz
+            if t > 0 and t < max_t:
+                max_t = t
+        
+        return max(max_t, 0.0)
+    
+    else:
+        end = start + requested_length * direction
+        end_pt = Point3D(end[0], end[1], end[2])
+        if domain.contains(end_pt):
+            return requested_length
+        
+        projected = domain.project_inside(end_pt)
+        vec = np.array([projected.x, projected.y, projected.z]) - start
+        return max(np.linalg.norm(vec) - tube_radius, 0.0)
+
+
 def grow_kary_tree_to_depths(
     network: VascularNetwork,
     root_node_id: int,
@@ -945,25 +1081,26 @@ def grow_kary_tree_to_depths(
                 child_dir = np.cos(angle_rad) * tip_dir_norm + np.sin(angle_rad) * lateral
                 child_dir = child_dir / (np.linalg.norm(child_dir) + 1e-12)
                 
-                child_end = tip_pos + child_length * child_dir
-                
                 if boundary_mode == "strict" and hasattr(network, 'domain') and network.domain is not None:
-                    child_end_pt = Point3D(child_end[0], child_end[1], child_end[2])
-                    if not network.domain.contains(child_end_pt):
-                        child_end_pt = network.domain.project_inside(child_end_pt)
-                        child_end = np.array([child_end_pt.x, child_end_pt.y, child_end_pt.z])
-                        
-                        new_vec = child_end - tip_pos
-                        new_length = np.linalg.norm(new_vec)
-                        if new_length > 1e-9:
-                            child_dir = new_vec / new_length
-                        
-                        if new_length < constraints.min_segment_length:
-                            all_warnings.append(
-                                f"Level {level}, child {k}: segment too short after boundary clamp "
-                                f"({new_length:.6f}m < {constraints.min_segment_length:.6f}m)"
-                            )
-                            continue
+                    max_tube_radius = max(tip_radius, child_radius)
+                    safe_length = _compute_tube_safe_step_length(
+                        start=tip_pos,
+                        direction=child_dir,
+                        tube_radius=max_tube_radius,
+                        domain=network.domain,
+                        requested_length=child_length,
+                    )
+                    
+                    if safe_length < constraints.min_segment_length:
+                        all_warnings.append(
+                            f"Level {level}, child {k}: tube-safe step too short "
+                            f"({safe_length:.6f}m < {constraints.min_segment_length:.6f}m)"
+                        )
+                        continue
+                    
+                    child_length = safe_length
+                
+                child_end = tip_pos + child_length * child_dir
                 
                 child_end_pt = Point3D(child_end[0], child_end[1], child_end[2])
                 child_dir_obj = Direction3D(child_dir[0], child_dir[1], child_dir[2])

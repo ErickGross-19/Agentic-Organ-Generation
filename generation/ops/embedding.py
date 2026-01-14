@@ -1357,6 +1357,40 @@ def embed_tree_as_negative_space(
         if not domain_mesh.is_watertight:
             trimesh.repair.fill_holes(domain_mesh)
         
+        if isinstance(domain, CylinderDomain):
+            domain_volume = np.pi * domain.radius**2 * domain.height
+        elif isinstance(domain, BoxDomain):
+            domain_volume = (domain.x_max - domain.x_min) * (domain.y_max - domain.y_min) * (domain.z_max - domain.z_min)
+        elif isinstance(domain, EllipsoidDomain):
+            domain_volume = (4/3) * np.pi * domain.semi_axis_a * domain.semi_axis_b * domain.semi_axis_c
+        else:
+            domain_volume = domain_mesh.volume * 2
+        
+        expected_void_voxels = None
+        if tree_mesh.is_watertight and tree_mesh.volume > 0:
+            expected_void_voxels = tree_mesh.volume / (voxel_pitch ** 3)
+        
+        is_valid, reason = _verify_carve_result(
+            void_voxels=tree_voxel_count,
+            domain_voxels=domain_voxel_count,
+            solid_voxels=int(solid_mask.sum()),
+            expected_void_voxels=expected_void_voxels,
+            output_volume=domain_mesh.volume,
+            domain_volume=domain_volume,
+            log_prefix="[mask_carve] ",
+        )
+        
+        if not is_valid:
+            print(f"[mask_carve] Carve verification FAILED: {reason}")
+            print(f"[mask_carve] Switching to fallback voxel subtraction...")
+            domain_mesh = _fallback_voxel_subtraction(
+                domain=domain,
+                void_mesh=tree_mesh,
+                voxel_pitch=voxel_pitch,
+                log_prefix="[mask_carve fallback] ",
+            )
+            print(f"[mask_carve] Fallback complete: {len(domain_mesh.vertices)} vertices, volume={domain_mesh.volume:.9f}")
+        
         result['domain_with_void'] = domain_mesh
         print(f"Domain mesh: {len(domain_mesh.vertices)} vertices, {len(domain_mesh.faces)} faces")
         print(f"  Watertight: {domain_mesh.is_watertight}, Volume: {domain_mesh.volume:.9f}")
