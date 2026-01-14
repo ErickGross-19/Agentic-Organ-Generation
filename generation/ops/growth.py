@@ -883,6 +883,9 @@ def _compute_tube_safe_step_length(
     tube_radius: float,
     domain: "DomainSpec",
     requested_length: float,
+    adaptive_safety: bool = True,
+    min_usable_height_fraction: float = 0.3,
+    min_usable_radius_fraction: float = 0.2,
 ) -> float:
     """
     Compute the maximum step length that keeps the entire tube inside the domain.
@@ -902,11 +905,23 @@ def _compute_tube_safe_step_length(
         Domain to check against
     requested_length : float
         Desired step length
+    adaptive_safety : bool
+        If True, automatically reduce effective tube_radius when it would make
+        the domain unusable. This allows trees to grow in constrained geometries
+        at the cost of potentially having tube surfaces slightly protrude.
+    min_usable_height_fraction : float
+        Minimum fraction of domain height that should remain usable (default 0.3 = 30%)
+    min_usable_radius_fraction : float
+        Minimum fraction of domain radius that should remain usable (default 0.2 = 20%)
         
     Returns
     -------
     float
         Maximum safe step length (may be less than requested_length)
+        
+    Raises
+    ------
+    Warning is printed if adaptive_safety kicks in and constraints are relaxed.
     """
     from ..core.domain import CylinderDomain, BoxDomain
     
@@ -918,12 +933,40 @@ def _compute_tube_safe_step_length(
         H = domain.height
         half_h = H / 2.0
         
-        effective_radius = R - tube_radius
+        # Adaptive safety: cap tube_radius to ensure usable domain
+        effective_tube_radius_xy = tube_radius
+        effective_tube_radius_z = tube_radius
+        safety_relaxed = False
+        
+        if adaptive_safety:
+            # For XY constraint: ensure at least min_usable_radius_fraction of radius is usable
+            max_tube_radius_xy = R * (1.0 - min_usable_radius_fraction)
+            if tube_radius > max_tube_radius_xy:
+                effective_tube_radius_xy = max_tube_radius_xy
+                safety_relaxed = True
+            
+            # For Z constraint: ensure at least min_usable_height_fraction of height is usable
+            max_tube_radius_z = half_h * (1.0 - min_usable_height_fraction)
+            if tube_radius > max_tube_radius_z:
+                effective_tube_radius_z = max_tube_radius_z
+                safety_relaxed = True
+            
+            if safety_relaxed:
+                import warnings
+                warnings.warn(
+                    f"Adaptive tube-safe: tube_radius ({tube_radius*1000:.2f}mm) exceeds safe limits. "
+                    f"Relaxed to XY={effective_tube_radius_xy*1000:.2f}mm, Z={effective_tube_radius_z*1000:.2f}mm. "
+                    f"Tube surface may protrude outside domain boundary.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+        
+        effective_radius = R - effective_tube_radius_xy
         if effective_radius <= 0:
             return 0.0
         
-        z_min = cz - half_h + tube_radius
-        z_max = cz + half_h - tube_radius
+        z_min = cz - half_h + effective_tube_radius_z
+        z_max = cz + half_h - effective_tube_radius_z
         
         dx, dy, dz = direction[0], direction[1], direction[2]
         px, py, pz = start[0], start[1], start[2]
@@ -969,12 +1012,51 @@ def _compute_tube_safe_step_length(
         return max(max_t, 0.0)
     
     elif isinstance(domain, BoxDomain):
-        effective_x_min = domain.x_min + tube_radius
-        effective_x_max = domain.x_max - tube_radius
-        effective_y_min = domain.y_min + tube_radius
-        effective_y_max = domain.y_max - tube_radius
-        effective_z_min = domain.z_min + tube_radius
-        effective_z_max = domain.z_max - tube_radius
+        box_width_x = domain.x_max - domain.x_min
+        box_width_y = domain.y_max - domain.y_min
+        box_height_z = domain.z_max - domain.z_min
+        
+        # Adaptive safety: cap tube_radius to ensure usable domain
+        effective_tube_radius_x = tube_radius
+        effective_tube_radius_y = tube_radius
+        effective_tube_radius_z = tube_radius
+        safety_relaxed = False
+        
+        if adaptive_safety:
+            # For X constraint: ensure at least min_usable_radius_fraction of width is usable
+            max_tube_radius_x = (box_width_x / 2.0) * (1.0 - min_usable_radius_fraction)
+            if tube_radius > max_tube_radius_x:
+                effective_tube_radius_x = max_tube_radius_x
+                safety_relaxed = True
+            
+            # For Y constraint: ensure at least min_usable_radius_fraction of width is usable
+            max_tube_radius_y = (box_width_y / 2.0) * (1.0 - min_usable_radius_fraction)
+            if tube_radius > max_tube_radius_y:
+                effective_tube_radius_y = max_tube_radius_y
+                safety_relaxed = True
+            
+            # For Z constraint: ensure at least min_usable_height_fraction of height is usable
+            max_tube_radius_z = (box_height_z / 2.0) * (1.0 - min_usable_height_fraction)
+            if tube_radius > max_tube_radius_z:
+                effective_tube_radius_z = max_tube_radius_z
+                safety_relaxed = True
+            
+            if safety_relaxed:
+                import warnings
+                warnings.warn(
+                    f"Adaptive tube-safe (BoxDomain): tube_radius ({tube_radius*1000:.2f}mm) exceeds safe limits. "
+                    f"Relaxed to X={effective_tube_radius_x*1000:.2f}mm, Y={effective_tube_radius_y*1000:.2f}mm, Z={effective_tube_radius_z*1000:.2f}mm. "
+                    f"Tube surface may protrude outside domain boundary.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+        
+        effective_x_min = domain.x_min + effective_tube_radius_x
+        effective_x_max = domain.x_max - effective_tube_radius_x
+        effective_y_min = domain.y_min + effective_tube_radius_y
+        effective_y_max = domain.y_max - effective_tube_radius_y
+        effective_z_min = domain.z_min + effective_tube_radius_z
+        effective_z_max = domain.z_max - effective_tube_radius_z
         
         if (effective_x_min >= effective_x_max or 
             effective_y_min >= effective_y_max or 
