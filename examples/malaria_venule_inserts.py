@@ -1723,13 +1723,24 @@ def generate_bifurcation_tree_mesh_v2(
     )
     
     if not result.is_success() and result.status.name != "PARTIAL_SUCCESS":
-        print(f"    Warning: grow_kary_tree_v2 failed: {result.message}")
+        print(f"    ERROR: grow_kary_tree_v2 failed: {result.message}")
+        if result.errors:
+            for e in result.errors[:5]:
+                print(f"      ERROR: {e}")
         if result.warnings:
             for w in result.warnings[:5]:
-                print(f"      - {w}")
+                print(f"      WARNING: {w}")
+        print(f"    Returning empty mesh due to tree generation failure.")
+        print(f"    HINT: Use compute_inlet_positions_center_rings() to place inlets at center first.")
+        return trimesh.Trimesh()
     
     if result.warnings:
         print(f"    Tree generation completed with {len(result.warnings)} warnings")
+    
+    if len(network.segments) == 0:
+        print(f"    ERROR: Network has no segments after tree generation!")
+        print(f"    HINT: Use compute_inlet_positions_center_rings() to place inlets at center first.")
+        return trimesh.Trimesh()
     
     print(f"    Converting network to mesh ({len(network.segments)} segments).")
     mesh_result = to_trimesh(network, mode="fast", include_caps=True, include_node_spheres=False)
