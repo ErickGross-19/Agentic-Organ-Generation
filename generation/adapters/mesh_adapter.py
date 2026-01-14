@@ -6,9 +6,78 @@ Provides STL mesh export with fast and robust modes, including hollow tube gener
 
 import numpy as np
 import trimesh
+from dataclasses import dataclass, field
 from typing import Optional, Literal, Dict, Any, Tuple
 from ..core.network import VascularNetwork
 from ..core.result import OperationResult, OperationStatus, ErrorCode
+
+
+@dataclass
+class JunctionGeometryPolicy:
+    """
+    Configuration for how junction geometry is generated in mesh conversion.
+    
+    This policy controls the generation of node spheres, inlet/outlet geometry,
+    caps, and handling of degenerate segments. The defaults are optimized for
+    microfluidic void generation where bulb artifacts should be minimized.
+    
+    Attributes
+    ----------
+    node_mode : str
+        How to handle junction nodes: "none", "sphere", or "fillet"
+        Default "none" to avoid bulb artifacts.
+    node_radius_scale : float
+        Scale factor for node sphere/fillet radius relative to max attached segment radius.
+        Only used if node_mode is "sphere" or "fillet".
+    inlet_mode : str
+        How to handle inlet geometry: "open", "capped", or "flared"
+        Default "open" for microfluidic voids.
+    outlet_mode : str
+        How to handle outlet geometry: "open", "capped", or "flared"
+        Default "open" for microfluidic voids.
+    cap_style : str
+        Style for caps when inlet_mode or outlet_mode is "capped": "flat" or "hemisphere"
+    degenerate_segment_mode : str
+        How to handle degenerate (near-zero length) segments:
+        - "skip": Do not add geometry
+        - "short_frustum": Create a micro-frustum along parent direction
+        - "micro_sphere": Create a small sphere (not recommended)
+        Default "short_frustum" to maintain continuity without bulbs.
+    degenerate_length_threshold : float
+        Segments shorter than this are considered degenerate.
+    min_segment_length_enforced : float
+        Minimum length for short_frustum mode.
+    """
+    node_mode: Literal["none", "sphere", "fillet"] = "none"
+    node_radius_scale: float = 0.2
+    inlet_mode: Literal["open", "capped", "flared"] = "open"
+    outlet_mode: Literal["open", "capped", "flared"] = "open"
+    cap_style: Literal["flat", "hemisphere"] = "flat"
+    degenerate_segment_mode: Literal["skip", "short_frustum", "micro_sphere"] = "short_frustum"
+    degenerate_length_threshold: float = 1e-6
+    min_segment_length_enforced: float = 1e-7
+    
+    @classmethod
+    def for_microfluidic_voids(cls) -> "JunctionGeometryPolicy":
+        """Create a policy optimized for microfluidic void generation."""
+        return cls(
+            node_mode="none",
+            inlet_mode="open",
+            outlet_mode="open",
+            degenerate_segment_mode="short_frustum",
+        )
+    
+    @classmethod
+    def for_visualization(cls) -> "JunctionGeometryPolicy":
+        """Create a policy optimized for visualization with smooth junctions."""
+        return cls(
+            node_mode="sphere",
+            node_radius_scale=0.3,
+            inlet_mode="capped",
+            outlet_mode="capped",
+            cap_style="hemisphere",
+            degenerate_segment_mode="micro_sphere",
+        )
 
 
 def _precompute_node_radii(network: VascularNetwork) -> Dict[int, float]:

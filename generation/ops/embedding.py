@@ -14,17 +14,30 @@ Units:
     Example bioprinting-scale defaults:
     - voxel_pitch=3e-4 (0.3mm resolution)
     - shell_thickness=2e-3 (2mm wall thickness)
+
+Fallback Behavior:
+    When fallback="auto" (default), the embedding will automatically switch to
+    deterministic filled-voxel subtraction if the primary path produces:
+    - Surface-only void masks (outline instead of solid)
+    - Shell-like output (volume too small)
+    - Uncarved output (no meaningful reduction)
+    
+    This ensures reliable results even when the primary voxelization path
+    encounters edge cases with thin vessels or complex geometries.
 """
 
+import math
 import numpy as np
 import trimesh
 from pathlib import Path
-from typing import Optional, Dict, Tuple, Union
+from typing import Optional, Dict, Tuple, Union, Literal
 from scipy import ndimage
 from skimage.measure import marching_cubes
+from trimesh.voxel import VoxelGrid
 
 from ..core.domain import DomainSpec, BoxDomain, EllipsoidDomain, CylinderDomain
 from ..utils.units import detect_unit, warn_if_legacy_units, INTERNAL_UNIT, DEFAULT_OUTPUT_UNIT
+from validity.mesh.voxel_utils import voxelized_with_retry as _shared_voxelized_with_retry
 
 
 def _voxelized_with_retry(
@@ -68,6 +81,286 @@ def _voxelized_with_retry(
         f"{log_prefix}voxelization failed after {max_attempts} attempts; "
         f"final pitch={cur:.4g}, original pitch={pitch:.4g}"
     ) from last_exc
+
+
+def _ensure_mesh_in_world_units(
+    mesh_out: trimesh.Trimesh,
+    reference_extent: float,
+    voxel_transform: np.ndarray,
+    label: str = "",
+    ratio_threshold: float = 50.0,
+) -> trimesh.Trimesh:
+    """
+    Detect and fix meshes returned in voxel index coordinates.
+    
+    Some trimesh builds return marching_cubes output in voxel index coordinates
+    instead of world units. This function detects this by comparing extents
+    and applies the voxel transform to convert to world units.
+    
+    Parameters
+    ----------
+    mesh_out : trimesh.Trimesh
+        The mesh to check/fix
+    reference_extent : float
+        Expected extent in world units (e.g., domain diameter)
+    voxel_transform : np.ndarray
+        4x4 transform matrix from voxel grid
+    label : str
+        Label for log messages
+    ratio_threshold : float
+        Ratio above which we assume voxel coordinates (default: 50)
+        
+    Returns
+    -------
+    trimesh.Trimesh
+        Mesh in world units
+    """
+    try:
+        out_extent = float(np.max(mesh_out.extents))
+        if reference_extent > 0:
+            ratio = out_extent / float(reference_extent)
+            if ratio > ratio_threshold:
+                print(
+                    f"[units-fix]{' ' + label if label else ''} marching_cubes looks like voxel coords "
+                    f"(out/ref={ratio:.1f}). Applying voxel transform."
+                )
+                m2 = mesh_out.copy()
+                m2.apply_transform(voxel_transform)
+                return m2
+    except Exception as e:
+        print(f"[units-fix]{' ' + label if label else ''} warning: {e}")
+    return mesh_out
+
+
+def _verify_carve_result(
+    void_voxels: int,
+    domain_voxels: int,
+    solid_voxels: int,
+    expected_void_voxels: Optional[float],
+    output_volume: float,
+    domain_volume: float,
+    log_prefix: str = "",
+) -> Tuple[bool, str]:
+    """
+    Verify that the carve operation produced a valid result.
+    
+    Performs multiple sanity checks to detect common failure modes:
+    - Surface-only void masks (outline instead of solid)
+    - Shell-like output (volume too small)
+    - Uncarved output (no meaningful reduction)
+    
+    Parameters
+    ----------
+    void_voxels : int
+        Number of voxels in the void mask
+    domain_voxels : int
+        Number of voxels in the domain mask
+    solid_voxels : int
+        Number of voxels in the solid mask (domain - void)
+    expected_void_voxels : float, optional
+        Expected void voxels based on void mesh volume
+    output_volume : float
+        Volume of the output solid mesh
+    domain_volume : float
+        Volume of the domain (e.g., cylinder volume)
+    log_prefix : str
+        Prefix for log messages
+        
+    Returns
+    -------
+    tuple
+        (is_valid, reason) where is_valid is True if checks pass
+    """
+    epsilon = max(1, int(0.001 * domain_voxels))
+    
+    if void_voxels <= 0:
+        return False, "void mask is empty"
+    
+    if solid_voxels >= (domain_voxels - epsilon):
+        return False, "void not meaningfully carved (solid_voxels >= domain_voxels)"
+    
+    if expected_void_voxels is not None and expected_void_voxels > 0:
+        ratio = void_voxels / expected_void_voxels
+        print(f"{log_prefix}Void voxel sanity: void_vox={void_voxels}, expected~{int(expected_void_voxels)}, ratio={ratio:.4f}")
+        if ratio < 0.50:
+            return False, f"surface-only void mask detected (ratio={ratio:.4f} < 0.50)"
+    
+    if output_volume < 0.30 * domain_volume:
+        return False, f"output is shell-like (volume {output_volume:.9e} < 30% of domain {domain_volume:.9e})"
+    
+    reduction_pct = (domain_volume - output_volume) / domain_volume * 100.0
+    print(f"{log_prefix}Volume sanity: domain={domain_volume:.9e}, output={output_volume:.9e}, reduction={reduction_pct:.3f}%")
+    if reduction_pct < 0.2:
+        return False, f"output looks uncarved (reduction {reduction_pct:.3f}% < 0.2%)"
+    
+    return True, "all checks passed"
+
+
+def _fallback_voxel_subtraction(
+    domain: DomainSpec,
+    void_mesh: trimesh.Trimesh,
+    voxel_pitch: float,
+    log_prefix: str = "",
+) -> trimesh.Trimesh:
+    """
+    Deterministic fallback using filled voxel subtraction.
+    
+    This is the reliable backstop when the primary embedding path fails.
+    Uses filled voxel grids aligned to a common padded grid, then subtracts
+    and reconstructs with VoxelGrid.marching_cubes.
+    
+    Parameters
+    ----------
+    domain : DomainSpec
+        Domain specification
+    void_mesh : trimesh.Trimesh
+        The void mesh to subtract
+    voxel_pitch : float
+        Voxel pitch for the operation
+    log_prefix : str
+        Prefix for log messages
+        
+    Returns
+    -------
+    trimesh.Trimesh
+        The solid mesh with void carved out
+    """
+    print(f"{log_prefix}Using deterministic filled-voxel subtraction fallback...")
+    
+    if isinstance(domain, CylinderDomain):
+        center = np.array([domain.center.x, domain.center.y, domain.center.z])
+        radius = domain.radius
+        height = domain.height
+        
+        domain_mesh = trimesh.creation.cylinder(
+            radius=radius,
+            height=height,
+            sections=64,
+        )
+        domain_mesh.apply_translation(center)
+        
+        domain_min = np.array([
+            center[0] - radius,
+            center[1] - radius,
+            center[2] - height / 2
+        ])
+        domain_max = np.array([
+            center[0] + radius,
+            center[1] + radius,
+            center[2] + height / 2
+        ])
+        ref_extent = max(2.0 * radius, height)
+        
+    elif isinstance(domain, BoxDomain):
+        domain_mesh = trimesh.creation.box(
+            extents=[
+                domain.x_max - domain.x_min,
+                domain.y_max - domain.y_min,
+                domain.z_max - domain.z_min,
+            ]
+        )
+        center = np.array([
+            (domain.x_min + domain.x_max) / 2,
+            (domain.y_min + domain.y_max) / 2,
+            (domain.z_min + domain.z_max) / 2,
+        ])
+        domain_mesh.apply_translation(center)
+        
+        domain_min = np.array([domain.x_min, domain.y_min, domain.z_min])
+        domain_max = np.array([domain.x_max, domain.y_max, domain.z_max])
+        ref_extent = np.max(domain_max - domain_min)
+        
+    elif isinstance(domain, EllipsoidDomain):
+        center = np.array([domain.center.x, domain.center.y, domain.center.z])
+        radii = np.array([domain.semi_axis_a, domain.semi_axis_b, domain.semi_axis_c])
+        
+        domain_mesh = trimesh.creation.icosphere(subdivisions=3, radius=1.0)
+        domain_mesh.apply_scale(radii)
+        domain_mesh.apply_translation(center)
+        
+        domain_min = center - radii
+        domain_max = center + radii
+        ref_extent = 2.0 * np.max(radii)
+    else:
+        raise ValueError(f"Unsupported domain type for fallback: {type(domain)}")
+    
+    pad = 2 * float(voxel_pitch)
+    domain_min_padded = domain_min - pad
+    domain_max_padded = domain_max + pad
+    
+    grid_shape = np.ceil((domain_max_padded - domain_min_padded) / float(voxel_pitch)).astype(int) + 1
+    grid_shape = np.maximum(grid_shape, 1)
+    
+    domain_vox = domain_mesh.voxelized(float(voxel_pitch)).fill()
+    domain_matrix = domain_vox.matrix.astype(bool)
+    domain_origin = domain_vox.transform[:3, 3].astype(float)
+    
+    void_vox = void_mesh.voxelized(float(voxel_pitch)).fill()
+    void_matrix = void_vox.matrix.astype(bool)
+    void_origin = void_vox.transform[:3, 3].astype(float)
+    
+    aligned_domain = np.zeros(tuple(grid_shape), dtype=bool)
+    aligned_void = np.zeros(tuple(grid_shape), dtype=bool)
+    
+    def paste_into(dst: np.ndarray, src: np.ndarray, src_origin: np.ndarray):
+        src_origin = np.asarray(src_origin, dtype=float)
+        offset_vox = np.round((src_origin - domain_min_padded) / float(voxel_pitch)).astype(int)
+        
+        src_start = np.maximum(-offset_vox, 0)
+        dst_start = np.maximum(offset_vox, 0)
+        
+        copy_size = np.minimum(np.array(src.shape) - src_start, np.array(dst.shape) - dst_start)
+        copy_size = np.maximum(copy_size, 0)
+        
+        if np.all(copy_size > 0):
+            dst[
+                dst_start[0]:dst_start[0] + copy_size[0],
+                dst_start[1]:dst_start[1] + copy_size[1],
+                dst_start[2]:dst_start[2] + copy_size[2],
+            ] = src[
+                src_start[0]:src_start[0] + copy_size[0],
+                src_start[1]:src_start[1] + copy_size[1],
+                src_start[2]:src_start[2] + copy_size[2],
+            ]
+    
+    paste_into(aligned_domain, domain_matrix, domain_origin)
+    paste_into(aligned_void, void_matrix, void_origin)
+    
+    print(f"{log_prefix}  Domain voxels: {int(aligned_domain.sum())}")
+    print(f"{log_prefix}  Void voxels:   {int(aligned_void.sum())}")
+    
+    result_mask = aligned_domain & (~aligned_void)
+    print(f"{log_prefix}  Result voxels: {int(result_mask.sum())}")
+    
+    if not result_mask.any():
+        raise RuntimeError("Result mask is empty after voxel subtraction")
+    
+    T = np.eye(4, dtype=float)
+    T[0, 0] = float(voxel_pitch)
+    T[1, 1] = float(voxel_pitch)
+    T[2, 2] = float(voxel_pitch)
+    T[:3, 3] = domain_min_padded
+    
+    vg = VoxelGrid(result_mask, transform=T)
+    solid_mesh = vg.marching_cubes
+    
+    solid_mesh = _ensure_mesh_in_world_units(solid_mesh, ref_extent, vg.transform, label="fallback")
+    
+    try:
+        solid_mesh.remove_unreferenced_vertices()
+        solid_mesh.merge_vertices()
+        if solid_mesh.volume < 0:
+            solid_mesh.invert()
+        trimesh.repair.fix_normals(solid_mesh)
+        if not solid_mesh.is_watertight:
+            trimesh.repair.fill_holes(solid_mesh)
+    except Exception:
+        pass
+    
+    print(f"{log_prefix}Fallback complete: {len(solid_mesh.vertices)} vertices, {len(solid_mesh.faces)} faces")
+    print(f"{log_prefix}  Watertight: {solid_mesh.is_watertight}")
+    
+    return solid_mesh
 
 
 def _compute_ellipsoid_mask_slicewise(
@@ -239,12 +532,384 @@ def _suggest_pitch_for_budget(
     """
     Suggest a voxel pitch that would fit within the budget.
     """
-    # Total voxels = (size/pitch + 2*padding)^3 for each dimension
-    # Simplified: assume cubic domain, solve for pitch
     avg_size = np.mean(domain_size)
-    # Approximate: (avg_size/pitch)^3 ≈ max_voxels
     suggested_pitch = avg_size / (max_voxels ** (1/3))
     return suggested_pitch
+
+
+def _embed_voxel_subtraction(
+    void_mesh: trimesh.Trimesh,
+    domain: DomainSpec,
+    voxel_pitch: float,
+    margin: float = 0.0,
+    dilation_voxels: int = 0,
+    output_void: bool = True,
+    output_shell: bool = False,
+    shell_thickness: float = 2e-3,
+    use_morphological_shell: bool = True,
+    output_units: str = DEFAULT_OUTPUT_UNIT,
+    max_voxels: Optional[int] = None,
+    auto_adjust_pitch: bool = False,
+    tree_min: Optional[np.ndarray] = None,
+    tree_max: Optional[np.ndarray] = None,
+) -> Dict[str, Optional[trimesh.Trimesh]]:
+    """
+    Embed a void mesh into a domain using filled-voxel subtraction.
+    
+    This is the primary embedding method, ported from malaria_venule_inserts.py.
+    It uses filled voxel grids for both domain and void, aligns them to a common
+    padded grid, subtracts, and reconstructs with VoxelGrid.marching_cubes.
+    
+    Parameters
+    ----------
+    void_mesh : trimesh.Trimesh
+        The void mesh to subtract from the domain (already in geometry units)
+    domain : DomainSpec
+        Domain specification (BoxDomain, CylinderDomain, or EllipsoidDomain)
+    voxel_pitch : float
+        Voxel size in meters
+    margin : float
+        Additional margin around domain bounds
+    dilation_voxels : int
+        Number of voxels to dilate the void by
+    output_void : bool
+        Whether to output the void mesh
+    output_shell : bool
+        Whether to output a shell mesh around the void
+    shell_thickness : float
+        Thickness of shell around void in meters
+    use_morphological_shell : bool
+        If True, use morphological dilation for shell generation
+    output_units : str
+        Units for the output meshes
+    max_voxels : int, optional
+        Maximum allowed voxel count
+    auto_adjust_pitch : bool
+        If True, automatically increase pitch to fit within budget
+    tree_min : np.ndarray, optional
+        Minimum bounds of the tree mesh (for metadata)
+    tree_max : np.ndarray, optional
+        Maximum bounds of the tree mesh (for metadata)
+        
+    Returns
+    -------
+    dict
+        Dictionary with 'domain_with_void', 'void', 'shell', and 'metadata' keys
+    """
+    void_mesh = void_mesh.copy()
+    try:
+        void_mesh.remove_unreferenced_vertices()
+        void_mesh.merge_vertices()
+        if void_mesh.volume < 0:
+            void_mesh.invert()
+        trimesh.repair.fix_normals(void_mesh)
+    except Exception:
+        pass
+    
+    if isinstance(domain, CylinderDomain):
+        center = np.array([domain.center.x, domain.center.y, domain.center.z])
+        radius = domain.radius
+        height = domain.height
+        
+        if margin > 0:
+            radius += margin
+            height += 2 * margin
+        
+        domain_mesh = trimesh.creation.cylinder(
+            radius=radius,
+            height=height,
+            sections=64,
+        )
+        domain_mesh.apply_translation(center)
+        
+        domain_min = np.array([
+            center[0] - radius,
+            center[1] - radius,
+            center[2] - height / 2
+        ])
+        domain_max = np.array([
+            center[0] + radius,
+            center[1] + radius,
+            center[2] + height / 2
+        ])
+        ref_extent = max(2.0 * radius, height)
+        domain_volume = math.pi * (radius ** 2) * height
+        
+    elif isinstance(domain, BoxDomain):
+        extents = np.array([
+            domain.x_max - domain.x_min,
+            domain.y_max - domain.y_min,
+            domain.z_max - domain.z_min,
+        ])
+        if margin > 0:
+            extents += 2 * margin
+        
+        domain_mesh = trimesh.creation.box(extents=extents)
+        center = np.array([
+            (domain.x_min + domain.x_max) / 2,
+            (domain.y_min + domain.y_max) / 2,
+            (domain.z_min + domain.z_max) / 2,
+        ])
+        domain_mesh.apply_translation(center)
+        
+        domain_min = center - extents / 2
+        domain_max = center + extents / 2
+        ref_extent = np.max(extents)
+        domain_volume = np.prod(extents)
+        
+    elif isinstance(domain, EllipsoidDomain):
+        center = np.array([domain.center.x, domain.center.y, domain.center.z])
+        radii = np.array([domain.semi_axis_a, domain.semi_axis_b, domain.semi_axis_c])
+        
+        if margin > 0:
+            radii += margin
+        
+        domain_mesh = trimesh.creation.icosphere(subdivisions=3, radius=1.0)
+        domain_mesh.apply_scale(radii)
+        domain_mesh.apply_translation(center)
+        
+        domain_min = center - radii
+        domain_max = center + radii
+        ref_extent = 2.0 * np.max(radii)
+        domain_volume = (4.0 / 3.0) * math.pi * np.prod(radii)
+    else:
+        raise ValueError(f"Unsupported domain type for voxel subtraction: {type(domain)}")
+    
+    pad = 2 * float(voxel_pitch)
+    domain_min_padded = domain_min - pad
+    domain_max_padded = domain_max + pad
+    
+    grid_shape = np.ceil((domain_max_padded - domain_min_padded) / float(voxel_pitch)).astype(int) + 1
+    grid_shape = np.maximum(grid_shape, 1)
+    
+    total_voxels = int(np.prod(grid_shape))
+    original_pitch = voxel_pitch
+    pitch_was_adjusted = False
+    
+    if max_voxels is not None and total_voxels > max_voxels:
+        domain_size = domain_max - domain_min
+        suggested_pitch = _suggest_pitch_for_budget(domain_size, max_voxels, padding=2)
+        
+        if auto_adjust_pitch:
+            print(f"WARNING: Voxel budget exceeded ({total_voxels:,} > {max_voxels:,})")
+            print(f"  Auto-adjusting pitch from {voxel_pitch:.4g}m to {suggested_pitch:.4g}m")
+            voxel_pitch = suggested_pitch
+            pitch_was_adjusted = True
+            
+            pad = 2 * float(voxel_pitch)
+            domain_min_padded = domain_min - pad
+            domain_max_padded = domain_max + pad
+            grid_shape = np.ceil((domain_max_padded - domain_min_padded) / float(voxel_pitch)).astype(int) + 1
+            grid_shape = np.maximum(grid_shape, 1)
+            total_voxels = int(np.prod(grid_shape))
+            print(f"  New grid shape: {grid_shape} ({total_voxels:,} voxels)")
+        else:
+            raise VoxelBudgetExceededError(
+                requested_voxels=total_voxels,
+                max_voxels=max_voxels,
+                grid_shape=tuple(grid_shape),
+                voxel_pitch=voxel_pitch,
+                suggested_pitch=suggested_pitch,
+            )
+    
+    estimated_memory = _estimate_memory_bytes(tuple(grid_shape))
+    memory_gb = estimated_memory / (1024 ** 3)
+    
+    print(f"[voxel_subtraction] Grid shape: {grid_shape} ({total_voxels:,} voxels)")
+    print(f"[voxel_subtraction] Estimated memory: {memory_gb:.2f} GB")
+    print(f"[voxel_subtraction] Voxel pitch: {voxel_pitch:.4g}m")
+    
+    print("[voxel_subtraction] Voxelizing domain mesh (filled)...")
+    domain_vox = domain_mesh.voxelized(float(voxel_pitch)).fill()
+    domain_matrix = domain_vox.matrix.astype(bool)
+    domain_origin = domain_vox.transform[:3, 3].astype(float)
+    
+    print("[voxel_subtraction] Voxelizing void mesh (filled)...")
+    void_vox = void_mesh.voxelized(float(voxel_pitch)).fill()
+    void_matrix = void_vox.matrix.astype(bool)
+    void_origin = void_vox.transform[:3, 3].astype(float)
+    
+    aligned_domain = np.zeros(tuple(grid_shape), dtype=bool)
+    aligned_void = np.zeros(tuple(grid_shape), dtype=bool)
+    
+    def paste_into(dst: np.ndarray, src: np.ndarray, src_origin: np.ndarray):
+        src_origin = np.asarray(src_origin, dtype=float)
+        offset_vox = np.round((src_origin - domain_min_padded) / float(voxel_pitch)).astype(int)
+        
+        src_start = np.maximum(-offset_vox, 0)
+        dst_start = np.maximum(offset_vox, 0)
+        
+        copy_size = np.minimum(np.array(src.shape) - src_start, np.array(dst.shape) - dst_start)
+        copy_size = np.maximum(copy_size, 0)
+        
+        if np.all(copy_size > 0):
+            dst[
+                dst_start[0]:dst_start[0] + copy_size[0],
+                dst_start[1]:dst_start[1] + copy_size[1],
+                dst_start[2]:dst_start[2] + copy_size[2],
+            ] = src[
+                src_start[0]:src_start[0] + copy_size[0],
+                src_start[1]:src_start[1] + copy_size[1],
+                src_start[2]:src_start[2] + copy_size[2],
+            ]
+    
+    paste_into(aligned_domain, domain_matrix, domain_origin)
+    paste_into(aligned_void, void_matrix, void_origin)
+    
+    domain_voxel_count = int(aligned_domain.sum())
+    void_voxel_count = int(aligned_void.sum())
+    
+    print(f"[voxel_subtraction] Domain voxels: {domain_voxel_count}")
+    print(f"[voxel_subtraction] Void voxels:   {void_voxel_count}")
+    
+    if dilation_voxels > 0:
+        print(f"[voxel_subtraction] Dilating void by {dilation_voxels} voxels...")
+        aligned_void = ndimage.binary_dilation(aligned_void, iterations=dilation_voxels)
+        void_voxel_count = int(aligned_void.sum())
+        print(f"[voxel_subtraction] Void voxels after dilation: {void_voxel_count}")
+    
+    result_mask = aligned_domain & (~aligned_void)
+    solid_voxel_count = int(result_mask.sum())
+    print(f"[voxel_subtraction] Result voxels: {solid_voxel_count}")
+    
+    if not result_mask.any():
+        raise RuntimeError("Result mask is empty after voxel subtraction")
+    
+    T = np.eye(4, dtype=float)
+    T[0, 0] = float(voxel_pitch)
+    T[1, 1] = float(voxel_pitch)
+    T[2, 2] = float(voxel_pitch)
+    T[:3, 3] = domain_min_padded
+    
+    print("[voxel_subtraction] Reconstructing solid mesh with marching cubes...")
+    vg = VoxelGrid(result_mask, transform=T)
+    solid_mesh = vg.marching_cubes
+    
+    solid_mesh = _ensure_mesh_in_world_units(solid_mesh, ref_extent, vg.transform, label="solid")
+    
+    try:
+        solid_mesh.remove_unreferenced_vertices()
+        solid_mesh.merge_vertices()
+        if solid_mesh.volume < 0:
+            solid_mesh.invert()
+        trimesh.repair.fix_normals(solid_mesh)
+        if not solid_mesh.is_watertight:
+            trimesh.repair.fill_holes(solid_mesh)
+    except Exception:
+        pass
+    
+    print(f"[voxel_subtraction] Solid mesh: {len(solid_mesh.vertices)} vertices, {len(solid_mesh.faces)} faces")
+    print(f"[voxel_subtraction] Watertight: {solid_mesh.is_watertight}, Volume: {solid_mesh.volume:.9e}")
+    
+    result: Dict[str, Optional[trimesh.Trimesh]] = {
+        'domain_with_void': solid_mesh,
+        'void': None,
+        'shell': None,
+    }
+    
+    if output_void and aligned_void.any():
+        print("[voxel_subtraction] Reconstructing void mesh...")
+        vg_void = VoxelGrid(aligned_void, transform=T)
+        void_out = vg_void.marching_cubes
+        void_out = _ensure_mesh_in_world_units(void_out, ref_extent, vg_void.transform, label="void")
+        
+        try:
+            void_out.remove_unreferenced_vertices()
+            void_out.merge_vertices()
+            if void_out.volume < 0:
+                void_out.invert()
+            trimesh.repair.fix_normals(void_out)
+            if not void_out.is_watertight:
+                trimesh.repair.fill_holes(void_out)
+        except Exception:
+            pass
+        
+        result['void'] = void_out
+        print(f"[voxel_subtraction] Void mesh: {len(void_out.vertices)} vertices, {len(void_out.faces)} faces")
+    
+    if output_shell and aligned_void.any():
+        print(f"[voxel_subtraction] Generating shell (thickness={shell_thickness}m)...")
+        th_vox = max(1, int(np.ceil(shell_thickness / float(voxel_pitch))))
+        
+        if use_morphological_shell:
+            shell_mask = ndimage.binary_dilation(aligned_void, iterations=th_vox) & aligned_domain & (~aligned_void)
+        else:
+            dist_from_void = ndimage.distance_transform_edt(
+                ~aligned_void,
+                sampling=(float(voxel_pitch), float(voxel_pitch), float(voxel_pitch))
+            )
+            shell_mask = (dist_from_void <= shell_thickness) & aligned_domain & (~aligned_void)
+            del dist_from_void
+        
+        if shell_mask.any():
+            vg_shell = VoxelGrid(shell_mask, transform=T)
+            shell_out = vg_shell.marching_cubes
+            shell_out = _ensure_mesh_in_world_units(shell_out, ref_extent, vg_shell.transform, label="shell")
+            
+            try:
+                shell_out.remove_unreferenced_vertices()
+                shell_out.merge_vertices()
+                if shell_out.volume < 0:
+                    shell_out.invert()
+                trimesh.repair.fix_normals(shell_out)
+                if not shell_out.is_watertight:
+                    trimesh.repair.fill_holes(shell_out)
+            except Exception:
+                pass
+            
+            result['shell'] = shell_out
+            print(f"[voxel_subtraction] Shell mesh: {len(shell_out.vertices)} vertices, {len(shell_out.faces)} faces")
+        else:
+            print("[voxel_subtraction] Warning: Shell mask is empty")
+    
+    result['metadata'] = {
+        'method': 'voxel_subtraction',
+        'voxel_pitch': voxel_pitch,
+        'grid_shape': grid_shape.tolist(),
+        'total_voxels': total_voxels,
+        'estimated_memory_bytes': estimated_memory,
+        'estimated_memory_gb': memory_gb,
+        'domain_bounds': {
+            'min': domain_min.tolist(),
+            'max': domain_max.tolist(),
+        },
+        'padded_bounds': {
+            'min': domain_min_padded.tolist(),
+            'max': domain_max_padded.tolist(),
+        },
+        'tree_bounds': {
+            'min': tree_min.tolist() if tree_min is not None else None,
+            'max': tree_max.tolist() if tree_max is not None else None,
+        },
+        'voxel_counts': {
+            'domain': domain_voxel_count,
+            'void': void_voxel_count,
+            'solid': solid_voxel_count,
+        },
+        'dilation_voxels': dilation_voxels,
+        'output_units': output_units,
+        'budget_info': {
+            'max_voxels': max_voxels,
+            'original_pitch': original_pitch,
+            'pitch_was_adjusted': pitch_was_adjusted,
+            'auto_adjust_pitch': auto_adjust_pitch,
+        },
+    }
+    
+    from ..utils.units import UnitContext
+    unit_ctx = UnitContext(output_units=output_units)
+    
+    if result['domain_with_void'] is not None:
+        result['domain_with_void'] = unit_ctx.scale_mesh(result['domain_with_void'])
+    if result['void'] is not None:
+        result['void'] = unit_ctx.scale_mesh(result['void'])
+    if result['shell'] is not None:
+        result['shell'] = unit_ctx.scale_mesh(result['shell'])
+    
+    result['metadata']['scale_factor'] = unit_ctx.scale_factor
+    result['metadata']['unit_metadata'] = unit_ctx.get_metadata()
+    
+    return result
 
 
 def embed_tree_as_negative_space(
@@ -253,7 +918,7 @@ def embed_tree_as_negative_space(
     voxel_pitch: float = 3e-4,
     margin: float = 0.0,
     dilation_voxels: int = 0,
-    smoothing_iters: int = 5,
+    smoothing_iters: int = 0,
     output_void: bool = True,
     output_shell: bool = False,
     shell_thickness: float = 2e-3,
@@ -263,12 +928,17 @@ def embed_tree_as_negative_space(
     output_units: str = DEFAULT_OUTPUT_UNIT,
     max_voxels: Optional[int] = None,
     auto_adjust_pitch: bool = False,
+    method: Literal["voxel_subtraction", "mask_carve"] = "voxel_subtraction",
 ) -> Dict[str, Optional[trimesh.Trimesh]]:
     """
     Embed a vascular tree STL mesh into a domain as negative space (void).
     
     This creates a solid domain mesh with the tree carved out as a void.
     Useful for creating molds, scaffolds, or perfusion chambers.
+    
+    **Primary Method**: Uses filled-voxel subtraction (from malaria venule inserts)
+    which is more robust for complex geometries. The domain and void are both
+    voxelized with `.fill()` to create solid volumes, then subtracted.
     
     **Units**: Internal units are METERS (SI). All spatial parameters (voxel_pitch,
     shell_thickness, margin, domain dimensions) should be specified in meters.
@@ -279,7 +949,7 @@ def embed_tree_as_negative_space(
     tree_stl_path : str or Path
         Path to the vascular tree STL file
     domain : DomainSpec
-        Domain specification (BoxDomain or EllipsoidDomain) in meters
+        Domain specification (BoxDomain, CylinderDomain, or EllipsoidDomain) in meters
     voxel_pitch : float
         Voxel size in meters (default: 3e-4 = 0.3mm)
         Smaller values give higher resolution but slower computation.
@@ -290,7 +960,7 @@ def embed_tree_as_negative_space(
         Number of voxels to dilate the tree by (useful if tree is thin centerlines)
         Default: 0 (no dilation)
     smoothing_iters : int
-        Number of smoothing iterations to reduce voxel artifacts (default: 5)
+        Number of smoothing iterations to reduce voxel artifacts (default: 0)
     output_void : bool
         Whether to output the void mesh (tree volume) (default: True)
     output_shell : bool
@@ -321,6 +991,12 @@ def embed_tree_as_negative_space(
     auto_adjust_pitch : bool
         If True and max_voxels is set, automatically increase voxel_pitch to fit
         within the budget instead of raising an error. Default: False
+    method : str
+        Embedding method to use:
+        - "voxel_subtraction" (default): Robust filled-voxel subtraction using
+          VoxelGrid.marching_cubes. More reliable for complex geometries.
+        - "mask_carve": Legacy mask-based carving using skimage marching_cubes.
+          May be faster but less robust for thin vessels.
     
     Returns
     -------
@@ -350,7 +1026,7 @@ def embed_tree_as_negative_space(
     ...     width=0.1, height=0.1, depth=0.1  # 100mm cube in meters
     ... )
     >>> 
-    >>> # Embed tree as negative space
+    >>> # Embed tree as negative space (uses voxel subtraction by default)
     >>> result = embed_tree_as_negative_space(
     ...     tree_stl_path='tree.stl',
     ...     domain=domain,
@@ -419,6 +1095,24 @@ def embed_tree_as_negative_space(
         tree_center = (tree_min + tree_max) / 2
         tree_size = tree_max - tree_min
         print(f"Scaled STL from {stl_units} to {geometry_units} (scale factor: {scale_factor})")
+    
+    if method == "voxel_subtraction":
+        return _embed_voxel_subtraction(
+            void_mesh=tree_mesh,
+            domain=domain,
+            voxel_pitch=voxel_pitch,
+            margin=margin,
+            dilation_voxels=dilation_voxels,
+            output_void=output_void,
+            output_shell=output_shell,
+            shell_thickness=shell_thickness,
+            use_morphological_shell=use_morphological_shell,
+            output_units=output_units,
+            max_voxels=max_voxels,
+            auto_adjust_pitch=auto_adjust_pitch,
+            tree_min=tree_min,
+            tree_max=tree_max,
+        )
     
     if isinstance(domain, BoxDomain):
         domain_min = np.array([domain.x_min, domain.y_min, domain.z_min])
