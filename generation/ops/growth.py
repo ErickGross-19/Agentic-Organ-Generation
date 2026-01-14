@@ -1445,6 +1445,13 @@ def grow_kary_tree_v2(
     all_segment_ids = []
     all_warnings = []
     
+    # Track skip reasons for better diagnostics
+    skip_counts = {
+        "boundary_clamp": 0,  # safe_length < min_segment_length_m
+        "soft_collision": 0,  # collision with existing geometry
+        "reaim_failed": 0,    # all re-aim attempts failed
+    }
+    
     initial_azimuth_pref = rng.uniform(0, 2 * np.pi)
     
     tips = [(root_node_id, root_pos, root_dir, root_radius, 0, initial_azimuth_pref)]
@@ -1586,6 +1593,7 @@ def grow_kary_tree_v2(
                         safe_length = safe_length * spec.boundary_safety
                         
                         if safe_length < spec.min_segment_length_m:
+                            skip_counts["boundary_clamp"] += 1
                             continue
                         
                         attempt_length = safe_length
@@ -1616,6 +1624,7 @@ def grow_kary_tree_v2(
                                 collision_ok = False
                         
                         if not collision_ok:
+                            skip_counts["soft_collision"] += 1
                             continue
                     
                     success = True
@@ -1625,6 +1634,7 @@ def grow_kary_tree_v2(
                     break
                 
                 if not success:
+                    skip_counts["reaim_failed"] += 1
                     all_warnings.append(
                         f"Level {level}, child {k}: could not place branch after {spec.reaim_attempts} attempts"
                     )
@@ -1686,11 +1696,43 @@ def grow_kary_tree_v2(
         created_segment_ids=all_segment_ids,
     )
     
+    # Build detailed message with skip statistics
+    total_skipped = sum(skip_counts.values())
+    message_parts = [f"Grew {spec.K}-ary tree (v2) with {num_levels} levels from node {root_node_id}"]
+    message_parts.append(f"Created {len(all_segment_ids)} segments, {len(all_node_ids)} nodes")
+    
+    if total_skipped > 0:
+        skip_details = []
+        if skip_counts["boundary_clamp"] > 0:
+            skip_details.append(f"boundary_clamp={skip_counts['boundary_clamp']}")
+        if skip_counts["soft_collision"] > 0:
+            skip_details.append(f"soft_collision={skip_counts['soft_collision']}")
+        if skip_counts["reaim_failed"] > 0:
+            skip_details.append(f"reaim_failed={skip_counts['reaim_failed']}")
+        message_parts.append(f"Skipped {total_skipped} branches ({', '.join(skip_details)})")
+    
+    # Check if no segments were created - this is a critical failure
+    if len(all_segment_ids) == 0:
+        error_msg = (
+            f"No segments created! All branches were skipped. "
+            f"Skip reasons: boundary_clamp={skip_counts['boundary_clamp']}, "
+            f"soft_collision={skip_counts['soft_collision']}, "
+            f"reaim_failed={skip_counts['reaim_failed']}. "
+            f"This usually means the inlet position is too close to the domain boundary "
+            f"or the domain is too small for the requested tree structure. "
+            f"Try using compute_inlet_positions_center_rings() to place inlets at the center first."
+        )
+        return OperationResult.failure(
+            message=error_msg,
+            errors=[error_msg],
+            warnings=all_warnings,
+        )
+    
     status = OperationStatus.SUCCESS if not all_warnings else OperationStatus.PARTIAL_SUCCESS
     
     return OperationResult(
         status=status,
-        message=f"Grew {spec.K}-ary tree (v2) with {num_levels} levels from node {root_node_id}",
+        message=". ".join(message_parts),
         new_ids={
             "nodes": all_node_ids,
             "segments": all_segment_ids,
