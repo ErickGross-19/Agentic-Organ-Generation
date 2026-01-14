@@ -835,13 +835,19 @@ def _compute_tube_safe_step_length(
         z_min = cz - half_h + tube_radius
         z_max = cz + half_h - tube_radius
         
-        max_t = requested_length
-        
         dx, dy, dz = direction[0], direction[1], direction[2]
         px, py, pz = start[0], start[1], start[2]
         
         ox = px - cx
         oy = py - cy
+        start_r_xy = np.sqrt(ox * ox + oy * oy)
+        if start_r_xy > effective_radius:
+            return 0.0
+        
+        if pz < z_min or pz > z_max:
+            return 0.0
+        
+        max_t = requested_length
         
         a = dx * dx + dy * dy
         b = 2.0 * (ox * dx + oy * dy)
@@ -882,9 +888,14 @@ def _compute_tube_safe_step_length(
             effective_z_min >= effective_z_max):
             return 0.0
         
+        px, py, pz = start[0], start[1], start[2]
+        if (px < effective_x_min or px > effective_x_max or
+            py < effective_y_min or py > effective_y_max or
+            pz < effective_z_min or pz > effective_z_max):
+            return 0.0
+        
         max_t = requested_length
         dx, dy, dz = direction[0], direction[1], direction[2]
-        px, py, pz = start[0], start[1], start[2]
         
         if abs(dx) > 1e-12:
             if dx > 0:
