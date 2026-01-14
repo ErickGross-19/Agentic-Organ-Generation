@@ -222,7 +222,7 @@ def compute_bifurcation_depths(
     cylinder_height: float = CYLINDER_HEIGHT_M,
     top_margin_fraction: float = 0.15,
     bottom_margin_fraction: float = 0.125,
-    depth_power: float = 1.6,
+    depth_power: float = 2.0,
 ) -> List[float]:
     """
     Compute bifurcation depths based on number of bifurcations and object height.
@@ -301,7 +301,7 @@ OBJ3_TERMINAL_RADIUS_M = 0.0001    # 100 um terminal radius
 OBJ3_TOTAL_TERMINALS = 512         # Total terminal count
 OBJ3_TERMINALS_PER_INLET = 128     # 512 / 4 = 128 terminals per inlet
 OBJ3_BIFURCATION_LEVELS = 7        # 2^7 = 128 terminals per inlet
-OBJ3_WALL_MARGIN_M = 0.005       # 0.5 mm minimum wall margin from cylinder edge
+OBJ3_WALL_MARGIN_M = 0.0005       # 0.5 mm minimum wall margin from cylinder edge
 # Bifurcation depth schedule - INFERRED from number of bifurcations and object height
 OBJ3_BIFURCATION_DEPTHS_M = compute_bifurcation_depths(
     num_bifurcations=OBJ3_BIFURCATION_LEVELS,
@@ -397,10 +397,10 @@ BRANCH_MIN_RADIUS_M = 1e-5           # Minimum radius for branching
 BIFURC_BOTTOM_MARGIN_FRACTION = 0.125    # 12.5% margin at bottom of cylinder
 BIFURC_HORIZONTAL_STEP_M = 0.0002        # Small step for horizontal branches
 BIFURC_MIN_SEGMENT_LENGTH_M = 0.0001     # Minimum segment length
-BIFURC_MAX_GROWTH_FRACTION = 0.8         # Max growth as fraction of available space (leave 20% for next bifurcation)
+BIFURC_MAX_GROWTH_FRACTION = 0.6         # Max growth as fraction of available space (leave 20% for next bifurcation)
 BIFURC_MIN_GROWTH_DISTANCE_M = 0.0001    # Minimum growth distance
 BIFURC_ANGLE_REDUCTION_PER_LEVEL = 0.1   # Angle reduction factor per bifurcation level
-BIFURC_TERMINAL_SEGMENT_LENGTH_M = 0.0001  # Length of terminal segments
+BIFURC_TERMINAL_SEGMENT_LENGTH_M = 0.00005  # Length of terminal segments
 BIFURC_DIRECTION_THRESHOLD = 0.1         # Threshold for detecting vertical vs horizontal direction
 
 # =============================================================================
