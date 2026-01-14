@@ -934,8 +934,11 @@ def _compute_tube_safe_step_length(
         if start_r_xy > effective_radius:
             return 0.0
         
-        if pz < z_min or pz > z_max:
-            return 0.0
+        # NOTE: We intentionally do NOT check if pz is within [z_min, z_max] here.
+        # Inlets are placed at the boundary (e.g., top face at z = +half_h), which
+        # would fail the check (pz > z_max). The ray intersection logic below
+        # correctly handles clamping the step length to stay within bounds.
+        # The z-boundary is enforced by the ray-plane intersection (lines below).
         
         max_t = requested_length
         
@@ -979,10 +982,10 @@ def _compute_tube_safe_step_length(
             return 0.0
         
         px, py, pz = start[0], start[1], start[2]
-        if (px < effective_x_min or px > effective_x_max or
-            py < effective_y_min or py > effective_y_max or
-            pz < effective_z_min or pz > effective_z_max):
-            return 0.0
+        # NOTE: We intentionally do NOT check if the starting position is within
+        # the effective bounds here. Inlets are placed at the boundary, which
+        # would fail this check. The ray intersection logic below correctly
+        # handles clamping the step length to stay within bounds.
         
         max_t = requested_length
         dx, dy, dz = direction[0], direction[1], direction[2]
