@@ -328,6 +328,7 @@ def compute_inlet_positions_center_rings_obj3(
     spacing_factor: float = 0.2,
     max_per_ring: int = 4,
     ring_offset_angle: float = None,
+    ring_spacing_multiplier: float = 1.5,
 ) -> List[Tuple[float, float]]:
     """
     Compute inlet positions for Object 3 using center + concentric rings with max 4 per ring.
@@ -336,6 +337,7 @@ def compute_inlet_positions_center_rings_obj3(
     - Places 1 channel at the center first
     - Limits each ring to max 4 inlets (configurable)
     - Offsets each subsequent ring by half the angular spacing (staggered pattern)
+    - Spaces rings further apart using ring_spacing_multiplier
     
     Parameters
     ----------
@@ -356,6 +358,8 @@ def compute_inlet_positions_center_rings_obj3(
     ring_offset_angle : float, optional
         Angular offset between rings in radians. If None, uses half the angular spacing
         of the previous ring (pi / max_per_ring) for a staggered pattern.
+    ring_spacing_multiplier : float
+        Multiplier for spacing between rings (default 1.5 = 50% more spacing between rings)
     
     Returns
     -------
@@ -389,6 +393,9 @@ def compute_inlet_positions_center_rings_obj3(
     # Calculate pitch based on inlet diameter and spacing
     pitch = 2.0 * inlet_radius * (1.0 + spacing_factor)
     
+    # Apply ring spacing multiplier for more space between rings
+    ring_pitch = pitch * ring_spacing_multiplier
+    
     # Default offset is half the angular spacing for staggered pattern
     if ring_offset_angle is None:
         ring_offset_angle = pi / max_per_ring
@@ -397,7 +404,7 @@ def compute_inlet_positions_center_rings_obj3(
     cumulative_offset = 0.0
     
     while len(positions) < num_inlets:
-        ring_radius = ring_k * pitch
+        ring_radius = ring_k * ring_pitch
         
         if ring_radius > max_placement_radius:
             break
@@ -534,12 +541,14 @@ OBJ3_BIFURCATION_DEPTHS_M = compute_bifurcation_depths(
 # Uses specialized function with max 4 inlets per ring and staggered offset between rings
 OBJ3_RING_SPACING_FACTOR = 0.2    # Extra gap between channels as fraction of diameter
 OBJ3_MAX_INLETS_PER_RING = 4      # Maximum inlets per ring (staggered pattern)
+OBJ3_RING_SPACING_MULTIPLIER = 1.5  # Multiplier for spacing between rings (1.5 = 50% more space)
 OBJ3_INLET_POSITIONS = compute_inlet_positions_center_rings_obj3(
     num_inlets=OBJ3_NUM_INLETS,
     inlet_radius=OBJ3_INLET_RADIUS_M,
     wall_margin=OBJ3_WALL_MARGIN_M,
     spacing_factor=OBJ3_RING_SPACING_FACTOR,
     max_per_ring=OBJ3_MAX_INLETS_PER_RING,
+    ring_spacing_multiplier=OBJ3_RING_SPACING_MULTIPLIER,
 )
 
 # =============================================================================
