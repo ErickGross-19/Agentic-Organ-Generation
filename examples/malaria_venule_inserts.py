@@ -2388,7 +2388,6 @@ def generate_object3_bifurcate_512(output_dir: Optional[Path] = None) -> trimesh
     combined_void = remove_small_components(
         combined_void,
         min_faces=500,
-        min_diag_m=8.0 * VOXEL_PITCH_M,
         keep_largest=True
     )
 
