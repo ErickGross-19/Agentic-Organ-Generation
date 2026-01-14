@@ -525,7 +525,7 @@ OBJ2_INLET_POSITIONS = compute_inlet_positions_center_rings(
 # =============================================================================
 # OBJECT 3: Recursive Bifurcation (512 terminals)
 # =============================================================================
-OBJ3_NUM_INLETS = 4                # 4 inlet channels
+OBJ3_NUM_INLETS = 5                # 5 inlet channels
 OBJ3_INLET_RADIUS_M = 0.001        # 1 mm inlet radius
 OBJ3_TERMINAL_RADIUS_M = 0.0001    # 100 um terminal radius
 OBJ3_TOTAL_TERMINALS = 512         # Total terminal count
