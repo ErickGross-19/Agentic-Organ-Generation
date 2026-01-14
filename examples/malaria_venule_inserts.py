@@ -53,7 +53,7 @@ from generation.core.domain import CylinderDomain
 from generation.core.types import Point3D, Direction3D, TubeGeometry
 from generation.core.network import VascularNetwork, Node, VesselSegment
 from generation.ops.build import create_network, add_inlet
-from generation.ops.growth import grow_branch, grow_to_point, grow_kary_tree_to_depths
+from generation.ops.growth import grow_branch, grow_to_point, grow_kary_tree_to_depths, grow_kary_tree_v2, KaryTreeSpec
 from generation.adapters.mesh_adapter import to_trimesh, export_stl
 from generation.ops.embedding import embed_tree_as_negative_space
 from generation.ops.features import add_raised_ridge, RidgeSpec, FaceId
@@ -1702,6 +1702,126 @@ def generate_bifurcation_tree_mesh(
     return trimesh.Trimesh()
 
 
+def generate_bifurcation_tree_mesh_v2(
+    inlet_position: Tuple[float, float, float],
+    inlet_radius: float,
+    terminal_radius: float,
+    bifurcation_depths: List[float],
+    spec: Optional[KaryTreeSpec] = None,
+    rng_seed: Optional[int] = None,
+) -> "trimesh.Trimesh":
+    """
+    Generate a K-ary bifurcation tree using the upgraded grow_kary_tree_v2 algorithm.
+    
+    This uses the core library's KaryTreeSpec for all tunable parameters, producing
+    tree-like structures with leader + lateral branching, direction memory, golden
+    angle rotation, growth envelope, soft collision avoidance, and tube-safe boundary
+    clamping.
+    
+    Parameters
+    ----------
+    inlet_position : tuple
+        (x, y, z) position of the inlet in meters
+    inlet_radius : float
+        Radius of the inlet in meters
+    terminal_radius : float
+        Target radius at terminal branches in meters
+    bifurcation_depths : list of float
+        Depths for each bifurcation level (positive values, measured downward from inlet)
+    spec : KaryTreeSpec, optional
+        Configuration for tree generation. If None, uses defaults tuned for 10mm x 2mm insert.
+    rng_seed : int, optional
+        Random seed for deterministic behavior
+    
+    Returns
+    -------
+    trimesh.Trimesh
+        The generated tree mesh
+    """
+    if spec is None:
+        spec = KaryTreeSpec(
+            K=4,
+            num_levels=len(bifurcation_depths),
+            leader_angle_deg_start=12.0,
+            leader_angle_deg_min=5.0,
+            side_angle_deg_start=35.0,
+            side_angle_deg_min=18.0,
+            side_length_mult_start=0.55,
+            side_length_mult_end=0.85,
+            side_radius_factor=0.75,
+            use_golden_angle_rotation=True,
+            envelope_r_frac_start=0.35,
+            envelope_r_frac_end=0.95,
+            enable_soft_collision=True,
+            enable_reaim_instead_of_skip=True,
+            wall_margin_m=OBJ3_WALL_MARGIN_M if 'OBJ3_WALL_MARGIN_M' in globals() else 0.0001,
+            min_segment_length_m=BRANCH_MIN_SEGMENT_LENGTH_M,
+        )
+    
+    domain = CylinderDomain(
+        center=Point3D(*CYLINDER_CENTER),
+        radius=CYLINDER_RADIUS_M,
+        height=CYLINDER_HEIGHT_M,
+    )
+    network = create_network(domain, seed=rng_seed)
+    
+    constraints = BranchingConstraints(
+        min_segment_length=BRANCH_MIN_SEGMENT_LENGTH_M,
+        max_segment_length=BRANCH_MAX_SEGMENT_LENGTH_M,
+        min_radius=BRANCH_MIN_RADIUS_M,
+    )
+    
+    inlet_result = add_inlet(
+        network,
+        position=Point3D(*inlet_position),
+        direction=(0.0, 0.0, -1.0),
+        radius=inlet_radius,
+        vessel_type="venous",
+    )
+    if not inlet_result.is_success():
+        print(f"    Warning: Failed to add inlet: {inlet_result.message}")
+        return trimesh.Trimesh()
+    
+    root_id = inlet_result.new_ids["node"]
+    root_node = network.get_node(root_id)
+    if root_node:
+        root_node.attributes["direction"] = {"dx": 0.0, "dy": 0.0, "dz": -1.0}
+    
+    def taper_fn(level: int, num_levels: int, parent_radius: float, is_leader: bool) -> float:
+        frac = level / max(num_levels - 1, 1)
+        base_radius = inlet_radius * (1 - frac) + terminal_radius * frac
+        if not is_leader:
+            base_radius *= spec.side_radius_factor
+        return max(base_radius, BRANCH_MIN_RADIUS_M)
+    
+    result = grow_kary_tree_v2(
+        network=network,
+        root_node_id=root_id,
+        depths=bifurcation_depths,
+        spec=spec,
+        taper_fn=taper_fn,
+        constraints=constraints,
+        seed=rng_seed,
+    )
+    
+    if not result.is_success() and result.status.name != "PARTIAL_SUCCESS":
+        print(f"    Warning: grow_kary_tree_v2 failed: {result.message}")
+        if result.warnings:
+            for w in result.warnings[:5]:
+                print(f"      - {w}")
+    
+    if result.warnings:
+        print(f"    Tree generation completed with {len(result.warnings)} warnings")
+    
+    print(f"    Converting network to mesh ({len(network.segments)} segments).")
+    mesh_result = to_trimesh(network, mode="fast", include_caps=True, include_node_spheres=False)
+    if mesh_result.is_success():
+        return mesh_result.metadata["mesh"]
+    
+    print(f"    Warning: to_trimesh failed: {mesh_result.message}")
+    return trimesh.Trimesh()
+
+
 def _create_tapered_cylinder(
     start: np.ndarray,
     end: np.ndarray,
@@ -1823,16 +1943,36 @@ def generate_object3_bifurcate_512(output_dir: Optional[Path] = None) -> trimesh
     print(f"  Generating {OBJ3_NUM_INLETS} bifurcating trees...")
     all_trees = []
     
+    tree_spec = KaryTreeSpec(
+        K=4,
+        num_levels=len(OBJ3_BIFURCATION_DEPTHS_M),
+        leader_angle_deg_start=12.0,
+        leader_angle_deg_min=5.0,
+        side_angle_deg_start=35.0,
+        side_angle_deg_min=18.0,
+        side_length_mult_start=0.55,
+        side_length_mult_end=0.85,
+        side_radius_factor=0.75,
+        use_golden_angle_rotation=True,
+        envelope_r_frac_start=0.35,
+        envelope_r_frac_end=0.95,
+        enable_soft_collision=True,
+        enable_reaim_instead_of_skip=True,
+        wall_margin_m=OBJ3_WALL_MARGIN_M,
+        min_segment_length_m=BRANCH_MIN_SEGMENT_LENGTH_M,
+    )
+    
     for i, (x, y) in enumerate(OBJ3_INLET_POSITIONS):
         print(f"    Tree {i+1}: inlet at ({meters_to_mm(x):.1f}, {meters_to_mm(y):.1f})mm")
         inlet_pos = (x, y, z_top)
         
-        tree_mesh = generate_bifurcation_tree_mesh(
+        tree_mesh = generate_bifurcation_tree_mesh_v2(
             inlet_position=inlet_pos,
             inlet_radius=OBJ3_INLET_RADIUS_M,
             terminal_radius=OBJ3_TERMINAL_RADIUS_M,
             bifurcation_depths=OBJ3_BIFURCATION_DEPTHS_M,
-            base_angle_deg=OBJ3_BASE_ANGLE_DEG,
+            spec=tree_spec,
+            rng_seed=42 + i,
         )
         all_trees.append(tree_mesh)
         print(f"      Generated tree with {len(tree_mesh.vertices)} vertices")

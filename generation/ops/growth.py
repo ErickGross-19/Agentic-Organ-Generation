@@ -2,6 +2,7 @@
 Growth operations for extending vascular networks.
 """
 
+from dataclasses import dataclass, field
 from typing import Optional, Tuple, List
 import numpy as np
 from ..core.types import Point3D, Direction3D, TubeGeometry
@@ -9,6 +10,95 @@ from ..core.network import VascularNetwork, Node, VesselSegment
 from ..core.result import OperationResult, OperationStatus, Delta, ErrorCode
 from ..rules.constraints import BranchingConstraints, RadiusRuleSpec, DegradationRuleSpec
 from ..rules.radius import apply_radius_rule
+
+
+@dataclass
+class KaryTreeSpec:
+    """
+    Configuration for K-ary tree generation with leader + lateral branching.
+    
+    All tunable parameters are centralized here - no magic numbers in the algorithm.
+    This spec produces tree-like structures with a dominant trunk and hierarchical
+    branching, smooth direction memory, space-aware growth, and soft collision avoidance.
+    
+    Default values are tuned for a 10mm diameter x 2mm height cylinder domain.
+    """
+    
+    K: int = 4
+    num_levels: int = 4
+    
+    leader_angle_deg_start: float = 12.0
+    leader_angle_deg_min: float = 5.0
+    leader_angle_decay_levels: float = 3.0
+    
+    side_angle_deg_start: float = 35.0
+    side_angle_deg_min: float = 18.0
+    side_angle_decay_levels: float = 5.0
+    
+    leader_length_mult: float = 1.0
+    side_length_mult_start: float = 0.55
+    side_length_mult_end: float = 0.85
+    
+    side_radius_factor: float = 0.75
+    
+    azimuth_sigma_deg_start: float = 15.0
+    azimuth_sigma_deg_end: float = 5.0
+    
+    use_golden_angle_rotation: bool = True
+    golden_angle_deg: float = 137.50776405
+    
+    envelope_r_frac_start: float = 0.35
+    envelope_r_frac_end: float = 0.95
+    
+    enable_soft_collision: bool = True
+    collision_sample_stride: int = 1
+    collision_clearance_factor: float = 2.0
+    collision_attempts_per_child: int = 3
+    collision_azimuth_jitter_deg: float = 10.0
+    
+    boundary_safety: float = 0.95
+    z_margin_voxels: int = 2
+    wall_margin_m: float = 0.0
+    enforce_downward_bias: bool = True
+    downward_bias_min_dz: float = -0.05
+    
+    enable_reaim_instead_of_skip: bool = True
+    reaim_attempts: int = 3
+    reaim_angle_shrink: float = 0.8
+    reaim_length_shrink: float = 0.85
+    
+    min_segment_length_m: float = 5e-5
+    
+    def get_leader_angle_deg(self, level: int) -> float:
+        """Get leader branch angle for a given level (decays toward min)."""
+        decay_factor = min(level / max(self.leader_angle_decay_levels, 1.0), 1.0)
+        return self.leader_angle_deg_start - decay_factor * (self.leader_angle_deg_start - self.leader_angle_deg_min)
+    
+    def get_side_angle_deg(self, level: int) -> float:
+        """Get lateral branch angle for a given level (decays toward min)."""
+        decay_factor = min(level / max(self.side_angle_decay_levels, 1.0), 1.0)
+        return self.side_angle_deg_start - decay_factor * (self.side_angle_deg_start - self.side_angle_deg_min)
+    
+    def get_side_length_mult(self, level: int) -> float:
+        """Get lateral branch length multiplier for a given level (grows toward end)."""
+        if self.num_levels <= 1:
+            return self.side_length_mult_end
+        frac = level / (self.num_levels - 1)
+        return self.side_length_mult_start + frac * (self.side_length_mult_end - self.side_length_mult_start)
+    
+    def get_azimuth_sigma_deg(self, level: int) -> float:
+        """Get azimuth preference sigma for a given level (tightens toward end)."""
+        if self.num_levels <= 1:
+            return self.azimuth_sigma_deg_end
+        frac = level / (self.num_levels - 1)
+        return self.azimuth_sigma_deg_start - frac * (self.azimuth_sigma_deg_start - self.azimuth_sigma_deg_end)
+    
+    def get_envelope_r_frac(self, level: int) -> float:
+        """Get allowable radial fraction for a given level (expands toward end)."""
+        if self.num_levels <= 1:
+            return self.envelope_r_frac_end
+        frac = level / (self.num_levels - 1)
+        return self.envelope_r_frac_start + frac * (self.envelope_r_frac_end - self.envelope_r_frac_start)
 
 
 def grow_branch(
@@ -1170,6 +1260,437 @@ def grow_kary_tree_to_depths(
     return OperationResult(
         status=status,
         message=f"Grew {K}-ary tree with {num_levels} levels from node {root_node_id}",
+        new_ids={
+            "nodes": all_node_ids,
+            "segments": all_segment_ids,
+        },
+        warnings=all_warnings,
+        delta=delta,
+        rng_state=network.id_gen.get_state(),
+    )
+
+
+def _build_collision_samples(
+    network: VascularNetwork,
+    stride: int = 1,
+) -> List[Tuple[np.ndarray, float]]:
+    """
+    Build a list of (center_point, radius) samples from existing segments for collision checking.
+    
+    Parameters
+    ----------
+    network : VascularNetwork
+        Network to sample from
+    stride : int
+        Sample every Nth segment (1 = all segments)
+    
+    Returns
+    -------
+    List of (center_point, radius) tuples
+    """
+    samples = []
+    for i, seg in enumerate(network.segments.values()):
+        if i % stride != 0:
+            continue
+        start_node = network.get_node(seg.start_node_id)
+        end_node = network.get_node(seg.end_node_id)
+        if start_node is None or end_node is None:
+            continue
+        
+        start_pos = np.array([start_node.position.x, start_node.position.y, start_node.position.z])
+        end_pos = np.array([end_node.position.x, end_node.position.y, end_node.position.z])
+        center = (start_pos + end_pos) / 2.0
+        
+        if seg.geometry and hasattr(seg.geometry, 'radius_start'):
+            radius = max(seg.geometry.radius_start, seg.geometry.radius_end)
+        else:
+            radius = start_node.attributes.get("radius", 0.0001)
+        
+        samples.append((center, radius))
+    
+    return samples
+
+
+def _check_soft_collision(
+    point: np.ndarray,
+    radius: float,
+    samples: List[Tuple[np.ndarray, float]],
+    clearance_factor: float,
+) -> bool:
+    """
+    Check if a point would cause a soft collision with existing samples.
+    
+    Returns True if collision detected (too close to existing geometry).
+    """
+    for sample_center, sample_radius in samples:
+        dist = np.linalg.norm(point - sample_center)
+        min_clearance = clearance_factor * max(radius, sample_radius)
+        if dist < min_clearance:
+            return True
+    return False
+
+
+def grow_kary_tree_v2(
+    network: VascularNetwork,
+    root_node_id: int,
+    depths: List[float],
+    spec: Optional[KaryTreeSpec] = None,
+    taper_fn: Optional[callable] = None,
+    constraints: Optional[BranchingConstraints] = None,
+    seed: Optional[int] = None,
+) -> OperationResult:
+    """
+    Grow a K-ary tree with leader + lateral branching pattern (upgraded algorithm).
+    
+    This implements a tree-like structure with:
+    - Dominant trunk (leader branch) + hierarchical lateral branches
+    - Smooth direction memory (azimuth preference)
+    - Golden angle rotation to avoid periodic geometry
+    - Level-dependent growth envelope
+    - Soft collision avoidance
+    - Re-aim strategy instead of skip-on-insufficient-room
+    - Tube-safe boundary clamping
+    
+    Parameters
+    ----------
+    network : VascularNetwork
+        Network to modify
+    root_node_id : int
+        Node to grow tree from (typically an inlet)
+    depths : list of float
+        Bifurcation depths from the root (positive values, measured downward)
+    spec : KaryTreeSpec, optional
+        Configuration for tree generation (uses defaults if None)
+    taper_fn : callable, optional
+        Function(level, num_levels, parent_radius, is_leader) -> child_radius
+        If None, uses Murray's law scaling with side_radius_factor for laterals
+    constraints : BranchingConstraints, optional
+        Branching constraints
+    seed : int, optional
+        Random seed for deterministic behavior
+        
+    Returns
+    -------
+    result : OperationResult
+        Result with new_ids containing 'nodes' and 'segments' lists
+    """
+    if spec is None:
+        spec = KaryTreeSpec()
+    
+    if constraints is None:
+        constraints = BranchingConstraints()
+    
+    rng = np.random.default_rng(seed)
+    
+    root_node = network.get_node(root_node_id)
+    if root_node is None:
+        return OperationResult.failure(
+            message=f"Root node {root_node_id} not found",
+            errors=["Node not found"],
+        )
+    
+    if "radius" not in root_node.attributes:
+        return OperationResult.failure(
+            message="Root node has no stored radius",
+            errors=["Missing radius"],
+        )
+    
+    root_radius = root_node.attributes["radius"]
+    root_pos = np.array([root_node.position.x, root_node.position.y, root_node.position.z])
+    
+    if "direction" in root_node.attributes:
+        root_dir = Direction3D.from_dict(root_node.attributes["direction"]).to_array()
+    else:
+        root_dir = np.array([0.0, 0.0, -1.0])
+    
+    num_levels = len(depths)
+    spec_with_levels = KaryTreeSpec(
+        K=spec.K,
+        num_levels=num_levels,
+        leader_angle_deg_start=spec.leader_angle_deg_start,
+        leader_angle_deg_min=spec.leader_angle_deg_min,
+        leader_angle_decay_levels=spec.leader_angle_decay_levels,
+        side_angle_deg_start=spec.side_angle_deg_start,
+        side_angle_deg_min=spec.side_angle_deg_min,
+        side_angle_decay_levels=spec.side_angle_decay_levels,
+        leader_length_mult=spec.leader_length_mult,
+        side_length_mult_start=spec.side_length_mult_start,
+        side_length_mult_end=spec.side_length_mult_end,
+        side_radius_factor=spec.side_radius_factor,
+        azimuth_sigma_deg_start=spec.azimuth_sigma_deg_start,
+        azimuth_sigma_deg_end=spec.azimuth_sigma_deg_end,
+        use_golden_angle_rotation=spec.use_golden_angle_rotation,
+        golden_angle_deg=spec.golden_angle_deg,
+        envelope_r_frac_start=spec.envelope_r_frac_start,
+        envelope_r_frac_end=spec.envelope_r_frac_end,
+        enable_soft_collision=spec.enable_soft_collision,
+        collision_sample_stride=spec.collision_sample_stride,
+        collision_clearance_factor=spec.collision_clearance_factor,
+        collision_attempts_per_child=spec.collision_attempts_per_child,
+        collision_azimuth_jitter_deg=spec.collision_azimuth_jitter_deg,
+        boundary_safety=spec.boundary_safety,
+        z_margin_voxels=spec.z_margin_voxels,
+        wall_margin_m=spec.wall_margin_m,
+        enforce_downward_bias=spec.enforce_downward_bias,
+        downward_bias_min_dz=spec.downward_bias_min_dz,
+        enable_reaim_instead_of_skip=spec.enable_reaim_instead_of_skip,
+        reaim_attempts=spec.reaim_attempts,
+        reaim_angle_shrink=spec.reaim_angle_shrink,
+        reaim_length_shrink=spec.reaim_length_shrink,
+        min_segment_length_m=spec.min_segment_length_m,
+    )
+    spec = spec_with_levels
+    
+    all_node_ids = []
+    all_segment_ids = []
+    all_warnings = []
+    
+    initial_azimuth_pref = rng.uniform(0, 2 * np.pi)
+    
+    tips = [(root_node_id, root_pos, root_dir, root_radius, 0, initial_azimuth_pref)]
+    
+    from ..core.domain import CylinderDomain
+    domain_radius = None
+    domain_center_xy = None
+    if hasattr(network, 'domain') and network.domain is not None:
+        if isinstance(network.domain, CylinderDomain):
+            domain_radius = network.domain.radius
+            domain_center_xy = np.array([network.domain.center.x, network.domain.center.y])
+    
+    for level in range(num_levels):
+        target_depth = depths[level]
+        new_tips = []
+        
+        collision_samples = []
+        if spec.enable_soft_collision:
+            collision_samples = _build_collision_samples(network, spec.collision_sample_stride)
+        
+        leader_angle_deg = spec.get_leader_angle_deg(level)
+        side_angle_deg = spec.get_side_angle_deg(level)
+        side_length_mult = spec.get_side_length_mult(level)
+        azimuth_sigma_deg = spec.get_azimuth_sigma_deg(level)
+        envelope_r_frac = spec.get_envelope_r_frac(level)
+        
+        golden_rotation = 0.0
+        if spec.use_golden_angle_rotation:
+            golden_rotation = np.radians(spec.golden_angle_deg) * level
+        
+        for tip_node_id, tip_pos, tip_dir, tip_radius, tip_level, tip_azimuth_pref in tips:
+            if tip_level != level:
+                new_tips.append((tip_node_id, tip_pos, tip_dir, tip_radius, tip_level, tip_azimuth_pref))
+                continue
+            
+            if level < num_levels - 1:
+                next_depth = depths[level + 1]
+            else:
+                next_depth = target_depth + (target_depth - depths[level - 1] if level > 0 else target_depth)
+            
+            base_length = next_depth - target_depth
+            base_length = max(base_length, spec.min_segment_length_m)
+            
+            tip_dir_norm = tip_dir / (np.linalg.norm(tip_dir) + 1e-12)
+            
+            if abs(tip_dir_norm[2]) < 0.9:
+                perp1 = np.cross(tip_dir_norm, np.array([0, 0, 1]))
+            else:
+                perp1 = np.cross(tip_dir_norm, np.array([1, 0, 0]))
+            perp1 = perp1 / (np.linalg.norm(perp1) + 1e-12)
+            perp2 = np.cross(tip_dir_norm, perp1)
+            perp2 = perp2 / (np.linalg.norm(perp2) + 1e-12)
+            
+            azimuth_sigma_rad = np.radians(azimuth_sigma_deg)
+            sampled_azimuth = tip_azimuth_pref + rng.normal(0, azimuth_sigma_rad)
+            sampled_azimuth += golden_rotation
+            
+            K = spec.K
+            for k in range(K):
+                is_leader = (k == 0)
+                
+                if is_leader:
+                    angle_deg = leader_angle_deg
+                    length_mult = spec.leader_length_mult
+                    radius_factor = 1.0
+                    child_azimuth = sampled_azimuth
+                else:
+                    angle_deg = side_angle_deg
+                    length_mult = side_length_mult
+                    radius_factor = spec.side_radius_factor
+                    child_azimuth = sampled_azimuth + (2 * np.pi * (k - 1) / (K - 1)) if K > 1 else sampled_azimuth
+                
+                angle_rad = np.radians(angle_deg)
+                child_length = base_length * length_mult
+                
+                if taper_fn is not None:
+                    child_radius = taper_fn(level, num_levels, tip_radius, is_leader)
+                else:
+                    base_child_radius = tip_radius * (0.5 ** (1.0 / 3.0))
+                    child_radius = base_child_radius * radius_factor
+                
+                child_radius = max(child_radius, constraints.min_radius)
+                
+                lateral = np.cos(child_azimuth) * perp1 + np.sin(child_azimuth) * perp2
+                child_dir = np.cos(angle_rad) * tip_dir_norm + np.sin(angle_rad) * lateral
+                child_dir = child_dir / (np.linalg.norm(child_dir) + 1e-12)
+                
+                if spec.enforce_downward_bias and child_dir[2] > spec.downward_bias_min_dz:
+                    child_dir[2] = spec.downward_bias_min_dz
+                    child_dir = child_dir / (np.linalg.norm(child_dir) + 1e-12)
+                
+                if domain_radius is not None and domain_center_xy is not None:
+                    tip_xy = tip_pos[:2] - domain_center_xy
+                    tip_r = np.linalg.norm(tip_xy)
+                    allowed_r = envelope_r_frac * domain_radius
+                    
+                    if tip_r > allowed_r * 0.8:
+                        outward_dir = tip_xy / (tip_r + 1e-12)
+                        child_xy_component = child_dir[:2]
+                        outward_component = np.dot(child_xy_component, outward_dir)
+                        
+                        if outward_component > 0:
+                            child_dir[:2] -= 0.5 * outward_component * outward_dir
+                            child_dir = child_dir / (np.linalg.norm(child_dir) + 1e-12)
+                
+                success = False
+                final_child_end = None
+                final_child_dir = None
+                final_child_length = child_length
+                
+                for attempt in range(max(1, spec.reaim_attempts if spec.enable_reaim_instead_of_skip else 1)):
+                    attempt_angle_rad = angle_rad * (spec.reaim_angle_shrink ** attempt)
+                    attempt_length = child_length * (spec.reaim_length_shrink ** attempt)
+                    
+                    if attempt > 0:
+                        jitter = rng.uniform(-np.radians(spec.collision_azimuth_jitter_deg), 
+                                            np.radians(spec.collision_azimuth_jitter_deg))
+                        attempt_azimuth = child_azimuth + jitter
+                        lateral = np.cos(attempt_azimuth) * perp1 + np.sin(attempt_azimuth) * perp2
+                        attempt_dir = np.cos(attempt_angle_rad) * tip_dir_norm + np.sin(attempt_angle_rad) * lateral
+                        attempt_dir = attempt_dir / (np.linalg.norm(attempt_dir) + 1e-12)
+                        
+                        if spec.enforce_downward_bias and attempt_dir[2] > spec.downward_bias_min_dz:
+                            attempt_dir[2] = spec.downward_bias_min_dz
+                            attempt_dir = attempt_dir / (np.linalg.norm(attempt_dir) + 1e-12)
+                    else:
+                        attempt_dir = child_dir
+                    
+                    if hasattr(network, 'domain') and network.domain is not None:
+                        max_tube_radius = max(tip_radius, child_radius)
+                        safe_length = _compute_tube_safe_step_length(
+                            start=tip_pos,
+                            direction=attempt_dir,
+                            tube_radius=max_tube_radius + spec.wall_margin_m,
+                            domain=network.domain,
+                            requested_length=attempt_length,
+                        )
+                        
+                        safe_length = safe_length * spec.boundary_safety
+                        
+                        if safe_length < spec.min_segment_length_m:
+                            continue
+                        
+                        attempt_length = safe_length
+                    
+                    attempt_end = tip_pos + attempt_length * attempt_dir
+                    
+                    if spec.enable_soft_collision and collision_samples:
+                        collision_ok = True
+                        for coll_attempt in range(spec.collision_attempts_per_child):
+                            if coll_attempt > 0:
+                                jitter = rng.uniform(-np.radians(spec.collision_azimuth_jitter_deg),
+                                                    np.radians(spec.collision_azimuth_jitter_deg))
+                                jittered_azimuth = child_azimuth + jitter
+                                lateral = np.cos(jittered_azimuth) * perp1 + np.sin(jittered_azimuth) * perp2
+                                jittered_dir = np.cos(attempt_angle_rad) * tip_dir_norm + np.sin(attempt_angle_rad) * lateral
+                                jittered_dir = jittered_dir / (np.linalg.norm(jittered_dir) + 1e-12)
+                                attempt_end = tip_pos + attempt_length * jittered_dir
+                                attempt_dir = jittered_dir
+                            
+                            has_collision = _check_soft_collision(
+                                attempt_end, child_radius, collision_samples, spec.collision_clearance_factor
+                            )
+                            
+                            if not has_collision:
+                                collision_ok = True
+                                break
+                            else:
+                                collision_ok = False
+                        
+                        if not collision_ok:
+                            continue
+                    
+                    success = True
+                    final_child_end = attempt_end
+                    final_child_dir = attempt_dir
+                    final_child_length = attempt_length
+                    break
+                
+                if not success:
+                    all_warnings.append(
+                        f"Level {level}, child {k}: could not place branch after {spec.reaim_attempts} attempts"
+                    )
+                    continue
+                
+                child_end_pt = Point3D(final_child_end[0], final_child_end[1], final_child_end[2])
+                child_dir_obj = Direction3D(final_child_dir[0], final_child_dir[1], final_child_dir[2])
+                
+                new_node_id = network.id_gen.next_id()
+                new_azimuth_pref = child_azimuth
+                
+                new_node = Node(
+                    id=new_node_id,
+                    position=child_end_pt,
+                    node_type="terminal",
+                    vessel_type=root_node.vessel_type,
+                    attributes={
+                        "radius": child_radius,
+                        "direction": child_dir_obj.to_dict(),
+                        "branch_order": level + 1,
+                        "tree_level": level,
+                        "is_leader": is_leader,
+                        "azimuth_pref": new_azimuth_pref,
+                    },
+                )
+                
+                segment_id = network.id_gen.next_id()
+                geometry = TubeGeometry(
+                    start=Point3D(tip_pos[0], tip_pos[1], tip_pos[2]),
+                    end=child_end_pt,
+                    radius_start=tip_radius,
+                    radius_end=child_radius,
+                )
+                
+                segment = VesselSegment(
+                    id=segment_id,
+                    start_node_id=tip_node_id,
+                    end_node_id=new_node_id,
+                    geometry=geometry,
+                    vessel_type=root_node.vessel_type,
+                )
+                
+                network.add_node(new_node)
+                network.add_segment(segment)
+                
+                all_node_ids.append(new_node_id)
+                all_segment_ids.append(segment_id)
+                
+                new_tips.append((new_node_id, final_child_end, final_child_dir, child_radius, level + 1, new_azimuth_pref))
+            
+            tip_node = network.get_node(tip_node_id)
+            if tip_node is not None and tip_node.node_type == "terminal":
+                tip_node.node_type = "junction"
+        
+        tips = new_tips
+    
+    delta = Delta(
+        created_node_ids=all_node_ids,
+        created_segment_ids=all_segment_ids,
+    )
+    
+    status = OperationStatus.SUCCESS if not all_warnings else OperationStatus.PARTIAL_SUCCESS
+    
+    return OperationResult(
+        status=status,
+        message=f"Grew {spec.K}-ary tree (v2) with {num_levels} levels from node {root_node_id}",
         new_ids={
             "nodes": all_node_ids,
             "segments": all_segment_ids,

@@ -1,7 +1,7 @@
 """Operations for building and modifying vascular networks."""
 
 from .build import create_network, add_inlet, add_outlet
-from .growth import grow_branch, grow_to_point, bifurcate, grow_kary_tree_to_depths
+from .growth import grow_branch, grow_to_point, bifurcate, grow_kary_tree_to_depths, grow_kary_tree_v2, KaryTreeSpec
 from .collision import get_collisions, avoid_collisions
 from .space_colonization import space_colonization_step, SpaceColonizationParams
 from .anastomosis import create_anastomosis, check_tree_interactions
@@ -24,6 +24,8 @@ __all__ = [
     "grow_to_point",
     "bifurcate",
     "grow_kary_tree_to_depths",
+    "grow_kary_tree_v2",
+    "KaryTreeSpec",
     "get_collisions",
     "avoid_collisions",
     "space_colonization_step",
