@@ -95,6 +95,19 @@ TOP_FACE_Z_M = CYLINDER_CENTER[2] + CYLINDER_HEIGHT_M / 2     # +1.0 mm
 INLET_PLACEMENT_FRACTION = 0.7
 
 # =============================================================================
+# VOXELIZATION PARAMETERS
+# =============================================================================
+VOXEL_PITCH_M = 2.5e-5             # 25 um voxel pitch (for fine resolution embedding)
+VOXEL_PITCH_UNION_M = 5.0e-5       # 50 um voxel pitch (for union operations)
+# Note: Ridge is 0.1mm (100um) thick, so we need at least 2 voxels across it
+# Using 50um pitch gives 2 voxels across the ridge thickness for proper resolution
+# 25 um pitch on 10mm x 10mm x 2mm domain = ~12.8M voxels
+VOXEL_PITCH_RIDGE_M = 2.5e-5       # 25 um for ridge operations (4 voxels across 0.1mm ridge)
+VOXEL_RETRY_MAX_ATTEMPTS = 4       # Max retry attempts for voxelization
+VOXEL_RETRY_FACTOR = 1.5           # Pitch multiplier on retry
+
+
+# =============================================================================
 # HELPER FUNCTIONS FOR PARAMETER INFERENCE
 # =============================================================================
 def ensure_mesh_in_world_units(mesh_out: trimesh.Trimesh,
@@ -352,18 +365,6 @@ OBJ5_NLP_FIX_ROOT = True               # Fix inlet positions
 OBJ5_NLP_MAX_ITERATIONS = 500          # Max optimization iterations
 OBJ5_NLP_TOLERANCE = 1e-5              # Solver tolerance
 OBJ5_NLP_CLEANUP_DEGENERATE = True     # Remove degenerate segments
-
-# =============================================================================
-# VOXELIZATION PARAMETERS
-# =============================================================================
-VOXEL_PITCH_M = 2.5e-5             # 25 um voxel pitch (for fine resolution embedding)
-VOXEL_PITCH_UNION_M = 5.0e-5       # 50 um voxel pitch (for union operations)
-# Note: Ridge is 0.1mm (100um) thick, so we need at least 2 voxels across it
-# Using 50um pitch gives 2 voxels across the ridge thickness for proper resolution
-# 25 um pitch on 10mm x 10mm x 2mm domain = ~12.8M voxels
-VOXEL_PITCH_RIDGE_M = 2.5e-5       # 25 um for ridge operations (4 voxels across 0.1mm ridge)
-VOXEL_RETRY_MAX_ATTEMPTS = 4       # Max retry attempts for voxelization
-VOXEL_RETRY_FACTOR = 1.5           # Pitch multiplier on retry
 
 # =============================================================================
 # MESH RESOLUTION PARAMETERS
