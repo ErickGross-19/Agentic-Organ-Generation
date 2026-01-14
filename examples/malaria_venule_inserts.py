@@ -1323,59 +1323,40 @@ def generate_bifurcation_tree_mesh(
 ) -> trimesh.Trimesh:
     """
     Generate a bifurcating tree mesh from a single inlet.
-    
-    Uses the pre-built grow_to_point and bifurcate tools from the generation library.
-    Implements grow -> bifurcate -> grow pattern where branches grow for an RNG-based
-    distance before bifurcating, ensuring proper separation between branches.
-    
-    Parameters
-    ----------
-    inlet_position : tuple
-        (x, y, z) position of inlet in meters
-    inlet_radius : float
-        Radius at inlet in meters
-    terminal_radius : float
-        Radius at terminals in meters
-    bifurcation_depths : list
-        Z-depths (from top) where bifurcations occur, in meters
-    base_angle_deg : float
-        Base bifurcation angle in degrees
-    rng_seed : int, optional
-        Random seed for reproducible growth distances
-    growth_fraction_range : tuple
-        (min, max) fraction of available distance for post-bifurcation growth.
-        Growth distance is calculated as: fraction * distance_to_next_bifurcation
-        This ensures branches separate before the next bifurcation while leaving
-        enough space to bifurcate before reaching the base height or edge.
-    
-    Returns
-    -------
-    trimesh.Trimesh
-        Combined mesh of all branches
+
+    Key fix vs your current version:
+    - Before each pre-bifurcation grow_to_point, clamp the step length so the target stays
+      inside the cylinder (prevents "Target point ... is outside domain" warnings).
     """
+    # Import inside function for robustness (matches your Object 4 style)
     from generation.ops.growth import grow_to_point, bifurcate
     from generation.rules.constraints import BranchingConstraints
-    
-    num_levels = len(bifurcation_depths)
+
     rng = np.random.default_rng(rng_seed)
-    
-    # Create a VascularNetwork with a cylinder domain for the tree
+
+    num_levels = len(bifurcation_depths)
+    if num_levels == 0:
+        return trimesh.Trimesh()
+
+    # Cylinder bounds
+    z_top = CYLINDER_CENTER[2] + CYLINDER_HEIGHT_M / 2
+    z_bottom = CYLINDER_CENTER[2] - CYLINDER_HEIGHT_M / 2
+
+    # Create network + domain (Point3D required by the library)
     domain = CylinderDomain(
         center=Point3D(*CYLINDER_CENTER),
         radius=CYLINDER_RADIUS_M,
         height=CYLINDER_HEIGHT_M,
     )
-
     network = create_network(domain, seed=rng_seed)
-    
-    # Set up constraints with relaxed limits for small geometry
+
     constraints = BranchingConstraints(
         min_segment_length=BRANCH_MIN_SEGMENT_LENGTH_M,
         max_segment_length=BRANCH_MAX_SEGMENT_LENGTH_M,
         min_radius=BRANCH_MIN_RADIUS_M,
     )
-    
-    # Add inlet node
+
+    # Add inlet
     inlet_result = add_inlet(
         network,
         position=Point3D(*inlet_position),
@@ -1383,63 +1364,146 @@ def generate_bifurcation_tree_mesh(
         radius=inlet_radius,
         vessel_type="venous",
     )
-
-
     if not inlet_result.is_success():
         print(f"    Warning: Failed to add inlet: {inlet_result.message}")
         return trimesh.Trimesh()
-    
-    inlet_node_id = inlet_result.new_ids["node"]
-    
-    # Track current branch tips: list of (node_id, level)
-    current_tips = [(inlet_node_id, 0)]
-    
+
+    root_id = inlet_result.new_ids["node"]
+    root_node = network.get_node(root_id)
+    if root_node:
+        root_node.attributes["direction"] = {"dx": 0.0, "dy": 0.0, "dz": -1.0}
+
+    # Helper: max step along direction inside cylinder (with margins)
+    def _max_step_inside_cylinder(
+        p: np.ndarray,
+        d: np.ndarray,
+        r_effective: float,
+        zmin: float,
+        zmax: float,
+    ) -> float:
+        """
+        Return the maximum t >= 0 such that p + t*d stays inside:
+          x^2 + y^2 <= r_effective^2 and z in [zmin, zmax]
+        """
+        eps = 1e-12
+        dx, dy, dz = float(d[0]), float(d[1]), float(d[2])
+        x, y, z = float(p[0]), float(p[1]), float(p[2])
+
+        t_candidates = []
+
+        # Z planes
+        if dz > eps:
+            t_candidates.append((zmax - z) / dz)
+        elif dz < -eps:
+            t_candidates.append((zmin - z) / dz)
+
+        # Side wall: (x + t dx)^2 + (y + t dy)^2 = r^2
+        a = dx * dx + dy * dy
+        if a > eps:
+            b = 2.0 * (x * dx + y * dy)
+            c = (x * x + y * y) - (r_effective * r_effective)
+            disc = b * b - 4.0 * a * c
+            if disc >= 0.0:
+                sdisc = math.sqrt(disc)
+                t1 = (-b - sdisc) / (2.0 * a)
+                t2 = (-b + sdisc) / (2.0 * a)
+                # We want the first positive intersection ahead
+                for t in (t1, t2):
+                    if t > eps:
+                        t_candidates.append(t)
+
+        # If no intersections found (should be rare), treat as unbounded
+        if not t_candidates:
+            return float("inf")
+
+        # Smallest positive boundary hit
+        t_pos = [t for t in t_candidates if t > eps]
+        if not t_pos:
+            return 0.0
+        return min(t_pos)
+
+    # Tips tracked as (node_id, level_index)
+    current_tips: List[Tuple[str, int]] = [(root_id, 0)]
+
     for level in range(num_levels):
-        depth = bifurcation_depths[level]
-        target_z = inlet_position[2] - depth
-        
-        # Calculate distance to next bifurcation level (for growth distance calculation)
+        depth = float(bifurcation_depths[level])
+        target_z = float(inlet_position[2]) - depth
+
+        # Distance between this level and next (controls child growth lengths)
         if level + 1 < num_levels:
-            next_depth = bifurcation_depths[level + 1]
-            distance_between_levels = next_depth - depth
+            next_depth = float(bifurcation_depths[level + 1])
+            distance_between_levels = max(next_depth - depth, BIFURC_MIN_SEGMENT_LENGTH_M)
         else:
-            # Last level: use remaining distance to bottom (with margin)
-            bottom_z = inlet_position[2] - CYLINDER_HEIGHT_M * (1.0 - BIFURC_BOTTOM_MARGIN_FRACTION)  # Leave margin
-            distance_between_levels = depth - (inlet_position[2] - bottom_z)
+            # Last level: remaining distance to bottom, leaving a margin
+            bottom_z_allowed = float(inlet_position[2]) - CYLINDER_HEIGHT_M * (1.0 - BIFURC_BOTTOM_MARGIN_FRACTION)
+            distance_between_levels = depth - (float(inlet_position[2]) - bottom_z_allowed)
             distance_between_levels = max(distance_between_levels, BIFURC_MIN_SEGMENT_LENGTH_M)
-        
-        new_tips = []
-        
+
+        new_tips: List[Tuple[str, int]] = []
+
         for tip_node_id, tip_level in current_tips:
             if tip_level != level:
                 new_tips.append((tip_node_id, tip_level))
                 continue
-            
-            # Get current node position and direction
+
             tip_node = network.get_node(tip_node_id)
             if tip_node is None:
                 continue
-            
-            tip_pos = np.array([tip_node.position.x, tip_node.position.y, tip_node.position.z])
-            tip_dir_dict = tip_node.attributes.get("direction", {"dx": 0, "dy": 0, "dz": -1})
-            tip_dir = np.array([tip_dir_dict.get("dx", 0), tip_dir_dict.get("dy", 0), tip_dir_dict.get("dz", -1)])
-            
-            # Compute radius for this level
-            current_radius = compute_taper_radius(level, num_levels, inlet_radius, terminal_radius)
-            next_radius = compute_taper_radius(level + 1, num_levels, inlet_radius, terminal_radius)
-            
-            # Calculate distance to target z for grow_to_point
+
+            tip_pos = np.array([tip_node.position.x, tip_node.position.y, tip_node.position.z], dtype=float)
+
+            tip_dir_dict = tip_node.attributes.get("direction", {"dx": 0.0, "dy": 0.0, "dz": -1.0})
+            tip_dir = np.array(
+                [float(tip_dir_dict.get("dx", 0.0)),
+                 float(tip_dir_dict.get("dy", 0.0)),
+                 float(tip_dir_dict.get("dz", -1.0))],
+                dtype=float
+            )
+
+            # Normalize direction for stable stepping
+            nrm = float(np.linalg.norm(tip_dir))
+            if nrm < 1e-12:
+                tip_dir = np.array([0.0, 0.0, -1.0], dtype=float)
+            else:
+                tip_dir = tip_dir / nrm
+
+            current_radius = float(compute_taper_radius(level, num_levels, inlet_radius, terminal_radius))
+            next_radius = float(compute_taper_radius(level + 1, num_levels, inlet_radius, terminal_radius))
+
+            # Base dist_to_target (your original logic)
             if abs(tip_dir[2]) > BIFURC_DIRECTION_THRESHOLD:
                 dist_to_target = abs((target_z - tip_pos[2]) / tip_dir[2])
             else:
-                dist_to_target = BIFURC_HORIZONTAL_STEP_M  # Small step for horizontal branches
-            
-            dist_to_target = max(dist_to_target, BIFURC_MIN_SEGMENT_LENGTH_M)  # Minimum segment length
-            
-            # Calculate bifurcation point
+                dist_to_target = BIFURC_HORIZONTAL_STEP_M
+
+            dist_to_target = max(dist_to_target, BIFURC_MIN_SEGMENT_LENGTH_M)
+
+            # -------------------------
+            # CRITICAL FIX: clamp step so target stays inside cylinder
+            # Use an effective radius that accounts for vessel radius + wall margin.
+            # -------------------------
+            wall_margin = float(globals().get("OBJ3_WALL_MARGIN_M", 0.0))
+            r_eff = CYLINDER_RADIUS_M - wall_margin - current_radius
+            r_eff = max(r_eff, 1e-6)
+
+            # Keep a tiny z-margin to avoid landing exactly on caps
+            z_margin = 2.0 * float(globals().get("VOXEL_PITCH_M", 2.5e-5))
+            zmin_eff = z_bottom + z_margin
+            zmax_eff = z_top - z_margin
+
+            t_max = _max_step_inside_cylinder(tip_pos, tip_dir, r_eff, zmin_eff, zmax_eff)
+
+            safety = 0.95
+            if t_max != float("inf"):
+                dist_to_target = min(dist_to_target, safety * t_max)
+
+            if dist_to_target < BIFURC_MIN_SEGMENT_LENGTH_M:
+                # Not enough room to place the next bifurcation point safely
+                print(f"    Warning: insufficient room to grow at level {level} from tip; skipping branch.")
+                continue
+
             bifurc_pos = tip_pos + tip_dir * dist_to_target
-            
-            # Use grow_to_point to grow to bifurcation point
+
             grow_result = grow_to_point(
                 network,
                 from_node_id=tip_node_id,
@@ -1449,30 +1513,25 @@ def generate_bifurcation_tree_mesh(
                 check_collisions=False,
                 fail_on_collision=False,
             )
-            
             if not grow_result.is_success():
                 print(f"    Warning: grow_to_point failed at level {level}: {grow_result.message}")
                 continue
-            
+
             bifurc_node_id = grow_result.new_ids["node"]
-            
-            # Calculate RNG-based growth distances for child branches
-            # This implements the grow -> bifurcate -> grow pattern
-            max_growth = distance_between_levels * BIFURC_MAX_GROWTH_FRACTION  # Leave room for next bifurcation approach
-            
-            growth_fraction1 = rng.uniform(growth_fraction_range[0], growth_fraction_range[1])
-            growth_distance1 = min(growth_fraction1 * distance_between_levels, max_growth)
+
+            # Child growth distances (your existing grow->bifurcate->grow pattern)
+            max_growth = distance_between_levels * BIFURC_MAX_GROWTH_FRACTION
+
+            g1 = float(rng.uniform(growth_fraction_range[0], growth_fraction_range[1]))
+            growth_distance1 = min(g1 * distance_between_levels, max_growth)
             growth_distance1 = max(growth_distance1, BIFURC_MIN_GROWTH_DISTANCE_M)
-            
-            growth_fraction2 = rng.uniform(growth_fraction_range[0], growth_fraction_range[1])
-            growth_distance2 = min(growth_fraction2 * distance_between_levels, max_growth)
+
+            g2 = float(rng.uniform(growth_fraction_range[0], growth_fraction_range[1]))
+            growth_distance2 = min(g2 * distance_between_levels, max_growth)
             growth_distance2 = max(growth_distance2, BIFURC_MIN_GROWTH_DISTANCE_M)
-            
-            # Angle for bifurcation (decreases with level for tighter packing)
-            angle_deg = base_angle_deg * (1.0 - BIFURC_ANGLE_REDUCTION_PER_LEVEL * level)
-            
-            # Use bifurcate to create two child branches with RNG-based growth lengths
-            # The bifurcate function creates growth segments for each child
+
+            angle_deg = float(base_angle_deg) * (1.0 - BIFURC_ANGLE_REDUCTION_PER_LEVEL * level)
+
             bifurc_result = bifurcate(
                 network,
                 at_node_id=bifurc_node_id,
@@ -1482,36 +1541,42 @@ def generate_bifurcation_tree_mesh(
                 check_collisions=False,
                 seed=rng_seed,
             )
-            
             if not bifurc_result.is_success():
                 print(f"    Warning: bifurcate failed at level {level}: {bifurc_result.message}")
                 continue
-            
-            # Get the child node IDs from bifurcation result
+
             child_node_ids = bifurc_result.new_ids.get("nodes", [])
             for child_node_id in child_node_ids:
-                # Update child node radius for next level
                 child_node = network.get_node(child_node_id)
                 if child_node:
                     child_node.attributes["radius"] = next_radius
                 new_tips.append((child_node_id, level + 1))
-        
+
         current_tips = new_tips
-    
-    # Add final short terminal segments for remaining tips
-    for tip_node_id, tip_level in current_tips:
+
+    # Add short terminal segments
+    for tip_node_id, _tip_level in current_tips:
         tip_node = network.get_node(tip_node_id)
         if tip_node is None:
             continue
-        
-        tip_pos = np.array([tip_node.position.x, tip_node.position.y, tip_node.position.z])
-        tip_dir_dict = tip_node.attributes.get("direction", {"dx": 0, "dy": 0, "dz": -1})
-        tip_dir = np.array([tip_dir_dict.get("dx", 0), tip_dir_dict.get("dy", 0), tip_dir_dict.get("dz", -1)])
-        
-        # Short terminal segment
+
+        tip_pos = np.array([tip_node.position.x, tip_node.position.y, tip_node.position.z], dtype=float)
+        tip_dir_dict = tip_node.attributes.get("direction", {"dx": 0.0, "dy": 0.0, "dz": -1.0})
+        tip_dir = np.array(
+            [float(tip_dir_dict.get("dx", 0.0)),
+             float(tip_dir_dict.get("dy", 0.0)),
+             float(tip_dir_dict.get("dz", -1.0))],
+            dtype=float
+        )
+        nrm = float(np.linalg.norm(tip_dir))
+        if nrm < 1e-12:
+            tip_dir = np.array([0.0, 0.0, -1.0], dtype=float)
+        else:
+            tip_dir = tip_dir / nrm
+
         end_pos = tip_pos + tip_dir * BIFURC_TERMINAL_SEGMENT_LENGTH_M
-        
-        grow_result = grow_to_point(
+
+        _ = grow_to_point(
             network,
             from_node_id=tip_node_id,
             target_point=tuple(end_pos),
@@ -1520,11 +1585,11 @@ def generate_bifurcation_tree_mesh(
             check_collisions=False,
             fail_on_collision=False,
         )
-    
-    # Convert network to mesh using the mesh adapter
-    print(f"    Converting network to mesh ({len(network.segments)} segments)...")
+
+    # Convert to mesh
+    print(f"    Converting network to mesh ({len(network.segments)} segments).")
     mesh_result = to_trimesh(network, mode="fast", include_caps=True, include_node_spheres=False)
-    
+
     if mesh_result.is_success():
         return mesh_result.metadata["mesh"]
     else:
