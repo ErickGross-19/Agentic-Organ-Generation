@@ -225,17 +225,20 @@ def compute_inlet_positions_center_rings(
     ridge_inner_radius: float = None,
     wall_margin: float = 0.0005,
     spacing_factor: float = 0.2,
-) -> List[Tuple[float, float]]:
+    include_z: bool = False,
+    z_position: float = None,
+) -> List[Tuple[float, ...]]:
     """
     Compute inlet positions using center + concentric rings layout.
     
     Places 1 channel at the center first, then fills outward in concentric rings
-    until the requested number of inlets is reached.
+    until the requested number of inlets is reached. This ensures the first inlet
+    is always at the center, with subsequent inlets building outward.
     
     Parameters
     ----------
     num_inlets : int
-        Total number of inlets to place
+        Total number of inlets to place (can be any positive integer)
     inlet_radius : float
         Radius of each inlet channel (meters)
     cylinder_radius : float, optional
@@ -246,10 +249,14 @@ def compute_inlet_positions_center_rings(
         Minimum margin from cylinder edge (meters)
     spacing_factor : float
         Extra gap between channels as fraction of diameter (0.2 = 20% extra spacing)
+    include_z : bool
+        If True, include z coordinate in returned positions
+    z_position : float, optional
+        Z coordinate to use when include_z=True (defaults to TOP_FACE_Z_M)
     
     Returns
     -------
-    List of (x, y) tuples for inlet center positions
+    List of (x, y) or (x, y, z) tuples for inlet center positions
     """
     if num_inlets == 0:
         return []
@@ -297,7 +304,19 @@ def compute_inlet_positions_center_rings(
         
         ring_k += 1
     
-    return positions[:num_inlets]
+    positions = positions[:num_inlets]
+    
+    # Add Z coordinate if requested
+    if include_z:
+        if z_position is None:
+            # Prefer TOP_FACE_Z_M if available
+            if "TOP_FACE_Z_M" in globals():
+                z_position = TOP_FACE_Z_M
+            else:
+                raise ValueError("include_z=True requires z_position (TOP_FACE_Z_M not available).")
+        positions = [(x, y, float(z_position)) for x, y in positions]
+    
+    return positions
 
 
 def compute_bifurcation_depths(
@@ -385,12 +404,13 @@ OBJ2_FANG_TIP_RADIUS_FACTOR = 0.05 # Tip radius as fraction of inlet radius (0.0
 OBJ2_FANG_NUM_POINTS = 32          # Number of points in circular cross-section
 OBJ2_FANG_NUM_SLICES = 24          # Number of z-slices for smooth curve
 
-# Inlet positions for Object 2 - computed based on layout mode
-# For legacy mode, use the old compute_inlet_positions function
-OBJ2_INLET_POSITIONS = compute_inlet_positions(
+# Inlet positions for Object 2 - center first, then concentric rings outward
+# Supports any number of inlets (n)
+OBJ2_INLET_POSITIONS = compute_inlet_positions_center_rings(
     num_inlets=OBJ2_NUM_INLETS,
     inlet_radius=OBJ2_INLET_RADIUS_M,
     wall_margin=OBJ2_WALL_MARGIN_M,
+    spacing_factor=OBJ2_RING_SPACING_FACTOR,
 )
 
 # =============================================================================
@@ -408,11 +428,14 @@ OBJ3_BIFURCATION_DEPTHS_M = compute_bifurcation_depths(
     num_bifurcations=OBJ3_BIFURCATION_LEVELS,
     cylinder_height=CYLINDER_HEIGHT_M,
 )
-# Inlet positions for Object 3 - INFERRED from geometry
-OBJ3_INLET_POSITIONS = compute_inlet_positions(
+# Inlet positions for Object 3 - center first, then concentric rings outward
+# Supports any number of inlets (n)
+OBJ3_RING_SPACING_FACTOR = 0.2    # Extra gap between channels as fraction of diameter
+OBJ3_INLET_POSITIONS = compute_inlet_positions_center_rings(
     num_inlets=OBJ3_NUM_INLETS,
     inlet_radius=OBJ3_INLET_RADIUS_M,
     wall_margin=OBJ3_WALL_MARGIN_M,
+    spacing_factor=OBJ3_RING_SPACING_FACTOR,
 )
 
 # =============================================================================
@@ -426,11 +449,14 @@ OBJ4_HORIZONTAL_LENGTH_M = 0.001   # 1 mm horizontal travel after turn
 OBJ4_NUM_BIFURCATIONS = 3          # Number of bifurcation levels in lateral plane
 OBJ4_MERGE_OVERLAP_M = 0.0005      # 0.5 mm overlap for merge region
 OBJ4_WALL_MARGIN_M = 0.0005        # 0.5 mm minimum wall margin from cylinder edge
-# Inlet position for Object 4 - INFERRED from geometry (single inlet at center)
-_obj4_positions = compute_inlet_positions(
+# Inlet position for Object 4 - center first (single inlet = always at center)
+# Supports any number of inlets (n)
+OBJ4_RING_SPACING_FACTOR = 0.2    # Extra gap between channels as fraction of diameter
+_obj4_positions = compute_inlet_positions_center_rings(
     num_inlets=OBJ4_NUM_INLETS,
     inlet_radius=OBJ4_INLET_RADIUS_M,
     wall_margin=OBJ4_WALL_MARGIN_M,
+    spacing_factor=OBJ4_RING_SPACING_FACTOR,
 )
 OBJ4_INLET_POSITION = _obj4_positions[0] if _obj4_positions else (0.0, 0.0)
 
@@ -449,11 +475,14 @@ OBJ5_STRAIGHT_DOWN_M = 0.0001      # 0.1 mm straight down before CCO growth
 OBJ5_VESSEL_TYPE = "venous"        # Vessel type for inserts
 OBJ5_SEED = 42                     # Random seed for reproducibility
 OBJ5_WALL_MARGIN_M = 0.0005        # 0.5 mm minimum wall margin from cylinder edge
-# Inlet positions for Object 5 - INFERRED from geometry (with Z coordinate at top face)
-OBJ5_INLET_POSITIONS = compute_inlet_positions(
+# Inlet positions for Object 5 - center first, then concentric rings outward (with Z coordinate)
+# Supports any number of inlets (n)
+OBJ5_RING_SPACING_FACTOR = 0.2    # Extra gap between channels as fraction of diameter
+OBJ5_INLET_POSITIONS = compute_inlet_positions_center_rings(
     num_inlets=OBJ5_NUM_INLETS,
     inlet_radius=OBJ5_INLET_RADIUS_M,
     wall_margin=OBJ5_WALL_MARGIN_M,
+    spacing_factor=OBJ5_RING_SPACING_FACTOR,
     include_z=True,
     z_position=TOP_FACE_Z_M,
 )
@@ -1863,8 +1892,18 @@ def generate_object3_bifurcate_512(output_dir: Optional[Path] = None) -> trimesh
             spec=tree_spec,
             rng_seed=42 + i,
         )
-        all_trees.append(tree_mesh)
-        print(f"      Generated tree with {len(tree_mesh.vertices)} vertices")
+        # Only add non-empty meshes (filter out failed tree generations)
+        if len(tree_mesh.faces) > 0:
+            all_trees.append(tree_mesh)
+            print(f"      Generated tree with {len(tree_mesh.vertices)} vertices, {len(tree_mesh.faces)} faces")
+        else:
+            print(f"      Warning: Tree {i+1} generated empty mesh, skipping")
+    
+    # Check that we have at least one valid tree
+    if not all_trees:
+        raise ValueError("All tree generations failed - no valid meshes to union")
+    
+    print(f"  Successfully generated {len(all_trees)} non-empty trees out of {len(OBJ3_INLET_POSITIONS)} inlets")
     
     # Union all trees (overlapping branches merge)
     print("  Combining all trees (overlap-based merge)...")
