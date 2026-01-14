@@ -1360,7 +1360,12 @@ def generate_bifurcation_tree_mesh(
     rng = np.random.default_rng(rng_seed)
     
     # Create a VascularNetwork with a cylinder domain for the tree
-    domain = CylinderDomain(center=Point3D(*CYLINDER_CENTER), radius=CYLINDER_RADIUS_M, height=CYLINDER_HEIGHT_M)
+    domain = CylinderDomain(
+        center=Point3D(*CYLINDER_CENTER),
+        radius=CYLINDER_RADIUS_M,
+        height=CYLINDER_HEIGHT_M,
+    )
+
     network = create_network(domain, seed=rng_seed)
     
     # Set up constraints with relaxed limits for small geometry
@@ -1378,6 +1383,7 @@ def generate_bifurcation_tree_mesh(
         radius=inlet_radius,
         vessel_type="venous",
     )
+
 
     if not inlet_result.is_success():
         print(f"    Warning: Failed to add inlet: {inlet_result.message}")
@@ -1803,11 +1809,12 @@ def generate_object4_turn_bifurcate_merge(
     print("  Building channel network using pre-built tools...")
     inlet_result = add_inlet(
         network,
-        position=Point3D(*inlet_position),
+        position=Point3D(*inlet_pos),
         direction=(0.0, 0.0, -1.0),
-        radius=inlet_radius,
+        radius=OBJ4_INLET_RADIUS_M,
         vessel_type="venous",
     )
+
 
     if not inlet_result.is_success():
         print(f"    Warning: Failed to add inlet: {inlet_result.message}")
