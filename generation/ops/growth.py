@@ -785,3 +785,248 @@ def _compute_polyline_route(
                 ]
     
     return []
+
+
+def grow_kary_tree_to_depths(
+    network: VascularNetwork,
+    root_node_id: int,
+    K: int,
+    depths: List[float],
+    taper_fn: Optional[callable] = None,
+    angle_deg: float = 45.0,
+    angle_decay: float = 0.9,
+    azimuth_mode: str = "random_uniform",
+    boundary_mode: str = "strict",
+    child_length_scale_fn: Optional[callable] = None,
+    constraints: Optional[BranchingConstraints] = None,
+    seed: Optional[int] = None,
+) -> OperationResult:
+    """
+    Grow a K-ary tree from a root node to specified bifurcation depths.
+    
+    This implements non-planar 3D branching where each bifurcation creates K children
+    evenly distributed around 360 degrees with a random azimuth offset. The tree
+    grows downward (negative Z) from the root to the specified depths.
+    
+    Parameters
+    ----------
+    network : VascularNetwork
+        Network to modify
+    root_node_id : int
+        Node to grow tree from (typically an inlet)
+    K : int
+        Number of children at each bifurcation (e.g., 2 for binary, 4 for quad)
+    depths : list of float
+        Bifurcation depths from the root (positive values, measured downward)
+        Example: [0.25e-3, 0.50e-3, 0.75e-3] for 3 levels at 0.25mm, 0.5mm, 0.75mm
+    taper_fn : callable, optional
+        Function(level, num_levels, parent_radius) -> child_radius
+        If None, uses Murray's law scaling
+    angle_deg : float
+        Base branching angle in degrees (default: 45)
+    angle_decay : float
+        Angle decay factor per level (default: 0.9)
+    azimuth_mode : str
+        How to distribute children around the parent direction:
+        - "random_uniform": Random azimuth offset, children evenly spaced (default)
+        - "fixed": No random offset, deterministic placement
+    boundary_mode : str
+        How to handle domain boundaries:
+        - "strict": Clamp step length so tube stays inside domain (default)
+        - "project_inside": Allow domain projection for more growth
+    child_length_scale_fn : callable, optional
+        Function(level, num_levels) -> scale factor for child lengths
+        If None, uses uniform scaling
+    constraints : BranchingConstraints, optional
+        Branching constraints
+    seed : int, optional
+        Random seed for deterministic behavior
+        
+    Returns
+    -------
+    result : OperationResult
+        Result with new_ids containing 'nodes' and 'segments' lists
+        
+    Examples
+    --------
+    >>> # Create a 4-ary tree with 7 bifurcation levels
+    >>> depths = [0.25e-3, 0.50e-3, 0.75e-3, 1.0e-3, 1.25e-3, 1.5e-3, 1.75e-3]
+    >>> result = grow_kary_tree_to_depths(
+    ...     network, inlet_id, K=4, depths=depths,
+    ...     taper_fn=lambda lvl, n, r: r * 0.7,  # 30% taper per level
+    ...     seed=42,
+    ... )
+    """
+    if constraints is None:
+        constraints = BranchingConstraints()
+    
+    rng = np.random.default_rng(seed)
+    
+    root_node = network.get_node(root_node_id)
+    if root_node is None:
+        return OperationResult.failure(
+            message=f"Root node {root_node_id} not found",
+            errors=["Node not found"],
+        )
+    
+    if "radius" not in root_node.attributes:
+        return OperationResult.failure(
+            message="Root node has no stored radius",
+            errors=["Missing radius"],
+        )
+    
+    root_radius = root_node.attributes["radius"]
+    root_pos = np.array([root_node.position.x, root_node.position.y, root_node.position.z])
+    
+    if "direction" in root_node.attributes:
+        root_dir = Direction3D.from_dict(root_node.attributes["direction"]).to_array()
+    else:
+        root_dir = np.array([0.0, 0.0, -1.0])
+    
+    num_levels = len(depths)
+    all_node_ids = []
+    all_segment_ids = []
+    all_warnings = []
+    
+    tips = [(root_node_id, root_pos, root_dir, root_radius, 0)]
+    
+    for level in range(num_levels):
+        target_depth = depths[level]
+        new_tips = []
+        
+        current_angle = angle_deg * (angle_decay ** level)
+        angle_rad = np.radians(current_angle)
+        
+        for tip_node_id, tip_pos, tip_dir, tip_radius, tip_level in tips:
+            if tip_level != level:
+                new_tips.append((tip_node_id, tip_pos, tip_dir, tip_radius, tip_level))
+                continue
+            
+            if taper_fn is not None:
+                child_radius = taper_fn(level, num_levels, tip_radius)
+            else:
+                child_radius = tip_radius * (0.5 ** (1.0 / 3.0))
+            
+            child_radius = max(child_radius, constraints.min_radius)
+            
+            if level < num_levels - 1:
+                next_depth = depths[level + 1]
+            else:
+                next_depth = target_depth + (target_depth - depths[level - 1] if level > 0 else target_depth)
+            
+            base_length = next_depth - target_depth
+            if child_length_scale_fn is not None:
+                length_scale = child_length_scale_fn(level, num_levels)
+            else:
+                length_scale = 1.0
+            child_length = base_length * length_scale
+            child_length = max(child_length, constraints.min_segment_length)
+            
+            tip_dir_norm = tip_dir / (np.linalg.norm(tip_dir) + 1e-12)
+            
+            if abs(tip_dir_norm[2]) < 0.9:
+                perp1 = np.cross(tip_dir_norm, np.array([0, 0, 1]))
+            else:
+                perp1 = np.cross(tip_dir_norm, np.array([1, 0, 0]))
+            perp1 = perp1 / (np.linalg.norm(perp1) + 1e-12)
+            perp2 = np.cross(tip_dir_norm, perp1)
+            perp2 = perp2 / (np.linalg.norm(perp2) + 1e-12)
+            
+            if azimuth_mode == "random_uniform":
+                azimuth_offset = rng.uniform(0, 2 * np.pi)
+            else:
+                azimuth_offset = 0.0
+            
+            for k in range(K):
+                child_azimuth = azimuth_offset + (2 * np.pi * k / K)
+                
+                lateral = np.cos(child_azimuth) * perp1 + np.sin(child_azimuth) * perp2
+                
+                child_dir = np.cos(angle_rad) * tip_dir_norm + np.sin(angle_rad) * lateral
+                child_dir = child_dir / (np.linalg.norm(child_dir) + 1e-12)
+                
+                child_end = tip_pos + child_length * child_dir
+                
+                if boundary_mode == "strict" and hasattr(network, 'domain') and network.domain is not None:
+                    child_end_pt = Point3D(child_end[0], child_end[1], child_end[2])
+                    if not network.domain.contains(child_end_pt):
+                        child_end_pt = network.domain.project_inside(child_end_pt)
+                        child_end = np.array([child_end_pt.x, child_end_pt.y, child_end_pt.z])
+                        
+                        new_vec = child_end - tip_pos
+                        new_length = np.linalg.norm(new_vec)
+                        if new_length > 1e-9:
+                            child_dir = new_vec / new_length
+                        
+                        if new_length < constraints.min_segment_length:
+                            all_warnings.append(
+                                f"Level {level}, child {k}: segment too short after boundary clamp "
+                                f"({new_length:.6f}m < {constraints.min_segment_length:.6f}m)"
+                            )
+                            continue
+                
+                child_end_pt = Point3D(child_end[0], child_end[1], child_end[2])
+                child_dir_obj = Direction3D(child_dir[0], child_dir[1], child_dir[2])
+                
+                new_node_id = network.id_gen.next_id()
+                new_node = Node(
+                    id=new_node_id,
+                    position=child_end_pt,
+                    node_type="terminal",
+                    vessel_type=root_node.vessel_type,
+                    attributes={
+                        "radius": child_radius,
+                        "direction": child_dir_obj.to_dict(),
+                        "branch_order": level + 1,
+                        "tree_level": level,
+                    },
+                )
+                
+                segment_id = network.id_gen.next_id()
+                geometry = TubeGeometry(
+                    start=Point3D(tip_pos[0], tip_pos[1], tip_pos[2]),
+                    end=child_end_pt,
+                    radius_start=tip_radius,
+                    radius_end=child_radius,
+                )
+                
+                segment = VesselSegment(
+                    id=segment_id,
+                    start_node_id=tip_node_id,
+                    end_node_id=new_node_id,
+                    geometry=geometry,
+                    vessel_type=root_node.vessel_type,
+                )
+                
+                network.add_node(new_node)
+                network.add_segment(segment)
+                
+                all_node_ids.append(new_node_id)
+                all_segment_ids.append(segment_id)
+                
+                new_tips.append((new_node_id, child_end, child_dir, child_radius, level + 1))
+            
+            tip_node = network.get_node(tip_node_id)
+            if tip_node is not None and tip_node.node_type == "terminal":
+                tip_node.node_type = "junction"
+        
+        tips = new_tips
+    
+    delta = Delta(
+        created_node_ids=all_node_ids,
+        created_segment_ids=all_segment_ids,
+    )
+    
+    status = OperationStatus.SUCCESS if not all_warnings else OperationStatus.PARTIAL_SUCCESS
+    
+    return OperationResult(
+        status=status,
+        message=f"Grew {K}-ary tree with {num_levels} levels from node {root_node_id}",
+        new_ids={
+            "nodes": all_node_ids,
+            "segments": all_segment_ids,
+        },
+        warnings=all_warnings,
+        delta=delta,
+        rng_state=network.id_gen.get_state(),
+    )
