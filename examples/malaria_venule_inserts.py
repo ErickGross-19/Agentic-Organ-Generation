@@ -326,7 +326,7 @@ def compute_inlet_positions_center_rings_obj3(
     ridge_inner_radius: float = None,
     wall_margin: float = 0.0005,
     spacing_factor: float = 0.2,
-    max_per_ring: int = 4,
+    max_per_ring: int = 5,
     ring_offset_angle: float = None,
     ring_spacing_multiplier: float = 1.5,
 ) -> List[Tuple[float, float]]:
@@ -527,10 +527,12 @@ OBJ2_INLET_POSITIONS = compute_inlet_positions_center_rings(
 # =============================================================================
 OBJ3_NUM_INLETS = 5                # 5 inlet channels
 OBJ3_INLET_RADIUS_M = 0.001        # 1 mm inlet radius
-OBJ3_TERMINAL_RADIUS_M = 0.0001    # 100 um terminal radius
-OBJ3_TOTAL_TERMINALS = 512         # Total terminal count
-OBJ3_TERMINALS_PER_INLET = 128     # 512 / 4 = 128 terminals per inlet
-OBJ3_BIFURCATION_LEVELS = 7        # 2^7 = 128 terminals per inlet
+OBJ3_TERMINAL_RADIUS_M = 0.0001 
+OBJ3_BIFURCATION_LEVELS = 7 # 100 um terminal radius
+OBJ3_TOTAL_TERMINALS = 640   
+OBJ3_TERMINALS_PER_INLET = 128 # Total terminal count
+     # 512 / 4 = 128 terminals per inlet
+       # 2^7 = 128 terminals per inlet
 OBJ3_WALL_MARGIN_M = 0.0005       # 0.5 mm minimum wall margin from cylinder edge
 # Bifurcation depth schedule - INFERRED from number of bifurcations and object height
 OBJ3_BIFURCATION_DEPTHS_M = compute_bifurcation_depths(
