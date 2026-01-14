@@ -431,7 +431,7 @@ def compute_inlet_positions_center_rings_obj3(
 def compute_bifurcation_depths(
     num_bifurcations: int,
     cylinder_height: float = CYLINDER_HEIGHT_M,
-    top_margin_fraction: float = 0.15,
+    top_margin_fraction: float = 0.25,
     bottom_margin_fraction: float = 0.125,
     depth_power: float = 2.0,
 ) -> List[float]:
@@ -1773,7 +1773,7 @@ def generate_bifurcation_tree_mesh_v2(
     """
     if spec is None:
         spec = KaryTreeSpec(
-            K=4,
+            K=2,
             num_levels=len(bifurcation_depths),
             leader_angle_deg_start=12.0,
             leader_angle_deg_min=5.0,
@@ -2004,7 +2004,7 @@ def generate_object3_bifurcate_512(output_dir: Optional[Path] = None) -> trimesh
     all_trees = []
     
     tree_spec = KaryTreeSpec(
-        K=4,
+        K=2,
         num_levels=len(OBJ3_BIFURCATION_DEPTHS_M),
         # Reduced angles to allow more branches to fit in the constrained volume
         leader_angle_deg_start=8.0,   # Reduced from 12.0 - leader stays more vertical
