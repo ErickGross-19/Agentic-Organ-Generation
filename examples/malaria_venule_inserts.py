@@ -715,12 +715,10 @@ def export_mesh_with_units(mesh: trimesh.Trimesh, output_path: Path, units: str 
 
 
 
-  
- def repair_mesh_for_embedding(
+def repair_mesh_for_embedding(
     mesh: trimesh.Trimesh,
     name: str = "mesh",
-    keep_largest_component: bool = True,
-) -> trimesh.Trimesh:
+    keep_largest_component: bool = True, ) -> trimesh.Trimesh:
     repaired = mesh.copy()
 
     print(f"    Repairing {name} for embedding...")
