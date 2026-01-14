@@ -541,7 +541,9 @@ OBJ3_BIFURCATION_DEPTHS_M = compute_bifurcation_depths(
 # Uses specialized function with max 4 inlets per ring and staggered offset between rings
 OBJ3_RING_SPACING_FACTOR = 0.2    # Extra gap between channels as fraction of diameter
 OBJ3_MAX_INLETS_PER_RING = 4      # Maximum inlets per ring (staggered pattern)
-OBJ3_RING_SPACING_MULTIPLIER = 1.5  # Multiplier for spacing between rings (1.5 = 50% more space)
+# NOTE: ring_spacing_multiplier must be <= 1.4 for first ring to fit within max_placement_radius
+# With inlet_radius=1mm, pitch=2.4mm, max_placement_radius=3.4mm: 2.4*1.4=3.36 < 3.4 ✓
+OBJ3_RING_SPACING_MULTIPLIER = 1.0  # Reduced from 1.5 to fit rings within domain
 OBJ3_INLET_POSITIONS = compute_inlet_positions_center_rings_obj3(
     num_inlets=OBJ3_NUM_INLETS,
     inlet_radius=OBJ3_INLET_RADIUS_M,
@@ -1848,7 +1850,9 @@ def generate_bifurcation_tree_mesh_v2(
         return trimesh.Trimesh()
     
     if result.warnings:
-        print(f"    Tree generation completed with {len(result.warnings)} warnings")
+        print(f"    Tree generation completed with {len(result.warnings)} warnings:")
+        for w in result.warnings:
+            print(f"      WARNING: {w}")
     
     if len(network.segments) == 0:
         print(f"    ERROR: Network has no segments after tree generation!")
