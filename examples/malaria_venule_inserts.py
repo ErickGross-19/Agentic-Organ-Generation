@@ -1583,8 +1583,12 @@ def generate_object2_channels(output_dir: Optional[Path] = None) -> trimesh.Trim
         traceback.print_exc()
 
     
-    # Return cylinder_with_void - ridge will be added at the END in main() to prevent smoothing
-    return cylinder_with_void
+    # Add ridge at the END (after all voxel operations) to prevent smoothing
+    print("  Adding ridge to Object 2...")
+    cylinder_with_ridge = add_ridge_to_mesh(cylinder_with_void)
+    print(f"    Final mesh: {len(cylinder_with_ridge.vertices)} vertices, {len(cylinder_with_ridge.faces)} faces")
+    
+    return cylinder_with_ridge
 
 
 def generate_bifurcation_tree_mesh_v2(
@@ -1932,8 +1936,12 @@ def generate_object3_bifurcate_512(output_dir: Optional[Path] = None) -> trimesh
         import traceback
         traceback.print_exc()
     
-    # Return cylinder_with_void - ridge will be added at the END in main() to prevent smoothing
-    return cylinder_with_void
+    # Add ridge at the END (after all voxel operations) to prevent smoothing
+    print("  Adding ridge to Object 3...")
+    cylinder_with_ridge = add_ridge_to_mesh(cylinder_with_void)
+    print(f"    Final mesh: {len(cylinder_with_ridge.vertices)} vertices, {len(cylinder_with_ridge.faces)} faces")
+    
+    return cylinder_with_ridge
 
 
 def generate_object4_turn_bifurcate_merge(
@@ -2258,8 +2266,12 @@ def generate_object4_turn_bifurcate_merge(
         traceback.print_exc()
 
     
-    # Return cylinder_with_void - ridge will be added at the END in main() to prevent smoothing
-    return cylinder_with_void
+    # Add ridge at the END (after all voxel operations) to prevent smoothing
+    print("  Adding ridge to Object 4...")
+    cylinder_with_ridge = add_ridge_to_mesh(cylinder_with_void)
+    print(f"    Final mesh: {len(cylinder_with_ridge.vertices)} vertices, {len(cylinder_with_ridge.faces)} faces")
+    
+    return cylinder_with_ridge
 
 
 # =============================================================================
@@ -2603,8 +2615,12 @@ def generate_object5_cco_nlp_organic(output_dir: Optional[Path] = None) -> trime
         json.dump(report, f, indent=2)
     print(f"  Report saved: {report_path}")
     
-    # Return cylinder_with_void - ridge will be added at the END in main() to prevent smoothing
-    return cylinder_with_void
+    # Add ridge at the END (after all voxel operations) to prevent smoothing
+    print("  Adding ridge to Object 5...")
+    cylinder_with_ridge = add_ridge_to_mesh(cylinder_with_void)
+    print(f"    Final mesh: {len(cylinder_with_ridge.vertices)} vertices, {len(cylinder_with_ridge.faces)} faces")
+    
+    return cylinder_with_ridge
 
 
 # =============================================================================
@@ -2696,25 +2712,18 @@ def main():
     print(f"Intermediate STLs will be saved to: {OUTPUT_DIR / 'intermediate'}")
     
     # Generate and export each object (pass output_dir for intermediate STL exports)
-    # Objects 2-5 return cylinder_with_void (without ridge) - ridge is added at the END
-    # Object 1 already includes ridge (no voxel operations after ridge)
+    # Each object function now adds its own ridge internally
     objects = [
-        ("object1_control.stl", lambda: generate_object1_control(output_dir=OUTPUT_DIR), False),  # Already has ridge
-        ("object2_channels.stl", lambda: generate_object2_channels(output_dir=OUTPUT_DIR), True),  # Needs ridge
-        ("object3_bifurcate_512.stl", lambda: generate_object3_bifurcate_512(output_dir=OUTPUT_DIR), True),  # Needs ridge
-        ("object4_turn_bifurcate_merge.stl", lambda: generate_object4_turn_bifurcate_merge(output_dir=OUTPUT_DIR), True),  # Needs ridge
-        ("object5_cco_nlp_organic.stl", lambda: generate_object5_cco_nlp_organic(output_dir=OUTPUT_DIR), True),  # Needs ridge
+        ("object1_control.stl", lambda: generate_object1_control(output_dir=OUTPUT_DIR)),
+        ("object2_channels.stl", lambda: generate_object2_channels(output_dir=OUTPUT_DIR)),
+        ("object3_bifurcate_512.stl", lambda: generate_object3_bifurcate_512(output_dir=OUTPUT_DIR)),
+        ("object4_turn_bifurcate_merge.stl", lambda: generate_object4_turn_bifurcate_merge(output_dir=OUTPUT_DIR)),
+        ("object5_cco_nlp_organic.stl", lambda: generate_object5_cco_nlp_organic(output_dir=OUTPUT_DIR)),
     ]
     
-    for filename, generator_func, needs_ridge in objects:
+    for filename, generator_func in objects:
         try:
             mesh_m = generator_func()
-            
-            # Add ridge at the END for objects 2-5 (after all voxel operations)
-            if needs_ridge:
-                print(f"  Adding ridge to {filename} (at END to prevent smoothing)...")
-                mesh_m = add_ridge_to_mesh(mesh_m)
-                print(f"    Final mesh: {len(mesh_m.vertices)} vertices, {len(mesh_m.faces)} faces")
             
             # Scale to millimeters
             mesh_mm = scale_mesh_to_mm(mesh_m)
