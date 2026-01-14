@@ -44,7 +44,6 @@ from generation.ops.features import add_raised_ridge, RidgeSpec, FaceId
 from generation.adapters.mesh_adapter import to_trimesh
 from generation.backends.cco_hybrid_backend import CCOHybridBackend, CCOConfig
 from generation.backends.space_colonization_backend import SpaceColonizationBackend, SpaceColonizationConfig
-from generation.optimization.nlp_geometry import optimize_geometry, NLPConfig
 from validity.mesh.voxel_utils import remove_small_components
 
 
@@ -922,14 +921,21 @@ def run_scenario_d_cco_nlp() -> ScenarioResult:
         start_time = time.time()
         
         try:
-            # Use CCOHybridBackend
+            # Use CCOHybridBackend with NLP optimization enabled
             backend = CCOHybridBackend()
             config = CCOConfig(
                 collision_clearance=0.00005,  # 50um
                 collision_check_enabled=True,
                 min_radius=25e-6,  # 25um minimum radius
                 max_consecutive_failures=100,
+                # Enable NLP-based bifurcation point optimization
+                use_nlp_optimization=True,
+                nlp_solver="SLSQP",
+                nlp_tolerance=1e-6,
+                max_nlp_iterations=100,
             )
+            
+            print(f"  CCO with NLP optimization enabled (use_nlp_optimization=True)")
             
             network = backend.generate(
                 domain=domain,
@@ -940,23 +946,6 @@ def run_scenario_d_cco_nlp() -> ScenarioResult:
                 config=config,
                 rng_seed=42,
             )
-            
-            # Run NLP optimization
-            nlp_config = NLPConfig(
-                min_radius=25e-6,
-                max_radius=INLET_RADIUS_M,
-                max_iterations=500,
-                solver_tolerance=1e-6,
-            )
-            
-            nlp_result = optimize_geometry(network, config=nlp_config)
-            
-            print(f"  NLP optimization: success={nlp_result.success}, "
-                  f"iterations={nlp_result.iterations}, "
-                  f"volume_reduction={nlp_result.volume_reduction:.2%}")
-            
-            if nlp_result.errors:
-                print(f"  NLP errors: {nlp_result.errors}")
             
             # Get density metric (achieved outlets)
             num_segments = len(network.segments)
