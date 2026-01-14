@@ -1400,7 +1400,7 @@ def generate_bifurcation_tree_mesh(
 
     K = 4  # always 4 children per split
     # ---- "Tree-like" shaping knobs ----
-    OBJ3_TRUNK_LENGTH_M = top_margin_fraction * CYLINDER_HEIGHT_M       # 0.35 mm straight trunk before any branching
+    OBJ3_TRUNK_LENGTH_M = 0.0003      # 0.35 mm straight trunk before any branching
     OBJ3_TRUNK_RADIUS_FACTOR = 0.75      # trunk radius = 0.55 * inlet_radius (quick neck-down)
     OBJ3_TAPER_ALPHA = 0.35              # <1.0 shrinks faster early (more tree-like, less bulb)
 
