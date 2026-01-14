@@ -1856,7 +1856,9 @@ def generate_bifurcation_tree_mesh_v2(
         return trimesh.Trimesh()
     
     print(f"    Converting network to mesh ({len(network.segments)} segments).")
-    mesh_result = to_trimesh(network, mode="fast", include_caps=True, include_node_spheres=False)
+    # NOTE: include_caps=False is critical for void meshes that open to the top face.
+    # Caps would extend beyond the domain boundary and cause embedding issues.
+    mesh_result = to_trimesh(network, mode="fast", include_caps=False, include_node_spheres=False)
     if mesh_result.is_success():
         return mesh_result.metadata["mesh"]
     
@@ -1981,6 +1983,18 @@ def generate_object3_bifurcate_512(output_dir: Optional[Path] = None) -> trimesh
     
     z_top = CYLINDER_CENTER[2] + CYLINDER_HEIGHT_M / 2
     
+    # Inset inlet Z position to ensure the void mesh stays inside the domain.
+    # The inlet must be far enough from the top face that the tube surface
+    # (including any mesh artifacts) doesn't protrude outside.
+    # Formula: inlet_z = z_top - (inlet_radius + z_margin + extra_cap_margin)
+    # where z_margin accounts for voxel discretization and extra_cap_margin
+    # provides additional safety margin for mesh generation artifacts.
+    z_margin = 2 * VOXEL_PITCH_M  # 2 voxels of margin (z_margin_voxels default)
+    extra_cap_margin = OBJ3_INLET_RADIUS_M  # Extra margin since caps may still appear
+    inlet_z_inset = OBJ3_INLET_RADIUS_M + z_margin + extra_cap_margin
+    inlet_z = z_top - inlet_z_inset
+    print(f"  Inlet Z inset: {meters_to_mm(inlet_z_inset):.3f}mm below top face")
+    
     # Generate bifurcating trees from each inlet
     print(f"  Generating {OBJ3_NUM_INLETS} bifurcating trees...")
     all_trees = []
@@ -1988,10 +2002,11 @@ def generate_object3_bifurcate_512(output_dir: Optional[Path] = None) -> trimesh
     tree_spec = KaryTreeSpec(
         K=4,
         num_levels=len(OBJ3_BIFURCATION_DEPTHS_M),
-        leader_angle_deg_start=12.0,
-        leader_angle_deg_min=5.0,
-        side_angle_deg_start=35.0,
-        side_angle_deg_min=18.0,
+        # Reduced angles to allow more branches to fit in the constrained volume
+        leader_angle_deg_start=8.0,   # Reduced from 12.0 - leader stays more vertical
+        leader_angle_deg_min=3.0,     # Reduced from 5.0
+        side_angle_deg_start=25.0,    # Reduced from 35.0 - laterals spread less
+        side_angle_deg_min=12.0,      # Reduced from 18.0
         side_length_mult_start=0.55,
         side_length_mult_end=0.85,
         side_radius_factor=0.75,
@@ -2001,12 +2016,13 @@ def generate_object3_bifurcate_512(output_dir: Optional[Path] = None) -> trimesh
         enable_soft_collision=True,
         enable_reaim_instead_of_skip=True,
         wall_margin_m=OBJ3_WALL_MARGIN_M,
-        min_segment_length_m=BRANCH_MIN_SEGMENT_LENGTH_M,
+        # Reduced min_segment_length to allow more branches in small volume
+        min_segment_length_m=1e-6,    # 1µm instead of 10µm
     )
     
     for i, (x, y) in enumerate(OBJ3_INLET_POSITIONS):
-        print(f"    Tree {i+1}: inlet at ({meters_to_mm(x):.1f}, {meters_to_mm(y):.1f})mm")
-        inlet_pos = (x, y, z_top)
+        print(f"    Tree {i+1}: inlet at ({meters_to_mm(x):.1f}, {meters_to_mm(y):.1f})mm, z={meters_to_mm(inlet_z):.3f}mm")
+        inlet_pos = (x, y, inlet_z)
         
         tree_mesh = generate_bifurcation_tree_mesh_v2(
             inlet_position=inlet_pos,
