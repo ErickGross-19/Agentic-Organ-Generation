@@ -871,7 +871,8 @@ def embed_void_in_cylinder(
             geometry_units="m",
             output_units="m",
             output_void=True,
-            smoothing_iters=0,  # preserve void edges
+            output_shell=False,      # <-- CRITICAL: don't return a thin shell
+            smoothing_iters=0,       # preserve void edges
         )
 
         domain_with_void = result.get("domain_with_void", None)
@@ -910,6 +911,17 @@ def embed_void_in_cylinder(
 
             carved = domain_voxels - solid_voxels
             print(f"    Carving verified: removed ~{carved} voxels ({carved/domain_voxels*100:.2f}%)")
+            # If embedding returned a shell or an uncarved domain by mistake, volume won't drop meaningfully.
+            cyl_vol = math.pi * (CYLINDER_RADIUS_M ** 2) * CYLINDER_HEIGHT_M
+            out_vol = abs(float(domain_with_void.volume))
+            reduction_pct = (cyl_vol - out_vol) / cyl_vol * 100.0
+            
+            print(f"    Volume check: cylinder={cyl_vol:.9e} m^3, output={out_vol:.9e} m^3, reduction={reduction_pct:.3f}%")
+            
+            # If reduction is tiny, it is almost certainly "outline only" (shell) or uncarved.
+            if reduction_pct < 0.2:
+                raise RuntimeError("Embedding output looks uncarved/shell-like (volume reduction < 0.2%). Forcing voxel-subtraction fallback.")
+
         else:
             print("    Warning: embedding did not return voxel_counts; skipping carve verification.")
 
