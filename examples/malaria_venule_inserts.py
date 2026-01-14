@@ -224,7 +224,7 @@ def compute_inlet_positions_center_rings(
     cylinder_radius: float = None,
     ridge_inner_radius: float = None,
     wall_margin: float = 0.0005,
-    spacing_factor: float = 0.2,
+    spacing_factor: float = 0.5,
     include_z: bool = False,
     z_position: float = None,
 ) -> List[Tuple[float, ...]]:
