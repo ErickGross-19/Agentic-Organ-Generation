@@ -319,6 +319,115 @@ def compute_inlet_positions_center_rings(
     return positions
 
 
+def compute_inlet_positions_center_rings_obj3(
+    num_inlets: int,
+    inlet_radius: float,
+    cylinder_radius: float = None,
+    ridge_inner_radius: float = None,
+    wall_margin: float = 0.0005,
+    spacing_factor: float = 0.2,
+    max_per_ring: int = 4,
+    ring_offset_angle: float = None,
+    ring_spacing_multiplier: float = 1.5,
+) -> List[Tuple[float, float]]:
+    """
+    Compute inlet positions for Object 3 using center + concentric rings with max 4 per ring.
+    
+    This specialized version for Object 3:
+    - Places 1 channel at the center first
+    - Limits each ring to max 4 inlets (configurable)
+    - Offsets each subsequent ring by half the angular spacing (staggered pattern)
+    - Spaces rings further apart using ring_spacing_multiplier
+    
+    Parameters
+    ----------
+    num_inlets : int
+        Total number of inlets to place
+    inlet_radius : float
+        Radius of each inlet channel (meters)
+    cylinder_radius : float, optional
+        Radius of the cylinder domain (defaults to CYLINDER_RADIUS_M)
+    ridge_inner_radius : float, optional
+        Inner radius of the ridge (defaults to RIDGE_INNER_RADIUS_M)
+    wall_margin : float
+        Minimum margin from cylinder edge (meters)
+    spacing_factor : float
+        Extra gap between channels as fraction of diameter (0.2 = 20% extra spacing)
+    max_per_ring : int
+        Maximum number of inlets per ring (default 4)
+    ring_offset_angle : float, optional
+        Angular offset between rings in radians. If None, uses half the angular spacing
+        of the previous ring (pi / max_per_ring) for a staggered pattern.
+    ring_spacing_multiplier : float
+        Multiplier for spacing between rings (default 1.5 = 50% more spacing between rings)
+    
+    Returns
+    -------
+    List of (x, y) tuples for inlet center positions
+    """
+    if num_inlets == 0:
+        return []
+    
+    if cylinder_radius is None:
+        cylinder_radius = CYLINDER_RADIUS_M
+    if ridge_inner_radius is None:
+        ridge_inner_radius = RIDGE_INNER_RADIUS_M
+    
+    limiting_radius = min(float(cylinder_radius), float(ridge_inner_radius))
+    max_placement_radius = limiting_radius - float(inlet_radius) - float(wall_margin)
+    
+    if max_placement_radius <= 0:
+        raise ValueError(
+            f"Cannot place inlets: max_placement_radius<=0.\n"
+            f"  limiting_radius={limiting_radius:.6f} m\n"
+            f"  inlet_radius={inlet_radius:.6f} m\n"
+            f"  wall_margin={wall_margin:.6f} m"
+        )
+    
+    # Start with center position
+    positions = [(0.0, 0.0)]
+    
+    if num_inlets == 1:
+        return positions
+    
+    # Calculate pitch based on inlet diameter and spacing
+    pitch = 2.0 * inlet_radius * (1.0 + spacing_factor)
+    
+    # Apply ring spacing multiplier for more space between rings
+    ring_pitch = pitch * ring_spacing_multiplier
+    
+    # Default offset is half the angular spacing for staggered pattern
+    if ring_offset_angle is None:
+        ring_offset_angle = pi / max_per_ring
+    
+    ring_k = 1
+    cumulative_offset = 0.0
+    
+    while len(positions) < num_inlets:
+        ring_radius = ring_k * ring_pitch
+        
+        if ring_radius > max_placement_radius:
+            break
+        
+        # Limit inlets per ring to max_per_ring
+        n_on_ring = min(max_per_ring, num_inlets - len(positions))
+        
+        # Place inlets evenly around the ring with cumulative offset
+        for i in range(n_on_ring):
+            if len(positions) >= num_inlets:
+                break
+            angle = cumulative_offset + 2.0 * pi * i / max_per_ring
+            x = ring_radius * cos(angle)
+            y = ring_radius * sin(angle)
+            positions.append((x, y))
+        
+        # Add offset for next ring (staggered pattern)
+        cumulative_offset += ring_offset_angle
+        ring_k += 1
+    
+    return positions[:num_inlets]
+
+
 def compute_bifurcation_depths(
     num_bifurcations: int,
     cylinder_height: float = CYLINDER_HEIGHT_M,
@@ -429,13 +538,17 @@ OBJ3_BIFURCATION_DEPTHS_M = compute_bifurcation_depths(
     cylinder_height=CYLINDER_HEIGHT_M,
 )
 # Inlet positions for Object 3 - center first, then concentric rings outward
-# Supports any number of inlets (n)
+# Uses specialized function with max 4 inlets per ring and staggered offset between rings
 OBJ3_RING_SPACING_FACTOR = 0.2    # Extra gap between channels as fraction of diameter
-OBJ3_INLET_POSITIONS = compute_inlet_positions_center_rings(
+OBJ3_MAX_INLETS_PER_RING = 4      # Maximum inlets per ring (staggered pattern)
+OBJ3_RING_SPACING_MULTIPLIER = 1.5  # Multiplier for spacing between rings (1.5 = 50% more space)
+OBJ3_INLET_POSITIONS = compute_inlet_positions_center_rings_obj3(
     num_inlets=OBJ3_NUM_INLETS,
     inlet_radius=OBJ3_INLET_RADIUS_M,
     wall_margin=OBJ3_WALL_MARGIN_M,
     spacing_factor=OBJ3_RING_SPACING_FACTOR,
+    max_per_ring=OBJ3_MAX_INLETS_PER_RING,
+    ring_spacing_multiplier=OBJ3_RING_SPACING_MULTIPLIER,
 )
 
 # =============================================================================
