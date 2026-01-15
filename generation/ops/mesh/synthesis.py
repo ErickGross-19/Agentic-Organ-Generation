@@ -57,9 +57,11 @@ def synthesize_mesh(
         "add_node_spheres": policy.add_node_spheres,
         "cap_ends": policy.cap_ends,
         "segments_per_circle": policy.segments_per_circle,
+        "mutate_network_in_place": policy.mutate_network_in_place,
+        "radius_clamp_mode": policy.radius_clamp_mode,
     }
     
-    # Apply radius clamping if specified
+    # Build effective policy
     effective_policy = MeshSynthesisPolicy(
         add_node_spheres=policy.add_node_spheres,
         cap_ends=policy.cap_ends,
@@ -67,36 +69,65 @@ def synthesize_mesh(
         radius_clamp_max=policy.radius_clamp_max,
         voxel_repair_synthesis=policy.voxel_repair_synthesis,
         segments_per_circle=policy.segments_per_circle,
+        mutate_network_in_place=policy.mutate_network_in_place,
+        radius_clamp_mode=policy.radius_clamp_mode,
     )
     
+    # Apply radius clamping if specified
+    # Clamp TubeGeometry.radius_start and radius_end (the correct fields)
     clamped_count = 0
+    work_network = network
+    
     if policy.radius_clamp_min is not None or policy.radius_clamp_max is not None:
-        for segment in network.segments.values():
-            if hasattr(segment, 'start_radius') and segment.start_radius:
-                original = segment.start_radius
-                if policy.radius_clamp_min and segment.start_radius < policy.radius_clamp_min:
-                    segment.start_radius = policy.radius_clamp_min
-                    clamped_count += 1
-                if policy.radius_clamp_max and segment.start_radius > policy.radius_clamp_max:
-                    segment.start_radius = policy.radius_clamp_max
-                    clamped_count += 1
+        # Determine if we should mutate in place or work on a copy
+        should_mutate = policy.mutate_network_in_place or policy.radius_clamp_mode == "mutate"
+        
+        if not should_mutate:
+            # Create a deep copy of the network to avoid mutating the original
+            import copy
+            work_network = copy.deepcopy(network)
+            metadata["network_copied"] = True
+        
+        for segment in work_network.segments.values():
+            # Access radius through geometry attribute (TubeGeometry)
+            if hasattr(segment, 'geometry') and segment.geometry is not None:
+                geom = segment.geometry
+                
+                # Clamp radius_start
+                if hasattr(geom, 'radius_start') and geom.radius_start is not None:
+                    if policy.radius_clamp_min and geom.radius_start < policy.radius_clamp_min:
+                        geom.radius_start = policy.radius_clamp_min
+                        clamped_count += 1
+                    if policy.radius_clamp_max and geom.radius_start > policy.radius_clamp_max:
+                        geom.radius_start = policy.radius_clamp_max
+                        clamped_count += 1
+                
+                # Clamp radius_end
+                if hasattr(geom, 'radius_end') and geom.radius_end is not None:
+                    if policy.radius_clamp_min and geom.radius_end < policy.radius_clamp_min:
+                        geom.radius_end = policy.radius_clamp_min
+                        clamped_count += 1
+                    if policy.radius_clamp_max and geom.radius_end > policy.radius_clamp_max:
+                        geom.radius_end = policy.radius_clamp_max
+                        clamped_count += 1
             
-            if hasattr(segment, 'end_radius') and segment.end_radius:
-                if policy.radius_clamp_min and segment.end_radius < policy.radius_clamp_min:
-                    segment.end_radius = policy.radius_clamp_min
+            # Also check for direct radius attributes (legacy support)
+            elif hasattr(segment, 'radius') and segment.radius is not None:
+                if policy.radius_clamp_min and segment.radius < policy.radius_clamp_min:
+                    segment.radius = policy.radius_clamp_min
                     clamped_count += 1
-                if policy.radius_clamp_max and segment.end_radius > policy.radius_clamp_max:
-                    segment.end_radius = policy.radius_clamp_max
+                if policy.radius_clamp_max and segment.radius > policy.radius_clamp_max:
+                    segment.radius = policy.radius_clamp_max
                     clamped_count += 1
         
         if clamped_count > 0:
             warnings.append(f"Clamped {clamped_count} radii to policy limits")
             metadata["radii_clamped"] = clamped_count
     
-    # Synthesize mesh using adapter
+    # Synthesize mesh using adapter (use work_network which may be clamped)
     try:
         mesh = to_trimesh(
-            network,
+            work_network,
             add_node_spheres=policy.add_node_spheres,
             cap_ends=policy.cap_ends,
             segments_per_circle=policy.segments_per_circle,
