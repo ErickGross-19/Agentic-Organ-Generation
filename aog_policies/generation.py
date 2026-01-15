@@ -242,7 +242,7 @@ class GrowthPolicy:
     JSON Schema:
     {
         "enabled": bool,
-        "backend": "space_colonization" | "kary_tree" | "cco_hybrid",
+        "backend": "space_colonization" | "kary_tree" | "cco_hybrid" | "programmatic",
         "target_terminals": int,
         "terminal_tolerance": float (fraction),
         "max_iterations": int,
@@ -253,7 +253,7 @@ class GrowthPolicy:
     }
     """
     enabled: bool = True
-    backend: Literal["space_colonization", "kary_tree", "cco_hybrid"] = "space_colonization"
+    backend: Literal["space_colonization", "kary_tree", "cco_hybrid", "programmatic"] = "space_colonization"
     target_terminals: Optional[int] = None
     terminal_tolerance: float = 0.1  # 10% tolerance
     max_iterations: int = 500
