@@ -144,48 +144,79 @@ def _embed_with_retry(
 ) -> Tuple["trimesh.Trimesh", "trimesh.Trimesh", "trimesh.Trimesh"]:
     """
     Perform embedding with automatic pitch adjustment on memory errors.
+    
+    Note: The existing embed_tree_as_negative_space function only accepts
+    file paths, so we save the in-memory mesh to a temp file. This is a
+    Phase 1 workaround; Phase 2 will refactor the underlying function to
+    accept in-memory meshes directly.
     """
     from ..ops.embedding import embed_tree_as_negative_space
     import trimesh
+    import tempfile
+    import os
     
     current_pitch = policy.voxel_pitch
     max_attempts = policy.max_pitch_steps if policy.auto_adjust_pitch else 1
     
-    for attempt in range(max_attempts):
-        try:
-            # Call the existing embedding function
-            result = embed_tree_as_negative_space(
-                domain=domain,
-                tree_stl_path=None,
-                tree_mesh=void_mesh,
-                voxel_pitch=current_pitch,
-                shell_thickness=policy.shell_thickness,
-                fallback=policy.fallback,
-            )
-            
-            # Unpack result
-            if isinstance(result, tuple) and len(result) >= 2:
-                solid = result[0]
-                void_out = result[1] if len(result) > 1 else void_mesh
-                shell = result[2] if len(result) > 2 else solid
-            else:
-                solid = result
-                void_out = void_mesh
-                shell = solid
-            
-            return solid, void_out, shell
-            
-        except MemoryError:
-            if attempt < max_attempts - 1:
-                current_pitch *= 1.5
-                pitch_adjustments.append(current_pitch)
-                logger.warning(
-                    f"Memory error during embedding, increasing pitch to {current_pitch:.6f}"
-                )
-            else:
-                raise
+    # Save mesh to temp file (existing function only accepts paths)
+    temp_dir = tempfile.mkdtemp()
+    temp_path = os.path.join(temp_dir, "void_mesh.stl")
     
-    raise RuntimeError("Embedding failed after all retry attempts")
+    try:
+        void_mesh.export(temp_path)
+        
+        for attempt in range(max_attempts):
+            try:
+                # Call the existing embedding function with file path
+                result = embed_tree_as_negative_space(
+                    tree_stl_path=temp_path,
+                    domain=domain,
+                    voxel_pitch=current_pitch,
+                    shell_thickness=policy.shell_thickness,
+                    output_void=True,
+                    output_shell=True,
+                    auto_adjust_pitch=policy.auto_adjust_pitch,
+                )
+                
+                # Unpack result dictionary
+                if isinstance(result, dict):
+                    solid = result.get('domain_with_void', trimesh.Trimesh())
+                    void_out = result.get('void', void_mesh)
+                    shell = result.get('shell', solid)
+                    
+                    # Handle None values
+                    if solid is None:
+                        solid = trimesh.Trimesh()
+                    if void_out is None:
+                        void_out = void_mesh
+                    if shell is None:
+                        shell = solid
+                else:
+                    solid = result
+                    void_out = void_mesh
+                    shell = solid
+                
+                return solid, void_out, shell
+                
+            except MemoryError:
+                if attempt < max_attempts - 1:
+                    current_pitch *= 1.5
+                    pitch_adjustments.append(current_pitch)
+                    logger.warning(
+                        f"Memory error during embedding, increasing pitch to {current_pitch:.6f}"
+                    )
+                else:
+                    raise
+        
+        raise RuntimeError("Embedding failed after all retry attempts")
+        
+    finally:
+        # Clean up temp file
+        try:
+            os.remove(temp_path)
+            os.rmdir(temp_dir)
+        except Exception:
+            pass
 
 
 def _check_shrink_warnings(

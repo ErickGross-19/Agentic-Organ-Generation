@@ -130,7 +130,10 @@ class GrowthPolicy:
         "target_terminals": int,
         "terminal_tolerance": float (fraction),
         "max_iterations": int,
-        "seed": int | null
+        "seed": int | null,
+        "min_segment_length": float (meters),
+        "max_segment_length": float (meters),
+        "step_size": float (meters)
     }
     """
     enabled: bool = True
@@ -139,6 +142,9 @@ class GrowthPolicy:
     terminal_tolerance: float = 0.1  # 10% tolerance
     max_iterations: int = 500
     seed: Optional[int] = None
+    min_segment_length: float = 0.0002  # 0.2mm
+    max_segment_length: float = 0.002  # 2mm
+    step_size: float = 0.0003  # 0.3mm
     
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
