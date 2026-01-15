@@ -886,6 +886,7 @@ def _compute_tube_safe_step_length(
     adaptive_safety: bool = True,
     min_usable_height_fraction: float = 0.3,
     min_usable_radius_fraction: float = 0.2,
+    debug: bool = False,
 ) -> float:
     """
     Compute the maximum step length that keeps the entire tube inside the domain.
@@ -971,10 +972,20 @@ def _compute_tube_safe_step_length(
         dx, dy, dz = direction[0], direction[1], direction[2]
         px, py, pz = start[0], start[1], start[2]
         
+        if debug:
+            print(f"  [DEBUG _compute_tube_safe_step_length]")
+            print(f"    Input: start=({px*1000:.3f}, {py*1000:.3f}, {pz*1000:.3f})mm, dir=({dx:.3f}, {dy:.3f}, {dz:.3f})")
+            print(f"    Input: tube_radius={tube_radius*1000:.3f}mm, requested_length={requested_length*1000:.3f}mm")
+            print(f"    Domain: R={R*1000:.3f}mm, H={H*1000:.3f}mm, half_h={half_h*1000:.3f}mm")
+            print(f"    Adaptive: effective_tube_radius_xy={effective_tube_radius_xy*1000:.3f}mm, effective_tube_radius_z={effective_tube_radius_z*1000:.3f}mm")
+            print(f"    Bounds: z_min={z_min*1000:.3f}mm, z_max={z_max*1000:.3f}mm, effective_radius={effective_radius*1000:.3f}mm")
+        
         ox = px - cx
         oy = py - cy
         start_r_xy = np.sqrt(ox * ox + oy * oy)
         if start_r_xy > effective_radius:
+            if debug:
+                print(f"    REJECTED: start_r_xy={start_r_xy*1000:.3f}mm > effective_radius={effective_radius*1000:.3f}mm")
             return 0.0
         
         # NOTE: We intentionally do NOT check if pz is within [z_min, z_max] here.
@@ -997,17 +1008,30 @@ def _compute_tube_safe_step_length(
                 t2 = (-b + sqrt_disc) / (2.0 * a)
                 
                 if t2 > 0 and t2 < max_t:
+                    if debug:
+                        print(f"    XY clamp: t2={t2*1000:.3f}mm (was max_t={max_t*1000:.3f}mm)")
                     max_t = max(t2, 0.0)
         
         if abs(dz) > 1e-12:
             if dz < 0:
                 t_bottom = (z_min - pz) / dz
+                if debug:
+                    print(f"    Z check (dz<0): t_bottom={t_bottom*1000:.3f}mm (z_min={z_min*1000:.3f}mm, pz={pz*1000:.3f}mm)")
                 if t_bottom > 0 and t_bottom < max_t:
+                    if debug:
+                        print(f"    Z clamp (bottom): t_bottom={t_bottom*1000:.3f}mm (was max_t={max_t*1000:.3f}mm)")
                     max_t = t_bottom
             else:
                 t_top = (z_max - pz) / dz
+                if debug:
+                    print(f"    Z check (dz>0): t_top={t_top*1000:.3f}mm (z_max={z_max*1000:.3f}mm, pz={pz*1000:.3f}mm)")
                 if t_top > 0 and t_top < max_t:
+                    if debug:
+                        print(f"    Z clamp (top): t_top={t_top*1000:.3f}mm (was max_t={max_t*1000:.3f}mm)")
                     max_t = t_top
+        
+        if debug:
+            print(f"    Result: safe_length={max(max_t, 0.0)*1000:.3f}mm")
         
         return max(max_t, 0.0)
     
@@ -1423,6 +1447,7 @@ def grow_kary_tree_v2(
     taper_fn: Optional[callable] = None,
     constraints: Optional[BranchingConstraints] = None,
     seed: Optional[int] = None,
+    debug: bool = False,
 ) -> OperationResult:
     """
     Grow a K-ary tree with leader + lateral branching pattern (upgraded algorithm).
@@ -1620,6 +1645,13 @@ def grow_kary_tree_v2(
                 
                 child_radius = max(child_radius, constraints.min_radius)
                 
+                if debug:
+                    print(f"\n[DEBUG grow_kary_tree_v2] Level {level}, child {k} ({'leader' if is_leader else 'lateral'})")
+                    print(f"  tip_pos=({tip_pos[0]*1000:.3f}, {tip_pos[1]*1000:.3f}, {tip_pos[2]*1000:.3f})mm")
+                    print(f"  tip_radius={tip_radius*1000:.3f}mm, child_radius={child_radius*1000:.3f}mm")
+                    print(f"  angle_deg={angle_deg:.1f}, child_length={child_length*1000:.3f}mm")
+                    print(f"  wall_margin_m={spec.wall_margin_m*1000:.3f}mm, min_segment_length_m={spec.min_segment_length_m*1000:.6f}mm")
+                
                 lateral = np.cos(child_azimuth) * perp1 + np.sin(child_azimuth) * perp2
                 child_dir = np.cos(angle_rad) * tip_dir_norm + np.sin(angle_rad) * lateral
                 child_dir = child_dir / (np.linalg.norm(child_dir) + 1e-12)
@@ -1651,6 +1683,9 @@ def grow_kary_tree_v2(
                     attempt_angle_rad = angle_rad * (spec.reaim_angle_shrink ** attempt)
                     attempt_length = child_length * (spec.reaim_length_shrink ** attempt)
                     
+                    if debug:
+                        print(f"  Attempt {attempt}: angle_rad={np.degrees(attempt_angle_rad):.1f}deg, attempt_length={attempt_length*1000:.3f}mm")
+                    
                     if attempt > 0:
                         jitter = rng.uniform(-np.radians(spec.collision_azimuth_jitter_deg), 
                                             np.radians(spec.collision_azimuth_jitter_deg))
@@ -1667,21 +1702,34 @@ def grow_kary_tree_v2(
                     
                     if hasattr(network, 'domain') and network.domain is not None:
                         max_tube_radius = max(tip_radius, child_radius)
+                        total_tube_radius = max_tube_radius + spec.wall_margin_m
+                        
+                        if debug:
+                            print(f"  Calling _compute_tube_safe_step_length:")
+                            print(f"    max_tube_radius={max_tube_radius*1000:.3f}mm + wall_margin={spec.wall_margin_m*1000:.3f}mm = {total_tube_radius*1000:.3f}mm")
+                        
                         safe_length = _compute_tube_safe_step_length(
                             start=tip_pos,
                             direction=attempt_dir,
-                            tube_radius=max_tube_radius + spec.wall_margin_m,
+                            tube_radius=total_tube_radius,
                             domain=network.domain,
                             requested_length=attempt_length,
+                            debug=debug,
                         )
                         
-                        safe_length = safe_length * spec.boundary_safety
+                        safe_length_after_safety = safe_length * spec.boundary_safety
                         
-                        if safe_length < spec.min_segment_length_m:
+                        if debug:
+                            print(f"  safe_length={safe_length*1000:.3f}mm * boundary_safety={spec.boundary_safety} = {safe_length_after_safety*1000:.3f}mm")
+                            print(f"  min_segment_length_m={spec.min_segment_length_m*1000:.6f}mm")
+                            if safe_length_after_safety < spec.min_segment_length_m:
+                                print(f"  REJECTED: safe_length ({safe_length_after_safety*1000:.6f}mm) < min_segment_length_m ({spec.min_segment_length_m*1000:.6f}mm)")
+                        
+                        if safe_length_after_safety < spec.min_segment_length_m:
                             skip_counts["boundary_clamp"] += 1
                             continue
                         
-                        attempt_length = safe_length
+                        attempt_length = safe_length_after_safety
                     
                     attempt_end = tip_pos + attempt_length * attempt_dir
                     
