@@ -7,18 +7,37 @@ avoidance, anastomosis creation, and embedding structures into domains.
 
 Primary Output: Domain-with-void scaffold mesh + supplementary surface mesh
 
-Main Entry Points:
-    - design_from_spec(): Build networks from declarative JSON specifications
-    - run_experiment(): One-call orchestration of design -> evaluate -> export
-    - create_network(): Low-level network initialization
-    - space_colonization_step(): Organic growth algorithm
+IMPORT GUIDE
+------------
+Import from specific submodules to avoid loading unnecessary dependencies:
+
+    # High-level API (recommended entry points)
+    from generation.api import design_from_spec, run_experiment, generate_network
+    
+    # Specifications
+    from generation.specs import DesignSpec, TreeSpec, EllipsoidSpec, CylinderSpec
+    
+    # Core types
+    from generation.core import VascularNetwork, EllipsoidDomain, BoxDomain
+    
+    # Operations (import only what you need)
+    from generation.ops import create_network, add_inlet, add_outlet
+    from generation.ops.collision import get_collisions, detect_collisions
+    from generation.ops.embedding import embed_tree_as_negative_space
+    from generation.ops.features import add_raised_ridge, FaceId
+    from generation.ops.pathfinding import find_path, grow_toward_targets
+    
+    # Backends
+    from generation.backends import CCOHybridBackend, SpaceColonizationBackend
+    
+    # Parameters
+    from generation.params import get_preset
 
 Example:
-    >>> from generation.api import design_from_spec, run_experiment
+    >>> from generation.api import run_experiment
     >>> from generation.specs import DesignSpec, TreeSpec, EllipsoidSpec
     >>> from generation.params import get_preset
     >>>
-    >>> # Define network design as spec
     >>> spec = DesignSpec(
     ...     domain=EllipsoidSpec(center=(0,0,0), semi_axes=(50,50,50)),
     ...     tree=TreeSpec.single_inlet(
@@ -27,47 +46,19 @@ Example:
     ...         colonization=get_preset("liver_arterial_dense")
     ...     )
     ... )
-    >>>
-    >>> # Run complete experiment
     >>> result = run_experiment(spec, output_dir="./output")
+
+NOTE: This __init__.py is intentionally lightweight to prevent import-time errors
+when optional dependencies are missing. Import from specific submodules as shown above.
 """
 
-from .api import design_from_spec, evaluate_network, run_experiment
-from .ops import (
-    create_network,
-    add_inlet,
-    add_outlet,
-    grow_branch,
-    bifurcate,
-    space_colonization_step,
-    get_collisions,
-    avoid_collisions,
-    create_anastomosis,
-    embed_tree_as_negative_space,
-)
-from .core import VascularNetwork, EllipsoidDomain, BoxDomain
-from .params import get_preset
-
+# Only export submodule names for discovery - actual imports should be from submodules
 __all__ = [
-    # High-level API
-    "design_from_spec",
-    "evaluate_network", 
-    "run_experiment",
-    # Operations
-    "create_network",
-    "add_inlet",
-    "add_outlet",
-    "grow_branch",
-    "bifurcate",
-    "space_colonization_step",
-    "get_collisions",
-    "avoid_collisions",
-    "create_anastomosis",
-    "embed_tree_as_negative_space",
-    # Core types
-    "VascularNetwork",
-    "EllipsoidDomain",
-    "BoxDomain",
-    # Params
-    "get_preset",
+    "api",
+    "backends",
+    "core",
+    "ops",
+    "params",
+    "specs",
+    "utils",
 ]
