@@ -95,7 +95,23 @@ def design_from_spec(
         DeprecationWarning,
         stacklevel=2,
     )
+    return _design_from_spec_impl(spec, max_retries, fail_on_empty)
+
+
+def _design_from_spec_impl(
+    spec: DesignSpec,
+    max_retries: int = 3,
+    fail_on_empty: bool = True,
+) -> VascularNetwork:
+    """
+    Internal implementation of design_from_spec.
     
+    This function contains the actual implementation logic and is used by both
+    the deprecated design_from_spec (for backward compatibility) and internal
+    code like run_experiment (without triggering deprecation warnings).
+    
+    Parameters and return values are the same as design_from_spec.
+    """
     domain = compile_domain(spec.domain)
     
     # Create network

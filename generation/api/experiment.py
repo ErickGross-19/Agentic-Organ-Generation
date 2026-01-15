@@ -1,8 +1,8 @@
 """End-to-end experiment runner for vascular network design.
 
 This module provides a high-level run_experiment() function that combines
-design_from_spec() and evaluate_network() into a single workflow with
-automatic file saving and logging.
+network generation and evaluation into a single workflow with automatic
+file saving and logging.
 """
 
 from typing import Optional, Dict, Any
@@ -12,7 +12,7 @@ import time
 
 from ..specs.design_spec import DesignSpec
 from ..specs.eval_result import EvalResult
-from .design import design_from_spec
+from .design import _design_from_spec_impl
 from .evaluate import evaluate_network, EvalConfig
 
 
@@ -68,7 +68,7 @@ def run_experiment(
     timing = {}
     
     design_start = time.time()
-    network = design_from_spec(spec)
+    network = _design_from_spec_impl(spec)
     timing['design'] = time.time() - design_start
     
     eval_start = time.time()
