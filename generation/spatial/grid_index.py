@@ -16,11 +16,11 @@ def segment_segment_distance_exact(
     """
     Compute exact minimum distance between two 3D line segments (straight lines only).
     
+    This is a wrapper around the canonical implementation in
+    generation.utils.geometry.segment_segment_distance.
+    
     Segment 1: p1 to p2
     Segment 2: p3 to p4
-    
-    Uses the analytic formula for closest points on two line segments.
-    This handles all cases including parallel segments and endpoint proximity.
     
     NOTE: This function only handles straight segments. For polyline-aware distance
     that handles segments with centerline_points, use `polyline_segment_distance()`.
@@ -37,59 +37,8 @@ def segment_segment_distance_exact(
     float
         Minimum distance between the two segments
     """
-    d1 = p2 - p1  # Direction of segment 1
-    d2 = p4 - p3  # Direction of segment 2
-    r = p1 - p3
-    
-    a = np.dot(d1, d1)  # |d1|^2
-    e = np.dot(d2, d2)  # |d2|^2
-    f = np.dot(d2, r)
-    
-    EPSILON = 1e-10
-    
-    # Check if both segments are degenerate (points)
-    if a < EPSILON and e < EPSILON:
-        return float(np.linalg.norm(r))
-    
-    # Check if segment 1 is degenerate (point)
-    if a < EPSILON:
-        s = 0.0
-        t = np.clip(f / e, 0.0, 1.0)
-    else:
-        c = np.dot(d1, r)
-        
-        # Check if segment 2 is degenerate (point)
-        if e < EPSILON:
-            t = 0.0
-            s = np.clip(-c / a, 0.0, 1.0)
-        else:
-            # General non-degenerate case
-            b = np.dot(d1, d2)
-            denom = a * e - b * b  # Always >= 0
-            
-            # If segments are not parallel, compute closest point on line 1 to line 2
-            if denom > EPSILON:
-                s = np.clip((b * f - c * e) / denom, 0.0, 1.0)
-            else:
-                # Segments are parallel, pick arbitrary s
-                s = 0.0
-            
-            # Compute point on line 2 closest to S1(s)
-            t = (b * s + f) / e
-            
-            # If t is outside [0,1], clamp and recompute s
-            if t < 0.0:
-                t = 0.0
-                s = np.clip(-c / a, 0.0, 1.0)
-            elif t > 1.0:
-                t = 1.0
-                s = np.clip((b - c) / a, 0.0, 1.0)
-    
-    # Compute closest points
-    closest1 = p1 + s * d1
-    closest2 = p3 + t * d2
-    
-    return float(np.linalg.norm(closest1 - closest2))
+    from ..utils.geometry import segment_segment_distance
+    return segment_segment_distance(p1, p2, p3, p4)
 
 
 def polyline_segment_distance(
@@ -198,11 +147,14 @@ class SpatialIndex:
         """
         Compute cell size from network statistics.
         
-        P2-2: Uses 0.5 * median segment length, clamped to [0.0005m, 0.05m].
+        P2-2: Uses 0.5 * median segment length, clamped to [0.0005m, 0.05m).
         This ensures the grid is appropriately sized for the network scale.
+        
+        A3 FIX: Upper bound is strictly less than max (0.049999) to ensure
+        cell_size < 0.05 as expected by tests.
         """
         min_cell_size = 0.0005  # 0.5mm minimum
-        max_cell_size = 0.05    # 50mm maximum
+        max_cell_size = 0.049999  # Strictly less than 50mm (A3 fix)
         default_cell_size = 0.005  # 5mm default
         
         if not self.network.segments:

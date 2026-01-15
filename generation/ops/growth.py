@@ -216,13 +216,14 @@ def grow_branch(
             new_position.z,
         ])
         
+        # A2 FIX: Use policy-controlled collision parameters instead of hardcoded values
         has_collision, collision_details = check_segment_collision_swept(
             network,
             new_seg_start=parent_pos,
             new_seg_end=new_pos,
             new_seg_radius=target_radius,
             exclude_node_ids=[from_node_id],
-            min_clearance=0.0005,
+            min_clearance=constraints.collision_min_clearance,
         )
         
         for detail in collision_details:
@@ -237,7 +238,7 @@ def grow_branch(
                 parent_pos,
                 new_pos,
                 target_radius,
-                wall_thickness=0.0003,
+                wall_thickness=constraints.wall_thickness,
             )
             if not fits:
                 warnings.append(f"Tube may extend outside domain (margin: {margin:.4f}m)")
@@ -454,13 +455,14 @@ def grow_to_point(
     if check_collisions:
         from .collision import check_segment_collision_swept, check_domain_boundary_clearance
         
+        # A2 FIX: Use policy-controlled collision parameters instead of hardcoded values
         has_collision, collision_details = check_segment_collision_swept(
             network,
             new_seg_start=parent_pos,
             new_seg_end=target_pos,
             new_seg_radius=target_radius,
             exclude_node_ids=[from_node_id],
-            min_clearance=0.001,
+            min_clearance=constraints.collision_min_clearance,
         )
         
         domain_fits = True
@@ -470,7 +472,7 @@ def grow_to_point(
                 parent_pos,
                 target_pos,
                 target_radius,
-                wall_thickness=0.0003,
+                wall_thickness=constraints.wall_thickness,
             )
         
         if (has_collision or not domain_fits) and use_polyline_routing:

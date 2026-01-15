@@ -20,6 +20,9 @@ class BranchingConstraints:
     - min_radius=3e-4 (0.3mm capillary scale)
     - min_segment_length=1e-3 (1mm)
     - max_segment_length=5e-2 (50mm)
+    
+    A2 FIX: Added collision_min_clearance and wall_thickness fields to make
+    collision detection policy-controlled instead of using hardcoded values.
     """
 
     min_radius: float = 3e-4  # 0.3 mm = 3e-4 m (capillary scale)
@@ -31,6 +34,10 @@ class BranchingConstraints:
     curvature_limit_deg: float = 15.0  # Max curvature per step
     termination_rule: str = "radius_or_order"  # "radius_or_order", "radius_only", "order_only"
     allowed_vessel_types: List[str] = field(default_factory=lambda: ["arterial", "venous"])
+    
+    # A2 FIX: Collision detection parameters (previously hardcoded)
+    collision_min_clearance: float = 0.001  # 1mm minimum clearance between segments
+    wall_thickness: float = 0.0003  # 0.3mm wall thickness for boundary checks
 
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
@@ -44,6 +51,8 @@ class BranchingConstraints:
             "curvature_limit_deg": self.curvature_limit_deg,
             "termination_rule": self.termination_rule,
             "allowed_vessel_types": self.allowed_vessel_types,
+            "collision_min_clearance": self.collision_min_clearance,
+            "wall_thickness": self.wall_thickness,
         }
 
     @classmethod
@@ -59,6 +68,8 @@ class BranchingConstraints:
             curvature_limit_deg=d.get("curvature_limit_deg", 15.0),
             termination_rule=d.get("termination_rule", "radius_or_order"),
             allowed_vessel_types=d.get("allowed_vessel_types", ["arterial", "venous"]),
+            collision_min_clearance=d.get("collision_min_clearance", 0.001),
+            wall_thickness=d.get("wall_thickness", 0.0003),
         )
 
 
