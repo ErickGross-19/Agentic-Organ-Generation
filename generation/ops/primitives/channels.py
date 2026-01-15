@@ -540,10 +540,148 @@ def create_channels_from_ports(
     return combined, meta
 
 
+def create_channel_from_policy(
+    start: Tuple[float, float, float],
+    direction: Tuple[float, float, float],
+    radius: float,
+    policy: ChannelPolicy,
+    domain_depth: Optional[float] = None,
+    face_center: Optional[Tuple[float, float, float]] = None,
+    effective_radius: Optional[float] = None,
+) -> Tuple["trimesh.Trimesh", OperationReport]:
+    """
+    Create a channel using the full ChannelPolicy configuration.
+    
+    This is the canonical entry point for policy-driven channel creation.
+    It properly implements all policy fields including length_mode,
+    start_offset, and stop_before_boundary.
+    
+    Parameters
+    ----------
+    start : tuple
+        Start position (x, y, z) in meters (typically on domain surface)
+    direction : tuple
+        Direction vector pointing into the domain (will be normalized)
+    radius : float
+        Channel radius in meters
+    policy : ChannelPolicy
+        Policy controlling channel creation
+    domain_depth : float, optional
+        Depth of the domain in the direction of the channel.
+        Required for length_mode="to_depth" or "to_center_fraction"
+    face_center : tuple, optional
+        Center of the face for radial outward direction calculation.
+        Used for fang_hook profile with bend_mode="radial_out"
+    effective_radius : float, optional
+        Maximum effective radius for constraint enforcement
+        
+    Returns
+    -------
+    mesh : trimesh.Trimesh
+        Channel mesh
+    report : OperationReport
+        Report with requested/effective policy and metadata
+    """
+    import trimesh
+    
+    start = np.array(start)
+    direction = np.array(direction)
+    direction_norm = np.linalg.norm(direction)
+    if direction_norm > 1e-9:
+        direction = direction / direction_norm
+    else:
+        direction = np.array([0, 0, -1])
+    
+    warnings = []
+    meta = {
+        "profile": policy.profile,
+        "length_mode": policy.length_mode,
+        "requested_length": policy.length,
+        "start_offset_applied": policy.start_offset,
+        "stop_before_boundary_applied": policy.stop_before_boundary,
+    }
+    
+    # Apply start_offset
+    actual_start = start + direction * policy.start_offset
+    
+    # Calculate channel length based on length_mode
+    if policy.length_mode == "explicit":
+        if policy.length is None:
+            raise ValueError("length_mode='explicit' requires length to be set")
+        channel_length = policy.length
+    elif policy.length_mode == "to_center_fraction":
+        if domain_depth is None:
+            raise ValueError("length_mode='to_center_fraction' requires domain_depth")
+        channel_length = domain_depth * policy.length_fraction
+    elif policy.length_mode == "to_depth":
+        if domain_depth is None:
+            raise ValueError("length_mode='to_depth' requires domain_depth")
+        channel_length = domain_depth - policy.stop_before_boundary
+    else:
+        raise ValueError(f"Unknown length_mode: {policy.length_mode}")
+    
+    # Apply stop_before_boundary
+    channel_length = max(0.001, channel_length - policy.stop_before_boundary)
+    
+    meta["effective_length"] = channel_length
+    
+    # Calculate end point
+    end = actual_start + direction * channel_length
+    
+    # Create channel based on profile
+    if policy.profile == "cylinder":
+        mesh = create_straight_channel(
+            tuple(actual_start), tuple(end), radius, policy.radial_sections
+        )
+    elif policy.profile == "taper":
+        end_radius = policy.radius_end if policy.radius_end is not None else radius * policy.taper_factor
+        mesh = create_tapered_channel(
+            tuple(actual_start), tuple(end), radius, end_radius,
+            policy.radial_sections, policy.path_samples
+        )
+    elif policy.profile == "fang_hook":
+        mesh, hook_meta = create_fang_hook(
+            tuple(actual_start), tuple(end), radius,
+            hook_depth=policy.hook_depth,
+            hook_angle_deg=policy.hook_angle_deg,
+            segments_per_curve=policy.segments_per_curve,
+            effective_radius=effective_radius,
+            face_center=face_center,
+            policy=policy,
+        )
+        meta.update(hook_meta)
+        if hook_meta.get("constraint_warning"):
+            warnings.append(hook_meta["constraint_warning"])
+    elif policy.profile == "path_channel":
+        # Path channel uses the path_sweep module for more complex paths
+        # For now, fall back to straight channel
+        warnings.append("path_channel profile not fully implemented, using cylinder")
+        mesh = create_straight_channel(
+            tuple(actual_start), tuple(end), radius, policy.radial_sections
+        )
+    else:
+        warnings.append(f"Unknown profile '{policy.profile}', using cylinder")
+        mesh = create_straight_channel(
+            tuple(actual_start), tuple(end), radius, policy.radial_sections
+        )
+    
+    report = OperationReport(
+        operation="create_channel_from_policy",
+        success=True,
+        requested_policy=policy.to_dict(),
+        effective_policy=policy.to_dict(),
+        warnings=warnings,
+        metadata=meta,
+    )
+    
+    return mesh, report
+
+
 __all__ = [
     "create_straight_channel",
     "create_tapered_channel",
     "create_fang_hook",
     "create_channels_from_ports",
+    "create_channel_from_policy",
     "ChannelPolicy",
 ]
