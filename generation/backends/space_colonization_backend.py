@@ -16,6 +16,8 @@ from ..core.network import VascularNetwork, Node
 from ..core.domain import DomainSpec
 from ..core.types import Point3D, Direction3D
 from ..ops.space_colonization import space_colonization_step, SpaceColonizationParams as SCParams
+from ..utils.tissue_sampling import sample_tissue_points
+from aog_policies import TissueSamplingPolicy
 
 
 @dataclass
@@ -55,6 +57,7 @@ class SpaceColonizationBackend(GenerationBackend):
         vessel_type: str = "arterial",
         config: Optional[SpaceColonizationConfig] = None,
         rng_seed: Optional[int] = None,
+        tissue_sampling_policy: Optional[TissueSamplingPolicy] = None,
     ) -> VascularNetwork:
         """
         Generate a vascular network using space colonization.
@@ -75,6 +78,9 @@ class SpaceColonizationBackend(GenerationBackend):
             Space colonization configuration
         rng_seed : int, optional
             Random seed for reproducibility
+        tissue_sampling_policy : TissueSamplingPolicy, optional
+            Policy controlling tissue/attractor point sampling strategy.
+            If None, uses uniform sampling via domain.sample_points().
             
         Returns
         -------
@@ -105,8 +111,55 @@ class SpaceColonizationBackend(GenerationBackend):
         network.add_node(inlet_node)
         
         num_attractors = max(config.num_attractors, num_outlets * 2)
-        attractors = domain.sample_points(num_attractors, seed=int(rng.integers(0, 2**31)))
-        attractor_list = [Point3D.from_array(a) for a in attractors]
+        
+        # Use TissueSamplingPolicy if provided, otherwise fall back to domain.sample_points()
+        if tissue_sampling_policy is not None:
+            # Override n_points in policy with calculated num_attractors
+            effective_policy = TissueSamplingPolicy(
+                enabled=tissue_sampling_policy.enabled,
+                strategy=tissue_sampling_policy.strategy,
+                n_points=num_attractors,
+                seed=int(rng.integers(0, 2**31)),
+                min_distance_to_ports=tissue_sampling_policy.min_distance_to_ports,
+                exclude_spheres=tissue_sampling_policy.exclude_spheres,
+                depth_reference=tissue_sampling_policy.depth_reference,
+                depth_min=tissue_sampling_policy.depth_min,
+                depth_max=tissue_sampling_policy.depth_max,
+                depth_distribution=tissue_sampling_policy.depth_distribution,
+                depth_power=tissue_sampling_policy.depth_power,
+                depth_lambda=tissue_sampling_policy.depth_lambda,
+                depth_alpha=tissue_sampling_policy.depth_alpha,
+                depth_beta=tissue_sampling_policy.depth_beta,
+                radial_reference=tissue_sampling_policy.radial_reference,
+                r_min=tissue_sampling_policy.r_min,
+                r_max=tissue_sampling_policy.r_max,
+                radial_distribution=tissue_sampling_policy.radial_distribution,
+                radial_power=tissue_sampling_policy.radial_power,
+                ring_r0=tissue_sampling_policy.ring_r0,
+                ring_sigma=tissue_sampling_policy.ring_sigma,
+                shell_thickness=tissue_sampling_policy.shell_thickness,
+                shell_mode=tissue_sampling_policy.shell_mode,
+                gaussian_mean=tissue_sampling_policy.gaussian_mean,
+                gaussian_sigma=tissue_sampling_policy.gaussian_sigma,
+                mixture_components=tissue_sampling_policy.mixture_components,
+            )
+            
+            # Build ports dict for exclusion zones
+            ports = {
+                "inlets": [{"position": tuple(inlet_position)}],
+                "outlets": [],
+            }
+            
+            attractor_list, sampling_report = sample_tissue_points(
+                domain=domain,
+                ports=ports,
+                policy=effective_policy,
+                seed=int(rng.integers(0, 2**31)),
+            )
+        else:
+            # Legacy path: use domain.sample_points() directly
+            attractors = domain.sample_points(num_attractors, seed=int(rng.integers(0, 2**31)))
+            attractor_list = [Point3D.from_array(a) for a in attractors]
         
         sc_config = SCParams(
             influence_radius=config.attraction_distance,
@@ -210,9 +263,16 @@ class SpaceColonizationBackend(GenerationBackend):
         rng_seed: Optional[int] = None,
         create_anastomoses: bool = False,
         num_anastomoses: int = 0,
+        tissue_sampling_policy: Optional[TissueSamplingPolicy] = None,
     ) -> VascularNetwork:
         """
         Generate a dual arterial-venous network using space colonization.
+        
+        Parameters
+        ----------
+        tissue_sampling_policy : TissueSamplingPolicy, optional
+            Policy controlling tissue/attractor point sampling strategy.
+            If None, uses uniform sampling via domain.sample_points().
         """
         if config is None:
             config = SpaceColonizationConfig()
@@ -238,9 +298,53 @@ class SpaceColonizationBackend(GenerationBackend):
         network.add_node(arterial_inlet_node)
         
         num_attractors = max(config.num_attractors, (arterial_outlets + venous_outlets) * 2)
-        all_attractors = domain.sample_points(num_attractors, seed=int(rng.integers(0, 2**31)))
         
-        arterial_attractors = [Point3D.from_array(a) for a in all_attractors[:len(all_attractors)//2]]
+        # Use TissueSamplingPolicy if provided, otherwise fall back to domain.sample_points()
+        if tissue_sampling_policy is not None:
+            effective_policy = TissueSamplingPolicy(
+                enabled=tissue_sampling_policy.enabled,
+                strategy=tissue_sampling_policy.strategy,
+                n_points=num_attractors,
+                seed=int(rng.integers(0, 2**31)),
+                min_distance_to_ports=tissue_sampling_policy.min_distance_to_ports,
+                exclude_spheres=tissue_sampling_policy.exclude_spheres,
+                depth_reference=tissue_sampling_policy.depth_reference,
+                depth_min=tissue_sampling_policy.depth_min,
+                depth_max=tissue_sampling_policy.depth_max,
+                depth_distribution=tissue_sampling_policy.depth_distribution,
+                depth_power=tissue_sampling_policy.depth_power,
+                depth_lambda=tissue_sampling_policy.depth_lambda,
+                depth_alpha=tissue_sampling_policy.depth_alpha,
+                depth_beta=tissue_sampling_policy.depth_beta,
+                radial_reference=tissue_sampling_policy.radial_reference,
+                r_min=tissue_sampling_policy.r_min,
+                r_max=tissue_sampling_policy.r_max,
+                radial_distribution=tissue_sampling_policy.radial_distribution,
+                radial_power=tissue_sampling_policy.radial_power,
+                ring_r0=tissue_sampling_policy.ring_r0,
+                ring_sigma=tissue_sampling_policy.ring_sigma,
+                shell_thickness=tissue_sampling_policy.shell_thickness,
+                shell_mode=tissue_sampling_policy.shell_mode,
+                gaussian_mean=tissue_sampling_policy.gaussian_mean,
+                gaussian_sigma=tissue_sampling_policy.gaussian_sigma,
+                mixture_components=tissue_sampling_policy.mixture_components,
+            )
+            
+            ports = {
+                "inlets": [{"position": tuple(arterial_inlet)}],
+                "outlets": [{"position": tuple(venous_outlet)}],
+            }
+            
+            all_attractor_points, _ = sample_tissue_points(
+                domain=domain,
+                ports=ports,
+                policy=effective_policy,
+                seed=int(rng.integers(0, 2**31)),
+            )
+            arterial_attractors = all_attractor_points[:len(all_attractor_points)//2]
+        else:
+            all_attractors = domain.sample_points(num_attractors, seed=int(rng.integers(0, 2**31)))
+            arterial_attractors = [Point3D.from_array(a) for a in all_attractors[:len(all_attractors)//2]]
         
         sc_config = SCParams(
             influence_radius=config.attraction_distance,
@@ -292,7 +396,11 @@ class SpaceColonizationBackend(GenerationBackend):
         )
         network.add_node(venous_outlet_node)
         
-        venous_attractors = [Point3D.from_array(a) for a in all_attractors[len(all_attractors)//2:]]
+        # Get venous attractors from the second half
+        if tissue_sampling_policy is not None:
+            venous_attractors = all_attractor_points[len(all_attractor_points)//2:]
+        else:
+            venous_attractors = [Point3D.from_array(a) for a in all_attractors[len(all_attractors)//2:]]
         
         active_nodes = [venous_outlet_node.id]
         for iteration in range(config.max_iterations // 2):

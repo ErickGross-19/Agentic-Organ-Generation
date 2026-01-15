@@ -242,7 +242,7 @@ class GrowthPolicy:
     JSON Schema:
     {
         "enabled": bool,
-        "backend": "space_colonization" | "kary_tree" | "cco_hybrid",
+        "backend": "space_colonization" | "kary_tree" | "cco_hybrid" | "programmatic",
         "target_terminals": int,
         "terminal_tolerance": float (fraction),
         "max_iterations": int,
@@ -253,7 +253,7 @@ class GrowthPolicy:
     }
     """
     enabled: bool = True
-    backend: Literal["space_colonization", "kary_tree", "cco_hybrid"] = "space_colonization"
+    backend: Literal["space_colonization", "kary_tree", "cco_hybrid", "programmatic"] = "space_colonization"
     target_terminals: Optional[int] = None
     terminal_tolerance: float = 0.1  # 10% tolerance
     max_iterations: int = 500
@@ -418,7 +418,11 @@ class EmbeddingPolicy:
         "shell_thickness": float (meters),
         "auto_adjust_pitch": bool,
         "max_pitch_steps": int,
-        "fallback": "auto" | "voxel_subtraction" | "none"
+        "fallback": "auto" | "voxel_subtraction" | "none",
+        "preserve_ports_enabled": bool,
+        "preserve_mode": "recarve" | "mask",
+        "carve_radius_factor": float,
+        "carve_depth": float (meters)
     }
     """
     voxel_pitch: float = 3e-4  # 0.3mm
@@ -426,6 +430,10 @@ class EmbeddingPolicy:
     auto_adjust_pitch: bool = True
     max_pitch_steps: int = 4
     fallback: Literal["auto", "voxel_subtraction", "none"] = "auto"
+    preserve_ports_enabled: bool = True
+    preserve_mode: Literal["recarve", "mask"] = "recarve"
+    carve_radius_factor: float = 1.2
+    carve_depth: float = 0.002  # 2mm
     
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

@@ -51,6 +51,7 @@ def generate_network(
         - "space_colonization": Attractor-based organic growth
         - "kary_tree": Recursive bifurcation to target terminal count
         - "cco_hybrid": CCO with Murray's Law optimization
+        - "programmatic": DSL-based programmatic generation with pathfinding
     domain : DomainSpec or Domain
         Domain specification or compiled domain object
     ports : dict
@@ -114,6 +115,12 @@ def generate_network(
         
     elif generator_kind == "cco_hybrid":
         network, gen_meta = _generate_cco_hybrid(
+            compiled_domain, ports, growth_policy, collision_policy, seed
+        )
+        metadata.update(gen_meta)
+        
+    elif generator_kind == "programmatic":
+        network, gen_meta = _generate_programmatic(
             compiled_domain, ports, growth_policy, collision_policy, seed
         )
         metadata.update(gen_meta)
@@ -300,6 +307,112 @@ def _generate_cco_hybrid(
         "terminal_count": terminal_count,
         "node_count": len(network.nodes),
         "segment_count": len(network.segments),
+    }
+
+
+def _generate_programmatic(
+    domain: "Domain",
+    ports: Dict[str, Any],
+    growth_policy: GrowthPolicy,
+    collision_policy: CollisionPolicy,
+    seed: Optional[int],
+) -> Tuple[VascularNetwork, Dict[str, Any]]:
+    """Generate network using programmatic backend with DSL-based generation.
+    
+    The programmatic backend enables orchestrated generation where paths/graphs
+    are built from a declarative DSL with pathfinding as one algorithm option
+    and consistent collision-aware execution.
+    
+    Features:
+    - Multiple path algorithms (A*, straight, bezier, hybrid)
+    - Waypoint-based routing with skip-on-failure
+    - Collision detection and resolution (reroute/shrink/terminate)
+    - Obstacle inflation = clearance + local radius
+    """
+    from ..backends.programmatic_backend import (
+        ProgrammaticBackend,
+        ProgramPolicy,
+        ProgramCollisionPolicy,
+        WaypointPolicy,
+        StepSpec,
+    )
+    
+    backend = ProgrammaticBackend()
+    
+    # Get first inlet
+    inlets = ports.get("inlets", [])
+    if not inlets:
+        raise ValueError("Programmatic backend requires at least one inlet")
+    
+    inlet = inlets[0]
+    inlet_position = tuple(inlet.get("position", (0, 0, 0)))
+    inlet_radius = inlet.get("radius", 0.001)
+    
+    # Build collision policy from CollisionPolicy
+    prog_collision_policy = ProgramCollisionPolicy(
+        enabled=collision_policy.check_collisions,
+        min_clearance=collision_policy.collision_clearance,
+        inflate_by_radius=True,
+        check_after_each_step=True,
+    )
+    
+    # Build waypoint policy with skip-on-failure and warnings
+    waypoint_policy = WaypointPolicy(
+        skip_unreachable=True,
+        max_skip_count=3,
+        emit_warnings=True,
+        fallback_direct=True,
+    )
+    
+    # Build default steps: inlet -> outlets
+    steps = [
+        StepSpec.add_node(
+            "inlet",
+            position=inlet_position,
+            node_type="inlet",
+            radius=inlet_radius,
+        )
+    ]
+    
+    # Add routes to outlets
+    outlets = ports.get("outlets", [])
+    for i, outlet in enumerate(outlets):
+        outlet_pos = tuple(outlet.get("position", (0, 0, 0)))
+        outlet_radius = outlet.get("radius", inlet_radius * 0.5)
+        steps.append(
+            StepSpec.route(
+                "inlet",
+                to=outlet_pos,
+                algorithm="astar_voxel",
+                radius=outlet_radius,
+                clearance=collision_policy.collision_clearance,
+            )
+        )
+    
+    # Build program policy
+    policy = ProgramPolicy(
+        mode="network",
+        steps=steps,
+        path_algorithm="astar_voxel",
+        collision_policy=prog_collision_policy,
+        waypoint_policy=waypoint_policy,
+        default_radius=inlet_radius,
+        default_clearance=collision_policy.collision_clearance,
+    )
+    
+    # Generate network
+    network, report = backend.generate_from_program(domain, ports, policy)
+    
+    # Count terminals using string node_type
+    terminal_count = sum(1 for n in network.nodes.values() if n.node_type == "terminal")
+    
+    return network, {
+        "terminal_count": terminal_count,
+        "node_count": len(network.nodes),
+        "segment_count": len(network.segments),
+        "steps_executed": report.steps_executed,
+        "steps_total": report.steps_total,
+        "warnings": report.warnings,
     }
 
 

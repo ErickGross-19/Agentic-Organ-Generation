@@ -21,6 +21,17 @@ from .layout import (
     compute_grid_positions,
 )
 
+from .faces import (
+    CANONICAL_FACES,
+    FaceId,
+    validate_face,
+    face_to_enum,
+    face_normal,
+    face_center,
+    face_frame,
+    opposite_face,
+)
+
 __all__ = [
     'CANONICAL_UNIT',
     'to_si_length',
@@ -34,4 +45,12 @@ __all__ = [
     'compute_inlet_positions',
     'compute_outlet_positions',
     'compute_grid_positions',
+    'CANONICAL_FACES',
+    'FaceId',
+    'validate_face',
+    'face_to_enum',
+    'face_normal',
+    'face_center',
+    'face_frame',
+    'opposite_face',
 ]

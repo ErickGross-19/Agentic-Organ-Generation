@@ -4,21 +4,25 @@ Domain-aware port placement utilities.
 This module provides functions for placing inlet/outlet ports on domain
 surfaces with support for ridge constraints and effective radius calculations.
 
+The main entry point is `place_ports_on_domain()` which accepts a domain object
+and PortPlacementPolicy, returning positions, directions, and metadata.
+
 UNIT CONVENTIONS
 ----------------
 All geometric values are in METERS internally.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, Tuple, Dict, Any, List, TYPE_CHECKING
+from typing import Optional, Tuple, Dict, Any, List, Union, TYPE_CHECKING
 import numpy as np
 from math import cos, sin, pi, sqrt
 import logging
 
 from aog_policies import PortPlacementPolicy, OperationReport
+from .faces import validate_face, face_normal, face_center, face_frame
 
 if TYPE_CHECKING:
-    from ..specs.design_spec import DomainSpec
+    from ..core.domain import BoxDomain, CylinderDomain, EllipsoidDomain
 
 logger = logging.getLogger(__name__)
 
@@ -481,12 +485,202 @@ def place_ports(
         return place_ports_circle(num_ports, domain_radius, port_radius, z_position, policy)
 
 
+@dataclass
+class DomainAwarePlacementResult:
+    """Result of domain-aware port placement calculation."""
+    positions: List[Tuple[float, float, float]]
+    directions: List[Tuple[float, float, float]]
+    face_center: Tuple[float, float, float]
+    effective_radius: float
+    clamp_count: int
+    projection_stats: Dict[str, Any]
+    warnings: List[str] = field(default_factory=list)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "positions": self.positions,
+            "directions": self.directions,
+            "face_center": self.face_center,
+            "effective_radius": self.effective_radius,
+            "clamp_count": self.clamp_count,
+            "projection_stats": self.projection_stats,
+            "warnings": self.warnings,
+        }
+
+
+def _get_domain_face_radius(
+    domain: Union["BoxDomain", "CylinderDomain", "EllipsoidDomain"],
+    face: str,
+) -> float:
+    """
+    Get the effective radius for port placement on a domain face.
+    
+    For cylinders: top/bottom faces use cylinder radius
+    For boxes: uses half the smaller dimension of the face
+    For ellipsoids: uses the semi-axis perpendicular to the face normal
+    """
+    from ..core.domain import BoxDomain, CylinderDomain, EllipsoidDomain
+    
+    canonical = validate_face(face)
+    
+    if isinstance(domain, CylinderDomain):
+        if canonical in ("top", "bottom", "+z", "-z"):
+            return domain.radius
+        else:
+            # Side faces - use half height as "radius"
+            return domain.height / 2
+    
+    elif isinstance(domain, BoxDomain):
+        dx = domain.x_max - domain.x_min
+        dy = domain.y_max - domain.y_min
+        dz = domain.z_max - domain.z_min
+        
+        if canonical in ("top", "bottom", "+z", "-z"):
+            return min(dx, dy) / 2
+        elif canonical in ("+x", "-x"):
+            return min(dy, dz) / 2
+        elif canonical in ("+y", "-y"):
+            return min(dx, dz) / 2
+    
+    elif isinstance(domain, EllipsoidDomain):
+        if canonical in ("top", "bottom", "+z", "-z"):
+            return min(domain.semi_axis_a, domain.semi_axis_b)
+        elif canonical in ("+x", "-x"):
+            return min(domain.semi_axis_b, domain.semi_axis_c)
+        elif canonical in ("+y", "-y"):
+            return min(domain.semi_axis_a, domain.semi_axis_c)
+    
+    # Fallback
+    return 0.001
+
+
+def place_ports_on_domain(
+    domain: Union["BoxDomain", "CylinderDomain", "EllipsoidDomain"],
+    num_ports: int,
+    port_radius: float,
+    policy: Optional[PortPlacementPolicy] = None,
+) -> Tuple[DomainAwarePlacementResult, OperationReport]:
+    """
+    Place ports on a domain face using the policy configuration.
+    
+    This is the main entry point for domain-aware port placement.
+    It uses the face frame to build a reference plane and places ports
+    in the local coordinate system, then transforms to world coordinates.
+    
+    Parameters
+    ----------
+    domain : BoxDomain, CylinderDomain, or EllipsoidDomain
+        Domain to place ports on
+    num_ports : int
+        Number of ports to place
+    port_radius : float
+        Radius of each port in meters
+    policy : PortPlacementPolicy, optional
+        Policy controlling placement parameters
+        
+    Returns
+    -------
+    result : DomainAwarePlacementResult
+        Placement result with positions, directions, and metadata
+    report : OperationReport
+        Report with requested/effective policy
+    """
+    if policy is None:
+        policy = PortPlacementPolicy()
+    
+    warnings = []
+    
+    # Get face frame
+    canonical_face = validate_face(policy.face)
+    origin, normal, u_vec, v_vec, center = face_frame(canonical_face, domain)
+    
+    # Get domain radius for this face
+    domain_radius = _get_domain_face_radius(domain, canonical_face)
+    
+    # Compute effective radius with ridge constraints
+    if policy.ridge_constraint_enabled:
+        effective_radius = compute_effective_radius(
+            domain_radius,
+            policy.ridge_width,
+            policy.ridge_clearance,
+            policy.port_margin,
+        )
+    else:
+        effective_radius = domain_radius - policy.port_margin
+    
+    # Place ports in 2D local coordinates (on the face plane)
+    # Use z_position=0 since we'll transform to world coordinates
+    local_result, local_report = place_ports(
+        num_ports=num_ports,
+        domain_radius=domain_radius,
+        port_radius=port_radius,
+        z_position=0.0,
+        policy=policy,
+    )
+    
+    # Transform local positions to world coordinates
+    u = np.array(u_vec)
+    v = np.array(v_vec)
+    n = np.array(normal)
+    origin_pt = np.array(origin)
+    
+    world_positions = []
+    for local_x, local_y, _ in local_result.positions:
+        # Transform: world = origin + local_x * u + local_y * v
+        world_pt = origin_pt + local_x * u + local_y * v
+        world_positions.append(tuple(world_pt.tolist()))
+    
+    # All ports have the same direction (inward normal)
+    inward_normal = tuple((-n).tolist())
+    directions = [inward_normal] * num_ports
+    
+    # Compute projection stats
+    projection_stats = {
+        "min_distance_from_center": min(local_result.projection_distances) if local_result.projection_distances else 0.0,
+        "max_distance_from_center": max(local_result.projection_distances) if local_result.projection_distances else 0.0,
+        "mean_distance_from_center": np.mean(local_result.projection_distances) if local_result.projection_distances else 0.0,
+        "domain_radius": domain_radius,
+        "effective_radius": effective_radius,
+    }
+    
+    result = DomainAwarePlacementResult(
+        positions=world_positions,
+        directions=directions,
+        face_center=center,
+        effective_radius=effective_radius,
+        clamp_count=local_result.clamp_count,
+        projection_stats=projection_stats,
+        warnings=local_result.warnings + warnings,
+    )
+    
+    report = OperationReport(
+        operation="place_ports_on_domain",
+        success=True,
+        requested_policy=policy.to_dict(),
+        effective_policy=policy.to_dict(),
+        warnings=result.warnings,
+        metadata={
+            "num_ports": num_ports,
+            "face": canonical_face,
+            "face_center": center,
+            "effective_radius": effective_radius,
+            "domain_radius": domain_radius,
+            "clamp_count": result.clamp_count,
+            "projection_stats": projection_stats,
+        },
+    )
+    
+    return result, report
+
+
 __all__ = [
     "compute_effective_radius",
     "place_ports",
     "place_ports_circle",
     "place_ports_grid",
     "place_ports_center_rings",
+    "place_ports_on_domain",
     "PlacementResult",
+    "DomainAwarePlacementResult",
     "PortPlacementPolicy",
 ]
