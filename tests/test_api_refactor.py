@@ -169,13 +169,14 @@ class TestKaryTreeBackend:
             branch_length=0.001,
         )
         
-        backend = KaryTreeBackend(config)
+        backend = KaryTreeBackend()
         
         network = backend.generate(
             domain=domain,
             num_outlets=8,
             inlet_position=(0.0, 0.0, 0.003),
             inlet_radius=0.0005,
+            config=config,
         )
         
         assert network is not None
@@ -186,7 +187,6 @@ class TestKaryTreeBackend:
         """Test that terminal count is within tolerance or warning emitted."""
         from generation.backends.kary_tree_backend import KaryTreeBackend, KaryTreeConfig
         from generation.specs.design_spec import CylinderSpec
-        from generation.core.types import NodeType
         
         domain = CylinderSpec(
             center=(0.0, 0.0, 0.0015),
@@ -204,18 +204,20 @@ class TestKaryTreeBackend:
             branch_length=0.0008,
         )
         
-        backend = KaryTreeBackend(config)
+        backend = KaryTreeBackend()
         
         network = backend.generate(
             domain=domain,
             num_outlets=target,
             inlet_position=(0.0, 0.0, 0.003),
             inlet_radius=0.0005,
+            config=config,
         )
         
+        # Use string node_type instead of NodeType enum
         terminal_count = sum(
             1 for n in network.nodes.values()
-            if n.node_type == NodeType.TERMINAL
+            if n.node_type == "terminal"
         )
         
         min_expected = int(target * (1 - tolerance))

@@ -16,6 +16,7 @@ import numpy as np
 from ..policies import (
     GrowthPolicy,
     CollisionPolicy,
+    TissueSamplingPolicy,
     OperationReport,
 )
 from ..specs.design_spec import DesignSpec, DomainSpec
@@ -138,10 +139,12 @@ def _generate_space_colonization(
     growth_policy: GrowthPolicy,
     collision_policy: CollisionPolicy,
     seed: Optional[int],
+    tissue_sampling_policy: Optional[TissueSamplingPolicy] = None,
 ) -> Tuple[VascularNetwork, Dict[str, Any]]:
     """Generate network using space colonization algorithm."""
     from ..ops import create_network, add_inlet, add_outlet, space_colonization_step
     from ..ops.space_colonization import SpaceColonizationParams
+    from ..utils.tissue_sampling import sample_tissue_points
     
     network = create_network(domain=domain, seed=seed)
     
@@ -169,8 +172,16 @@ def _generate_space_colonization(
             vessel_type=vessel_type,
         )
     
-    # Sample tissue points
-    tissue_points = domain.sample_points(n_points=1000, seed=seed)
+    # Sample tissue points using policy-driven sampling
+    if tissue_sampling_policy is None:
+        tissue_sampling_policy = TissueSamplingPolicy()
+    
+    tissue_points, sampling_report = sample_tissue_points(
+        domain=domain,
+        ports=ports,
+        policy=tissue_sampling_policy,
+        seed=seed,
+    )
     
     # Run colonization
     params = SpaceColonizationParams(
@@ -178,8 +189,8 @@ def _generate_space_colonization(
     )
     space_colonization_step(network, tissue_points=tissue_points, params=params, seed=seed)
     
-    # Count terminals
-    terminal_count = sum(1 for n in network.nodes.values() if n.is_terminal)
+    # Count terminals using string node_type
+    terminal_count = sum(1 for n in network.nodes.values() if n.node_type == "terminal")
     
     return network, {
         "terminal_count": terminal_count,
@@ -195,46 +206,46 @@ def _generate_kary_tree(
     collision_policy: CollisionPolicy,
     seed: Optional[int],
 ) -> Tuple[VascularNetwork, Dict[str, Any]]:
-    """Generate network using k-ary tree recursive bifurcation."""
-    from ..ops import create_network, add_inlet
-    from ..ops.growth import grow_kary_tree_v2, KaryTreeSpec
+    """Generate network using k-ary tree recursive bifurcation via KaryTreeBackend."""
+    from ..backends.kary_tree_backend import KaryTreeBackend, KaryTreeConfig
     
-    network = create_network(domain=domain, seed=seed)
+    # Get first inlet for the backend
+    inlets = ports.get("inlets", [])
+    if not inlets:
+        raise ValueError("K-ary tree requires at least one inlet")
     
-    # Add inlets and grow trees from each
-    for inlet in ports.get("inlets", []):
-        pos = inlet.get("position", (0, 0, 0))
-        radius = inlet.get("radius", 0.001)
-        vessel_type = inlet.get("vessel_type", "arterial")
-        
-        inlet_node = add_inlet(
-            network,
-            position=Point3D(*pos),
-            radius=radius,
-            vessel_type=vessel_type,
-        )
-        
-        # Calculate target terminals per inlet
-        target = growth_policy.target_terminals or 128
-        num_inlets = len(ports.get("inlets", [1]))
-        terminals_per_inlet = target // num_inlets
-        
-        # Determine depth for target terminals (2^depth = terminals)
-        depth = max(1, int(np.log2(terminals_per_inlet)))
-        
-        # Create tree spec
-        tree_spec = KaryTreeSpec(
-            k=2,
-            depth=depth,
-            branch_length=0.001,
-            taper_factor=0.95,
-            angle_deg=30.0,
-        )
-        
-        grow_kary_tree_v2(network, inlet_node.id, tree_spec)
+    inlet = inlets[0]
+    inlet_position = np.array(inlet.get("position", (0, 0, 0)))
+    inlet_radius = inlet.get("radius", 0.001)
+    vessel_type = inlet.get("vessel_type", "arterial")
     
-    # Count terminals
-    terminal_count = sum(1 for n in network.nodes.values() if n.is_terminal)
+    # Target terminals
+    target = growth_policy.target_terminals or 128
+    
+    # Create backend config from growth policy
+    config = KaryTreeConfig(
+        k=2,
+        target_terminals=target,
+        terminal_tolerance=growth_policy.terminal_tolerance,
+        branch_length=growth_policy.step_size,
+        min_radius=growth_policy.min_segment_length / 10,  # Approximate
+        seed=seed,
+    )
+    
+    # Use backend to generate network
+    backend = KaryTreeBackend()
+    network = backend.generate(
+        domain=domain,
+        num_outlets=target,
+        inlet_position=inlet_position,
+        inlet_radius=inlet_radius,
+        vessel_type=vessel_type,
+        config=config,
+        rng_seed=seed,
+    )
+    
+    # Count terminals using string node_type
+    terminal_count = sum(1 for n in network.nodes.values() if n.node_type == "terminal")
     
     return network, {
         "terminal_count": terminal_count,
@@ -282,8 +293,8 @@ def _generate_cco_hybrid(
         rng_seed=seed,
     )
     
-    # Count terminals
-    terminal_count = sum(1 for n in network.nodes.values() if n.is_terminal)
+    # Count terminals using string node_type
+    terminal_count = sum(1 for n in network.nodes.values() if n.node_type == "terminal")
     
     return network, {
         "terminal_count": terminal_count,

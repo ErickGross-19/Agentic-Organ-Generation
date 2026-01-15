@@ -15,7 +15,7 @@ import numpy as np
 from math import cos, sin, pi, sqrt
 import logging
 
-from ..policies import PortPlacementPolicy, OperationReport
+from aog_policies import PortPlacementPolicy, OperationReport
 
 if TYPE_CHECKING:
     from ..specs.design_spec import DomainSpec
@@ -470,11 +470,11 @@ def place_ports(
     if policy is None:
         policy = PortPlacementPolicy()
     
-    if policy.placement_pattern == "circle":
+    if policy.pattern == "circle":
         return place_ports_circle(num_ports, domain_radius, port_radius, z_position, policy)
-    elif policy.placement_pattern == "grid":
+    elif policy.pattern == "grid":
         return place_ports_grid(num_ports, domain_radius, port_radius, z_position, policy)
-    elif policy.placement_pattern == "center_rings":
+    elif policy.pattern == "center_rings":
         return place_ports_center_rings(num_ports, domain_radius, port_radius, z_position, policy)
     else:
         # Default to circle

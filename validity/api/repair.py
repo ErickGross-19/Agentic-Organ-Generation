@@ -14,44 +14,13 @@ from typing import Optional, Dict, Any, List, TYPE_CHECKING
 import logging
 import numpy as np
 
+# Import RepairPolicy from centralized aog_policies package
+from aog_policies import RepairPolicy
+
 if TYPE_CHECKING:
     import trimesh
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class RepairPolicy:
-    """
-    Policy for mesh repair operations.
-    
-    Controls which repair steps are enabled and their parameters.
-    
-    JSON Schema:
-    {
-        "voxel_repair_enabled": bool,
-        "voxel_pitch": float (meters),
-        "remove_small_components_enabled": bool,
-        "min_component_faces": int,
-        "fill_holes_enabled": bool,
-        "smooth_enabled": bool,
-        "smooth_iterations": int
-    }
-    """
-    voxel_repair_enabled: bool = True
-    voxel_pitch: float = 1e-4  # 0.1mm
-    remove_small_components_enabled: bool = True
-    min_component_faces: int = 500
-    fill_holes_enabled: bool = True
-    smooth_enabled: bool = False
-    smooth_iterations: int = 10
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
-    
-    @staticmethod
-    def from_dict(d: Dict[str, Any]) -> "RepairPolicy":
-        return RepairPolicy(**{k: v for k, v in d.items() if k in RepairPolicy.__dataclass_fields__})
 
 
 @dataclass
