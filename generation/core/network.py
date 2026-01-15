@@ -21,7 +21,7 @@ class Node:
     id: int
     position: Point3D
     node_type: str  # "junction", "inlet", "outlet", "terminal"
-    vessel_type: str  # "arterial", "venous"
+    vessel_type: str = "arterial"  # "arterial", "venous" - defaults to arterial
     attributes: Dict[str, Any] = field(default_factory=dict)
     
     def to_dict(self) -> dict:
@@ -41,7 +41,7 @@ class Node:
             id=d["id"],
             position=Point3D.from_dict(d["position"]),
             node_type=d["node_type"],
-            vessel_type=d["vessel_type"],
+            vessel_type=d.get("vessel_type", "arterial"),
             attributes=d.get("attributes", {}),
         )
 
