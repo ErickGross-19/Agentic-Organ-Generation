@@ -1,6 +1,17 @@
 """
 High-level API for building vascular networks from specifications.
 
+DEPRECATION NOTICE
+------------------
+The `design_from_spec` function in this module is DEPRECATED.
+
+For new code, use:
+    - `generation.api.generate.generate_network()` for network generation
+    - Future `DesignSpecRunner` for full pipeline orchestration
+
+The `design_from_spec` function is kept only for backward compatibility and
+will be removed in a future version.
+
 UNIT CONVENTIONS
 ----------------
 This module uses the compile_domain() function to convert user-facing spec classes
@@ -13,6 +24,7 @@ into runtime domain objects. See generation/specs/compile.py for details on:
 
 from typing import Optional
 import logging
+import warnings
 import numpy as np
 
 from ..specs.design_spec import DesignSpec
@@ -38,6 +50,11 @@ def design_from_spec(
 ) -> VascularNetwork:
     """
     Build a vascular network from a design specification.
+    
+    .. deprecated::
+        This function is deprecated. Use `generation.api.generate.generate_network()`
+        for network generation, or the future `DesignSpecRunner` for full pipeline
+        orchestration. This function is kept only for backward compatibility.
     
     This is the main entry point for LLM-driven vascular network design.
     
@@ -71,6 +88,14 @@ def design_from_spec(
     DesignGenerationError
         If fail_on_empty=True and no growth occurs after all retries.
     """
+    warnings.warn(
+        "design_from_spec is deprecated. Use generation.api.generate.generate_network() "
+        "for network generation, or the future DesignSpecRunner for full pipeline "
+        "orchestration. This function will be removed in a future version.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    
     domain = compile_domain(spec.domain)
     
     # Create network
