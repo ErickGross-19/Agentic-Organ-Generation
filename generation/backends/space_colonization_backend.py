@@ -139,9 +139,9 @@ class SpaceColonizationBackend(GenerationBackend):
                 ring_sigma=tissue_sampling_policy.ring_sigma,
                 shell_thickness=tissue_sampling_policy.shell_thickness,
                 shell_mode=tissue_sampling_policy.shell_mode,
-                gaussian_center=tissue_sampling_policy.gaussian_center,
+                gaussian_mean=tissue_sampling_policy.gaussian_mean,
                 gaussian_sigma=tissue_sampling_policy.gaussian_sigma,
-                mixture_weights=tissue_sampling_policy.mixture_weights,
+                mixture_components=tissue_sampling_policy.mixture_components,
             )
             
             # Build ports dict for exclusion zones
@@ -325,9 +325,9 @@ class SpaceColonizationBackend(GenerationBackend):
                 ring_sigma=tissue_sampling_policy.ring_sigma,
                 shell_thickness=tissue_sampling_policy.shell_thickness,
                 shell_mode=tissue_sampling_policy.shell_mode,
-                gaussian_center=tissue_sampling_policy.gaussian_center,
+                gaussian_mean=tissue_sampling_policy.gaussian_mean,
                 gaussian_sigma=tissue_sampling_policy.gaussian_sigma,
-                mixture_weights=tissue_sampling_policy.mixture_weights,
+                mixture_components=tissue_sampling_policy.mixture_components,
             )
             
             ports = {
