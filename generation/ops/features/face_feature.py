@@ -205,7 +205,7 @@ class RidgeFeature(FaceFeature):
     ) -> FeatureResult:
         """Create a ridge feature on the specified face."""
         import trimesh
-        from ..features import create_annular_ridge, create_frame_ridge
+        from .ridge_helpers import create_annular_ridge, create_frame_ridge
         
         constraints = self.get_constraints(domain, face)
         
@@ -340,7 +340,7 @@ class RidgeFeature(FaceFeature):
         face: FaceId,
     ) -> "trimesh.Trimesh":
         """Create ridge mesh for cylinder domain."""
-        from ..features import create_annular_ridge
+        from .ridge_helpers import create_annular_ridge
         
         radius = domain.radius
         center_x = domain.center.x
@@ -370,7 +370,7 @@ class RidgeFeature(FaceFeature):
         face: FaceId,
     ) -> "trimesh.Trimesh":
         """Create ridge mesh for box domain."""
-        from ..features import create_frame_ridge
+        from .ridge_helpers import create_frame_ridge
         
         width = domain.x_max - domain.x_min
         depth = domain.y_max - domain.y_min
