@@ -1789,6 +1789,9 @@ def generate_bifurcation_tree_mesh_v2(
             envelope_r_frac_end=0.95,
             enable_soft_collision=True,
             enable_reaim_instead_of_skip=True,
+            collision_clearance_factor=0.7,
+            collision_attempts_per_child=12,
+            collision_azimuth_jitter_deg=25.0,
             wall_margin_m=OBJ3_WALL_MARGIN_M if 'OBJ3_WALL_MARGIN_M' in globals() else 0.0001,
             min_segment_length_m=BRANCH_MIN_SEGMENT_LENGTH_M,
         )
@@ -2018,6 +2021,9 @@ def generate_object3_bifurcate_512(output_dir: Optional[Path] = None) -> trimesh
         envelope_r_frac_start=0.35,
         envelope_r_frac_end=0.95,
         enable_soft_collision=True,
+        collision_clearance_factor=0.7,
+        collision_attempts_per_child=12,
+        collision_azimuth_jitter_deg=25.0,
         enable_reaim_instead_of_skip=True,
         wall_margin_m=OBJ3_WALL_MARGIN_M,
         # Reduced min_segment_length to allow more branches in small volume
