@@ -17,7 +17,7 @@ import logging
 from .base import GenerationBackend, BackendConfig, GenerationState
 from ..core.network import VascularNetwork, Node, VesselSegment
 from ..core.domain import DomainSpec
-from ..core.types import Point3D, NodeType
+from ..core.types import Point3D, TubeGeometry
 
 logger = logging.getLogger(__name__)
 
@@ -137,9 +137,9 @@ class KaryTreeBackend(GenerationBackend):
         inlet_node = Node(
             id=0,
             position=inlet_pos,
-            radius=inlet_radius,
-            node_type=NodeType.INLET,
+            node_type="inlet",
             vessel_type=vessel_type,
+            attributes={"radius": inlet_radius},
         )
         network.nodes[0] = inlet_node
         
@@ -167,7 +167,7 @@ class KaryTreeBackend(GenerationBackend):
         )
         
         # Count terminals and check tolerance
-        terminal_count = sum(1 for n in network.nodes.values() if n.node_type == NodeType.TERMINAL)
+        terminal_count = sum(1 for n in network.nodes.values() if n.node_type == "terminal")
         target = config.target_terminals
         tolerance = config.terminal_tolerance
         
@@ -205,12 +205,12 @@ class KaryTreeBackend(GenerationBackend):
         """Recursively generate subtree from parent node."""
         if current_depth >= max_depth:
             # Mark as terminal
-            parent_node.node_type = NodeType.TERMINAL
+            parent_node.node_type = "terminal"
             return
         
         if current_radius < config.min_radius:
             # Too small, mark as terminal
-            parent_node.node_type = NodeType.TERMINAL
+            parent_node.node_type = "terminal"
             return
         
         # Generate k children
@@ -252,20 +252,25 @@ class KaryTreeBackend(GenerationBackend):
             child_node = Node(
                 id=child_id,
                 position=Point3D(*child_pos),
-                radius=child_radius,
-                node_type=NodeType.JUNCTION,
+                node_type="junction",
                 vessel_type=vessel_type,
+                attributes={"radius": child_radius},
             )
             network.nodes[child_id] = child_node
             
-            # Create segment
+            # Create segment with proper TubeGeometry
             segment_id = len(network.segments)
+            geometry = TubeGeometry(
+                start=parent_node.position,
+                end=child_node.position,
+                radius_start=current_radius,
+                radius_end=child_radius,
+            )
             segment = VesselSegment(
                 id=segment_id,
                 start_node_id=parent_node.id,
                 end_node_id=child_id,
-                start_radius=current_radius,
-                end_radius=child_radius,
+                geometry=geometry,
                 vessel_type=vessel_type,
             )
             network.segments[segment_id] = segment

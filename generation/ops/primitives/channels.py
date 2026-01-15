@@ -14,7 +14,7 @@ from typing import Optional, Tuple, Dict, Any, List, TYPE_CHECKING
 import numpy as np
 import logging
 
-from ...policies import ChannelPolicy, OperationReport
+from aog_policies import ChannelPolicy, OperationReport
 
 if TYPE_CHECKING:
     import trimesh
@@ -211,10 +211,11 @@ def create_fang_hook(
     start: Tuple[float, float, float],
     end: Tuple[float, float, float],
     radius: float,
-    hook_depth: float,
-    hook_angle_deg: float = 90.0,
-    segments_per_curve: int = 16,
+    hook_depth: Optional[float] = None,
+    hook_angle_deg: Optional[float] = None,
+    segments_per_curve: Optional[int] = None,
     effective_radius: Optional[float] = None,
+    face_center: Optional[Tuple[float, float, float]] = None,
     policy: Optional[ChannelPolicy] = None,
 ) -> Tuple["trimesh.Trimesh", Dict[str, Any]]:
     """
@@ -231,16 +232,20 @@ def create_fang_hook(
         End position (x, y, z) in meters (inside domain)
     radius : float
         Channel radius in meters
-    hook_depth : float
-        Depth of the hook curve in meters
-    hook_angle_deg : float
-        Angle of the hook in degrees (default: 90)
-    segments_per_curve : int
-        Number of segments for the curved portion
+    hook_depth : float, optional
+        Depth of the hook curve in meters (defaults to policy.hook_depth)
+    hook_angle_deg : float, optional
+        Angle of the hook in degrees (defaults to policy.hook_angle_deg or 90)
+    segments_per_curve : int, optional
+        Number of segments for the curved portion (defaults to policy.segments_per_curve or 16)
     effective_radius : float, optional
         Maximum effective radius for constraint enforcement
+    face_center : tuple, optional
+        Center of the face for radial outward direction calculation.
+        If provided, hook bends radially outward from face center.
+        If None, uses arbitrary perpendicular direction.
     policy : ChannelPolicy, optional
-        Policy for additional constraints
+        Policy for additional constraints and default values
         
     Returns
     -------
@@ -251,20 +256,33 @@ def create_fang_hook(
     """
     import trimesh
     
+    # Use policy defaults if not specified
+    if policy is None:
+        policy = ChannelPolicy()
+    
+    if hook_depth is None:
+        hook_depth = policy.hook_depth
+    if hook_angle_deg is None:
+        hook_angle_deg = policy.hook_angle_deg
+    if segments_per_curve is None:
+        segments_per_curve = policy.segments_per_curve
+    
     start = np.array(start)
     end = np.array(end)
     
     meta = {
         "requested_hook_depth": hook_depth,
-        "actual_hook_depth": hook_depth,
+        "hook_depth_used": hook_depth,
         "constraint_modified": False,
+        "bend_mode": policy.bend_mode,
+        "face_center_used": face_center is not None,
     }
     
     # Check effective radius constraint
-    if effective_radius is not None and policy is not None and policy.enforce_effective_radius:
+    if effective_radius is not None and policy.enforce_effective_radius:
         max_hook_depth = effective_radius - radius
         if hook_depth > max_hook_depth:
-            meta["actual_hook_depth"] = max_hook_depth
+            meta["hook_depth_used"] = max_hook_depth
             meta["constraint_modified"] = True
             meta["constraint_warning"] = (
                 f"Hook depth reduced from {hook_depth:.6f} to {max_hook_depth:.6f} "
@@ -279,18 +297,45 @@ def create_fang_hook(
     direction_norm = direction / length if length > 1e-9 else np.array([0, 0, -1])
     
     # Find perpendicular for hook direction
-    if abs(direction_norm[2]) < 0.9:
-        hook_perp = np.cross(direction_norm, np.array([0, 0, 1]))
+    # Use face-center radial outward if face_center is provided and bend_mode is "radial_out"
+    if face_center is not None and policy.bend_mode == "radial_out":
+        face_center = np.array(face_center)
+        # Radial outward direction from face center to start point
+        radial_out = start - face_center
+        # Project onto plane perpendicular to direction
+        radial_out = radial_out - np.dot(radial_out, direction_norm) * direction_norm
+        radial_norm = np.linalg.norm(radial_out)
+        if radial_norm > 1e-9:
+            hook_perp = radial_out / radial_norm
+            meta["radial_direction_used"] = True
+        else:
+            # Start is at face center, fall back to arbitrary perpendicular
+            if abs(direction_norm[2]) < 0.9:
+                hook_perp = np.cross(direction_norm, np.array([0, 0, 1]))
+            else:
+                hook_perp = np.cross(direction_norm, np.array([1, 0, 0]))
+            hook_perp = hook_perp / np.linalg.norm(hook_perp)
+            meta["radial_direction_used"] = False
+            meta["radial_fallback_reason"] = "start_at_face_center"
     else:
-        hook_perp = np.cross(direction_norm, np.array([1, 0, 0]))
-    hook_perp = hook_perp / np.linalg.norm(hook_perp)
+        # Arbitrary perpendicular (legacy behavior)
+        if abs(direction_norm[2]) < 0.9:
+            hook_perp = np.cross(direction_norm, np.array([0, 0, 1]))
+        else:
+            hook_perp = np.cross(direction_norm, np.array([1, 0, 0]))
+        hook_perp = hook_perp / np.linalg.norm(hook_perp)
+        meta["radial_direction_used"] = False
     
     # Generate centerline points for the hook
     hook_angle_rad = np.radians(hook_angle_deg)
     centerline_points = []
     
+    # Use policy fractions instead of hardcoded values
+    straight_frac = policy.straight_fraction
+    curve_frac = policy.curve_fraction
+    
     # Straight section at start
-    straight_length = length * 0.3
+    straight_length = length * straight_frac
     for i in range(segments_per_curve // 3):
         t = i / (segments_per_curve // 3)
         pos = start + direction_norm * straight_length * t
@@ -298,7 +343,7 @@ def create_fang_hook(
     
     # Curved section
     curve_start = start + direction_norm * straight_length
-    curve_length = length * 0.4
+    curve_length = length * curve_frac
     
     for i in range(segments_per_curve // 3):
         t = i / (segments_per_curve // 3)

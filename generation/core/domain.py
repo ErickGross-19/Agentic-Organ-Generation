@@ -272,15 +272,36 @@ class BoxDomain(DomainSpec):
         )
     
     @classmethod
-    def from_center_and_size(cls, center: Point3D, width: float, height: float, depth: float) -> "BoxDomain":
-        """Create box from center point and dimensions."""
+    def from_center_and_size(cls, center, width: float, height: float, depth: float) -> "BoxDomain":
+        """
+        Create box from center point and dimensions.
+        
+        Parameters
+        ----------
+        center : Point3D or tuple or list
+            Center point as Point3D, tuple (x, y, z), or list [x, y, z]
+        width : float
+            Width in x direction
+        height : float
+            Height in y direction
+        depth : float
+            Depth in z direction
+        """
+        # Normalize center to Point3D
+        if isinstance(center, (tuple, list)) and len(center) >= 3:
+            cx, cy, cz = float(center[0]), float(center[1]), float(center[2])
+        elif hasattr(center, 'x') and hasattr(center, 'y') and hasattr(center, 'z'):
+            cx, cy, cz = center.x, center.y, center.z
+        else:
+            raise TypeError(f"center must be Point3D, tuple, or list, got {type(center)}")
+        
         return cls(
-            x_min=center.x - width / 2,
-            x_max=center.x + width / 2,
-            y_min=center.y - height / 2,
-            y_max=center.y + height / 2,
-            z_min=center.z - depth / 2,
-            z_max=center.z + depth / 2,
+            x_min=cx - width / 2,
+            x_max=cx + width / 2,
+            y_min=cy - height / 2,
+            y_max=cy + height / 2,
+            z_min=cz - depth / 2,
+            z_max=cz + depth / 2,
         )
 
 

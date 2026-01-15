@@ -15,7 +15,7 @@ import json
 import time
 import logging
 
-from ..policies import OutputPolicy, OperationReport
+from aog_policies import OutputPolicy, OperationReport
 
 if TYPE_CHECKING:
     import trimesh
@@ -165,6 +165,9 @@ def save_network(
     """
     Save a vascular network to JSON file.
     
+    Uses the network's to_dict() method for proper serialization,
+    then applies unit scaling if needed.
+    
     Parameters
     ----------
     network : VascularNetwork
@@ -190,34 +193,20 @@ def save_network(
     output_path = run_dir / rel_path
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
-    # Convert network to serializable dict
+    # Use network's to_dict() method for proper serialization
+    network_dict = network.to_dict()
+    
+    # Apply unit scaling if needed
     scale = 1000.0 if output_policy.output_units == "mm" else 1.0
     
-    network_dict = {
-        "nodes": {},
-        "segments": {},
-        "metadata": {
-            "output_units": output_policy.output_units,
-            "scale_from_meters": scale,
-        }
+    if scale != 1.0:
+        network_dict = _scale_network_dict(network_dict, scale)
+    
+    # Add output metadata
+    network_dict["output_metadata"] = {
+        "output_units": output_policy.output_units,
+        "scale_from_meters": scale,
     }
-    
-    for node_id, node in network.nodes.items():
-        network_dict["nodes"][str(node_id)] = {
-            "position": [node.position.x * scale, node.position.y * scale, node.position.z * scale],
-            "radius": node.radius * scale if hasattr(node, 'radius') else None,
-            "node_type": node.node_type.value if hasattr(node.node_type, 'value') else str(node.node_type),
-            "vessel_type": node.vessel_type if hasattr(node, 'vessel_type') else None,
-        }
-    
-    for seg_id, segment in network.segments.items():
-        network_dict["segments"][str(seg_id)] = {
-            "start_node": segment.start_node_id,
-            "end_node": segment.end_node_id,
-            "start_radius": segment.start_radius * scale if hasattr(segment, 'start_radius') else None,
-            "end_radius": segment.end_radius * scale if hasattr(segment, 'end_radius') else None,
-            "vessel_type": segment.vessel_type if hasattr(segment, 'vessel_type') else None,
-        }
     
     with open(output_path, 'w') as f:
         json.dump(network_dict, f, indent=2)
@@ -225,6 +214,105 @@ def save_network(
     logger.info(f"Saved network to {output_path}")
     
     return output_path
+
+
+def _scale_network_dict(network_dict: Dict[str, Any], scale: float) -> Dict[str, Any]:
+    """
+    Apply unit scaling to a network dictionary.
+    
+    Scales all position and radius values by the given factor.
+    
+    Parameters
+    ----------
+    network_dict : dict
+        Network dictionary from network.to_dict()
+    scale : float
+        Scale factor to apply
+        
+    Returns
+    -------
+    dict
+        Scaled network dictionary
+    """
+    import copy
+    scaled = copy.deepcopy(network_dict)
+    
+    # Scale node positions
+    for node_id, node_data in scaled.get("nodes", {}).items():
+        if "position" in node_data:
+            pos = node_data["position"]
+            if isinstance(pos, dict):
+                # Point3D format: {"x": ..., "y": ..., "z": ...}
+                pos["x"] = pos.get("x", 0) * scale
+                pos["y"] = pos.get("y", 0) * scale
+                pos["z"] = pos.get("z", 0) * scale
+            elif isinstance(pos, (list, tuple)):
+                node_data["position"] = [p * scale for p in pos]
+        
+        # Scale radius in attributes if present
+        if "attributes" in node_data and "radius" in node_data["attributes"]:
+            node_data["attributes"]["radius"] *= scale
+    
+    # Scale segment geometry
+    for seg_id, seg_data in scaled.get("segments", {}).items():
+        if "geometry" in seg_data:
+            geom = seg_data["geometry"]
+            
+            # Scale start position
+            if "start" in geom:
+                start = geom["start"]
+                if isinstance(start, dict):
+                    start["x"] = start.get("x", 0) * scale
+                    start["y"] = start.get("y", 0) * scale
+                    start["z"] = start.get("z", 0) * scale
+                elif isinstance(start, (list, tuple)):
+                    geom["start"] = [p * scale for p in start]
+            
+            # Scale end position
+            if "end" in geom:
+                end = geom["end"]
+                if isinstance(end, dict):
+                    end["x"] = end.get("x", 0) * scale
+                    end["y"] = end.get("y", 0) * scale
+                    end["z"] = end.get("z", 0) * scale
+                elif isinstance(end, (list, tuple)):
+                    geom["end"] = [p * scale for p in end]
+            
+            # Scale radii
+            if "radius_start" in geom:
+                geom["radius_start"] *= scale
+            if "radius_end" in geom:
+                geom["radius_end"] *= scale
+            
+            # Scale centerline points if present
+            if "centerline_points" in geom and geom["centerline_points"]:
+                scaled_points = []
+                for pt in geom["centerline_points"]:
+                    if isinstance(pt, dict):
+                        scaled_points.append({
+                            "x": pt.get("x", 0) * scale,
+                            "y": pt.get("y", 0) * scale,
+                            "z": pt.get("z", 0) * scale,
+                        })
+                    elif isinstance(pt, (list, tuple)):
+                        scaled_points.append([p * scale for p in pt])
+                geom["centerline_points"] = scaled_points
+    
+    # Scale domain bounds if present
+    if "domain" in scaled:
+        domain = scaled["domain"]
+        for key in ["x_min", "x_max", "y_min", "y_max", "z_min", "z_max", 
+                    "radius", "height", "semi_a", "semi_b", "semi_c"]:
+            if key in domain:
+                domain[key] *= scale
+        if "center" in domain:
+            center = domain["center"]
+            if isinstance(center, dict):
+                center["x"] = center.get("x", 0) * scale
+                center["y"] = center.get("y", 0) * scale
+                center["z"] = center.get("z", 0) * scale
+    
+    return scaled
 
 
 def export_all(

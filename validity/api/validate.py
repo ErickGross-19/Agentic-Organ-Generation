@@ -13,45 +13,14 @@ from dataclasses import dataclass, field, asdict
 from typing import Optional, Dict, Any, List, TYPE_CHECKING, Literal
 import logging
 
+# Import ValidationPolicy from centralized aog_policies package
+from aog_policies import ValidationPolicy
+
 if TYPE_CHECKING:
     import trimesh
     from generation.core.network import VascularNetwork
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class ValidationPolicy:
-    """
-    Policy for mesh/network validation.
-    
-    Controls which validation checks are enabled and their thresholds.
-    
-    JSON Schema:
-    {
-        "check_watertight": bool,
-        "check_components": bool,
-        "check_min_diameter": bool,
-        "check_open_ports": bool,
-        "check_bounds": bool,
-        "min_diameter_threshold": float (meters),
-        "max_components": int
-    }
-    """
-    check_watertight: bool = True
-    check_components: bool = True
-    check_min_diameter: bool = True
-    check_open_ports: bool = True
-    check_bounds: bool = True
-    min_diameter_threshold: float = 0.0005  # 0.5mm
-    max_components: int = 1
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
-    
-    @staticmethod
-    def from_dict(d: Dict[str, Any]) -> "ValidationPolicy":
-        return ValidationPolicy(**{k: v for k, v in d.items() if k in ValidationPolicy.__dataclass_fields__})
 
 
 @dataclass
