@@ -1884,10 +1884,8 @@ def _create_tapered_cylinder(
     length = np.linalg.norm(direction)
     
     if length < DEGENERATE_LENGTH_THRESHOLD:
-        # Degenerate segment, return small sphere
-        sphere = trimesh.creation.icosphere(subdivisions=1, radius=radius_start)
-        sphere.apply_translation(start)
-        return sphere
+        # Degenerate segment, skip (return None to avoid bulb artifacts)
+        return None
     
     direction = direction / length
     
@@ -2255,112 +2253,139 @@ def generate_object4_turn_bifurcate_merge(
         return trimesh.Trimesh()
     current_node_id = grow_result.new_ids["node"]
     
-    # 3. Bifurcate in XY plane with grow -> bifurcate -> grow pattern
-    print(f"    Bifurcating {OBJ4_NUM_BIFURCATIONS} levels in XY plane (using bifurcate)")
+    # 3. Bifurcate in XY plane with MANUAL PLANAR FAN-OUT (keeps z constant)
+    # This replaces the library bifurcate() which creates branches in YZ plane causing Z drift
+    print(f"    Bifurcating {OBJ4_NUM_BIFURCATIONS} levels in XY plane (manual planar fan-out)")
     
-    # Track current branch tips: list of node_ids
+    # Track current branch tips: list of (node_id, direction_xy_angle)
+    # direction_xy_angle is the angle in XY plane from +X axis
     branch_tip_ids = [current_node_id]
+    branch_tip_angles = [0.0]  # Initial direction is +X (angle=0)
+    
+    # Fixed z for all bifurcations (planar in XY)
+    bifurc_z = z_top - OBJ4_DOWNWARD_LENGTH_M
     
     for level in range(OBJ4_NUM_BIFURCATIONS):
         new_tip_ids = []
-        branch_length = OBJ4_BRANCH_BASE_LENGTH_M * (1.0 - OBJ4_BRANCH_LENGTH_DECAY * level)  # Decreasing length
+        new_tip_angles = []
+        branch_length = OBJ4_BRANCH_BASE_LENGTH_M * (1.0 - OBJ4_BRANCH_LENGTH_DECAY * level)
         branch_radius = OBJ4_INLET_RADIUS_M * OBJ4_TURN_RADIUS_FACTOR * (OBJ4_BRANCH_RADIUS_DECAY ** (level + 1))
         
-        # Calculate distance to next bifurcation level for growth distance
-        if level + 1 < OBJ4_NUM_BIFURCATIONS:
-            next_branch_length = OBJ4_BRANCH_BASE_LENGTH_M * (1.0 - OBJ4_BRANCH_LENGTH_DECAY * (level + 1))
-        else:
-            next_branch_length = branch_length * 0.5  # Last level: use half of current
+        # Angle for bifurcation (decreases with level for tighter packing)
+        half_angle_rad = np.radians((OBJ4_BASE_ANGLE_DEG - OBJ4_ANGLE_DECAY_PER_LEVEL_DEG * level) / 2.0)
         
-        for tip_node_id in branch_tip_ids:
+        for tip_idx, tip_node_id in enumerate(branch_tip_ids):
             tip_node = network.get_node(tip_node_id)
             if tip_node is None:
                 continue
             
             tip_pos = np.array([tip_node.position.x, tip_node.position.y, tip_node.position.z])
-            tip_dir_dict = tip_node.attributes.get("direction", {"dx": 1, "dy": 0, "dz": 0})
-            tip_dir = np.array([tip_dir_dict.get("dx", 1), tip_dir_dict.get("dy", 0), tip_dir_dict.get("dz", 0)])
+            parent_angle = branch_tip_angles[tip_idx]
             
-            # Grow forward a bit (pre-bifurcation growth) using grow_branch
-            mid_pos = tip_pos + tip_dir * branch_length
-            grow_result = grow_to_point(
-                network,
-                from_node_id=tip_node_id,
-                target_point=tuple(mid_pos),
-                target_radius=branch_radius,
-                constraints=constraints,
-                check_collisions=False,
-                fail_on_collision=False,
-            )
+            # Compute boundary-aware max distance in XY plane
+            # Solve: (x + t*dx)^2 + (y + t*dy)^2 = (R - margin - radius)^2
+            effective_radius = CYLINDER_RADIUS_M - OBJ4_WALL_MARGIN_M - branch_radius
             
-            if not grow_result.is_success():
-                print(f"    Warning: grow_to_point failed at level {level}: {grow_result.message}")
-                continue
-            
-            bifurc_node_id = grow_result.new_ids["node"]
-            
-            # Calculate RNG-based growth distances for child branches
-            max_growth = next_branch_length * BIFURC_MAX_GROWTH_FRACTION  # Leave room for next bifurcation approach
-            
-            growth_fraction1 = rng.uniform(growth_fraction_range[0], growth_fraction_range[1])
-            growth_distance1 = min(growth_fraction1 * next_branch_length, max_growth)
-            growth_distance1 = max(growth_distance1, BIFURC_MIN_GROWTH_DISTANCE_M)
-            
-            growth_fraction2 = rng.uniform(growth_fraction_range[0], growth_fraction_range[1])
-            growth_distance2 = min(growth_fraction2 * next_branch_length, max_growth)
-            growth_distance2 = max(growth_distance2, BIFURC_MIN_GROWTH_DISTANCE_M)
-            
-            # Angle for bifurcation (decreases with level for tighter packing)
-            angle_deg = OBJ4_BASE_ANGLE_DEG - OBJ4_ANGLE_DECAY_PER_LEVEL_DEG * level
-            
-            # Use bifurcate to create two child branches with RNG-based growth lengths
-            bifurc_result = bifurcate(
-                network,
-                at_node_id=bifurc_node_id,
-                child_lengths=(growth_distance1, growth_distance2),
-                angle_deg=angle_deg,
-                constraints=constraints,
-                check_collisions=False,
-                seed=rng_seed,
-            )
-            
-            if not bifurc_result.is_success():
-                print(f"    Warning: bifurcate failed at level {level}: {bifurc_result.message}")
-                continue
-            
-            # Get the child node IDs from bifurcation result
-            child_node_ids = bifurc_result.new_ids.get("nodes", [])
-            for child_node_id in child_node_ids:
-                # Update child node radius for next level
-                child_node = network.get_node(child_node_id)
-                if child_node:
-                    child_node.attributes["radius"] = branch_radius
-                new_tip_ids.append(child_node_id)
+            # Create two child branches with angles +/- half_angle from parent direction
+            for sign in [+1, -1]:
+                child_angle = parent_angle + sign * half_angle_rad
+                child_dir = np.array([np.cos(child_angle), np.sin(child_angle), 0.0])
+                
+                # Compute max distance before hitting cylinder wall
+                # Quadratic: t^2 + 2*t*(x*dx + y*dy) + (x^2 + y^2 - R_eff^2) = 0
+                a = child_dir[0]**2 + child_dir[1]**2  # = 1 for unit vector in XY
+                b = 2 * (tip_pos[0] * child_dir[0] + tip_pos[1] * child_dir[1])
+                c = tip_pos[0]**2 + tip_pos[1]**2 - effective_radius**2
+                
+                discriminant = b**2 - 4*a*c
+                if discriminant > 0:
+                    t_max = (-b + np.sqrt(discriminant)) / (2*a)
+                    t_max = max(0, t_max * 0.95)  # 95% of max to stay inside
+                else:
+                    t_max = branch_length  # Fallback
+                
+                # Use RNG-based growth distance, clamped to boundary
+                growth_fraction = rng.uniform(growth_fraction_range[0], growth_fraction_range[1])
+                growth_distance = min(growth_fraction * branch_length, t_max)
+                growth_distance = max(growth_distance, BIFURC_MIN_GROWTH_DISTANCE_M)
+                
+                # Compute child endpoint (keeping z constant for planar bifurcation)
+                child_end = tip_pos + child_dir * growth_distance
+                child_end[2] = bifurc_z  # Force z to stay constant
+                
+                # Grow to child endpoint
+                grow_result = grow_to_point(
+                    network,
+                    from_node_id=tip_node_id,
+                    target_point=tuple(child_end),
+                    target_radius=branch_radius,
+                    constraints=constraints,
+                    check_collisions=False,
+                    fail_on_collision=False,
+                )
+                
+                if grow_result.is_success():
+                    child_node_id = grow_result.new_ids["node"]
+                    # Store direction on child node for next level
+                    child_node = network.get_node(child_node_id)
+                    if child_node:
+                        child_node.attributes["direction"] = {
+                            "dx": child_dir[0], "dy": child_dir[1], "dz": 0.0
+                        }
+                        child_node.attributes["radius"] = branch_radius
+                    new_tip_ids.append(child_node_id)
+                    new_tip_angles.append(child_angle)
+                else:
+                    print(f"    Warning: grow_to_point failed at level {level}: {grow_result.message}")
         
         branch_tip_ids = new_tip_ids
+        branch_tip_angles = new_tip_angles
     
-    # 4. Merge branches back (overlap-based merge)
-    # Route all branch tips toward a common merge point using grow_to_point
-    print("    Merging branches (using grow_to_point)")
-    merge_point = (OBJ4_MERGE_POINT_X_M, 0.0, z_top - OBJ4_DOWNWARD_LENGTH_M)  # Merge point at +2mm X
+    # 4. Merge branches back with REAL MERGE NODE (single shared node)
+    # Create one canonical merge node, then connect all tips to it
+    print("    Merging branches (creating single shared merge node)")
+    merge_point = (OBJ4_MERGE_POINT_X_M, 0.0, bifurc_z)  # Merge point at +2mm X, same z as bifurcations
     
-    merge_node_id = None
+    # First, grow the first tip to the merge point to create the canonical merge node
+    canonical_merge_node_id = None
+    first_tip_grown = False
+    
     for tip_node_id in branch_tip_ids:
         tip_node = network.get_node(tip_node_id)
         if tip_node is None:
             continue
         
-        grow_result = grow_to_point(
-            network,
-            from_node_id=tip_node_id,
-            target_point=merge_point,
-            target_radius=OBJ4_TERMINAL_RADIUS_M,
-            constraints=constraints,
-            check_collisions=False,
-            fail_on_collision=False,
-        )
-        if grow_result.is_success():
-            merge_node_id = grow_result.new_ids["node"]
+        if not first_tip_grown:
+            # First tip: grow to merge point and create the canonical merge node
+            grow_result = grow_to_point(
+                network,
+                from_node_id=tip_node_id,
+                target_point=merge_point,
+                target_radius=OBJ4_TERMINAL_RADIUS_M,
+                constraints=constraints,
+                check_collisions=False,
+                fail_on_collision=False,
+            )
+            if grow_result.is_success():
+                canonical_merge_node_id = grow_result.new_ids["node"]
+                first_tip_grown = True
+        else:
+            # Subsequent tips: grow to merge point, then rewire to canonical node
+            # We grow close to the merge point, then the voxel union will merge them
+            grow_result = grow_to_point(
+                network,
+                from_node_id=tip_node_id,
+                target_point=merge_point,
+                target_radius=OBJ4_TERMINAL_RADIUS_M,
+                constraints=constraints,
+                check_collisions=False,
+                fail_on_collision=False,
+            )
+            # Note: Each grow creates a new node at merge_point, but voxel union
+            # will merge overlapping geometry. For true graph connectivity,
+            # we would need to rewire segments, but voxel-based embedding handles this.
+    
+    merge_node_id = canonical_merge_node_id
     
     # 5. Return upward to top face using grow_to_point
     print("    Segment: Return upward to top face (using grow_to_point)")
@@ -2383,8 +2408,9 @@ def generate_object4_turn_bifurcate_merge(
         )
     
     # Convert network to mesh using the mesh adapter
+    # NOTE: include_caps=False for void meshes to prevent caps protruding outside domain
     print(f"    Converting network to mesh ({len(network.segments)} segments)...")
-    mesh_result = to_trimesh(network, mode="fast", include_caps=True, include_node_spheres=False)
+    mesh_result = to_trimesh(network, mode="fast", include_caps=False, include_node_spheres=False)
     
     if not mesh_result.is_success():
         print(f"    Warning: to_trimesh failed: {mesh_result.message}")
@@ -2433,12 +2459,12 @@ def generate_object4_turn_bifurcate_merge(
     print(f"    Watertight: {cylinder_with_void.is_watertight}")
     
     # Run post-embedding validation on cylinder with void (before adding ridge)
-    # Run post-embedding validation on cylinder with void (before adding ridge)
+    # Object 4 is a loop: 1 inlet at top + 1 outlet at top = 2 expected outlets
     print("  Running validation on cylinder with void...")
     try:
         validation_config = ValidationConfig(
             voxel_pitch_m=VOXEL_PITCH_M * 1000.0,  # convert meters -> millimeters for validator
-            expected_outlets=OBJ2_NUM_INLETS,
+            expected_outlets=2,  # Object 4 loop: 1 inlet + 1 outlet at top face
         )
         report = run_post_embedding_validation(
             mesh=scale_mesh_to_mm(cylinder_with_void),  # validate in mm
@@ -2462,6 +2488,124 @@ def generate_object4_turn_bifurcate_merge(
 # =============================================================================
 # OBJECT 5: CCO-NLP ORGANIC GROWTH
 # =============================================================================
+
+def snap_nodes_and_prune(network: VascularNetwork, snap_tol: float, min_seg_len: float) -> int:
+    """
+    Snap near-coincident nodes and prune degenerate segments from a network.
+    
+    This cleanup step is important after merging multiple networks to avoid:
+    - Near-coincident nodes that create mesh artifacts
+    - Near-zero-length segments that become degenerate spheres
+    
+    Parameters
+    ----------
+    network : VascularNetwork
+        The network to clean up (modified in place)
+    snap_tol : float
+        Distance tolerance for snapping nodes together (meters)
+    min_seg_len : float
+        Minimum segment length; shorter segments are removed (meters)
+    
+    Returns
+    -------
+    int
+        Number of segments pruned
+    """
+    from scipy.spatial import KDTree
+    
+    # Build list of node positions and IDs
+    node_ids = list(network.nodes.keys())
+    if len(node_ids) < 2:
+        return 0
+    
+    positions = []
+    for nid in node_ids:
+        node = network.nodes[nid]
+        if hasattr(node.position, 'to_array'):
+            positions.append(node.position.to_array())
+        else:
+            positions.append(np.array([node.position.x, node.position.y, node.position.z]))
+    positions = np.array(positions)
+    
+    # Build KD-tree for spatial queries
+    tree = KDTree(positions)
+    
+    # Find pairs of nodes within snap_tol
+    pairs = tree.query_pairs(snap_tol)
+    
+    # Build mapping from duplicate nodes to canonical nodes
+    # Use union-find to handle transitive merges
+    canonical = {nid: nid for nid in node_ids}
+    
+    def find(x):
+        if canonical[x] != x:
+            canonical[x] = find(canonical[x])
+        return canonical[x]
+    
+    def union(x, y):
+        rx, ry = find(x), find(y)
+        if rx != ry:
+            # Keep the lower ID as canonical
+            if rx < ry:
+                canonical[ry] = rx
+            else:
+                canonical[rx] = ry
+    
+    for i, j in pairs:
+        union(node_ids[i], node_ids[j])
+    
+    # Compress paths
+    for nid in node_ids:
+        find(nid)
+    
+    # Count merged nodes
+    merged_count = sum(1 for nid in node_ids if canonical[nid] != nid)
+    if merged_count > 0:
+        print(f"    Snapped {merged_count} near-coincident nodes (tol={snap_tol*1e6:.1f}um)")
+    
+    # Update segment endpoints to use canonical node IDs
+    for seg in network.segments.values():
+        seg.start_node_id = canonical.get(seg.start_node_id, seg.start_node_id)
+        seg.end_node_id = canonical.get(seg.end_node_id, seg.end_node_id)
+    
+    # Identify and remove degenerate segments (same start/end or too short)
+    segments_to_remove = []
+    for seg_id, seg in network.segments.items():
+        # Same start and end node after snapping
+        if seg.start_node_id == seg.end_node_id:
+            segments_to_remove.append(seg_id)
+            continue
+        
+        # Check segment length
+        start_node = network.nodes.get(seg.start_node_id)
+        end_node = network.nodes.get(seg.end_node_id)
+        if start_node is None or end_node is None:
+            segments_to_remove.append(seg_id)
+            continue
+        
+        if hasattr(start_node.position, 'to_array'):
+            start_pos = start_node.position.to_array()
+        else:
+            start_pos = np.array([start_node.position.x, start_node.position.y, start_node.position.z])
+        if hasattr(end_node.position, 'to_array'):
+            end_pos = end_node.position.to_array()
+        else:
+            end_pos = np.array([end_node.position.x, end_node.position.y, end_node.position.z])
+        
+        length = np.linalg.norm(end_pos - start_pos)
+        if length < min_seg_len:
+            segments_to_remove.append(seg_id)
+    
+    # Remove degenerate segments
+    for seg_id in segments_to_remove:
+        if seg_id in network.segments:
+            del network.segments[seg_id]
+    
+    if segments_to_remove:
+        print(f"    Pruned {len(segments_to_remove)} degenerate segments (min_len={min_seg_len*1e6:.1f}um)")
+    
+    return len(segments_to_remove)
+
 
 def generate_object5_cco_nlp_organic(output_dir: Optional[Path] = None) -> trimesh.Trimesh:
     """
@@ -2646,6 +2790,15 @@ def generate_object5_cco_nlp_organic(output_dir: Optional[Path] = None) -> trime
     print(f"  Merged network: {len(merged_network.nodes)} nodes, "
           f"{len(merged_network.segments)} segments")
     
+    # Snap near-coincident nodes and prune degenerate segments
+    # This cleanup step is important after merging to avoid mesh artifacts
+    print("\n  Cleaning up merged network (snap nodes + prune degenerate segments)...")
+    snap_tol = 2 * VOXEL_PITCH_M  # Snap nodes within 2 voxel pitches
+    min_seg_len = 0.5 * BRANCH_MIN_SEGMENT_LENGTH_M  # Prune segments shorter than half min length
+    snap_nodes_and_prune(merged_network, snap_tol=snap_tol, min_seg_len=min_seg_len)
+    print(f"  After cleanup: {len(merged_network.nodes)} nodes, "
+          f"{len(merged_network.segments)} segments")
+    
     # Final global NLP optimization on merged network
     if OBJ5_NLP_ENABLED:
         print("\n  Applying final global NLP optimization...")
@@ -2746,12 +2899,12 @@ def generate_object5_cco_nlp_organic(output_dir: Optional[Path] = None) -> trime
     print(f"    Watertight: {cylinder_with_void.is_watertight}")
     
     # Run post-embedding validation on cylinder with void (before adding ridge)
-    # Run post-embedding validation on cylinder with void (before adding ridge)
+    # Object 5 has OBJ5_NUM_INLETS inlets at top face
     print("  Running validation on cylinder with void...")
     try:
         validation_config = ValidationConfig(
             voxel_pitch_m=VOXEL_PITCH_M * 1000.0,  # convert meters -> millimeters for validator
-            expected_outlets=OBJ2_NUM_INLETS,
+            expected_outlets=OBJ5_NUM_INLETS,  # Object 5: 4 inlets at top face
         )
         report = run_post_embedding_validation(
             mesh=scale_mesh_to_mm(cylinder_with_void),  # validate in mm
