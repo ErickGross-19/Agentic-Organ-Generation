@@ -645,16 +645,16 @@ def generate_bifurcating_tree(output_dir: Optional[Path] = None) -> trimesh.Trim
         result = add_inlet(
             network,
             position=inlet_pos,
+            direction=(inlet_dir.x, inlet_dir.y, inlet_dir.z),
             radius=BIFURCATING_TREE_INLET_RADIUS_M,
             vessel_type="arterial",
-            direction=(inlet_dir.x, inlet_dir.y, inlet_dir.z),
         )
         
         if result.status.name == "FAILURE":
             print(f"      ERROR: Failed to add inlet - {result.message}")
             continue
         
-        inlet_node_id = result.new_ids["node_id"]
+        inlet_node_id = result.new_ids["node"]
         
         # Store direction in node attributes
         inlet_node = network.get_node(inlet_node_id)
@@ -788,35 +788,35 @@ def generate_turn_bifurcate_merge(output_dir: Optional[Path] = None) -> trimesh.
     result = add_inlet(
         network,
         position=inlet_pos,
+        direction=(0.0, 0.0, -1.0),
         radius=inlet_radius,
         vessel_type="arterial",
-        direction=(0.0, 0.0, -1.0),
     )
-    inlet_node_id = result.new_ids["node_id"]
+    inlet_node_id = result.new_ids["node"]
     
     # Grow downward segment
     print("  Growing initial downward segment...")
     down_length = domain_spec.height * 0.3
     result = grow_branch(
         network,
-        start_node_id=inlet_node_id,
-        direction=Direction3D(0.0, 0.0, -1.0),
+        from_node_id=inlet_node_id,
         length=down_length,
-        end_radius=inlet_radius * 0.9,
+        direction=Direction3D(0.0, 0.0, -1.0),
+        target_radius=inlet_radius * 0.9,
     )
-    turn_node_id = result.new_ids["end_node_id"]
+    turn_node_id = result.new_ids["node"]
     
     # Grow horizontal segment (90-degree turn)
     print("  Growing horizontal turn segment...")
     horiz_length = domain_spec.radius * 0.4
     result = grow_branch(
         network,
-        start_node_id=turn_node_id,
-        direction=Direction3D(1.0, 0.0, 0.0),
+        from_node_id=turn_node_id,
         length=horiz_length,
-        end_radius=inlet_radius * 0.8,
+        direction=Direction3D(1.0, 0.0, 0.0),
+        target_radius=inlet_radius * 0.8,
     )
-    bifurc_node_id = result.new_ids["end_node_id"]
+    bifurc_node_id = result.new_ids["node"]
     
     # Bifurcate into two branches
     print("  Creating bifurcation...")
@@ -825,22 +825,22 @@ def generate_turn_bifurcate_merge(output_dir: Optional[Path] = None) -> trimesh.
     # Branch 1: down and forward
     result1 = grow_branch(
         network,
-        start_node_id=bifurc_node_id,
-        direction=Direction3D(0.3, 0.5, -0.8),
+        from_node_id=bifurc_node_id,
         length=branch_length,
-        end_radius=outlet_radius,
+        direction=Direction3D(0.3, 0.5, -0.8),
+        target_radius=outlet_radius,
     )
-    branch1_end_id = result1.new_ids["end_node_id"]
+    branch1_end_id = result1.new_ids["node"]
     
     # Branch 2: down and backward
     result2 = grow_branch(
         network,
-        start_node_id=bifurc_node_id,
-        direction=Direction3D(0.3, -0.5, -0.8),
+        from_node_id=bifurc_node_id,
         length=branch_length,
-        end_radius=outlet_radius,
+        direction=Direction3D(0.3, -0.5, -0.8),
+        target_radius=outlet_radius,
     )
-    branch2_end_id = result2.new_ids["end_node_id"]
+    branch2_end_id = result2.new_ids["node"]
     
     # Merge branches (grow toward common point)
     print("  Creating merge...")
@@ -850,18 +850,18 @@ def generate_turn_bifurcate_merge(output_dir: Optional[Path] = None) -> trimesh.
     # Grow from branch1 toward merge point
     result = grow_to_point(
         network,
-        start_node_id=branch1_end_id,
-        target_position=merge_pos,
-        end_radius=outlet_radius * 0.9,
+        from_node_id=branch1_end_id,
+        target_point=merge_pos,
+        target_radius=outlet_radius * 0.9,
     )
-    merge_node_id = result.new_ids["end_node_id"]
+    merge_node_id = result.new_ids["node"]
     
     # Grow from branch2 toward merge point
     result = grow_to_point(
         network,
-        start_node_id=branch2_end_id,
-        target_position=merge_pos,
-        end_radius=outlet_radius * 0.9,
+        from_node_id=branch2_end_id,
+        target_point=merge_pos,
+        target_radius=outlet_radius * 0.9,
     )
     
     # Add outlet at merge point
@@ -869,9 +869,9 @@ def generate_turn_bifurcate_merge(output_dir: Optional[Path] = None) -> trimesh.
     outlet_pos = Point3D(merge_pos.x, merge_pos.y, BOTTOM_FACE_Z_M + outlet_radius + 0.0001)
     result = grow_to_point(
         network,
-        start_node_id=merge_node_id,
-        target_position=outlet_pos,
-        end_radius=outlet_radius,
+        from_node_id=merge_node_id,
+        target_point=outlet_pos,
+        target_radius=outlet_radius,
     )
     
     print(f"  Network: {len(network.nodes)} nodes, {len(network.segments)} segments")
