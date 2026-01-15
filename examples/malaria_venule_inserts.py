@@ -433,7 +433,7 @@ def compute_bifurcation_depths(
     cylinder_height: float = CYLINDER_HEIGHT_M,
     top_margin_fraction: float = 0.25,
     bottom_margin_fraction: float = 0.125,
-    depth_power: float = 2.0,
+    depth_power: float = 2.3,
 ) -> List[float]:
     """
     Compute bifurcation depths based on number of bifurcations and object height.
@@ -1781,8 +1781,8 @@ def generate_bifurcation_tree_mesh_v2(
             leader_angle_deg_min=5.0,
             side_angle_deg_start=35.0,
             side_angle_deg_min=18.0,
-            side_length_mult_start=0.55,
-            side_length_mult_end=0.85,
+            side_length_mult_start=0.30,
+            side_length_mult_end=0.60,
             side_radius_factor=0.75,
             use_golden_angle_rotation=True,
             envelope_r_frac_start=0.35,
@@ -2011,8 +2011,8 @@ def generate_object3_bifurcate_512(output_dir: Optional[Path] = None) -> trimesh
         leader_angle_deg_min=3.0,     # Reduced from 5.0
         side_angle_deg_start=25.0,    # Reduced from 35.0 - laterals spread less
         side_angle_deg_min=12.0,      # Reduced from 18.0
-        side_length_mult_start=0.55,
-        side_length_mult_end=0.85,
+        side_length_mult_start=0.30,
+        side_length_mult_end=0.60,
         side_radius_factor=0.75,
         use_golden_angle_rotation=True,
         envelope_r_frac_start=0.35,
