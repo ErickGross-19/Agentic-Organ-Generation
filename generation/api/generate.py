@@ -684,19 +684,24 @@ def generate_void_mesh(
                 # Use voxel-based merge for proper union (not just concatenation)
                 # This produces a single watertight void component
                 from ..ops.mesh.merge import merge_meshes
+                from ..policies import MeshMergePolicy
                 try:
-                    mesh = merge_meshes(
-                        channel_meshes,
-                        method="voxel",
+                    merge_policy = MeshMergePolicy(
+                        mode="voxel",
                         voxel_pitch=channel_policy.min_diameter / 4 if channel_policy else 5e-5,
+                        auto_adjust_pitch=True,
                     )
-                    if mesh is None or len(mesh.vertices) == 0:
+                    merged_mesh, merge_report = merge_meshes(channel_meshes, merge_policy)
+                    if merged_mesh is None or len(merged_mesh.vertices) == 0:
                         # Fallback to concatenation if merge fails
                         mesh = trimesh.util.concatenate(channel_meshes)
                         warnings.append(
                             "Voxel merge failed, using concatenation. "
                             "Result may have self-intersections."
                         )
+                    else:
+                        mesh = merged_mesh
+                        warnings.extend(merge_report.warnings)
                 except Exception as e:
                     # Fallback to concatenation if merge fails
                     mesh = trimesh.util.concatenate(channel_meshes)
