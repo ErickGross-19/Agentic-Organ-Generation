@@ -249,7 +249,18 @@ class GrowthPolicy:
         "seed": int | null,
         "min_segment_length": float (meters),
         "max_segment_length": float (meters),
-        "step_size": float (meters)
+        "step_size": float (meters),
+        "backend_params": dict (JSON-serializable backend-specific configuration)
+    }
+    
+    backend_params Structure (for programmatic backend):
+    {
+        "mode": "network" | "mesh",
+        "path_algorithm": "astar_voxel" | "straight" | "bezier" | "hybrid",
+        "waypoint_policy": {"allow_skip": bool, ...},
+        "pathfinding_policy": {"voxel_pitch": float, "clearance": float, ...},
+        "radius_policy": {...},
+        "steps": [{op: ..., ...}, ...]
     }
     """
     enabled: bool = True
@@ -261,6 +272,7 @@ class GrowthPolicy:
     min_segment_length: float = 0.0002  # 0.2mm
     max_segment_length: float = 0.002  # 2mm
     step_size: float = 0.0003  # 0.3mm
+    backend_params: Dict[str, Any] = field(default_factory=dict)
     
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

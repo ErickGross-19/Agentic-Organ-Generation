@@ -125,6 +125,63 @@ class EnhancedEmbeddingPolicy:
 
 
 @dataclass
+class PortRecarveResult:
+    """Result of recarving a single port."""
+    port_index: int
+    position: Tuple[float, float, float]
+    direction: Tuple[float, float, float]
+    original_radius: float
+    carve_radius: float
+    carve_depth: float
+    voxels_carved: int = 0
+    reached_boundary: bool = False
+    warnings: List[str] = field(default_factory=list)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "port_index": self.port_index,
+            "position": self.position,
+            "direction": self.direction,
+            "original_radius": self.original_radius,
+            "carve_radius": self.carve_radius,
+            "carve_depth": self.carve_depth,
+            "voxels_carved": self.voxels_carved,
+            "reached_boundary": self.reached_boundary,
+            "warnings": self.warnings,
+        }
+
+
+@dataclass
+class RecarveReport:
+    """
+    Report from voxel-based port recarving operation.
+    
+    Contains per-port metrics and validation checks for debugging
+    DesignSpec runs without needing to open meshes.
+    """
+    success: bool
+    ports_carved: int = 0
+    total_voxels_carved: int = 0
+    voxel_pitch_used: float = 0.0
+    port_results: List[PortRecarveResult] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
+    is_watertight_after: bool = False
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "success": self.success,
+            "ports_carved": self.ports_carved,
+            "total_voxels_carved": self.total_voxels_carved,
+            "voxel_pitch_used": self.voxel_pitch_used,
+            "port_results": [r.to_dict() for r in self.port_results],
+            "warnings": self.warnings,
+            "errors": self.errors,
+            "is_watertight_after": self.is_watertight_after,
+        }
+
+
+@dataclass
 class EmbeddingReport:
     """Report from an embedding operation."""
     success: bool
@@ -140,6 +197,7 @@ class EmbeddingReport:
     warnings: List[str] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    recarve_report: Optional[RecarveReport] = None
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -156,6 +214,7 @@ class EmbeddingReport:
             "warnings": self.warnings,
             "errors": self.errors,
             "metadata": self.metadata,
+            "recarve_report": self.recarve_report.to_dict() if self.recarve_report else None,
         }
 
 
@@ -418,6 +477,272 @@ def get_port_constraints(
     return constraints
 
 
+def voxel_recarve_ports(
+    mesh: "trimesh.Trimesh",
+    ports: List[Dict[str, Any]],
+    voxel_pitch: float = 3e-4,
+    carve_radius_factor: float = 1.2,
+    carve_depth: float = 0.002,
+    carve_shape: Literal["cylinder", "frustum"] = "cylinder",
+) -> Tuple["trimesh.Trimesh", RecarveReport]:
+    """
+    Voxel-based port preservation via recarving.
+    
+    This function carves port openings using voxel grid operations,
+    eliminating dependency on boolean mesh backends (Blender/Cork/etc.).
+    Works consistently across all environments.
+    
+    Algorithm:
+    1. Voxelize the input mesh
+    2. For each port, create a cylinder/frustum mask aligned to port direction
+    3. Subtract the mask from the solid voxels
+    4. Reconstruct mesh via marching cubes
+    5. Validate watertightness and boundary reach
+    
+    Parameters
+    ----------
+    mesh : trimesh.Trimesh
+        The embedded solid mesh to carve ports into
+    ports : list of dict
+        Port specifications with keys:
+        - position: (x, y, z) tuple in meters
+        - direction: (dx, dy, dz) tuple (outward normal)
+        - radius: float in meters
+    voxel_pitch : float
+        Voxel size in meters (default: 0.3mm)
+    carve_radius_factor : float
+        Factor to multiply port radius for carving (default: 1.2)
+    carve_depth : float
+        Depth of carving in meters (default: 2mm)
+    carve_shape : str
+        Shape of carving: "cylinder" or "frustum" (default: cylinder)
+        
+    Returns
+    -------
+    result_mesh : trimesh.Trimesh
+        Mesh with ports carved
+    report : RecarveReport
+        Detailed report with per-port metrics
+    """
+    import trimesh
+    from trimesh.voxel import VoxelGrid
+    
+    warnings = []
+    errors = []
+    port_results = []
+    total_voxels_carved = 0
+    
+    if not ports:
+        return mesh, RecarveReport(
+            success=True,
+            ports_carved=0,
+            voxel_pitch_used=voxel_pitch,
+            is_watertight_after=mesh.is_watertight,
+        )
+    
+    try:
+        # Get mesh bounds
+        mesh_min = mesh.bounds[0]
+        mesh_max = mesh.bounds[1]
+        ref_extent = float(np.max(mesh.extents))
+        
+        # Add padding for port carving
+        pad = carve_depth + 2 * voxel_pitch
+        grid_min = mesh_min - pad
+        grid_max = mesh_max + pad
+        
+        grid_shape = np.ceil((grid_max - grid_min) / voxel_pitch).astype(int) + 1
+        grid_shape = np.maximum(grid_shape, 1)
+        
+        # Voxelize the mesh
+        mesh_vox = mesh.voxelized(voxel_pitch).fill()
+        mesh_matrix = mesh_vox.matrix.astype(bool)
+        mesh_origin = mesh_vox.transform[:3, 3].astype(float)
+        
+        # Create aligned grid
+        aligned_solid = np.zeros(tuple(grid_shape), dtype=bool)
+        
+        # Paste mesh voxels into aligned grid
+        offset_vox = np.round((mesh_origin - grid_min) / voxel_pitch).astype(int)
+        src_start = np.maximum(-offset_vox, 0)
+        dst_start = np.maximum(offset_vox, 0)
+        copy_size = np.minimum(
+            np.array(mesh_matrix.shape) - src_start,
+            np.array(aligned_solid.shape) - dst_start
+        )
+        copy_size = np.maximum(copy_size, 0)
+        
+        if np.all(copy_size > 0):
+            aligned_solid[
+                dst_start[0]:dst_start[0] + copy_size[0],
+                dst_start[1]:dst_start[1] + copy_size[1],
+                dst_start[2]:dst_start[2] + copy_size[2],
+            ] = mesh_matrix[
+                src_start[0]:src_start[0] + copy_size[0],
+                src_start[1]:src_start[1] + copy_size[1],
+                src_start[2]:src_start[2] + copy_size[2],
+            ]
+        
+        # Track original solid voxels for boundary check
+        original_solid_count = int(aligned_solid.sum())
+        
+        # Process each port
+        for i, port in enumerate(ports):
+            position = np.array(port.get("position", [0, 0, 0]), dtype=float)
+            direction = np.array(port.get("direction", [0, 0, 1]), dtype=float)
+            radius = float(port.get("radius", 0.001))
+            
+            # Normalize direction
+            dir_norm = np.linalg.norm(direction)
+            if dir_norm > 1e-9:
+                direction = direction / dir_norm
+            else:
+                direction = np.array([0, 0, 1])
+            
+            carve_radius = radius * carve_radius_factor
+            port_warnings = []
+            
+            # Create cylinder mask in voxel space
+            # Generate voxel coordinates
+            voxel_coords = np.indices(tuple(grid_shape)).reshape(3, -1).T
+            world_coords = voxel_coords * voxel_pitch + grid_min
+            
+            # Vector from port position to each voxel
+            rel_pos = world_coords - position
+            
+            # Project onto port direction (along cylinder axis)
+            along_axis = np.dot(rel_pos, direction)
+            
+            # Distance from axis (perpendicular)
+            proj_on_axis = np.outer(along_axis, direction)
+            perp_vec = rel_pos - proj_on_axis
+            dist_from_axis = np.linalg.norm(perp_vec, axis=1)
+            
+            # Cylinder mask: within radius and within depth
+            # Carve from port position inward (opposite to direction)
+            # Port position is at the surface, carve inward
+            if carve_shape == "frustum":
+                # Frustum: radius decreases linearly with depth
+                # At surface (along_axis=0): carve_radius
+                # At depth (along_axis=-carve_depth): carve_radius * 0.5
+                depth_fraction = np.clip(-along_axis / carve_depth, 0, 1)
+                effective_radius = carve_radius * (1.0 - 0.5 * depth_fraction)
+                in_shape = dist_from_axis <= effective_radius
+            else:
+                # Cylinder: constant radius
+                in_shape = dist_from_axis <= carve_radius
+            
+            # Within depth range (carve inward from port position)
+            in_depth = (along_axis >= -carve_depth) & (along_axis <= voxel_pitch)
+            
+            # Combined mask
+            carve_mask_flat = in_shape & in_depth
+            carve_mask = carve_mask_flat.reshape(tuple(grid_shape))
+            
+            # Count voxels to carve (only those that are currently solid)
+            voxels_to_carve = aligned_solid & carve_mask
+            voxels_carved = int(voxels_to_carve.sum())
+            
+            # Check if carve reached boundary (at least some voxels at edge of solid)
+            # A port "reaches boundary" if the carved region includes voxels that
+            # were at the edge of the solid (had non-solid neighbors)
+            reached_boundary = False
+            if voxels_carved > 0:
+                # Check if any carved voxels were at the boundary
+                # by checking if they had any non-solid neighbors before carving
+                from scipy import ndimage
+                
+                # Dilate the inverse of solid to find boundary voxels
+                non_solid = ~aligned_solid
+                boundary_region = ndimage.binary_dilation(non_solid, iterations=1) & aligned_solid
+                reached_boundary = bool(np.any(voxels_to_carve & boundary_region))
+                
+                if not reached_boundary:
+                    port_warnings.append(
+                        f"Port {i}: carve didn't reach outside boundary"
+                    )
+            else:
+                port_warnings.append(f"Port {i}: no voxels carved (port may be outside mesh)")
+            
+            # Apply carve
+            aligned_solid[carve_mask] = False
+            total_voxels_carved += voxels_carved
+            
+            port_results.append(PortRecarveResult(
+                port_index=i,
+                position=tuple(position),
+                direction=tuple(direction),
+                original_radius=radius,
+                carve_radius=carve_radius,
+                carve_depth=carve_depth,
+                voxels_carved=voxels_carved,
+                reached_boundary=reached_boundary,
+                warnings=port_warnings,
+            ))
+            warnings.extend(port_warnings)
+        
+        # Reconstruct mesh from voxels
+        if not aligned_solid.any():
+            errors.append("Result is empty after port carving")
+            return mesh, RecarveReport(
+                success=False,
+                ports_carved=0,
+                voxel_pitch_used=voxel_pitch,
+                errors=errors,
+            )
+        
+        # Create transform for voxel grid
+        T = np.eye(4, dtype=float)
+        T[0, 0] = voxel_pitch
+        T[1, 1] = voxel_pitch
+        T[2, 2] = voxel_pitch
+        T[:3, 3] = grid_min
+        
+        vg = VoxelGrid(aligned_solid, transform=T)
+        result_mesh = vg.marching_cubes
+        
+        # Fix coordinate system if needed
+        out_extent = float(np.max(result_mesh.extents))
+        if ref_extent > 0 and out_extent / ref_extent > 50:
+            result_mesh.apply_transform(vg.transform)
+        
+        # Cleanup
+        result_mesh.merge_vertices()
+        result_mesh.remove_unreferenced_vertices()
+        if result_mesh.volume < 0:
+            result_mesh.invert()
+        trimesh.repair.fix_normals(result_mesh)
+        
+        is_watertight = result_mesh.is_watertight
+        if not is_watertight:
+            warnings.append("Result mesh is not watertight after port carving")
+        
+        report = RecarveReport(
+            success=True,
+            ports_carved=len(ports),
+            total_voxels_carved=total_voxels_carved,
+            voxel_pitch_used=voxel_pitch,
+            port_results=port_results,
+            warnings=warnings,
+            errors=errors,
+            is_watertight_after=is_watertight,
+        )
+        
+        return result_mesh, report
+        
+    except Exception as e:
+        logger.error(f"Voxel port recarving failed: {e}")
+        errors.append(f"Voxel recarving failed: {e}")
+        return mesh, RecarveReport(
+            success=False,
+            ports_carved=0,
+            voxel_pitch_used=voxel_pitch,
+            port_results=port_results,
+            warnings=warnings,
+            errors=errors,
+        )
+
+
 def embed_void_mesh_as_negative_space(
     void_mesh: "trimesh.Trimesh",
     domain: "DomainSpec",
@@ -664,7 +989,10 @@ __all__ = [
     "embed_with_port_preservation",
     "embed_void_mesh_as_negative_space",
     "get_port_constraints",
+    "voxel_recarve_ports",
     "EnhancedEmbeddingPolicy",
     "PortPreservationPolicy",
     "EmbeddingReport",
+    "RecarveReport",
+    "PortRecarveResult",
 ]
