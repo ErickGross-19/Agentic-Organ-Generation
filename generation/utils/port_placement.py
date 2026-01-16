@@ -80,6 +80,232 @@ def compute_effective_radius(
     return max(0.0, effective_radius)
 
 
+def _resolve_pattern_params(
+    policy: PortPlacementPolicy,
+    effective_radius: float,
+    port_radius: float,
+) -> Dict[str, Any]:
+    """
+    Resolve pattern_params from policy into a unified layout config.
+    
+    PATCH 1: Unified pattern_params schema implementation.
+    
+    Common keys:
+    - scale: float (0-1), optional override of placement_fraction
+    - margin: float (meters), optional override of port_margin
+    - jitter: float (meters), default 0
+    - start_angle_deg: float, default 0
+    - angle_mode: "uniform"|"staggered"|"golden_angle" (default "uniform")
+    
+    Circle-specific:
+    - radius_fraction: float (0-1), overrides scale for circle radius
+    - min_separation: float (optional; if present, use rejection resampling)
+    
+    Grid-specific:
+    - rows: int (optional)
+    - cols: int (optional)
+    - spacing: float (meters) (optional)
+    - extent_fraction: float (0-1) (optional; fits grid into extent)
+    
+    Center-rings specific:
+    - ring_spacing: float (meters) OR ring_spacing_fraction: float (0-1)
+    - max_per_ring: int (optional)
+    - ring_start_count: int (optional)
+    
+    Parameters
+    ----------
+    policy : PortPlacementPolicy
+        Policy with pattern_params dict
+    effective_radius : float
+        Effective radius for placement
+    port_radius : float
+        Radius of each port
+        
+    Returns
+    -------
+    dict
+        Resolved layout configuration
+    """
+    params = policy.pattern_params or {}
+    
+    # Common parameters with defaults
+    scale = params.get("scale", policy.placement_fraction)
+    margin = params.get("margin", policy.port_margin)
+    jitter = params.get("jitter", 0.0)
+    start_angle_deg = params.get("start_angle_deg", 0.0)
+    angle_mode = params.get("angle_mode", "uniform")
+    
+    # Convert start_angle_deg to radians and combine with policy angular_offset
+    start_angle_rad = start_angle_deg * pi / 180.0 + policy.angular_offset
+    
+    # Circle-specific
+    radius_fraction = params.get("radius_fraction", scale)
+    min_separation = params.get("min_separation")
+    
+    # Grid-specific
+    rows = params.get("rows")
+    cols = params.get("cols")
+    spacing = params.get("spacing")
+    extent_fraction = params.get("extent_fraction", 0.9)
+    
+    # Center-rings specific
+    ring_spacing = params.get("ring_spacing")
+    ring_spacing_fraction = params.get("ring_spacing_fraction")
+    max_per_ring = params.get("max_per_ring")
+    ring_start_count = params.get("ring_start_count", 6)
+    
+    # Compute effective ring spacing
+    if ring_spacing is None and ring_spacing_fraction is not None:
+        ring_spacing = effective_radius * ring_spacing_fraction
+    
+    return {
+        "scale": scale,
+        "margin": margin,
+        "jitter": jitter,
+        "start_angle_rad": start_angle_rad,
+        "angle_mode": angle_mode,
+        "radius_fraction": radius_fraction,
+        "min_separation": min_separation,
+        "rows": rows,
+        "cols": cols,
+        "spacing": spacing,
+        "extent_fraction": extent_fraction,
+        "ring_spacing": ring_spacing,
+        "max_per_ring": max_per_ring,
+        "ring_start_count": ring_start_count,
+    }
+
+
+def _apply_jitter(
+    positions: List[Tuple[float, float, float]],
+    jitter: float,
+    seed: Optional[int] = None,
+) -> List[Tuple[float, float, float]]:
+    """Apply random jitter to positions."""
+    if jitter <= 0:
+        return positions
+    
+    rng = np.random.default_rng(seed)
+    jittered = []
+    for x, y, z in positions:
+        dx = rng.uniform(-jitter, jitter)
+        dy = rng.uniform(-jitter, jitter)
+        jittered.append((x + dx, y + dy, z))
+    return jittered
+
+
+def _apply_min_separation(
+    positions: List[Tuple[float, float, float]],
+    min_separation: float,
+    max_radius: float,
+    z_position: float,
+    max_attempts: int = 100,
+    seed: Optional[int] = None,
+) -> Tuple[List[Tuple[float, float, float]], List[str]]:
+    """
+    Apply minimum separation constraint using rejection resampling.
+    
+    PATCH 1: Implements min_separation from pattern_params.
+    
+    Parameters
+    ----------
+    positions : list
+        Initial positions
+    min_separation : float
+        Minimum distance between port centers
+    max_radius : float
+        Maximum placement radius
+    z_position : float
+        Z coordinate for ports
+    max_attempts : int
+        Maximum resampling attempts per port
+    seed : int, optional
+        Random seed for reproducibility
+        
+    Returns
+    -------
+    positions : list
+        Adjusted positions
+    warnings : list
+        Any warnings generated
+    """
+    warnings = []
+    if len(positions) <= 1:
+        return positions, warnings
+    
+    rng = np.random.default_rng(seed)
+    result = [positions[0]]  # Keep first position
+    
+    for i in range(1, len(positions)):
+        pos = positions[i]
+        valid = True
+        
+        # Check against all placed positions
+        for placed in result:
+            dx = pos[0] - placed[0]
+            dy = pos[1] - placed[1]
+            dist = sqrt(dx * dx + dy * dy)
+            if dist < min_separation:
+                valid = False
+                break
+        
+        if valid:
+            result.append(pos)
+        else:
+            # Try to find a valid position
+            found = False
+            for _ in range(max_attempts):
+                # Random position within max_radius
+                r = rng.uniform(0, max_radius)
+                theta = rng.uniform(0, 2 * pi)
+                new_pos = (r * cos(theta), r * sin(theta), z_position)
+                
+                # Check against all placed positions
+                valid = True
+                for placed in result:
+                    dx = new_pos[0] - placed[0]
+                    dy = new_pos[1] - placed[1]
+                    dist = sqrt(dx * dx + dy * dy)
+                    if dist < min_separation:
+                        valid = False
+                        break
+                
+                if valid:
+                    result.append(new_pos)
+                    found = True
+                    break
+            
+            if not found:
+                # Fall back to original position
+                result.append(pos)
+                warnings.append(
+                    f"Could not find valid position for port {i} with min_separation={min_separation}"
+                )
+    
+    return result, warnings
+
+
+def _compute_angle(
+    index: int,
+    total: int,
+    start_angle_rad: float,
+    angle_mode: str,
+) -> float:
+    """Compute angle for a port based on angle_mode."""
+    if angle_mode == "golden_angle":
+        # Golden angle: ~137.5 degrees
+        golden_angle = pi * (3 - sqrt(5))
+        return start_angle_rad + index * golden_angle
+    elif angle_mode == "staggered":
+        # Staggered: alternate offset by half step
+        base_angle = 2 * pi * index / total
+        stagger = (pi / total) if index % 2 == 1 else 0
+        return start_angle_rad + base_angle + stagger
+    else:
+        # Uniform distribution
+        return start_angle_rad + 2 * pi * index / total
+
+
 def place_ports_circle(
     num_ports: int,
     domain_radius: float,
@@ -90,6 +316,8 @@ def place_ports_circle(
 ) -> Tuple[PlacementResult, OperationReport]:
     """
     Place ports in a circular pattern on a domain face.
+    
+    PATCH 1: Now reads from pattern_params for unified schema support.
     
     Parameters
     ----------
@@ -132,6 +360,9 @@ def place_ports_circle(
             policy.port_margin,
         )
     
+    # PATCH 1: Resolve pattern_params into layout config
+    layout_config = _resolve_pattern_params(policy, effective_radius, port_radius)
+    
     # Maximum placement radius (center of ports must be inside effective radius)
     max_placement_radius = effective_radius - port_radius
     
@@ -143,6 +374,13 @@ def place_ports_circle(
         max_placement_radius = 0.001  # Fallback to small radius
         clamp_count = num_ports
     
+    # PATCH 1: Use layout_config values instead of hardcoded policy values
+    scale = layout_config["radius_fraction"]
+    start_angle = layout_config["start_angle_rad"]
+    angle_mode = layout_config["angle_mode"]
+    jitter = layout_config["jitter"]
+    min_separation = layout_config["min_separation"]
+    
     # Compute positions
     positions = []
     projection_distances = []
@@ -153,34 +391,47 @@ def place_ports_circle(
         positions.append((0.0, 0.0, z_position))
         projection_distances.append(0.0)
     elif num_ports == 2:
-        offset = max_placement_radius * policy.placement_fraction
-        positions.append((offset, 0.0, z_position))
-        positions.append((-offset, 0.0, z_position))
+        offset = max_placement_radius * scale
+        angle1 = start_angle
+        angle2 = start_angle + pi
+        positions.append((offset * cos(angle1), offset * sin(angle1), z_position))
+        positions.append((offset * cos(angle2), offset * sin(angle2), z_position))
         projection_distances.extend([offset, offset])
     elif num_ports == 3:
-        offset = max_placement_radius * policy.placement_fraction
+        offset = max_placement_radius * scale
         for i in range(3):
-            angle = policy.angular_offset + 2 * pi * i / 3 - pi / 2
+            angle = _compute_angle(i, 3, start_angle - pi / 2, angle_mode)
             x = offset * cos(angle)
             y = offset * sin(angle)
             positions.append((x, y, z_position))
             projection_distances.append(offset)
     elif num_ports == 4:
         offset = max_placement_radius / sqrt(2.0)
-        for dx, dy in [(1, 1), (-1, 1), (-1, -1), (1, -1)]:
+        for i, (dx, dy) in enumerate([(1, 1), (-1, 1), (-1, -1), (1, -1)]):
             x = offset * dx
             y = offset * dy
             positions.append((x, y, z_position))
             projection_distances.append(offset * sqrt(2))
     else:
-        # General case: distribute evenly on circle
-        offset = max_placement_radius * policy.placement_fraction
+        # General case: distribute using angle_mode
+        offset = max_placement_radius * scale
         for i in range(num_ports):
-            angle = policy.angular_offset + 2 * pi * i / num_ports
+            angle = _compute_angle(i, num_ports, start_angle, angle_mode)
             x = offset * cos(angle)
             y = offset * sin(angle)
             positions.append((x, y, z_position))
             projection_distances.append(offset)
+    
+    # PATCH 1: Apply min_separation rejection resampling if specified
+    if min_separation is not None and min_separation > 0 and num_ports > 1:
+        positions, resample_warnings = _apply_min_separation(
+            positions, min_separation, max_placement_radius, z_position
+        )
+        warnings.extend(resample_warnings)
+    
+    # PATCH 1: Apply jitter if specified
+    if jitter > 0:
+        positions = _apply_jitter(positions, jitter)
     
     # B1 FIX: Check and clamp positions that exceed effective radius
     # Only apply disk constraint if disk_constraint_enabled is True
@@ -235,6 +486,8 @@ def place_ports_grid(
     """
     Place ports in a grid pattern on a domain face.
     
+    PATCH 1: Now reads from pattern_params for unified schema support.
+    
     Parameters
     ----------
     num_ports : int
@@ -274,21 +527,48 @@ def place_ports_grid(
             policy.port_margin,
         )
     
+    # PATCH 1: Resolve pattern_params into layout config
+    layout_config = _resolve_pattern_params(policy, effective_radius, port_radius)
+    
+    # PATCH 1: Use layout_config values for grid parameters
+    rows = layout_config["rows"]
+    cols = layout_config["cols"]
+    spacing_override = layout_config["spacing"]
+    extent_fraction = layout_config["extent_fraction"]
+    jitter = layout_config["jitter"]
+    
     # Calculate grid dimensions
-    grid_size = int(np.ceil(np.sqrt(num_ports)))
-    spacing = 2 * effective_radius / (grid_size + 1)
+    if rows is not None and cols is not None:
+        grid_rows = rows
+        grid_cols = cols
+    else:
+        grid_size = int(np.ceil(np.sqrt(num_ports)))
+        grid_rows = grid_size
+        grid_cols = grid_size
+    
+    # Calculate spacing
+    if spacing_override is not None:
+        spacing = spacing_override
+    else:
+        # Fit grid into extent_fraction of effective radius
+        grid_extent = 2 * effective_radius * extent_fraction
+        spacing = grid_extent / (max(grid_rows, grid_cols) + 1)
     
     positions = []
     projection_distances = []
     
+    # Calculate grid offset to center it
+    x_offset = -spacing * (grid_cols - 1) / 2
+    y_offset = -spacing * (grid_rows - 1) / 2
+    
     count = 0
-    for i in range(grid_size):
-        for j in range(grid_size):
+    for i in range(grid_rows):
+        for j in range(grid_cols):
             if count >= num_ports:
                 break
             
-            x = -effective_radius + spacing * (i + 1)
-            y = -effective_radius + spacing * (j + 1)
+            x = x_offset + spacing * j
+            y = y_offset + spacing * i
             
             # B1 FIX: Check if inside effective radius only if disk_constraint_enabled
             dist = sqrt(x * x + y * y)
@@ -309,6 +589,10 @@ def place_ports_grid(
             f"falling back to circle pattern"
         )
         return place_ports_circle(num_ports, domain_radius, port_radius, z_position, policy)
+    
+    # PATCH 1: Apply jitter if specified
+    if jitter > 0:
+        positions = _apply_jitter(positions, jitter)
     
     result = PlacementResult(
         positions=positions,
@@ -348,6 +632,8 @@ def place_ports_center_rings(
     """
     Place ports in center + concentric rings pattern.
     
+    PATCH 1: Now reads from pattern_params for unified schema support.
+    
     Places 1 port at center, then fills outward in concentric rings.
     
     Parameters
@@ -363,7 +649,7 @@ def place_ports_center_rings(
     policy : PortPlacementPolicy, optional
         Policy controlling placement parameters
     spacing_factor : float
-        Extra gap between ports as fraction of diameter
+        Extra gap between ports as fraction of diameter (deprecated, use pattern_params)
     effective_radius_override : float, optional
         B1 FIX: Pre-computed effective radius from place_ports_on_domain.
         
@@ -391,6 +677,17 @@ def place_ports_center_rings(
             policy.port_margin,
         )
     
+    # PATCH 1: Resolve pattern_params into layout config
+    layout_config = _resolve_pattern_params(policy, effective_radius, port_radius)
+    
+    # PATCH 1: Use layout_config values for center-rings parameters
+    ring_spacing = layout_config["ring_spacing"]
+    max_per_ring = layout_config["max_per_ring"]
+    ring_start_count = layout_config["ring_start_count"]
+    start_angle = layout_config["start_angle_rad"]
+    angle_mode = layout_config["angle_mode"]
+    jitter = layout_config["jitter"]
+    
     max_placement_radius = effective_radius - port_radius
     
     if max_placement_radius <= 0:
@@ -404,7 +701,12 @@ def place_ports_center_rings(
     if num_ports == 1:
         pass
     else:
-        pitch = 2.0 * port_radius * (1.0 + spacing_factor)
+        # PATCH 1: Use ring_spacing from pattern_params if provided, else compute from spacing_factor
+        if ring_spacing is not None:
+            pitch = ring_spacing
+        else:
+            pitch = 2.0 * port_radius * (1.0 + spacing_factor)
+        
         ring_k = 1
         
         while len(positions) < num_ports:
@@ -420,12 +722,16 @@ def place_ports_center_rings(
                 break
             
             circumference = 2.0 * pi * ring_radius
-            n_on_ring = max(6, int(round(circumference / pitch)))
+            # PATCH 1: Use ring_start_count and max_per_ring from pattern_params
+            n_on_ring = max(ring_start_count, int(round(circumference / pitch)))
+            if max_per_ring is not None:
+                n_on_ring = min(n_on_ring, max_per_ring)
             
             for i in range(n_on_ring):
                 if len(positions) >= num_ports:
                     break
-                angle = policy.angular_offset + 2.0 * pi * i / n_on_ring
+                # PATCH 1: Use angle_mode for angle computation
+                angle = _compute_angle(i, n_on_ring, start_angle, angle_mode)
                 x = ring_radius * cos(angle)
                 y = ring_radius * sin(angle)
                 positions.append((x, y, z_position))
@@ -435,6 +741,10 @@ def place_ports_center_rings(
     
     positions = positions[:num_ports]
     projection_distances = projection_distances[:num_ports]
+    
+    # PATCH 1: Apply jitter if specified
+    if jitter > 0:
+        positions = _apply_jitter(positions, jitter)
     
     result = PlacementResult(
         positions=positions,

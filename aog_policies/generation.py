@@ -331,6 +331,8 @@ class MeshSynthesisPolicy:
     """
     Policy for mesh synthesis from networks.
     
+    PATCH 5: Added voxel repair pitch fields for policy-driven repair.
+    
     Controls how vascular networks are converted to triangle meshes.
     
     JSON Schema:
@@ -340,6 +342,10 @@ class MeshSynthesisPolicy:
         "radius_clamp_min": float (meters),
         "radius_clamp_max": float (meters),
         "voxel_repair_synthesis": bool,
+        "voxel_repair_pitch": float (meters),
+        "voxel_repair_auto_adjust": bool,
+        "voxel_repair_max_steps": int,
+        "voxel_repair_step_factor": float,
         "segments_per_circle": int,
         "mutate_network_in_place": bool,
         "radius_clamp_mode": "copy" | "mutate"
@@ -350,6 +356,11 @@ class MeshSynthesisPolicy:
     radius_clamp_min: Optional[float] = None
     radius_clamp_max: Optional[float] = None
     voxel_repair_synthesis: bool = False
+    # PATCH 5: New voxel repair policy fields
+    voxel_repair_pitch: float = 1e-4  # 0.1mm default
+    voxel_repair_auto_adjust: bool = True
+    voxel_repair_max_steps: int = 4
+    voxel_repair_step_factor: float = 1.5
     segments_per_circle: int = 16
     mutate_network_in_place: bool = False
     radius_clamp_mode: Literal["copy", "mutate"] = "copy"
@@ -409,6 +420,8 @@ class EmbeddingPolicy:
     """
     Policy for embedding voids into domains.
     
+    PATCH 3: Removed "mask" mode - only "recarve" is supported.
+    
     Controls the voxelization and carving process for creating
     domain-with-void meshes.
     
@@ -420,7 +433,7 @@ class EmbeddingPolicy:
         "max_pitch_steps": int,
         "fallback": "auto" | "voxel_subtraction" | "none",
         "preserve_ports_enabled": bool,
-        "preserve_mode": "recarve" | "mask",
+        "preserve_mode": "recarve",
         "carve_radius_factor": float,
         "carve_depth": float (meters)
     }
@@ -431,7 +444,7 @@ class EmbeddingPolicy:
     max_pitch_steps: int = 4
     fallback: Literal["auto", "voxel_subtraction", "none"] = "auto"
     preserve_ports_enabled: bool = True
-    preserve_mode: Literal["recarve", "mask"] = "recarve"
+    preserve_mode: Literal["recarve"] = "recarve"  # PATCH 3: Removed "mask" mode
     carve_radius_factor: float = 1.2
     carve_depth: float = 0.002  # 2mm
     
@@ -440,6 +453,15 @@ class EmbeddingPolicy:
     
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "EmbeddingPolicy":
+        # PATCH 3: Convert legacy "mask" mode to "recarve" with warning
+        import logging
+        if d.get("preserve_mode") == "mask":
+            logging.getLogger(__name__).warning(
+                "EmbeddingPolicy: 'mask' preserve_mode is deprecated and has been "
+                "converted to 'recarve'. The 'mask' mode was a no-op and is no longer supported."
+            )
+            d = dict(d)  # Make a copy to avoid mutating input
+            d["preserve_mode"] = "recarve"
         return EmbeddingPolicy(**{k: v for k, v in d.items() if k in EmbeddingPolicy.__dataclass_fields__})
 
 

@@ -166,80 +166,47 @@ def _embed_with_retry(
     pitch_adjustments: list,
 ) -> Tuple["trimesh.Trimesh", "trimesh.Trimesh", "trimesh.Trimesh"]:
     """
-    Perform embedding with automatic pitch adjustment on memory errors.
+    PATCH 3: Perform embedding using canonical mesh-based embedding directly.
     
-    Note: The existing embed_tree_as_negative_space function only accepts
-    file paths, so we save the in-memory mesh to a temp file. This is a
-    Phase 1 workaround; Phase 2 will refactor the underlying function to
-    accept in-memory meshes directly.
+    Now calls embed_void_mesh_as_negative_space directly with in-memory meshes,
+    eliminating the need for temp STL files.
     """
-    from ..ops.embedding import embed_tree_as_negative_space
+    from ..ops.embedding.enhanced_embedding import embed_void_mesh_as_negative_space
     import trimesh
-    import tempfile
-    import os
     
     current_pitch = policy.voxel_pitch
-    max_attempts = policy.max_pitch_steps if policy.auto_adjust_pitch else 1
-    
-    # Save mesh to temp file (existing function only accepts paths)
-    temp_dir = tempfile.mkdtemp()
-    temp_path = os.path.join(temp_dir, "void_mesh.stl")
     
     try:
-        void_mesh.export(temp_path)
+        # PATCH 3: Call canonical mesh-based embedding function directly
+        solid, void_out, shell, metadata = embed_void_mesh_as_negative_space(
+            void_mesh=void_mesh,
+            domain=domain,
+            voxel_pitch=current_pitch,
+            output_void=True,
+            output_shell=True,
+            shell_thickness=policy.shell_thickness,
+            auto_adjust_pitch=policy.auto_adjust_pitch,
+            max_pitch_steps=policy.max_pitch_steps,
+        )
         
-        for attempt in range(max_attempts):
-            try:
-                # Call the existing embedding function with file path
-                result = embed_tree_as_negative_space(
-                    tree_stl_path=temp_path,
-                    domain=domain,
-                    voxel_pitch=current_pitch,
-                    shell_thickness=policy.shell_thickness,
-                    output_void=True,
-                    output_shell=True,
-                    auto_adjust_pitch=policy.auto_adjust_pitch,
-                )
-                
-                # Unpack result dictionary
-                if isinstance(result, dict):
-                    solid = result.get('domain_with_void', trimesh.Trimesh())
-                    void_out = result.get('void', void_mesh)
-                    shell = result.get('shell', solid)
-                    
-                    # Handle None values
-                    if solid is None:
-                        solid = trimesh.Trimesh()
-                    if void_out is None:
-                        void_out = void_mesh
-                    if shell is None:
-                        shell = solid
-                else:
-                    solid = result
-                    void_out = void_mesh
-                    shell = solid
-                
-                return solid, void_out, shell
-                
-            except MemoryError:
-                if attempt < max_attempts - 1:
-                    current_pitch *= 1.5
-                    pitch_adjustments.append(current_pitch)
-                    logger.warning(
-                        f"Memory error during embedding, increasing pitch to {current_pitch:.6f}"
-                    )
-                else:
-                    raise
+        # Track pitch adjustments from metadata
+        if metadata.get("pitch_adjustments", 0) > 0:
+            effective_pitch = metadata.get("voxel_pitch_used", current_pitch)
+            pitch_adjustments.append(effective_pitch)
         
-        raise RuntimeError("Embedding failed after all retry attempts")
+        # Handle None values
+        if solid is None:
+            solid = trimesh.Trimesh()
+        if void_out is None:
+            void_out = void_mesh
+        if shell is None:
+            shell = solid
         
-    finally:
-        # Clean up temp file
-        try:
-            os.remove(temp_path)
-            os.rmdir(temp_dir)
-        except Exception:
-            pass
+        return solid, void_out, shell
+        
+    except Exception as e:
+        logger.error(f"Mesh-based embedding failed: {e}")
+        raise
 
 
 def _preserve_ports(
@@ -248,10 +215,11 @@ def _preserve_ports(
     policy: EmbeddingPolicy,
 ) -> Tuple["trimesh.Trimesh", int, List[str]]:
     """
-    C2 FIX: Preserve port geometry in the embedded mesh.
+    Preserve port geometry in the embedded mesh via recarving.
+    
+    PATCH 3: Removed "mask" mode - only "recarve" is supported.
     
     Uses the EmbeddingPolicy port preservation fields:
-    - preserve_mode: "recarve" or "mask"
     - carve_radius_factor: Factor to multiply port radius for carving
     - carve_depth: Depth of carving cylinder
     
@@ -330,20 +298,16 @@ def _preserve_ports(
             offset = position - direction * (carve_depth / 2 - min_clearance)
             cylinder.apply_translation(offset)
             
-            if policy.preserve_mode == "recarve":
-                # Subtract cylinder from mesh
-                try:
-                    new_result = result.difference(cylinder)
-                    if new_result is not None and len(new_result.vertices) > 0:
-                        result = new_result
-                        ports_preserved += 1
-                    else:
-                        warnings.append(f"Port preservation failed for port at {position}")
-                except Exception as e:
-                    warnings.append(f"Port preservation failed: {e}")
-            else:
-                # Mask mode: just count as preserved (no actual carving)
-                ports_preserved += 1
+            # PATCH 3: Always use recarve mode (mask mode removed)
+            try:
+                new_result = result.difference(cylinder)
+                if new_result is not None and len(new_result.vertices) > 0:
+                    result = new_result
+                    ports_preserved += 1
+                else:
+                    warnings.append(f"Port preservation failed for port at {position}")
+            except Exception as e:
+                warnings.append(f"Port preservation failed: {e}")
                 
         except Exception as e:
             warnings.append(f"Failed to preserve port: {e}")

@@ -62,12 +62,17 @@ def synthesize_mesh(
     }
     
     # Build effective policy
+    # PATCH 5: Include voxel repair policy fields
     effective_policy = MeshSynthesisPolicy(
         add_node_spheres=policy.add_node_spheres,
         cap_ends=policy.cap_ends,
         radius_clamp_min=policy.radius_clamp_min,
         radius_clamp_max=policy.radius_clamp_max,
         voxel_repair_synthesis=policy.voxel_repair_synthesis,
+        voxel_repair_pitch=policy.voxel_repair_pitch,
+        voxel_repair_auto_adjust=policy.voxel_repair_auto_adjust,
+        voxel_repair_max_steps=policy.voxel_repair_max_steps,
+        voxel_repair_step_factor=policy.voxel_repair_step_factor,
         segments_per_circle=policy.segments_per_circle,
         mutate_network_in_place=policy.mutate_network_in_place,
         radius_clamp_mode=policy.radius_clamp_mode,
@@ -133,10 +138,17 @@ def synthesize_mesh(
             segments_per_circle=policy.segments_per_circle,
         )
         
-        # Apply voxel repair if requested
+        # PATCH 5: Apply voxel repair if requested, using policy-driven parameters
         if policy.voxel_repair_synthesis:
-            mesh = _voxel_repair(mesh)
+            mesh, repair_metadata = _voxel_repair(
+                mesh,
+                pitch=policy.voxel_repair_pitch,
+                auto_adjust=policy.voxel_repair_auto_adjust,
+                max_steps=policy.voxel_repair_max_steps,
+                step_factor=policy.voxel_repair_step_factor,
+            )
             metadata["voxel_repair_applied"] = True
+            metadata["voxel_repair_metadata"] = repair_metadata
         
         metadata["vertex_count"] = len(mesh.vertices)
         metadata["face_count"] = len(mesh.faces)
@@ -162,34 +174,92 @@ def synthesize_mesh(
     return mesh, report
 
 
-def _voxel_repair(mesh: "trimesh.Trimesh", pitch: float = 1e-4) -> "trimesh.Trimesh":
-    """Apply voxel-based repair to a mesh."""
+def _voxel_repair(
+    mesh: "trimesh.Trimesh",
+    pitch: float = 1e-4,
+    auto_adjust: bool = True,
+    max_steps: int = 4,
+    step_factor: float = 1.5,
+) -> Tuple["trimesh.Trimesh", Dict[str, Any]]:
+    """
+    PATCH 5: Apply voxel-based repair to a mesh with policy-driven parameters.
+    
+    Parameters
+    ----------
+    mesh : trimesh.Trimesh
+        Mesh to repair
+    pitch : float
+        Initial voxel pitch in meters
+    auto_adjust : bool
+        If True, automatically increase pitch on failure
+    max_steps : int
+        Maximum number of pitch adjustment steps
+    step_factor : float
+        Factor to multiply pitch by on each adjustment step
+        
+    Returns
+    -------
+    repaired : trimesh.Trimesh
+        Repaired mesh (or original if repair failed)
+    metadata : dict
+        Repair metadata including effective_pitch, steps_taken, success
+    """
     import trimesh
     
-    try:
-        voxels = mesh.voxelized(pitch)
-        voxels = voxels.fill()
-        repaired = voxels.marching_cubes
+    metadata = {
+        "requested_pitch": pitch,
+        "effective_pitch": pitch,
+        "steps_taken": 0,
+        "success": False,
+        "auto_adjusted": False,
+    }
+    
+    current_pitch = pitch
+    
+    for step in range(max_steps):
+        metadata["steps_taken"] = step + 1
+        metadata["effective_pitch"] = current_pitch
         
-        # Check for coordinate system issues
-        in_extent = float(np.max(mesh.extents))
-        out_extent = float(np.max(repaired.extents))
-        
-        if in_extent > 0 and out_extent / in_extent > 50:
-            repaired.apply_transform(voxels.transform)
-        
-        repaired.merge_vertices()
-        repaired.remove_unreferenced_vertices()
-        
-        if repaired.volume < 0:
-            repaired.invert()
-        trimesh.repair.fix_normals(repaired)
-        
-        return repaired
-        
-    except Exception as e:
-        logger.warning(f"Voxel repair failed: {e}, returning original mesh")
-        return mesh
+        try:
+            voxels = mesh.voxelized(current_pitch)
+            voxels = voxels.fill()
+            repaired = voxels.marching_cubes
+            
+            # Check for coordinate system issues
+            in_extent = float(np.max(mesh.extents))
+            out_extent = float(np.max(repaired.extents))
+            
+            if in_extent > 0 and out_extent / in_extent > 50:
+                repaired.apply_transform(voxels.transform)
+            
+            repaired.merge_vertices()
+            repaired.remove_unreferenced_vertices()
+            
+            if repaired.volume < 0:
+                repaired.invert()
+            trimesh.repair.fix_normals(repaired)
+            
+            metadata["success"] = True
+            metadata["output_vertex_count"] = len(repaired.vertices)
+            metadata["output_face_count"] = len(repaired.faces)
+            
+            return repaired, metadata
+            
+        except Exception as e:
+            logger.warning(f"Voxel repair failed at pitch {current_pitch}: {e}")
+            
+            if not auto_adjust or step >= max_steps - 1:
+                # No more adjustments allowed, return original
+                metadata["error"] = str(e)
+                return mesh, metadata
+            
+            # Increase pitch and try again
+            current_pitch *= step_factor
+            metadata["auto_adjusted"] = True
+            logger.info(f"Auto-adjusting voxel repair pitch to {current_pitch}")
+    
+    # Should not reach here, but return original mesh if we do
+    return mesh, metadata
 
 
 __all__ = [

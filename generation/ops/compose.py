@@ -16,6 +16,8 @@ import logging
 
 from ..core.network import VascularNetwork
 from ..policies import MeshSynthesisPolicy, MeshMergePolicy
+# PATCH 6: Import RepairPolicy from aog_policies for canonical repair
+from aog_policies import RepairPolicy
 
 if TYPE_CHECKING:
     import trimesh
@@ -28,22 +30,29 @@ class ComposePolicy:
     """
     Policy for multi-component composition.
     
+    PATCH 6: Now accepts RepairPolicy from aog_policies for canonical repair.
+    
     Controls how multiple components are merged into a single void mesh.
     
     JSON Schema:
     {
         "synthesis_policy": MeshSynthesisPolicy,
         "merge_policy": MeshMergePolicy,
+        "repair_policy": RepairPolicy,
         "repair_enabled": bool,
-        "repair_voxel_pitch": float (meters),
         "keep_largest_component": bool,
         "min_component_volume": float (cubic meters)
     }
+    
+    Note: repair_voxel_pitch is deprecated; use repair_policy.voxel_pitch instead.
     """
     synthesis_policy: Optional[MeshSynthesisPolicy] = None
     merge_policy: Optional[MeshMergePolicy] = None
+    # PATCH 6: Use RepairPolicy from aog_policies for canonical repair
+    repair_policy: Optional[RepairPolicy] = None
     repair_enabled: bool = True
-    repair_voxel_pitch: float = 5e-5  # 50um
+    # Deprecated: use repair_policy.voxel_pitch instead
+    repair_voxel_pitch: float = 5e-5  # 50um (kept for backward compatibility)
     keep_largest_component: bool = True
     min_component_volume: float = 1e-12  # 1 cubic mm
     
@@ -52,11 +61,18 @@ class ComposePolicy:
             self.synthesis_policy = MeshSynthesisPolicy()
         if self.merge_policy is None:
             self.merge_policy = MeshMergePolicy()
+        # PATCH 6: Initialize RepairPolicy if not provided
+        if self.repair_policy is None:
+            self.repair_policy = RepairPolicy(
+                voxel_pitch=self.repair_voxel_pitch,
+                min_component_volume=self.min_component_volume,
+            )
     
     def to_dict(self) -> Dict[str, Any]:
         return {
             "synthesis_policy": self.synthesis_policy.to_dict() if self.synthesis_policy else None,
             "merge_policy": self.merge_policy.to_dict() if self.merge_policy else None,
+            "repair_policy": self.repair_policy.to_dict() if self.repair_policy else None,
             "repair_enabled": self.repair_enabled,
             "repair_voxel_pitch": self.repair_voxel_pitch,
             "keep_largest_component": self.keep_largest_component,
@@ -67,15 +83,20 @@ class ComposePolicy:
     def from_dict(cls, d: Dict[str, Any]) -> "ComposePolicy":
         synthesis_policy = None
         merge_policy = None
+        repair_policy = None
         
         if d.get("synthesis_policy"):
             synthesis_policy = MeshSynthesisPolicy.from_dict(d["synthesis_policy"])
         if d.get("merge_policy"):
             merge_policy = MeshMergePolicy.from_dict(d["merge_policy"])
+        # PATCH 6: Parse RepairPolicy from dict
+        if d.get("repair_policy"):
+            repair_policy = RepairPolicy.from_dict(d["repair_policy"])
         
         return cls(
             synthesis_policy=synthesis_policy,
             merge_policy=merge_policy,
+            repair_policy=repair_policy,
             repair_enabled=d.get("repair_enabled", True),
             repair_voxel_pitch=d.get("repair_voxel_pitch", 5e-5),
             keep_largest_component=d.get("keep_largest_component", True),
@@ -267,15 +288,25 @@ def compose_components(
         if merge_report.warnings:
             warnings.extend(merge_report.warnings)
     
-    # Apply repair if enabled
+    # PATCH 6: Apply repair using canonical validity repair instead of duplicated logic
+    repair_report = None
     if policy.repair_enabled:
-        merged = _repair_mesh(merged, policy.repair_voxel_pitch)
+        from validity.api.repair import repair_mesh as validity_repair_mesh
+        
+        merged, repair_report = validity_repair_mesh(merged, policy.repair_policy)
+        
+        # Propagate repair warnings to compose warnings
+        if repair_report.warnings:
+            warnings.extend([f"[repair] {w}" for w in repair_report.warnings])
     
-    # Keep largest component if enabled
+    # Keep largest component if enabled (only if repair didn't already do this)
+    # Note: RepairPolicy.remove_small_components_enabled handles this, but we keep
+    # this as a fallback for backward compatibility
     if policy.keep_largest_component and not merged.is_watertight:
-        merged = _keep_largest_component(merged, policy.min_component_volume)
+        if not (policy.repair_policy and policy.repair_policy.remove_small_components_enabled):
+            merged = _keep_largest_component(merged, policy.min_component_volume)
     
-    # Final cleanup
+    # Final cleanup (repair already does this, but ensure consistency)
     merged.merge_vertices()
     merged.remove_unreferenced_vertices()
     
@@ -298,6 +329,8 @@ def compose_components(
         component_reports=component_reports,
         metadata={
             "policy": policy.to_dict(),
+            # PATCH 6: Include repair report in metadata
+            "repair_report": repair_report.to_dict() if repair_report else None,
         },
     )
     

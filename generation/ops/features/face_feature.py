@@ -434,6 +434,265 @@ def create_ridge_with_constraints(
     return result.mesh, result.constraints or FeatureConstraints()
 
 
+# PATCH 4: Canonical face string mapping (Option A)
+CANONICAL_FACE_MAP: Dict[str, FaceId] = {
+    # Option A canonical strings
+    "top": FaceId.TOP,
+    "bottom": FaceId.BOTTOM,
+    "+x": FaceId.X_MAX,
+    "-x": FaceId.X_MIN,
+    "+y": FaceId.Y_MAX,
+    "-y": FaceId.Y_MIN,
+    "+z": FaceId.Z_MAX,
+    "-z": FaceId.Z_MIN,
+    # Also accept internal enum values for compatibility
+    "x_min": FaceId.X_MIN,
+    "x_max": FaceId.X_MAX,
+    "y_min": FaceId.Y_MIN,
+    "y_max": FaceId.Y_MAX,
+    "z_min": FaceId.Z_MIN,
+    "z_max": FaceId.Z_MAX,
+    "lateral": FaceId.LATERAL,
+}
+
+
+def _parse_face_string(face: str) -> FaceId:
+    """
+    PATCH 4: Convert canonical face string to FaceId enum.
+    
+    Accepts Option A canonical strings:
+    - "top", "bottom"
+    - "+x", "-x", "+y", "-y", "+z", "-z"
+    
+    Also accepts internal enum values for compatibility.
+    
+    Parameters
+    ----------
+    face : str
+        Canonical face string
+        
+    Returns
+    -------
+    FaceId
+        Corresponding FaceId enum value
+        
+    Raises
+    ------
+    ValueError
+        If face string is not recognized
+    """
+    face_lower = face.lower().strip()
+    if face_lower in CANONICAL_FACE_MAP:
+        return CANONICAL_FACE_MAP[face_lower]
+    
+    raise ValueError(
+        f"Invalid face string: '{face}'. "
+        f"Valid options are: {list(CANONICAL_FACE_MAP.keys())}"
+    )
+
+
+@dataclass
+class RidgePolicy:
+    """
+    PATCH 4: Policy for ridge features, compatible with aog_policies pattern.
+    
+    JSON Schema:
+    {
+        "height": float (meters),
+        "thickness": float (meters),
+        "inset": float (meters),
+        "overlap": float (meters) | null,
+        "resolution": int
+    }
+    """
+    height: float = 0.001  # 1mm
+    thickness: float = 0.001  # 1mm
+    inset: float = 0.0
+    overlap: Optional[float] = None
+    resolution: int = 64
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "height": self.height,
+            "thickness": self.thickness,
+            "inset": self.inset,
+            "overlap": self.overlap,
+            "resolution": self.resolution,
+        }
+    
+    @staticmethod
+    def from_dict(d: Dict[str, Any]) -> "RidgePolicy":
+        return RidgePolicy(**{k: v for k, v in d.items() if k in RidgePolicy.__dataclass_fields__})
+
+
+@dataclass
+class RidgeOperationReport:
+    """
+    PATCH 4: Operation report for ridge creation, following OperationReport pattern.
+    """
+    operation: str = "add_ridge"
+    success: bool = True
+    requested_policy: Dict[str, Any] = field(default_factory=dict)
+    effective_policy: Dict[str, Any] = field(default_factory=dict)
+    warnings: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "operation": self.operation,
+            "success": self.success,
+            "requested_policy": self.requested_policy,
+            "effective_policy": self.effective_policy,
+            "warnings": self.warnings,
+            "metadata": self.metadata,
+        }
+
+
+def add_ridge(
+    domain_mesh: "trimesh.Trimesh",
+    face: str,
+    ridge_policy: Optional[Union[RidgePolicy, Dict[str, Any]]] = None,
+    domain_spec: Optional[DomainSpec] = None,
+) -> Tuple["trimesh.Trimesh", FeatureConstraints, RidgeOperationReport]:
+    """
+    PATCH 4: Add a ridge to a domain mesh using canonical face strings.
+    
+    This is the public API for ridge creation, accepting Option A canonical
+    face strings ("top", "bottom", "+x", "-x", "+y", "-y", "+z", "-z").
+    
+    Parameters
+    ----------
+    domain_mesh : trimesh.Trimesh
+        Domain mesh to add ridge to
+    face : str
+        Canonical face string (e.g., "top", "bottom", "+z", "-z")
+    ridge_policy : RidgePolicy or dict, optional
+        Policy controlling ridge parameters
+    domain_spec : DomainSpec, optional
+        Domain specification for constraint calculation.
+        If not provided, constraints will be estimated from mesh bounds.
+        
+    Returns
+    -------
+    mesh : trimesh.Trimesh
+        Domain mesh with ridge added
+    constraints : FeatureConstraints
+        Constraints including effective_radius, face_center, face_normal
+    report : RidgeOperationReport
+        Report with requested/effective policy
+    """
+    import trimesh
+    
+    # Parse face string to FaceId
+    try:
+        face_id = _parse_face_string(face)
+    except ValueError as e:
+        return domain_mesh, FeatureConstraints(), RidgeOperationReport(
+            success=False,
+            warnings=[str(e)],
+        )
+    
+    # Parse policy
+    if ridge_policy is None:
+        policy = RidgePolicy()
+    elif isinstance(ridge_policy, dict):
+        policy = RidgePolicy.from_dict(ridge_policy)
+    else:
+        policy = ridge_policy
+    
+    # Create ridge spec from policy
+    spec = RidgeFeatureSpec(
+        height=policy.height,
+        thickness=policy.thickness,
+        inset=policy.inset,
+        overlap=policy.overlap,
+        resolution=policy.resolution,
+    )
+    
+    warnings = []
+    
+    # If domain_spec is provided, use RidgeFeature to create ridge
+    if domain_spec is not None:
+        feature = RidgeFeature(spec)
+        result = feature.create(domain_spec, face_id)
+        
+        if result.success and result.mesh is not None:
+            # Union ridge with domain mesh
+            try:
+                combined = domain_mesh.union(result.mesh)
+                if combined is not None and len(combined.vertices) > 0:
+                    domain_mesh = combined
+                else:
+                    warnings.append("Ridge union failed, returning original mesh")
+            except Exception as e:
+                warnings.append(f"Ridge union failed: {e}")
+        
+        constraints = result.constraints or FeatureConstraints()
+        warnings.extend(result.warnings)
+        
+    else:
+        # Estimate constraints from mesh bounds
+        bounds = domain_mesh.bounds
+        center = (bounds[0] + bounds[1]) / 2
+        extents = bounds[1] - bounds[0]
+        
+        # Determine face center and normal based on face_id
+        if face_id in (FaceId.TOP, FaceId.Z_MAX):
+            face_center = np.array([center[0], center[1], bounds[1][2]])
+            face_normal = np.array([0, 0, 1])
+            effective_radius = min(extents[0], extents[1]) / 2 - policy.thickness - policy.inset
+        elif face_id in (FaceId.BOTTOM, FaceId.Z_MIN):
+            face_center = np.array([center[0], center[1], bounds[0][2]])
+            face_normal = np.array([0, 0, -1])
+            effective_radius = min(extents[0], extents[1]) / 2 - policy.thickness - policy.inset
+        elif face_id == FaceId.X_MAX:
+            face_center = np.array([bounds[1][0], center[1], center[2]])
+            face_normal = np.array([1, 0, 0])
+            effective_radius = min(extents[1], extents[2]) / 2 - policy.thickness - policy.inset
+        elif face_id == FaceId.X_MIN:
+            face_center = np.array([bounds[0][0], center[1], center[2]])
+            face_normal = np.array([-1, 0, 0])
+            effective_radius = min(extents[1], extents[2]) / 2 - policy.thickness - policy.inset
+        elif face_id == FaceId.Y_MAX:
+            face_center = np.array([center[0], bounds[1][1], center[2]])
+            face_normal = np.array([0, 1, 0])
+            effective_radius = min(extents[0], extents[2]) / 2 - policy.thickness - policy.inset
+        elif face_id == FaceId.Y_MIN:
+            face_center = np.array([center[0], bounds[0][1], center[2]])
+            face_normal = np.array([0, -1, 0])
+            effective_radius = min(extents[0], extents[2]) / 2 - policy.thickness - policy.inset
+        else:
+            face_center = center
+            face_normal = np.array([0, 0, 1])
+            effective_radius = min(extents) / 2 - policy.thickness - policy.inset
+        
+        constraints = FeatureConstraints(
+            effective_radius=max(0.0, effective_radius),
+            face_center=face_center,
+            face_normal=face_normal,
+            min_clearance=policy.thickness,
+        )
+        
+        warnings.append("Ridge mesh not created (no domain_spec provided), constraints estimated from mesh bounds")
+    
+    # Build report
+    report = RidgeOperationReport(
+        success=True,
+        requested_policy=policy.to_dict(),
+        effective_policy=policy.to_dict(),
+        warnings=warnings,
+        metadata={
+            "face": face,
+            "face_id": face_id.value,
+            "effective_radius": constraints.effective_radius,
+            "face_center": constraints.face_center.tolist() if constraints.face_center is not None else None,
+            "face_normal": constraints.face_normal.tolist() if constraints.face_normal is not None else None,
+        },
+    )
+    
+    return domain_mesh, constraints, report
+
+
 __all__ = [
     "FaceFeature",
     "FeatureType",
@@ -443,4 +702,10 @@ __all__ = [
     "RidgeFeature",
     "RidgeFeatureSpec",
     "create_ridge_with_constraints",
+    # PATCH 4: New exports for canonical face string API
+    "add_ridge",
+    "RidgePolicy",
+    "RidgeOperationReport",
+    "CANONICAL_FACE_MAP",
+    "_parse_face_string",
 ]

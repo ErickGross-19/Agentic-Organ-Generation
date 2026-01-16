@@ -207,6 +207,137 @@ def create_tapered_channel(
     return mesh
 
 
+def _compute_bend_lateral(t: float, bend_shape: str) -> float:
+    """
+    Compute lateral displacement for bend shape at parameter t.
+    
+    PATCH 2: Implements bend_shape from ChannelPolicy.
+    
+    Parameters
+    ----------
+    t : float
+        Curve parameter in [0, 1]
+    bend_shape : str
+        Shape type: "quadratic", "cubic", or "sinusoid"
+        
+    Returns
+    -------
+    float
+        Lateral displacement factor (0 at t=0 and t=1, peak in middle)
+    """
+    if bend_shape == "quadratic":
+        # Parabolic: lateral = 4 * t * (1 - t), peak at t=0.5
+        return 4.0 * t * (1.0 - t)
+    elif bend_shape == "cubic":
+        # Sharper peak: lateral = 16 * t^2 * (1 - t)^2, peak at t=0.5
+        return 16.0 * t * t * (1.0 - t) * (1.0 - t)
+    else:
+        # Sinusoid (default): lateral = sin(pi * t), peak at t=0.5
+        return np.sin(np.pi * t)
+
+
+def _find_feasible_rotation(
+    start: np.ndarray,
+    face_center: np.ndarray,
+    direction_norm: np.ndarray,
+    hook_depth: float,
+    radius: float,
+    effective_radius: float,
+    max_rotation_deg: float = 180.0,
+    rotation_step_deg: float = 15.0,
+) -> Tuple[Optional[float], Optional[np.ndarray], float]:
+    """
+    Find a feasible rotation angle for the hook direction.
+    
+    PATCH 2: Implements "rotate" constraint_strategy.
+    
+    Parameters
+    ----------
+    start : np.ndarray
+        Start position
+    face_center : np.ndarray
+        Center of the face
+    direction_norm : np.ndarray
+        Normalized direction vector
+    hook_depth : float
+        Desired hook depth
+    radius : float
+        Channel radius
+    effective_radius : float
+        Maximum effective radius
+    max_rotation_deg : float
+        Maximum rotation to try
+    rotation_step_deg : float
+        Step size for rotation search
+        
+    Returns
+    -------
+    rotation_angle : float or None
+        Rotation angle that makes hook feasible, or None if not found
+    hook_perp : np.ndarray or None
+        Perpendicular direction for the hook
+    max_feasible_depth : float
+        Maximum feasible depth at best rotation
+    """
+    # Get base perpendicular direction (radial outward from face center)
+    radial_out = start - face_center
+    radial_out = radial_out - np.dot(radial_out, direction_norm) * direction_norm
+    radial_norm = np.linalg.norm(radial_out)
+    
+    if radial_norm < 1e-9:
+        # Start is at face center, can't rotate meaningfully
+        return None, None, 0.0
+    
+    base_perp = radial_out / radial_norm
+    
+    # Get second perpendicular for rotation plane
+    perp2 = np.cross(direction_norm, base_perp)
+    perp2 = perp2 / np.linalg.norm(perp2)
+    
+    best_rotation = None
+    best_perp = None
+    best_margin = -float('inf')
+    
+    # Try rotation angles
+    angles_to_try = [0.0]
+    for step in range(1, int(max_rotation_deg / rotation_step_deg) + 1):
+        angles_to_try.append(step * rotation_step_deg)
+        angles_to_try.append(-step * rotation_step_deg)
+    
+    for angle_deg in angles_to_try:
+        angle_rad = np.radians(angle_deg)
+        # Rotate base_perp around direction_norm
+        rotated_perp = base_perp * np.cos(angle_rad) + perp2 * np.sin(angle_rad)
+        
+        # Calculate the hook endpoint in the face plane
+        # The hook extends in rotated_perp direction by hook_depth
+        hook_endpoint_xy = start + rotated_perp * hook_depth
+        
+        # Distance from face center to hook endpoint
+        endpoint_to_center = hook_endpoint_xy - face_center
+        endpoint_to_center = endpoint_to_center - np.dot(endpoint_to_center, direction_norm) * direction_norm
+        endpoint_dist = np.linalg.norm(endpoint_to_center)
+        
+        # Check if feasible: endpoint + radius must be within effective_radius
+        margin = effective_radius - (endpoint_dist + radius)
+        
+        if margin >= 0 and margin > best_margin:
+            best_rotation = angle_deg
+            best_perp = rotated_perp
+            best_margin = margin
+    
+    # Calculate max feasible depth at best rotation
+    if best_perp is not None:
+        start_to_center = start - face_center
+        start_to_center = start_to_center - np.dot(start_to_center, direction_norm) * direction_norm
+        start_dist = np.linalg.norm(start_to_center)
+        max_feasible_depth = (effective_radius - radius) - start_dist
+    else:
+        max_feasible_depth = 0.0
+    
+    return best_rotation, best_perp, max(0.0, max_feasible_depth)
+
+
 def create_fang_hook(
     start: Tuple[float, float, float],
     end: Tuple[float, float, float],
@@ -220,6 +351,8 @@ def create_fang_hook(
 ) -> Tuple["trimesh.Trimesh", Dict[str, Any]]:
     """
     Create a curved fang hook channel.
+    
+    PATCH 2: Now implements constraint_strategy and bend_shape from policy.
     
     The fang hook is a curved channel that bends inward from the surface,
     useful for creating channels that don't go straight through.
@@ -245,7 +378,10 @@ def create_fang_hook(
         If provided, hook bends radially outward from face center.
         If None, uses arbitrary perpendicular direction.
     policy : ChannelPolicy, optional
-        Policy for additional constraints and default values
+        Policy for additional constraints and default values.
+        Key policy fields:
+        - constraint_strategy: "reduce_depth", "rotate", or "both"
+        - bend_shape: "quadratic", "cubic", or "sinusoid"
         
     Returns
     -------
@@ -270,75 +406,154 @@ def create_fang_hook(
     start = np.array(start)
     end = np.array(end)
     
-    meta = {
-        "requested_hook_depth": hook_depth,
-        "hook_depth_used": hook_depth,
-        "constraint_modified": False,
-        "bend_mode": policy.bend_mode,
-        "face_center_used": face_center is not None,
-    }
-    
-    # B4 FIX: Check effective radius constraint with distance from start to face center
-    if effective_radius is not None and policy.enforce_effective_radius:
-        # Calculate distance from start to face center in the face plane
-        start_to_center_dist = 0.0
-        if face_center is not None:
-            face_center_arr = np.array(face_center)
-            # Project onto face plane (perpendicular to direction)
-            start_to_center = start - face_center_arr
-            # Remove component along direction to get in-plane distance
-            start_to_center_in_plane = start_to_center - np.dot(start_to_center, direction_norm) * direction_norm
-            start_to_center_dist = np.linalg.norm(start_to_center_in_plane)
-            meta["start_to_center_dist"] = start_to_center_dist
-        
-        # B4 FIX: max_hook_depth = (effective_radius - radius) - dist(start_xy, face_center_xy)
-        max_hook_depth = (effective_radius - radius) - start_to_center_dist
-        max_hook_depth = max(0.0, max_hook_depth)  # Ensure non-negative
-        
-        if hook_depth > max_hook_depth:
-            meta["hook_depth_used"] = max_hook_depth
-            meta["constraint_modified"] = True
-            meta["constraint_warning"] = (
-                f"Hook depth reduced from {hook_depth:.6f} to {max_hook_depth:.6f} "
-                f"due to effective radius constraint (start_to_center_dist={start_to_center_dist:.6f})"
-            )
-            hook_depth = max_hook_depth
-            logger.warning(meta["constraint_warning"])
-    
-    # Calculate the curve
+    # Calculate direction early for constraint checking
     direction = end - start
     length = np.linalg.norm(direction)
     direction_norm = direction / length if length > 1e-9 else np.array([0, 0, -1])
     
-    # Find perpendicular for hook direction
-    # Use face-center radial outward if face_center is provided and bend_mode is "radial_out"
-    if face_center is not None and policy.bend_mode == "radial_out":
-        face_center = np.array(face_center)
-        # Radial outward direction from face center to start point
-        radial_out = start - face_center
-        # Project onto plane perpendicular to direction
-        radial_out = radial_out - np.dot(radial_out, direction_norm) * direction_norm
-        radial_norm = np.linalg.norm(radial_out)
-        if radial_norm > 1e-9:
-            hook_perp = radial_out / radial_norm
-            meta["radial_direction_used"] = True
+    meta = {
+        "requested_hook_depth": hook_depth,
+        "hook_depth_used": hook_depth,
+        "constraint_modified": False,
+        "constraint_strategy": policy.constraint_strategy,
+        "bend_shape": policy.bend_shape,
+        "bend_mode": policy.bend_mode,
+        "face_center_used": face_center is not None,
+        "rotation_applied": False,
+        "rotation_angle_deg": 0.0,
+    }
+    
+    # Initialize hook_perp to None, will be set based on constraint strategy
+    hook_perp = None
+    
+    # PATCH 2: Implement constraint_strategy
+    if effective_radius is not None and policy.enforce_effective_radius and face_center is not None:
+        face_center_arr = np.array(face_center)
+        
+        # Calculate distance from start to face center in the face plane
+        start_to_center = start - face_center_arr
+        start_to_center_in_plane = start_to_center - np.dot(start_to_center, direction_norm) * direction_norm
+        start_to_center_dist = np.linalg.norm(start_to_center_in_plane)
+        meta["start_to_center_dist"] = start_to_center_dist
+        
+        # max_hook_depth = (effective_radius - radius) - dist(start_xy, face_center_xy)
+        max_hook_depth = (effective_radius - radius) - start_to_center_dist
+        max_hook_depth = max(0.0, max_hook_depth)
+        
+        if hook_depth > max_hook_depth:
+            # Hook exceeds effective radius, apply constraint_strategy
+            strategy = policy.constraint_strategy
+            
+            if strategy == "rotate":
+                # Try to find a rotation that makes the hook feasible
+                rotation_angle, rotated_perp, feasible_depth = _find_feasible_rotation(
+                    start, face_center_arr, direction_norm, hook_depth, radius, effective_radius
+                )
+                
+                if rotation_angle is not None and feasible_depth >= hook_depth:
+                    # Rotation found that preserves full hook depth
+                    hook_perp = rotated_perp
+                    meta["rotation_applied"] = True
+                    meta["rotation_angle_deg"] = rotation_angle
+                    meta["constraint_strategy_result"] = "rotation_successful"
+                else:
+                    # Rotation alone not sufficient, fall back to reduce_depth
+                    meta["hook_depth_used"] = max_hook_depth
+                    meta["constraint_modified"] = True
+                    meta["constraint_warning"] = (
+                        f"Rotate strategy failed, hook depth reduced from {hook_depth:.6f} to {max_hook_depth:.6f}"
+                    )
+                    meta["constraint_strategy_result"] = "rotation_failed_reduced_depth"
+                    hook_depth = max_hook_depth
+                    logger.warning(meta["constraint_warning"])
+                    
+            elif strategy == "both":
+                # Try rotate first, then reduce depth if needed
+                rotation_angle, rotated_perp, feasible_depth = _find_feasible_rotation(
+                    start, face_center_arr, direction_norm, hook_depth, radius, effective_radius
+                )
+                
+                if rotation_angle is not None:
+                    hook_perp = rotated_perp
+                    meta["rotation_applied"] = True
+                    meta["rotation_angle_deg"] = rotation_angle
+                    
+                    if feasible_depth >= hook_depth:
+                        meta["constraint_strategy_result"] = "rotation_preserved_depth"
+                    else:
+                        # Rotation helped but still need to reduce depth
+                        # Recalculate max depth with rotated direction
+                        meta["hook_depth_used"] = feasible_depth
+                        meta["constraint_modified"] = True
+                        meta["constraint_warning"] = (
+                            f"Hook depth reduced from {hook_depth:.6f} to {feasible_depth:.6f} "
+                            f"after rotation of {rotation_angle:.1f} degrees"
+                        )
+                        meta["constraint_strategy_result"] = "rotation_and_reduce_depth"
+                        hook_depth = feasible_depth
+                        logger.warning(meta["constraint_warning"])
+                else:
+                    # No feasible rotation, just reduce depth
+                    meta["hook_depth_used"] = max_hook_depth
+                    meta["constraint_modified"] = True
+                    meta["constraint_warning"] = (
+                        f"Hook depth reduced from {hook_depth:.6f} to {max_hook_depth:.6f} "
+                        f"(no feasible rotation found)"
+                    )
+                    meta["constraint_strategy_result"] = "reduce_depth_only"
+                    hook_depth = max_hook_depth
+                    logger.warning(meta["constraint_warning"])
+                    
+            else:
+                # Default: "reduce_depth"
+                meta["hook_depth_used"] = max_hook_depth
+                meta["constraint_modified"] = True
+                meta["constraint_warning"] = (
+                    f"Hook depth reduced from {hook_depth:.6f} to {max_hook_depth:.6f} "
+                    f"due to effective radius constraint (start_to_center_dist={start_to_center_dist:.6f})"
+                )
+                meta["constraint_strategy_result"] = "reduce_depth"
+                hook_depth = max_hook_depth
+                logger.warning(meta["constraint_warning"])
+        
+        # Check if hook_depth is too small to be useful
+        if hook_depth <= 0:
+            meta["fallback_to_straight"] = True
+            meta["constraint_warning"] = (
+                f"Port too close to boundary for hook (max_hook_depth={max_hook_depth:.6f}); "
+                f"falling back to straight/taper channel"
+            )
+            logger.warning(meta["constraint_warning"])
+    
+    # Find perpendicular for hook direction if not already set by rotation
+    if hook_perp is None:
+        if face_center is not None and policy.bend_mode == "radial_out":
+            face_center_arr = np.array(face_center)
+            # Radial outward direction from face center to start point
+            radial_out = start - face_center_arr
+            # Project onto plane perpendicular to direction
+            radial_out = radial_out - np.dot(radial_out, direction_norm) * direction_norm
+            radial_norm = np.linalg.norm(radial_out)
+            if radial_norm > 1e-9:
+                hook_perp = radial_out / radial_norm
+                meta["radial_direction_used"] = True
+            else:
+                # Start is at face center, fall back to arbitrary perpendicular
+                if abs(direction_norm[2]) < 0.9:
+                    hook_perp = np.cross(direction_norm, np.array([0, 0, 1]))
+                else:
+                    hook_perp = np.cross(direction_norm, np.array([1, 0, 0]))
+                hook_perp = hook_perp / np.linalg.norm(hook_perp)
+                meta["radial_direction_used"] = False
+                meta["radial_fallback_reason"] = "start_at_face_center"
         else:
-            # Start is at face center, fall back to arbitrary perpendicular
+            # Arbitrary perpendicular (legacy behavior)
             if abs(direction_norm[2]) < 0.9:
                 hook_perp = np.cross(direction_norm, np.array([0, 0, 1]))
             else:
                 hook_perp = np.cross(direction_norm, np.array([1, 0, 0]))
             hook_perp = hook_perp / np.linalg.norm(hook_perp)
             meta["radial_direction_used"] = False
-            meta["radial_fallback_reason"] = "start_at_face_center"
-    else:
-        # Arbitrary perpendicular (legacy behavior)
-        if abs(direction_norm[2]) < 0.9:
-            hook_perp = np.cross(direction_norm, np.array([0, 0, 1]))
-        else:
-            hook_perp = np.cross(direction_norm, np.array([1, 0, 0]))
-        hook_perp = hook_perp / np.linalg.norm(hook_perp)
-        meta["radial_direction_used"] = False
     
     # Generate centerline points for the hook
     hook_angle_rad = np.radians(hook_angle_deg)
@@ -355,23 +570,29 @@ def create_fang_hook(
         pos = start + direction_norm * straight_length * t
         centerline_points.append(pos)
     
-    # Curved section
+    # Curved section with PATCH 2 bend_shape
     curve_start = start + direction_norm * straight_length
     curve_length = length * curve_frac
     
     for i in range(segments_per_curve // 3):
         t = i / (segments_per_curve // 3)
-        angle = t * hook_angle_rad
         
         # Position along curve
         along = curve_length * t
-        lateral = hook_depth * np.sin(angle)
+        
+        # PATCH 2: Use bend_shape to compute lateral displacement
+        bend_shape = policy.bend_shape
+        lateral_factor = _compute_bend_lateral(t, bend_shape)
+        lateral = hook_depth * lateral_factor
         
         pos = curve_start + direction_norm * along + hook_perp * lateral
         centerline_points.append(pos)
     
     # Straight section at end
-    curve_end = curve_start + direction_norm * curve_length + hook_perp * hook_depth * np.sin(hook_angle_rad)
+    # Calculate where the curve ends based on bend_shape
+    final_t = 1.0
+    final_lateral_factor = _compute_bend_lateral(final_t, policy.bend_shape)
+    curve_end = curve_start + direction_norm * curve_length + hook_perp * hook_depth * final_lateral_factor
     remaining = end - curve_end
     
     for i in range(segments_per_curve // 3 + 1):
