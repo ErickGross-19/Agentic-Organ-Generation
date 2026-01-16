@@ -15,12 +15,58 @@ import logging
 
 from ..policies import EmbeddingPolicy, OperationReport
 from ..specs.design_spec import DomainSpec
-from ..core.domain import BoxDomain, EllipsoidDomain, CylinderDomain
+from ..specs.compile import compile_domain
+from ..core.domain import (
+    BoxDomain,
+    EllipsoidDomain,
+    CylinderDomain,
+    DomainSpec as RuntimeDomainSpec,
+    domain_from_dict,
+)
 
 if TYPE_CHECKING:
     import trimesh
 
 logger = logging.getLogger(__name__)
+
+
+def _coerce_domain(domain: Union[Dict[str, Any], DomainSpec, "RuntimeDomainSpec"]) -> "RuntimeDomainSpec":
+    """
+    Coerce domain input to a runtime Domain object.
+    
+    This helper supports three input types:
+    1. Dict domain spec (runner/JSON): {"type": "box", "x_min": ..., ...}
+    2. Runtime Domain objects (already compiled): BoxDomain, CylinderDomain, etc.
+    3. Legacy spec dataclasses: DomainSpec from specs.design_spec
+    
+    Parameters
+    ----------
+    domain : dict, DomainSpec, or RuntimeDomainSpec
+        Domain specification in any supported format
+        
+    Returns
+    -------
+    RuntimeDomainSpec
+        Compiled runtime domain object
+        
+    Raises
+    ------
+    ValueError
+        If domain type is not recognized
+    """
+    if isinstance(domain, dict):
+        return domain_from_dict(domain)
+    
+    if isinstance(domain, RuntimeDomainSpec):
+        return domain
+    
+    if hasattr(domain, 'type') and hasattr(domain, 'to_dict'):
+        return compile_domain(domain)
+    
+    raise ValueError(
+        f"Cannot coerce domain of type {type(domain).__name__}. "
+        "Expected dict, RuntimeDomainSpec, or legacy DomainSpec."
+    )
 
 
 def embed_void(
@@ -68,16 +114,11 @@ def embed_void(
     """
     import trimesh
     from ..ops.embedding import embed_tree_as_negative_space
-    from ..specs.compile import compile_domain
     
     if embedding_policy is None:
         embedding_policy = EmbeddingPolicy()
     
-    # Compile domain if needed
-    if hasattr(domain, 'type'):
-        compiled_domain = compile_domain(domain)
-    else:
-        compiled_domain = domain
+    compiled_domain = _coerce_domain(domain)
     
     # Load void mesh if path provided
     if isinstance(void_mesh, (str, Path)):

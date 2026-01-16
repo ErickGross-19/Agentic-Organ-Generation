@@ -17,114 +17,15 @@ import logging
 from ...core.network import VascularNetwork
 from ...core.domain import DomainSpec
 from ...core.types import Point3D
+from aog_policies.features import PortPreservationPolicy
+from aog_policies.generation import EmbeddingPolicy
 
 if TYPE_CHECKING:
     import trimesh
 
 logger = logging.getLogger(__name__)
 
-
-@dataclass
-class PortPreservationPolicy:
-    """
-    Policy for preserving port geometry during embedding.
-    
-    Controls how inlet/outlet ports are handled to ensure they remain
-    accessible after the embedding process.
-    
-    NOTE: Only "recarve" mode is supported. The "mask" mode has been deprecated
-    as it does not properly preserve port geometry.
-    
-    JSON Schema:
-    {
-        "enabled": bool,
-        "mode": "recarve",
-        "cylinder_radius_factor": float,
-        "cylinder_depth": float (meters),
-        "min_clearance": float (meters)
-    }
-    """
-    enabled: bool = True
-    mode: Literal["recarve"] = "recarve"
-    cylinder_radius_factor: float = 1.2
-    cylinder_depth: float = 0.002  # 2mm
-    min_clearance: float = 0.0001  # 0.1mm
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "enabled": self.enabled,
-            "mode": self.mode,
-            "cylinder_radius_factor": self.cylinder_radius_factor,
-            "cylinder_depth": self.cylinder_depth,
-            "min_clearance": self.min_clearance,
-        }
-    
-    @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "PortPreservationPolicy":
-        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
-
-
-@dataclass
-class EnhancedEmbeddingPolicy:
-    """
-    Enhanced embedding policy with port preservation options.
-    
-    Extends the basic EmbeddingPolicy with additional controls for
-    port geometry preservation and feature constraints.
-    
-    JSON Schema:
-    {
-        "voxel_pitch": float (meters),
-        "shell_thickness": float (meters),
-        "auto_adjust_pitch": bool,
-        "max_pitch_steps": int,
-        "fallback": "auto" | "voxel_subtraction" | "none",
-        "preserve_ports": PortPreservationPolicy,
-        "apply_feature_constraints": bool,
-        "feature_clearance": float (meters)
-    }
-    """
-    voxel_pitch: float = 3e-4  # 0.3mm
-    shell_thickness: float = 2e-3  # 2mm
-    auto_adjust_pitch: bool = True
-    max_pitch_steps: int = 4
-    fallback: Literal["auto", "voxel_subtraction", "none"] = "auto"
-    preserve_ports: Optional[PortPreservationPolicy] = None
-    apply_feature_constraints: bool = True
-    feature_clearance: float = 0.0002  # 0.2mm
-    
-    def __post_init__(self):
-        if self.preserve_ports is None:
-            self.preserve_ports = PortPreservationPolicy()
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "voxel_pitch": self.voxel_pitch,
-            "shell_thickness": self.shell_thickness,
-            "auto_adjust_pitch": self.auto_adjust_pitch,
-            "max_pitch_steps": self.max_pitch_steps,
-            "fallback": self.fallback,
-            "preserve_ports": self.preserve_ports.to_dict() if self.preserve_ports else None,
-            "apply_feature_constraints": self.apply_feature_constraints,
-            "feature_clearance": self.feature_clearance,
-        }
-    
-    @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "EnhancedEmbeddingPolicy":
-        preserve_ports = None
-        if d.get("preserve_ports"):
-            preserve_ports = PortPreservationPolicy.from_dict(d["preserve_ports"])
-        
-        return cls(
-            voxel_pitch=d.get("voxel_pitch", 3e-4),
-            shell_thickness=d.get("shell_thickness", 2e-3),
-            auto_adjust_pitch=d.get("auto_adjust_pitch", True),
-            max_pitch_steps=d.get("max_pitch_steps", 4),
-            fallback=d.get("fallback", "auto"),
-            preserve_ports=preserve_ports,
-            apply_feature_constraints=d.get("apply_feature_constraints", True),
-            feature_clearance=d.get("feature_clearance", 0.0002),
-        )
+EnhancedEmbeddingPolicy = EmbeddingPolicy
 
 
 @dataclass

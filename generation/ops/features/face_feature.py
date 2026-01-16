@@ -18,6 +18,7 @@ import numpy as np
 import logging
 
 from ...core.domain import DomainSpec, CylinderDomain, BoxDomain
+from aog_policies.features import RidgePolicy
 
 if TYPE_CHECKING:
     import trimesh
@@ -489,40 +490,6 @@ def _parse_face_string(face: str) -> FaceId:
         f"Invalid face string: '{face}'. "
         f"Valid options are: {list(CANONICAL_FACE_MAP.keys())}"
     )
-
-
-@dataclass
-class RidgePolicy:
-    """
-    PATCH 4: Policy for ridge features, compatible with aog_policies pattern.
-    
-    JSON Schema:
-    {
-        "height": float (meters),
-        "thickness": float (meters),
-        "inset": float (meters),
-        "overlap": float (meters) | null,
-        "resolution": int
-    }
-    """
-    height: float = 0.001  # 1mm
-    thickness: float = 0.001  # 1mm
-    inset: float = 0.0
-    overlap: Optional[float] = None
-    resolution: int = 64
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "height": self.height,
-            "thickness": self.thickness,
-            "inset": self.inset,
-            "overlap": self.overlap,
-            "resolution": self.resolution,
-        }
-    
-    @staticmethod
-    def from_dict(d: Dict[str, Any]) -> "RidgePolicy":
-        return RidgePolicy(**{k: v for k, v in d.items() if k in RidgePolicy.__dataclass_fields__})
 
 
 @dataclass

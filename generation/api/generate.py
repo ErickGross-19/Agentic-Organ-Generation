@@ -686,9 +686,11 @@ def generate_void_mesh(
                 from ..ops.mesh.merge import merge_meshes
                 from ..policies import MeshMergePolicy
                 try:
+                    # Use a reasonable default pitch for voxel merge
+                    # 5e-5 (50 microns) is suitable for fine vascular structures
                     merge_policy = MeshMergePolicy(
                         mode="voxel",
-                        voxel_pitch=channel_policy.min_diameter / 4 if channel_policy else 5e-5,
+                        voxel_pitch=5e-5,
                         auto_adjust_pitch=True,
                     )
                     merged_mesh, merge_report = merge_meshes(channel_meshes, merge_policy)

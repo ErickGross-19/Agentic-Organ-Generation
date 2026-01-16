@@ -75,6 +75,87 @@ def _rotation_matrix_from_euler(roll: float, pitch: float, yaw: float) -> np.nda
     ])
 
 
+def _decompose_4x4_matrix(matrix: np.ndarray) -> Tuple[np.ndarray, np.ndarray, float]:
+    """
+    Decompose a 4x4 homogeneous transformation matrix into rotation, translation, and scale.
+    
+    Assumes the matrix is in row-major format:
+    [[R00, R01, R02, Tx],
+     [R10, R11, R12, Ty],
+     [R20, R21, R22, Tz],
+     [0,   0,   0,   1 ]]
+    
+    Parameters
+    ----------
+    matrix : np.ndarray
+        4x4 homogeneous transformation matrix (row-major).
+    
+    Returns
+    -------
+    rotation : np.ndarray
+        3x3 rotation matrix.
+    translation : np.ndarray
+        Translation vector [tx, ty, tz].
+    scale : float
+        Uniform scale factor (extracted from rotation matrix column norms).
+    
+    Raises
+    ------
+    ValueError
+        If matrix is not 4x4 or has non-uniform scaling.
+    """
+    matrix = np.array(matrix, dtype=float)
+    if matrix.shape != (4, 4):
+        raise ValueError(f"Expected 4x4 matrix, got shape {matrix.shape}")
+    
+    translation = matrix[:3, 3].copy()
+    
+    rotation_with_scale = matrix[:3, :3].copy()
+    col_norms = np.linalg.norm(rotation_with_scale, axis=0)
+    
+    scale = np.mean(col_norms)
+    if not np.allclose(col_norms, scale, rtol=1e-3):
+        raise ValueError(
+            f"Non-uniform scaling detected: column norms are {col_norms}. "
+            "TransformDomain only supports uniform scaling."
+        )
+    
+    if scale < 1e-10:
+        raise ValueError(f"Scale factor too small: {scale}")
+    
+    rotation = rotation_with_scale / scale
+    
+    det = np.linalg.det(rotation)
+    if det < 0:
+        rotation[:, 0] *= -1
+    
+    return rotation, translation, scale
+
+
+def _compose_4x4_matrix(rotation: np.ndarray, translation: np.ndarray, scale: float) -> np.ndarray:
+    """
+    Compose a 4x4 homogeneous transformation matrix from rotation, translation, and scale.
+    
+    Parameters
+    ----------
+    rotation : np.ndarray
+        3x3 rotation matrix.
+    translation : np.ndarray
+        Translation vector [tx, ty, tz].
+    scale : float
+        Uniform scale factor.
+    
+    Returns
+    -------
+    np.ndarray
+        4x4 homogeneous transformation matrix (row-major).
+    """
+    matrix = np.eye(4)
+    matrix[:3, :3] = rotation * scale
+    matrix[:3, 3] = translation
+    return matrix
+
+
 @dataclass
 class TransformDomain(DomainSpec):
     """
@@ -203,26 +284,113 @@ class TransformDomain(DomainSpec):
             min_corner[2], max_corner[2],
         )
     
-    def to_dict(self) -> dict:
-        """Convert to dictionary for serialization."""
-        return {
+    def to_dict(self, use_matrix_4x4: bool = False) -> dict:
+        """
+        Convert to dictionary for serialization.
+        
+        Parameters
+        ----------
+        use_matrix_4x4 : bool, optional
+            If True, output as a single 4x4 row-major matrix instead of
+            separate rotation/translation/scale fields. Default False.
+        
+        Returns
+        -------
+        dict
+            Serialized transform domain.
+        """
+        result = {
             "type": "transform",
             "base_domain": self.base_domain.to_dict(),
-            "translation": self.translation.tolist(),
-            "rotation": self.rotation.tolist(),
-            "scale": self.scale,
         }
+        
+        if use_matrix_4x4:
+            matrix = _compose_4x4_matrix(self.rotation, self.translation, self.scale)
+            result["matrix"] = matrix.tolist()
+        else:
+            result["translation"] = self.translation.tolist()
+            result["rotation"] = self.rotation.tolist()
+            result["scale"] = self.scale
+        
+        return result
     
     @classmethod
     def from_dict(cls, d: dict) -> "TransformDomain":
-        """Create from dictionary."""
+        """
+        Create from dictionary.
+        
+        Supports two formats:
+        1. Separate fields: {"translation": [...], "rotation": [[...]], "scale": float}
+        2. 4x4 matrix: {"matrix": [[...], [...], [...], [...]]} (row-major)
+        
+        Parameters
+        ----------
+        d : dict
+            Dictionary with transform specification.
+        
+        Returns
+        -------
+        TransformDomain
+            The constructed transform domain.
+        """
         from .domain import domain_from_dict
         
+        base_domain = domain_from_dict(d["base_domain"])
+        
+        if "matrix" in d:
+            rotation, translation, scale = _decompose_4x4_matrix(d["matrix"])
+            return cls(
+                base_domain=base_domain,
+                translation=translation,
+                rotation=rotation,
+                scale=scale,
+            )
+        
         return cls(
-            base_domain=domain_from_dict(d["base_domain"]),
+            base_domain=base_domain,
             translation=np.array(d.get("translation", [0, 0, 0])),
             rotation=np.array(d.get("rotation", np.eye(3).tolist())),
             scale=d.get("scale", 1.0),
+        )
+    
+    @classmethod
+    def from_matrix_4x4(
+        cls,
+        base_domain: DomainSpec,
+        matrix: np.ndarray,
+    ) -> "TransformDomain":
+        """
+        Create a TransformDomain from a 4x4 homogeneous transformation matrix.
+        
+        The matrix should be in row-major format:
+        [[R00, R01, R02, Tx],
+         [R10, R11, R12, Ty],
+         [R20, R21, R22, Tz],
+         [0,   0,   0,   1 ]]
+        
+        Parameters
+        ----------
+        base_domain : DomainSpec
+            The underlying domain to transform.
+        matrix : np.ndarray or list
+            4x4 homogeneous transformation matrix (row-major).
+        
+        Returns
+        -------
+        TransformDomain
+            The transformed domain.
+        
+        Raises
+        ------
+        ValueError
+            If matrix is not 4x4 or has non-uniform scaling.
+        """
+        rotation, translation, scale = _decompose_4x4_matrix(matrix)
+        return cls(
+            base_domain=base_domain,
+            translation=translation,
+            rotation=rotation,
+            scale=scale,
         )
     
     def get_face_frame(self, face: str) -> Dict[str, Any]:
@@ -351,4 +519,6 @@ __all__ = [
     "TransformDomain",
     "_rotation_matrix_from_axis_angle",
     "_rotation_matrix_from_euler",
+    "_decompose_4x4_matrix",
+    "_compose_4x4_matrix",
 ]

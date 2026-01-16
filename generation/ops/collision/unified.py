@@ -23,6 +23,7 @@ import logging
 from ...core.network import VascularNetwork, VesselSegment
 from ...core.domain import DomainSpec
 from ...core.types import Point3D
+from aog_policies.collision import UnifiedCollisionPolicy
 
 if TYPE_CHECKING:
     import trimesh
@@ -44,62 +45,6 @@ class ResolutionStrategy(str, Enum):
     SHRINK = "shrink"
     TERMINATE = "terminate"
     VOXEL_MERGE_FALLBACK = "voxel_merge_fallback"
-
-
-@dataclass
-class UnifiedCollisionPolicy:
-    """
-    Policy for unified collision detection and resolution.
-    
-    Controls collision detection parameters and resolution strategy order.
-    
-    JSON Schema:
-    {
-        "enabled": bool,
-        "min_clearance": float (meters),
-        "strategy_order": ["reroute", "shrink", "terminate", "voxel_merge_fallback"],
-        "min_radius": float (meters),
-        "check_segment_segment": bool,
-        "check_segment_mesh": bool,
-        "check_segment_boundary": bool,
-        "check_node_boundary": bool,
-        "reroute_max_attempts": int,
-        "shrink_factor": float,
-        "shrink_max_iterations": int
-    }
-    """
-    enabled: bool = True
-    min_clearance: float = 0.0002  # 0.2mm
-    strategy_order: List[str] = field(
-        default_factory=lambda: ["reroute", "shrink", "terminate"]
-    )
-    min_radius: float = 0.0001  # 0.1mm - floor for shrink strategy
-    check_segment_segment: bool = True
-    check_segment_mesh: bool = True
-    check_segment_boundary: bool = True
-    check_node_boundary: bool = True
-    reroute_max_attempts: int = 3
-    shrink_factor: float = 0.9
-    shrink_max_iterations: int = 5
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "enabled": self.enabled,
-            "min_clearance": self.min_clearance,
-            "strategy_order": self.strategy_order,
-            "min_radius": self.min_radius,
-            "check_segment_segment": self.check_segment_segment,
-            "check_segment_mesh": self.check_segment_mesh,
-            "check_segment_boundary": self.check_segment_boundary,
-            "check_node_boundary": self.check_node_boundary,
-            "reroute_max_attempts": self.reroute_max_attempts,
-            "shrink_factor": self.shrink_factor,
-            "shrink_max_iterations": self.shrink_max_iterations,
-        }
-    
-    @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "UnifiedCollisionPolicy":
-        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
 
 @dataclass
