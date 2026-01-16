@@ -134,10 +134,9 @@ class TestProgrammaticBackend:
         """Test that programmatic backend can be imported."""
         from generation.backends.programmatic_backend import (
             ProgrammaticBackend,
-            ProgramPolicy,
-            WaypointPolicy,
             StepSpec,
         )
+        from aog_policies import ProgramPolicy, WaypointPolicy
         
         backend = ProgrammaticBackend()
         assert backend is not None

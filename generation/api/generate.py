@@ -15,7 +15,8 @@ import hashlib
 import json
 import numpy as np
 
-from ..policies import (
+# Import policies from aog_policies (canonical source for runner contract)
+from aog_policies import (
     GrowthPolicy,
     CollisionPolicy,
     TissueSamplingPolicy,
@@ -480,7 +481,7 @@ def _generate_programmatic(
     """
     from ..backends.programmatic_backend import (
         ProgrammaticBackend,
-        ProgramPolicy,
+        _ProgramPolicy,
         ProgramCollisionPolicy,
         WaypointPolicy,
         StepSpec,
@@ -555,7 +556,7 @@ def _generate_programmatic(
             )
         
         # Build program policy
-        policy = ProgramPolicy(
+        policy = _ProgramPolicy(
             mode="network",
             steps=steps,
             path_algorithm="astar_voxel",

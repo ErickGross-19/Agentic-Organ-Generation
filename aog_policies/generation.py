@@ -475,7 +475,10 @@ class EmbeddingPolicy:
         "preserve_mode": "recarve",
         "carve_radius_factor": float,
         "carve_depth": float (meters),
-        "use_resolution_policy": bool
+        "use_resolution_policy": bool,
+        "output_shell": bool,
+        "output_domain_with_void": bool,
+        "output_void_mesh": bool
     }
 
     Resolution-aware pitch selection:
@@ -496,6 +499,9 @@ class EmbeddingPolicy:
     carve_radius_factor: float = 1.2
     carve_depth: float = 0.002  # 2mm
     use_resolution_policy: bool = False
+    output_shell: bool = False  # Runner contract: output shell mesh
+    output_domain_with_void: bool = True  # Runner contract: output domain with void
+    output_void_mesh: bool = True  # Runner contract: output void mesh
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -527,7 +533,10 @@ class OutputPolicy:
         "output_units": "mm" | "m",
         "naming_convention": "default" | "timestamped",
         "save_intermediates": bool,
-        "save_reports": bool
+        "save_reports": bool,
+        "output_stl": bool,
+        "output_json": bool,
+        "output_shell": bool
     }
     """
     output_dir: str = "./output"
@@ -535,6 +544,9 @@ class OutputPolicy:
     naming_convention: Literal["default", "timestamped"] = "default"
     save_intermediates: bool = False
     save_reports: bool = True
+    output_stl: bool = True  # Runner contract: output STL files
+    output_json: bool = True  # Runner contract: output JSON files
+    output_shell: bool = False  # Runner contract: output shell mesh
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -542,6 +554,90 @@ class OutputPolicy:
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "OutputPolicy":
         return OutputPolicy(**{k: v for k, v in d.items() if k in OutputPolicy.__dataclass_fields__})
+
+
+@dataclass
+class ProgramPolicy:
+    """
+    Policy for programmatic network generation.
+    
+    This is the main configuration object for the ProgrammaticBackend,
+    containing the DSL steps and all sub-policies.
+    
+    JSON Schema:
+    {
+        "mode": "network" | "mesh",
+        "steps": [StepSpec, ...],
+        "path_algorithm": "astar_voxel" | "straight" | "bezier" | "hybrid",
+        "collision_policy": UnifiedCollisionPolicy,
+        "retry_policy": RetryPolicy,
+        "waypoint_policy": WaypointPolicy,
+        "radius_policy": RadiusPolicy,
+        "default_radius": float (meters),
+        "default_clearance": float (meters)
+    }
+    
+    Sub-policies use their respective policy classes from aog_policies.collision
+    and aog_policies.pathfinding. They are converted to/from dicts for JSON
+    serialization using their to_dict/from_dict methods.
+    """
+    mode: Literal["network", "mesh"] = "network"
+    steps: List[Dict[str, Any]] = field(default_factory=list)
+    path_algorithm: str = "astar_voxel"
+    # Sub-policies use Any type to avoid circular imports; actual types are:
+    # collision_policy: UnifiedCollisionPolicy
+    # retry_policy: RetryPolicy  
+    # waypoint_policy: WaypointPolicy
+    # radius_policy: RadiusPolicy
+    collision_policy: Any = None
+    retry_policy: Any = None
+    waypoint_policy: Any = None
+    radius_policy: Any = None
+    default_radius: float = 0.001  # 1mm
+    default_clearance: float = 0.0002  # 0.2mm
+    
+    def __post_init__(self):
+        # Import here to avoid circular imports
+        from .collision import UnifiedCollisionPolicy, RadiusPolicy, RetryPolicy
+        from .pathfinding import WaypointPolicy
+        
+        # Initialize sub-policies with defaults if None
+        if self.collision_policy is None:
+            self.collision_policy = UnifiedCollisionPolicy()
+        elif isinstance(self.collision_policy, dict):
+            self.collision_policy = UnifiedCollisionPolicy.from_dict(self.collision_policy)
+            
+        if self.retry_policy is None:
+            self.retry_policy = RetryPolicy()
+        elif isinstance(self.retry_policy, dict):
+            self.retry_policy = RetryPolicy.from_dict(self.retry_policy)
+            
+        if self.waypoint_policy is None:
+            self.waypoint_policy = WaypointPolicy()
+        elif isinstance(self.waypoint_policy, dict):
+            self.waypoint_policy = WaypointPolicy.from_dict(self.waypoint_policy)
+            
+        if self.radius_policy is None:
+            self.radius_policy = RadiusPolicy()
+        elif isinstance(self.radius_policy, dict):
+            self.radius_policy = RadiusPolicy.from_dict(self.radius_policy)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "mode": self.mode,
+            "steps": self.steps,
+            "path_algorithm": self.path_algorithm,
+            "collision_policy": self.collision_policy.to_dict() if hasattr(self.collision_policy, 'to_dict') else self.collision_policy,
+            "retry_policy": self.retry_policy.to_dict() if hasattr(self.retry_policy, 'to_dict') else self.retry_policy,
+            "waypoint_policy": self.waypoint_policy.to_dict() if hasattr(self.waypoint_policy, 'to_dict') else self.waypoint_policy,
+            "radius_policy": self.radius_policy.to_dict() if hasattr(self.radius_policy, 'to_dict') else self.radius_policy,
+            "default_radius": self.default_radius,
+            "default_clearance": self.default_clearance,
+        }
+    
+    @staticmethod
+    def from_dict(d: Dict[str, Any]) -> "ProgramPolicy":
+        return ProgramPolicy(**{k: v for k, v in d.items() if k in ProgramPolicy.__dataclass_fields__})
 
 
 __all__ = [
@@ -555,4 +651,5 @@ __all__ = [
     "MeshMergePolicy",
     "EmbeddingPolicy",
     "OutputPolicy",
+    "ProgramPolicy",
 ]
