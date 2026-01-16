@@ -32,17 +32,20 @@ class PortPreservationPolicy:
     Controls how inlet/outlet ports are handled to ensure they remain
     accessible after the embedding process.
     
+    NOTE: Only "recarve" mode is supported. The "mask" mode has been deprecated
+    as it does not properly preserve port geometry.
+    
     JSON Schema:
     {
         "enabled": bool,
-        "mode": "recarve" | "mask",
+        "mode": "recarve",
         "cylinder_radius_factor": float,
         "cylinder_depth": float (meters),
         "min_clearance": float (meters)
     }
     """
     enabled: bool = True
-    mode: Literal["recarve", "mask"] = "recarve"
+    mode: Literal["recarve"] = "recarve"
     cylinder_radius_factor: float = 1.2
     cylinder_depth: float = 0.002  # 2mm
     min_clearance: float = 0.0001  # 0.1mm
@@ -325,25 +328,70 @@ def _voxel_embed(
     void_mesh: "trimesh.Trimesh",
     voxel_pitch: float,
 ) -> Tuple["trimesh.Trimesh", List[str]]:
-    """Perform voxel-based embedding as fallback."""
+    """
+    Perform voxel-based embedding as fallback.
+    
+    DEPRECATED: This fallback should only be used when boolean operations fail.
+    The preferred path is direct mesh boolean subtraction. This function is
+    retained for robustness but emits a warning when used.
+    
+    The algorithm:
+    1. Voxelize both domain and void meshes at the same pitch
+    2. Transform void voxels to domain's coordinate frame
+    3. Subtract void voxels from domain voxels
+    4. Reconstruct mesh via marching cubes
+    """
     import trimesh
+    from trimesh.voxel import VoxelGrid
     
     warnings = []
+    warnings.append(
+        "DEPRECATED: Using voxel-based embedding fallback. "
+        "This may produce lower quality results than direct boolean operations."
+    )
     
     try:
         # Voxelize both meshes
         domain_voxels = domain_mesh.voxelized(voxel_pitch).fill()
         void_voxels = void_mesh.voxelized(voxel_pitch).fill()
         
-        # Subtract void from domain
-        domain_matrix = domain_voxels.matrix.copy()
-        void_matrix = void_voxels.matrix
+        # Get the domain's transform and origin
+        domain_transform = domain_voxels.transform
+        domain_origin = domain_transform[:3, 3]
+        domain_scale = domain_transform[0, 0]  # Assuming uniform scale
         
-        # Align matrices (they may have different origins)
-        # For simplicity, we'll use the domain's transform
-        result_voxels = domain_voxels.copy()
+        # Get void's transform
+        void_transform = void_voxels.transform
+        void_origin = void_transform[:3, 3]
+        void_scale = void_transform[0, 0]
         
-        # Reconstruct mesh
+        # Create a copy of domain matrix for modification
+        result_matrix = domain_voxels.matrix.copy()
+        
+        # Transform void voxel coordinates to domain voxel coordinates
+        # and subtract void from domain
+        void_indices = np.argwhere(void_voxels.matrix)
+        
+        for idx in void_indices:
+            # Convert void voxel index to world coordinates
+            world_pos = void_origin + idx * void_scale
+            
+            # Convert world coordinates to domain voxel index
+            domain_idx = ((world_pos - domain_origin) / domain_scale).astype(int)
+            
+            # Check bounds and subtract
+            if (0 <= domain_idx[0] < result_matrix.shape[0] and
+                0 <= domain_idx[1] < result_matrix.shape[1] and
+                0 <= domain_idx[2] < result_matrix.shape[2]):
+                result_matrix[domain_idx[0], domain_idx[1], domain_idx[2]] = False
+        
+        # Create new voxel grid with subtracted result
+        result_voxels = VoxelGrid(
+            trimesh.voxel.encoding.DenseEncoding(result_matrix),
+            transform=domain_transform,
+        )
+        
+        # Reconstruct mesh via marching cubes
         result = result_voxels.marching_cubes
         
         # Check for coordinate system issues
@@ -351,14 +399,13 @@ def _voxel_embed(
         out_extent = float(np.max(result.extents))
         
         if in_extent > 0 and out_extent / in_extent > 50:
-            result.apply_transform(result_voxels.transform)
-        
-        warnings.append("Used voxel-based embedding fallback")
+            result.apply_transform(domain_transform)
         
         return result, warnings
         
     except Exception as e:
         warnings.append(f"Voxel embedding failed: {e}")
+        logger.error(f"Voxel embedding fallback failed: {e}")
         return domain_mesh.copy(), warnings
 
 
@@ -743,6 +790,74 @@ def voxel_recarve_ports(
         )
 
 
+def _compute_budget_first_pitch(
+    domain: "DomainSpec",
+    requested_pitch: float,
+    max_voxels: int = 50_000_000,
+    pitch_step_factor: float = 1.5,
+) -> Tuple[float, bool]:
+    """
+    Compute the appropriate voxel pitch based on budget constraints.
+    
+    This implements budget-first pitch selection: instead of starting with
+    the requested pitch and retrying on MemoryError, we compute the minimum
+    pitch that fits within the voxel budget up front.
+    
+    Parameters
+    ----------
+    domain : DomainSpec
+        Domain specification for computing bounds
+    requested_pitch : float
+        Requested voxel pitch in meters
+    max_voxels : int
+        Maximum number of voxels allowed (default: 50M)
+    pitch_step_factor : float
+        Factor to increase pitch by when relaxing (default: 1.5)
+        
+    Returns
+    -------
+    effective_pitch : float
+        The pitch to use (may be larger than requested if budget exceeded)
+    was_relaxed : bool
+        True if pitch was relaxed due to budget constraints
+    """
+    from ...core.domain import BoxDomain, CylinderDomain, EllipsoidDomain
+    
+    # Get domain bounds
+    bounds = domain.get_bounds()
+    domain_min = np.array([bounds[0], bounds[2], bounds[4]])
+    domain_max = np.array([bounds[1], bounds[3], bounds[5]])
+    
+    # Add padding
+    pad = 2 * requested_pitch
+    domain_min_padded = domain_min - pad
+    domain_max_padded = domain_max + pad
+    
+    # Compute grid shape at requested pitch
+    grid_shape = np.ceil((domain_max_padded - domain_min_padded) / requested_pitch).astype(int) + 1
+    total_voxels = int(np.prod(grid_shape))
+    
+    if total_voxels <= max_voxels:
+        return requested_pitch, False
+    
+    # Relax pitch until within budget
+    current_pitch = requested_pitch
+    while total_voxels > max_voxels:
+        current_pitch *= pitch_step_factor
+        pad = 2 * current_pitch
+        domain_min_padded = domain_min - pad
+        domain_max_padded = domain_max + pad
+        grid_shape = np.ceil((domain_max_padded - domain_min_padded) / current_pitch).astype(int) + 1
+        total_voxels = int(np.prod(grid_shape))
+    
+    logger.warning(
+        f"Relaxed embedding pitch from {requested_pitch:.6f}m to {current_pitch:.6f}m "
+        f"to fit within voxel budget ({max_voxels:,} voxels)"
+    )
+    
+    return current_pitch, True
+
+
 def embed_void_mesh_as_negative_space(
     void_mesh: "trimesh.Trimesh",
     domain: "DomainSpec",
@@ -752,6 +867,7 @@ def embed_void_mesh_as_negative_space(
     shell_thickness: float = 2e-3,
     auto_adjust_pitch: bool = True,
     max_pitch_steps: int = 4,
+    max_voxels: Optional[int] = None,
 ) -> Tuple["trimesh.Trimesh", "trimesh.Trimesh", Optional["trimesh.Trimesh"], Dict[str, Any]]:
     """
     C1 FIX: Embed an in-memory void mesh into a domain as negative space.
@@ -761,6 +877,10 @@ def embed_void_mesh_as_negative_space(
     a file path.
     
     Uses voxel subtraction (most robust method) to carve the void from the domain.
+    
+    Budget-first pitch selection: If max_voxels is specified, the pitch will be
+    relaxed up front if needed to fit within the voxel budget, rather than
+    waiting for MemoryError.
     
     Parameters
     ----------
@@ -780,6 +900,9 @@ def embed_void_mesh_as_negative_space(
         If True, automatically increase pitch on memory errors (default: True)
     max_pitch_steps : int
         Maximum number of pitch adjustment steps (default: 4)
+    max_voxels : int, optional
+        Maximum voxel budget. If specified, pitch will be relaxed up front
+        to fit within budget (budget-first selection).
         
     Returns
     -------
@@ -796,10 +919,19 @@ def embed_void_mesh_as_negative_space(
     from trimesh.voxel import VoxelGrid
     from ...core.domain import BoxDomain, CylinderDomain, EllipsoidDomain
     
+    # Budget-first pitch selection: compute appropriate pitch up front
+    pitch_was_relaxed = False
+    if max_voxels is not None:
+        voxel_pitch, pitch_was_relaxed = _compute_budget_first_pitch(
+            domain, voxel_pitch, max_voxels
+        )
+    
     metadata = {
         "voxel_pitch": voxel_pitch,
         "auto_adjust_pitch": auto_adjust_pitch,
         "pitch_adjustments": 0,
+        "budget_first_relaxed": pitch_was_relaxed,
+        "max_voxels_budget": max_voxels,
     }
     
     # Create domain mesh based on domain type

@@ -29,11 +29,11 @@ import numpy as np
 from ...core.domain import DomainSpec
 from ...core.types import Point3D
 from .astar_voxel import (
-    PathfindingPolicy,
     PathfindingResult,
     AStarNode,
     find_path,
 )
+from aog_policies.pathfinding import PathfindingPolicy, HierarchicalPathfindingPolicy
 
 if TYPE_CHECKING:
     from ...core.network import VascularNetwork
@@ -41,114 +41,6 @@ if TYPE_CHECKING:
     import trimesh
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class HierarchicalPathfindingPolicy:
-    """
-    Policy for hierarchical coarse-to-fine pathfinding.
-    
-    This extends PathfindingPolicy with parameters for two-stage pathfinding
-    that enables fine-pitch routing in large domains.
-    """
-    pitch_coarse: float = 0.0001  # 100µm coarse pitch
-    pitch_fine: float = 0.000005  # 5µm fine pitch
-    corridor_radius_buffer: float = 0.0002  # 200µm buffer around coarse path
-    max_voxels_coarse: int = 10_000_000  # 10M voxels for coarse grid
-    max_voxels_fine: int = 50_000_000  # 50M voxels for fine corridor
-    auto_relax_fine_pitch: bool = True
-    pitch_step_factor: float = 1.5
-    clearance: float = 0.0002  # 0.2mm
-    max_nodes_coarse: int = 100_000
-    max_nodes_fine: int = 500_000
-    timeout_s: float = 60.0
-    turn_penalty: float = 0.1
-    heuristic_weight: float = 1.0
-    smoothing_enabled: bool = True
-    smoothing_iters: int = 3
-    smoothing_strength: float = 0.5
-    allow_partial: bool = False
-    diagonal_movement: bool = True
-    allow_skip_waypoints: bool = True
-    max_skip_count: int = 3
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "pitch_coarse": self.pitch_coarse,
-            "pitch_fine": self.pitch_fine,
-            "corridor_radius_buffer": self.corridor_radius_buffer,
-            "max_voxels_coarse": self.max_voxels_coarse,
-            "max_voxels_fine": self.max_voxels_fine,
-            "auto_relax_fine_pitch": self.auto_relax_fine_pitch,
-            "pitch_step_factor": self.pitch_step_factor,
-            "clearance": self.clearance,
-            "max_nodes_coarse": self.max_nodes_coarse,
-            "max_nodes_fine": self.max_nodes_fine,
-            "timeout_s": self.timeout_s,
-            "turn_penalty": self.turn_penalty,
-            "heuristic_weight": self.heuristic_weight,
-            "smoothing_enabled": self.smoothing_enabled,
-            "smoothing_iters": self.smoothing_iters,
-            "smoothing_strength": self.smoothing_strength,
-            "allow_partial": self.allow_partial,
-            "diagonal_movement": self.diagonal_movement,
-            "allow_skip_waypoints": self.allow_skip_waypoints,
-            "max_skip_count": self.max_skip_count,
-        }
-    
-    @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "HierarchicalPathfindingPolicy":
-        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
-    
-    @classmethod
-    def from_resolution_policy(
-        cls,
-        resolution_policy: "ResolutionPolicy",
-        **overrides,
-    ) -> "HierarchicalPathfindingPolicy":
-        """Create from ResolutionPolicy with optional overrides."""
-        return cls(
-            pitch_coarse=overrides.get("pitch_coarse", resolution_policy.pathfinding_pitch_coarse),
-            pitch_fine=overrides.get("pitch_fine", resolution_policy.pathfinding_pitch_fine),
-            max_voxels_coarse=overrides.get("max_voxels_coarse", resolution_policy.max_voxels_pathfinding_coarse),
-            max_voxels_fine=overrides.get("max_voxels_fine", resolution_policy.max_voxels_pathfinding_fine),
-            auto_relax_fine_pitch=overrides.get("auto_relax_fine_pitch", resolution_policy.auto_relax_pitch),
-            pitch_step_factor=overrides.get("pitch_step_factor", resolution_policy.pitch_step_factor),
-            **{k: v for k, v in overrides.items() if k not in [
-                "pitch_coarse", "pitch_fine", "max_voxels_coarse", "max_voxels_fine",
-                "auto_relax_fine_pitch", "pitch_step_factor"
-            ]},
-        )
-    
-    def to_coarse_policy(self) -> PathfindingPolicy:
-        """Convert to PathfindingPolicy for coarse stage."""
-        return PathfindingPolicy(
-            voxel_pitch=self.pitch_coarse,
-            clearance=self.clearance,
-            max_nodes=self.max_nodes_coarse,
-            timeout_s=self.timeout_s / 2,
-            turn_penalty=self.turn_penalty,
-            heuristic_weight=self.heuristic_weight,
-            smoothing_enabled=False,
-            allow_partial=self.allow_partial,
-            diagonal_movement=self.diagonal_movement,
-        )
-    
-    def to_fine_policy(self) -> PathfindingPolicy:
-        """Convert to PathfindingPolicy for fine stage."""
-        return PathfindingPolicy(
-            voxel_pitch=self.pitch_fine,
-            clearance=self.clearance,
-            max_nodes=self.max_nodes_fine,
-            timeout_s=self.timeout_s / 2,
-            turn_penalty=self.turn_penalty,
-            heuristic_weight=self.heuristic_weight,
-            smoothing_enabled=self.smoothing_enabled,
-            smoothing_iters=self.smoothing_iters,
-            smoothing_strength=self.smoothing_strength,
-            allow_partial=self.allow_partial,
-            diagonal_movement=self.diagonal_movement,
-        )
 
 
 @dataclass
@@ -215,7 +107,8 @@ class CorridorVoxelMap:
     Voxelized corridor around a coarse path for fine-grained pathfinding.
     
     Only voxelizes the region around the coarse path, enabling fine-pitch
-    pathfinding without exploding memory.
+    pathfinding without exploding memory. Uses lazy evaluation with caching
+    to avoid O(N³) precomputation.
     """
     
     def __init__(
@@ -225,6 +118,7 @@ class CorridorVoxelMap:
         corridor_radius: float,
         pitch: float,
         clearance: float = 0.0,
+        lazy_evaluation: bool = True,
     ):
         """
         Initialize corridor voxel map.
@@ -241,12 +135,16 @@ class CorridorVoxelMap:
             Voxel pitch (resolution) in meters.
         clearance : float
             Additional clearance for obstacles.
+        lazy_evaluation : bool
+            If True, use lazy evaluation for corridor/domain checks
+            instead of precomputing the full grid. Default True.
         """
         self.domain = domain
         self.coarse_path = coarse_path
         self.corridor_radius = corridor_radius
         self.pitch = pitch
         self.clearance = clearance
+        self.lazy_evaluation = lazy_evaluation
         
         self._compute_corridor_bounds()
         
@@ -256,10 +154,17 @@ class CorridorVoxelMap:
         self.shape = np.maximum(self.shape, 1)
         
         self._grid = np.zeros(tuple(self.shape), dtype=bool)
-        self._in_corridor = np.zeros(tuple(self.shape), dtype=bool)
-        self._outside_domain = np.zeros(tuple(self.shape), dtype=bool)
         
-        self._compute_corridor_mask()
+        # Lazy evaluation: cache checked voxels
+        if lazy_evaluation:
+            self._corridor_cache: Dict[Tuple[int, int, int], bool] = {}
+            self._in_corridor = None
+            self._outside_domain = None
+        else:
+            self._corridor_cache = None
+            self._in_corridor = np.zeros(tuple(self.shape), dtype=bool)
+            self._outside_domain = np.zeros(tuple(self.shape), dtype=bool)
+            self._compute_corridor_mask()
     
     def _compute_corridor_bounds(self) -> None:
         """Compute bounding box of the corridor."""
@@ -275,7 +180,7 @@ class CorridorVoxelMap:
         self.max_bound = np.minimum(self.max_bound, domain_max)
     
     def _compute_corridor_mask(self) -> None:
-        """Compute mask for voxels inside the corridor and domain."""
+        """Compute mask for voxels inside the corridor and domain (legacy full-grid method)."""
         for i in range(self.shape[0]):
             for j in range(self.shape[1]):
                 for k in range(self.shape[2]):
@@ -289,6 +194,30 @@ class CorridorVoxelMap:
                     dist_to_path = self._distance_to_path(pos)
                     if dist_to_path <= self.corridor_radius:
                         self._in_corridor[i, j, k] = True
+    
+    def _is_in_corridor_and_domain(self, voxel: Tuple[int, int, int]) -> bool:
+        """Check if voxel is inside corridor and domain (lazy evaluation with caching)."""
+        if self._in_corridor is not None:
+            # Using precomputed grids
+            return self._in_corridor[voxel] and not self._outside_domain[voxel]
+        
+        # Lazy evaluation with cache
+        if voxel in self._corridor_cache:
+            return self._corridor_cache[voxel]
+        
+        pos = self.voxel_to_world(voxel)
+        point = Point3D(x=pos[0], y=pos[1], z=pos[2])
+        
+        # Check domain containment first
+        if not self.domain.contains(point):
+            self._corridor_cache[voxel] = False
+            return False
+        
+        # Check corridor distance
+        dist_to_path = self._distance_to_path(pos)
+        is_in_corridor = dist_to_path <= self.corridor_radius
+        self._corridor_cache[voxel] = is_in_corridor
+        return is_in_corridor
     
     def _distance_to_path(self, point: np.ndarray) -> float:
         """Compute minimum distance from point to coarse path."""
@@ -342,11 +271,7 @@ class CorridorVoxelMap:
         """Check if a voxel is free (not obstacle, inside corridor and domain)."""
         if not self.is_valid_voxel(voxel):
             return False
-        return (
-            not self._grid[voxel] and
-            self._in_corridor[voxel] and
-            not self._outside_domain[voxel]
-        )
+        return not self._grid[voxel] and self._is_in_corridor_and_domain(voxel)
     
     def add_capsule_obstacle(
         self,

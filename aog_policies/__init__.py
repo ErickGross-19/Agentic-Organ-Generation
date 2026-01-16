@@ -35,11 +35,29 @@ from .generation import (
 from .validity import (
     ValidationPolicy,
     RepairPolicy,
+    OpenPortPolicy,
 )
 
 from .resolution import (
     PitchLimits,
     ResolutionPolicy,
+)
+
+from .pathfinding import (
+    PathfindingPolicy,
+    WaypointPolicy,
+    HierarchicalPathfindingPolicy,
+)
+
+from .composition import (
+    ComposePolicy,
+)
+
+from .domain import (
+    PrimitiveMeshingPolicy,
+    MeshDomainPolicy,
+    ImplicitMeshingPolicy,
+    DomainMeshingPolicy,
 )
 
 __all__ = [
@@ -63,7 +81,19 @@ __all__ = [
     # Validity policies
     "ValidationPolicy",
     "RepairPolicy",
+    "OpenPortPolicy",
     # Resolution policies
     "PitchLimits",
     "ResolutionPolicy",
+    # Pathfinding policies
+    "PathfindingPolicy",
+    "WaypointPolicy",
+    "HierarchicalPathfindingPolicy",
+    # Composition policies
+    "ComposePolicy",
+    # Domain meshing policies
+    "PrimitiveMeshingPolicy",
+    "MeshDomainPolicy",
+    "ImplicitMeshingPolicy",
+    "DomainMeshingPolicy",
 ]

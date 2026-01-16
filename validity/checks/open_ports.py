@@ -19,46 +19,18 @@ UNIT CONVENTIONS
 All geometric values are in METERS internally.
 """
 
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 import numpy as np
 import logging
 
+from aog_policies.validity import OpenPortPolicy
+
 if TYPE_CHECKING:
     import trimesh
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class OpenPortPolicy:
-    """
-    Policy for open-port validation.
-    
-    Controls how ports are checked for connectivity to the outside.
-    """
-    enabled: bool = True
-    probe_radius_factor: float = 1.2
-    probe_length: float = 0.002  # 2mm probe length
-    min_connected_volume_voxels: int = 10
-    mode: str = "voxel_connectivity"
-    validation_pitch: Optional[float] = None
-    local_region_size: float = 0.005  # 5mm local region around port
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "enabled": self.enabled,
-            "probe_radius_factor": self.probe_radius_factor,
-            "probe_length": self.probe_length,
-            "min_connected_volume_voxels": self.min_connected_volume_voxels,
-            "mode": self.mode,
-            "validation_pitch": self.validation_pitch,
-            "local_region_size": self.local_region_size,
-        }
-    
-    @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "OpenPortPolicy":
-        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
 
 @dataclass
@@ -126,6 +98,7 @@ class LocalVoxelPatch:
     Voxelized local region around a port for connectivity checking.
     
     Only voxelizes a small region around the port to avoid memory issues.
+    Supports ROI voxel budgeting to ensure deterministic performance.
     """
     
     def __init__(
@@ -133,6 +106,8 @@ class LocalVoxelPatch:
         center: np.ndarray,
         size: float,
         pitch: float,
+        max_voxels: Optional[int] = None,
+        auto_relax_pitch: bool = True,
     ):
         """
         Initialize local voxel patch.
@@ -145,21 +120,45 @@ class LocalVoxelPatch:
             Size of the local region (cube side length).
         pitch : float
             Voxel pitch (resolution) in meters.
+        max_voxels : int, optional
+            Maximum number of voxels allowed in the ROI. If exceeded and
+            auto_relax_pitch is True, pitch will be increased.
+        auto_relax_pitch : bool
+            If True, automatically relax pitch to fit within max_voxels budget.
         """
         self.center = center
         self.size = size
         self.pitch = pitch
+        self.pitch_was_relaxed = False
         
+        # Compute initial shape
         half_size = size / 2
         self.min_bound = center - half_size
         self.max_bound = center + half_size
         
-        self.shape = np.ceil(size / pitch).astype(int)
-        self.shape = np.maximum(self.shape, 1)
-        if isinstance(self.shape, np.ndarray):
-            self.shape = tuple(self.shape.tolist())
+        shape = np.ceil(size / pitch).astype(int)
+        shape = np.maximum(shape, 1)
+        total_voxels = int(np.prod(shape))
+        
+        # ROI voxel budgeting: relax pitch if needed
+        if max_voxels is not None and total_voxels > max_voxels and auto_relax_pitch:
+            pitch_factor = 1.5
+            while total_voxels > max_voxels:
+                pitch *= pitch_factor
+                shape = np.ceil(size / pitch).astype(int)
+                shape = np.maximum(shape, 1)
+                total_voxels = int(np.prod(shape))
+            self.pitch = pitch
+            self.pitch_was_relaxed = True
+            logger.warning(
+                f"Relaxed open-port validation pitch to {pitch:.6f}m "
+                f"to fit within ROI budget ({max_voxels:,} voxels)"
+            )
+        
+        if isinstance(shape, np.ndarray):
+            self.shape = tuple(shape.tolist())
         else:
-            self.shape = (int(self.shape), int(self.shape), int(self.shape))
+            self.shape = (int(shape), int(shape), int(shape))
         
         self._outside_domain = np.zeros(self.shape, dtype=bool)
         self._void = np.zeros(self.shape, dtype=bool)
@@ -290,7 +289,7 @@ class LocalVoxelPatch:
                 return False, 0, False
         
         visited = np.zeros(self.shape, dtype=bool)
-        queue = [seed_voxel]
+        queue = deque([seed_voxel])  # Use deque for O(1) popleft
         visited[seed_voxel] = True
         connected_count = 0
         void_reached = False
@@ -302,7 +301,7 @@ class LocalVoxelPatch:
         ]
         
         while queue:
-            current = queue.pop(0)
+            current = queue.popleft()  # O(1) instead of O(n) with list.pop(0)
             
             if self._outside_domain[current] or self._void[current]:
                 connected_count += 1
@@ -379,6 +378,8 @@ def check_port_open(
         center=port_position,
         size=policy.local_region_size,
         pitch=pitch,
+        max_voxels=policy.max_voxels_roi,
+        auto_relax_pitch=policy.auto_relax_pitch,
     )
     
     patch.classify_from_domain_with_void(
