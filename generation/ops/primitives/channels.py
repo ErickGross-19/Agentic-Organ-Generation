@@ -207,7 +207,7 @@ def create_tapered_channel(
     return mesh
 
 
-def _compute_bend_lateral(t: float, bend_shape: str) -> float:
+def _compute_bend_lateral(t: float, bend_shape: str, hook_angle_rad: float = np.pi / 2) -> float:
     """
     Compute lateral displacement for bend shape at parameter t.
     
@@ -219,21 +219,25 @@ def _compute_bend_lateral(t: float, bend_shape: str) -> float:
         Curve parameter in [0, 1]
     bend_shape : str
         Shape type: "quadratic", "cubic", or "sinusoid"
+    hook_angle_rad : float
+        Hook angle in radians (used for sinusoid to preserve backward compatibility)
         
     Returns
     -------
     float
-        Lateral displacement factor (0 at t=0 and t=1, peak in middle)
+        Lateral displacement factor. For sinusoid: goes from 0 to sin(hook_angle_rad).
+        For quadratic/cubic: goes from 0 to peak at t=0.5 back to 0 (bump shapes).
     """
     if bend_shape == "quadratic":
-        # Parabolic: lateral = 4 * t * (1 - t), peak at t=0.5
+        # Parabolic bump: lateral = 4 * t * (1 - t), peak at t=0.5, returns to 0
         return 4.0 * t * (1.0 - t)
     elif bend_shape == "cubic":
-        # Sharper peak: lateral = 16 * t^2 * (1 - t)^2, peak at t=0.5
+        # Sharper bump: lateral = 16 * t^2 * (1 - t)^2, peak at t=0.5, returns to 0
         return 16.0 * t * t * (1.0 - t) * (1.0 - t)
     else:
-        # Sinusoid (default): lateral = sin(pi * t), peak at t=0.5
-        return np.sin(np.pi * t)
+        # Sinusoid (default): preserves original behavior - goes from 0 to sin(hook_angle_rad)
+        # This is a quarter-wave that does NOT return to 0, maintaining backward compatibility
+        return np.sin(t * hook_angle_rad)
 
 
 def _find_feasible_rotation(
@@ -581,8 +585,9 @@ def create_fang_hook(
         along = curve_length * t
         
         # PATCH 2: Use bend_shape to compute lateral displacement
+        # Pass hook_angle_rad for backward compatibility with sinusoid
         bend_shape = policy.bend_shape
-        lateral_factor = _compute_bend_lateral(t, bend_shape)
+        lateral_factor = _compute_bend_lateral(t, bend_shape, hook_angle_rad)
         lateral = hook_depth * lateral_factor
         
         pos = curve_start + direction_norm * along + hook_perp * lateral
@@ -591,7 +596,7 @@ def create_fang_hook(
     # Straight section at end
     # Calculate where the curve ends based on bend_shape
     final_t = 1.0
-    final_lateral_factor = _compute_bend_lateral(final_t, policy.bend_shape)
+    final_lateral_factor = _compute_bend_lateral(final_t, policy.bend_shape, hook_angle_rad)
     curve_end = curve_start + direction_norm * curve_length + hook_perp * hook_depth * final_lateral_factor
     remaining = end - curve_end
     
