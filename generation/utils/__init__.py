@@ -32,6 +32,17 @@ from .faces import (
     opposite_face,
 )
 
+from .scale import (
+    domain_scale,
+    domain_extents,
+    eps,
+    containment_tolerance,
+    collision_tolerance,
+    snap_tolerance,
+    prune_tolerance,
+    boundary_mask_tolerance,
+)
+
 __all__ = [
     'CANONICAL_UNIT',
     'to_si_length',
@@ -53,4 +64,12 @@ __all__ = [
     'face_center',
     'face_frame',
     'opposite_face',
+    'domain_scale',
+    'domain_extents',
+    'eps',
+    'containment_tolerance',
+    'collision_tolerance',
+    'snap_tolerance',
+    'prune_tolerance',
+    'boundary_mask_tolerance',
 ]

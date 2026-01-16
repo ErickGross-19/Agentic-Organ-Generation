@@ -37,6 +37,11 @@ from .validity import (
     RepairPolicy,
 )
 
+from .resolution import (
+    PitchLimits,
+    ResolutionPolicy,
+)
+
 __all__ = [
     # Base
     "OperationReport",
@@ -58,4 +63,7 @@ __all__ = [
     # Validity policies
     "ValidationPolicy",
     "RepairPolicy",
+    # Resolution policies
+    "PitchLimits",
+    "ResolutionPolicy",
 ]
