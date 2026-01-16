@@ -37,27 +37,35 @@ logger = logging.getLogger(__name__)
 @dataclass
 class PortCheckResult:
     """Result of checking a single port."""
-    port_id: str
-    port_type: str  # "inlet" or "outlet"
-    position: Tuple[float, float, float]
-    direction: Tuple[float, float, float]
-    radius: float
-    is_open: bool
+    port_name: str = ""
+    is_open: bool = False
+    connectivity_ratio: float = 0.0
+    voxel_pitch: float = 0.0
+    roi_voxels: int = 0
+    warnings: List[str] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
+    port_id: str = ""
+    port_type: str = ""
+    position: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    direction: Tuple[float, float, float] = (0.0, 0.0, 1.0)
+    radius: float = 0.0
     connected_volume_voxels: int = 0
     outside_seed_found: bool = False
     void_reached: bool = False
     diagnostics: Dict[str, Any] = field(default_factory=dict)
-    warnings: List[str] = field(default_factory=list)
-    errors: List[str] = field(default_factory=list)
     
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "port_name": self.port_name,
+            "is_open": self.is_open,
+            "connectivity_ratio": self.connectivity_ratio,
+            "voxel_pitch": self.voxel_pitch,
+            "roi_voxels": self.roi_voxels,
             "port_id": self.port_id,
             "port_type": self.port_type,
             "position": self.position,
             "direction": self.direction,
             "radius": self.radius,
-            "is_open": self.is_open,
             "connected_volume_voxels": self.connected_volume_voxels,
             "outside_seed_found": self.outside_seed_found,
             "void_reached": self.void_reached,
@@ -427,8 +435,8 @@ def check_port_open(
                 resolution_policy=resolution_policy,
                 max_voxels_override=policy.max_voxels_roi,
             )
-            pitch = result["effective_pitch"]
-            pitch_was_relaxed = result.get("was_relaxed", False)
+            pitch = result.effective_pitch
+            pitch_was_relaxed = result.was_relaxed
         else:
             pitch = port_radius / 4
     
@@ -470,13 +478,20 @@ def check_port_open(
             f"minimum {policy.min_connected_volume_voxels})"
         )
     
+    total_roi_voxels = patch.shape[0] * patch.shape[1] * patch.shape[2]
+    connectivity_ratio = connected_voxels / total_roi_voxels if total_roi_voxels > 0 else 0.0
+    
     return PortCheckResult(
+        port_name=port_id,
+        is_open=is_open,
+        connectivity_ratio=connectivity_ratio,
+        voxel_pitch=patch.pitch,
+        roi_voxels=total_roi_voxels,
         port_id=port_id,
         port_type=port_type,
         position=tuple(port_position),
         direction=tuple(port_direction),
         radius=port_radius,
-        is_open=is_open,
         connected_volume_voxels=connected_voxels,
         outside_seed_found=outside_seed_found,
         void_reached=void_reached,

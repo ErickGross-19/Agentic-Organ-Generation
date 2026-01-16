@@ -118,8 +118,14 @@ class HierarchicalPathfindingPolicy:
     C1 FIX: This is the mandatory pathfinding policy for all A* requests.
     C2 FIX: Supports resolution resolver integration for coarse-stage budgeting.
     
+    Runner Contract Fields (factor-based):
+        - coarse_pitch_factor: Multiplier for base pitch to get coarse pitch
+        - corridor_radius_factor: Multiplier for channel radius to get corridor radius
+    
     JSON Schema:
     {
+        "coarse_pitch_factor": float,
+        "corridor_radius_factor": float,
         "pitch_coarse": float (meters),
         "pitch_fine": float (meters),
         "corridor_radius_buffer": float (meters),
@@ -143,9 +149,11 @@ class HierarchicalPathfindingPolicy:
         "use_resolution_policy": bool
     }
     """
-    pitch_coarse: float = 0.0001  # 100um coarse pitch
+    coarse_pitch_factor: float = 4.0  # Runner contract: coarse pitch = base_pitch * factor
+    corridor_radius_factor: float = 2.0  # Runner contract: corridor radius = channel_radius * factor
+    pitch_coarse: float = 0.0001  # 100um coarse pitch (legacy, use coarse_pitch_factor instead)
     pitch_fine: float = 0.000005  # 5um fine pitch
-    corridor_radius_buffer: float = 0.0002  # 200um buffer around coarse path
+    corridor_radius_buffer: float = 0.0002  # 200um buffer around coarse path (legacy)
     max_voxels_coarse: int = 10_000_000  # 10M voxels for coarse grid
     max_voxels_fine: int = 50_000_000  # 50M voxels for fine corridor
     auto_relax_fine_pitch: bool = True
@@ -167,6 +175,8 @@ class HierarchicalPathfindingPolicy:
     
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "coarse_pitch_factor": self.coarse_pitch_factor,
+            "corridor_radius_factor": self.corridor_radius_factor,
             "pitch_coarse": self.pitch_coarse,
             "pitch_fine": self.pitch_fine,
             "corridor_radius_buffer": self.corridor_radius_buffer,

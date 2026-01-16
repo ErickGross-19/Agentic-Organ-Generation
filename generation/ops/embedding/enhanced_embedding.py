@@ -762,8 +762,8 @@ def _compute_budget_first_pitch(
 
 
 def embed_void_mesh_as_negative_space(
-    void_mesh: "trimesh.Trimesh",
-    domain: "DomainSpec",
+    void_mesh: "trimesh.Trimesh" = None,
+    domain: "DomainSpec" = None,
     voxel_pitch: float = 3e-4,
     output_void: bool = True,
     output_shell: bool = False,
@@ -773,6 +773,9 @@ def embed_void_mesh_as_negative_space(
     max_voxels: Optional[int] = None,
     resolution_policy: Optional[ResolutionPolicy] = None,
     use_resolution_policy: bool = False,
+    *,
+    domain_mesh: Optional["trimesh.Trimesh"] = None,
+    embedding_policy: Optional[EmbeddingPolicy] = None,
 ) -> Tuple["trimesh.Trimesh", "trimesh.Trimesh", Optional["trimesh.Trimesh"], Dict[str, Any]]:
     """
     Canonical embedding function: embed an in-memory void mesh into a domain as negative space.
@@ -780,6 +783,11 @@ def embed_void_mesh_as_negative_space(
     This is the canonical mesh-based embedding function that takes in-memory
     trimesh objects directly. Uses voxel subtraction (most robust method) to
     carve the void from the domain.
+    
+    Supports two calling conventions:
+    1. Legacy: embed_void_mesh_as_negative_space(void_mesh, domain, voxel_pitch=...)
+    2. Runner contract: embed_void_mesh_as_negative_space(domain_mesh=..., void_mesh=..., 
+                                                          embedding_policy=..., resolution_policy=...)
     
     B2/B3 FIX: Now supports resolution policy for unified pitch selection:
     - If use_resolution_policy=True, uses the resolution resolver for pitch derivation
@@ -791,7 +799,7 @@ def embed_void_mesh_as_negative_space(
     void_mesh : trimesh.Trimesh
         The void mesh to embed (in-memory)
     domain : DomainSpec
-        Domain specification (BoxDomain, CylinderDomain, or EllipsoidDomain)
+        Domain specification (BoxDomain, CylinderDomain, or EllipsoidDomain) - legacy signature
     voxel_pitch : float
         Voxel size in meters (default: 3e-4 = 0.3mm)
     output_void : bool
@@ -811,6 +819,10 @@ def embed_void_mesh_as_negative_space(
         Resolution policy for pitch derivation when use_resolution_policy=True.
     use_resolution_policy : bool
         If True, use resolution resolver for pitch selection (default: False).
+    domain_mesh : trimesh.Trimesh, optional (keyword-only)
+        Domain mesh for runner contract signature. If provided, uses mesh-based embedding.
+    embedding_policy : EmbeddingPolicy, optional (keyword-only)
+        Embedding policy for runner contract signature.
         
     Returns
     -------
@@ -827,9 +839,39 @@ def embed_void_mesh_as_negative_space(
     from trimesh.voxel import VoxelGrid
     from ...core.domain import BoxDomain, CylinderDomain, EllipsoidDomain
     
-    # Get domain bounds for pitch selection
-    bounds = domain.get_bounds()
-    bbox = (bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5])
+    # Handle runner contract signature: domain_mesh + embedding_policy + resolution_policy
+    if domain_mesh is not None:
+        # Runner contract signature: use domain_mesh directly
+        if void_mesh is None:
+            raise ValueError("void_mesh is required")
+        
+        # Extract parameters from embedding_policy if provided
+        if embedding_policy is not None:
+            voxel_pitch = embedding_policy.voxel_pitch
+            shell_thickness = embedding_policy.shell_thickness
+            max_voxels = embedding_policy.max_voxels if hasattr(embedding_policy, 'max_voxels') else None
+            use_resolution_policy = embedding_policy.use_resolution_policy if hasattr(embedding_policy, 'use_resolution_policy') else False
+        
+        # Get bounds from domain_mesh
+        bounds = domain_mesh.bounds
+        bbox = (bounds[0][0], bounds[1][0], bounds[0][1], bounds[1][1], bounds[0][2], bounds[1][2])
+        domain_min = bounds[0]
+        domain_max = bounds[1]
+        ref_extent = float(np.max(domain_max - domain_min))
+        
+        # Skip domain type detection - we already have the mesh
+        use_provided_domain_mesh = True
+    else:
+        # Legacy signature: use domain (DomainSpec)
+        if domain is None:
+            raise ValueError("Either domain or domain_mesh must be provided")
+        if void_mesh is None:
+            raise ValueError("void_mesh is required")
+        
+        # Get domain bounds for pitch selection
+        bounds = domain.get_bounds()
+        bbox = (bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5])
+        use_provided_domain_mesh = False
     
     # Pitch selection: use resolution resolver if enabled, otherwise legacy budget-first
     pitch_was_relaxed = False
@@ -872,69 +914,70 @@ def embed_void_mesh_as_negative_space(
     if resolution_result is not None:
         metadata["resolution_result"] = {
             "effective_pitch": resolution_result.effective_pitch,
-            "requested_pitch": resolution_result.requested_pitch,
+            "requested_pitch": resolution_result.metrics.get("requested_pitch"),
             "was_relaxed": resolution_result.was_relaxed,
             "relax_factor": resolution_result.relax_factor,
             "metrics": resolution_result.metrics,
         }
     
-    # Create domain mesh based on domain type
-    if isinstance(domain, CylinderDomain):
-        center = np.array([domain.center.x, domain.center.y, domain.center.z])
-        radius = domain.radius
-        height = domain.height
-        
-        domain_mesh = trimesh.creation.cylinder(
-            radius=radius,
-            height=height,
-            sections=64,
-        )
-        domain_mesh.apply_translation(center)
-        
-        domain_min = np.array([
-            center[0] - radius,
-            center[1] - radius,
-            center[2] - height / 2
-        ])
-        domain_max = np.array([
-            center[0] + radius,
-            center[1] + radius,
-            center[2] + height / 2
-        ])
-        ref_extent = max(2.0 * radius, height)
-        
-    elif isinstance(domain, BoxDomain):
-        domain_mesh = trimesh.creation.box(
-            extents=[
-                domain.x_max - domain.x_min,
-                domain.y_max - domain.y_min,
-                domain.z_max - domain.z_min,
-            ]
-        )
-        center = np.array([
-            (domain.x_min + domain.x_max) / 2,
-            (domain.y_min + domain.y_max) / 2,
-            (domain.z_min + domain.z_max) / 2,
-        ])
-        domain_mesh.apply_translation(center)
-        
-        domain_min = np.array([domain.x_min, domain.y_min, domain.z_min])
-        domain_max = np.array([domain.x_max, domain.y_max, domain.z_max])
-        ref_extent = np.max(domain_max - domain_min)
-        
-    elif isinstance(domain, EllipsoidDomain):
-        center = np.array([domain.center.x, domain.center.y, domain.center.z])
-        radii = np.array([domain.semi_axis_a, domain.semi_axis_b, domain.semi_axis_c])
-        
-        domain_mesh = trimesh.creation.icosphere(subdivisions=3, radius=1.0)
-        domain_mesh.apply_scale(radii)
-        domain_mesh.apply_translation(center)
-        
-        domain_min = center - radii
-        domain_max = center + radii
-        ref_extent = 2.0 * np.max(radii)
-    else:
-        raise ValueError(f"Unsupported domain type: {type(domain)}")
+    # Create domain mesh based on domain type (skip if using runner contract signature)
+    if not use_provided_domain_mesh:
+        if isinstance(domain, CylinderDomain):
+            center = np.array([domain.center.x, domain.center.y, domain.center.z])
+            radius = domain.radius
+            height = domain.height
+            
+            domain_mesh = trimesh.creation.cylinder(
+                radius=radius,
+                height=height,
+                sections=64,
+            )
+            domain_mesh.apply_translation(center)
+            
+            domain_min = np.array([
+                center[0] - radius,
+                center[1] - radius,
+                center[2] - height / 2
+            ])
+            domain_max = np.array([
+                center[0] + radius,
+                center[1] + radius,
+                center[2] + height / 2
+            ])
+            ref_extent = max(2.0 * radius, height)
+            
+        elif isinstance(domain, BoxDomain):
+            domain_mesh = trimesh.creation.box(
+                extents=[
+                    domain.x_max - domain.x_min,
+                    domain.y_max - domain.y_min,
+                    domain.z_max - domain.z_min,
+                ]
+            )
+            center = np.array([
+                (domain.x_min + domain.x_max) / 2,
+                (domain.y_min + domain.y_max) / 2,
+                (domain.z_min + domain.z_max) / 2,
+            ])
+            domain_mesh.apply_translation(center)
+            
+            domain_min = np.array([domain.x_min, domain.y_min, domain.z_min])
+            domain_max = np.array([domain.x_max, domain.y_max, domain.z_max])
+            ref_extent = np.max(domain_max - domain_min)
+            
+        elif isinstance(domain, EllipsoidDomain):
+            center = np.array([domain.center.x, domain.center.y, domain.center.z])
+            radii = np.array([domain.semi_axis_a, domain.semi_axis_b, domain.semi_axis_c])
+            
+            domain_mesh = trimesh.creation.icosphere(subdivisions=3, radius=1.0)
+            domain_mesh.apply_scale(radii)
+            domain_mesh.apply_translation(center)
+            
+            domain_min = center - radii
+            domain_max = center + radii
+            ref_extent = 2.0 * np.max(radii)
+        else:
+            raise ValueError(f"Unsupported domain type: {type(domain)}")
     
     # Voxel subtraction with retry on memory errors
     current_pitch = voxel_pitch
