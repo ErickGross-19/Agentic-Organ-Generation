@@ -112,16 +112,20 @@ def embed_void(
                 f"to {effective_pitch:.6f} due to memory constraints"
             )
         
-        # C2 FIX: Apply port preservation if enabled and ports provided
+        # VOXEL RECARVE: Apply port preservation if enabled and ports provided
+        # Uses voxel-based carving (no boolean backend dependency)
         ports_preserved = 0
+        recarve_report_dict = None
         if embedding_policy.preserve_ports_enabled and ports:
-            solid, ports_preserved, port_warnings = _preserve_ports(
+            solid, ports_preserved, port_warnings, recarve_report_dict = _preserve_ports(
                 solid,
                 ports,
                 embedding_policy,
             )
             warnings.extend(port_warnings)
             metadata["ports_preserved"] = ports_preserved
+            if recarve_report_dict:
+                metadata["recarve_report"] = recarve_report_dict
         
         # Check for shrink warnings
         shrink_warnings = _check_shrink_warnings(void_mesh, void_out)
@@ -213,11 +217,13 @@ def _preserve_ports(
     mesh: "trimesh.Trimesh",
     ports: List[Dict[str, Any]],
     policy: EmbeddingPolicy,
-) -> Tuple["trimesh.Trimesh", int, List[str]]:
+) -> Tuple["trimesh.Trimesh", int, List[str], Optional[Dict[str, Any]]]:
     """
-    Preserve port geometry in the embedded mesh via recarving.
+    Preserve port geometry in the embedded mesh via voxel-based recarving.
     
-    PATCH 3: Removed "mask" mode - only "recarve" is supported.
+    VOXEL RECARVE: Now uses voxel grid operations instead of boolean backends,
+    eliminating dependency on Blender/Cork/etc. Works consistently across all
+    environments.
     
     Uses the EmbeddingPolicy port preservation fields:
     - carve_radius_factor: Factor to multiply port radius for carving
@@ -240,79 +246,33 @@ def _preserve_ports(
         Number of ports successfully preserved
     warnings : list of str
         Any warnings generated during preservation
+    recarve_report_dict : dict or None
+        Detailed recarve report as dict for metadata
     """
-    import trimesh
-    import numpy as np
+    from ..ops.embedding.enhanced_embedding import voxel_recarve_ports
     
-    warnings = []
-    ports_preserved = 0
-    result = mesh
+    if not ports:
+        return mesh, 0, [], None
     
-    for port in ports:
-        try:
-            position = np.array(port.get("position", [0, 0, 0]))
-            direction = np.array(port.get("direction", [0, 0, 1]))
-            radius = port.get("radius", 0.001)
-            
-            # Normalize direction
-            dir_norm = np.linalg.norm(direction)
-            if dir_norm > 0:
-                direction = direction / dir_norm
-            
-            # Create carving cylinder using policy parameters
-            carve_radius = radius * policy.carve_radius_factor
-            carve_depth = policy.carve_depth
-            
-            cylinder = trimesh.creation.cylinder(
-                radius=carve_radius,
-                height=carve_depth,
-                sections=32,
-            )
-            
-            # Align cylinder with port direction
-            z_axis = np.array([0, 0, 1])
-            
-            if not np.allclose(direction, z_axis):
-                # Compute rotation
-                axis = np.cross(z_axis, direction)
-                axis_norm = np.linalg.norm(axis)
-                
-                if axis_norm > 1e-6:
-                    axis = axis / axis_norm
-                    angle = np.arccos(np.clip(np.dot(z_axis, direction), -1, 1))
-                    
-                    # Rodrigues' rotation formula
-                    K = np.array([
-                        [0, -axis[2], axis[1]],
-                        [axis[2], 0, -axis[0]],
-                        [-axis[1], axis[0], 0],
-                    ])
-                    R = np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
-                    
-                    transform = np.eye(4)
-                    transform[:3, :3] = R
-                    cylinder.apply_transform(transform)
-            
-            # Position cylinder at port (offset slightly inward)
-            min_clearance = 0.0001  # 0.1mm
-            offset = position - direction * (carve_depth / 2 - min_clearance)
-            cylinder.apply_translation(offset)
-            
-            # PATCH 3: Always use recarve mode (mask mode removed)
-            try:
-                new_result = result.difference(cylinder)
-                if new_result is not None and len(new_result.vertices) > 0:
-                    result = new_result
-                    ports_preserved += 1
-                else:
-                    warnings.append(f"Port preservation failed for port at {position}")
-            except Exception as e:
-                warnings.append(f"Port preservation failed: {e}")
-                
-        except Exception as e:
-            warnings.append(f"Failed to preserve port: {e}")
+    # Use voxel-based recarving (no boolean backend dependency)
+    result_mesh, recarve_report = voxel_recarve_ports(
+        mesh=mesh,
+        ports=ports,
+        voxel_pitch=policy.voxel_pitch,
+        carve_radius_factor=policy.carve_radius_factor,
+        carve_depth=policy.carve_depth,
+        carve_shape="cylinder",
+    )
     
-    return result, ports_preserved, warnings
+    # Collect warnings from report
+    warnings = list(recarve_report.warnings)
+    
+    # Count successfully carved ports (those with voxels_carved > 0)
+    ports_preserved = sum(
+        1 for pr in recarve_report.port_results if pr.voxels_carved > 0
+    )
+    
+    return result_mesh, ports_preserved, warnings, recarve_report.to_dict()
 
 
 def _check_shrink_warnings(

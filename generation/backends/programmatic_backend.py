@@ -601,6 +601,165 @@ class ProgrammaticBackend(GenerationBackend):
         else:
             return self._current_network, report
     
+    def generate_from_backend_params(
+        self,
+        domain: DomainSpec,
+        ports: Dict[str, Any],
+        backend_params: Dict[str, Any],
+        collision_policy: Optional["CollisionPolicy"] = None,
+        seed: Optional[int] = None,
+    ) -> Tuple[Union[VascularNetwork, "trimesh.Trimesh"], GenerationReport]:
+        """
+        Generate a vascular network from backend_params dict.
+        
+        This method enables unified API usage where all backends can be
+        configured through GrowthPolicy.backend_params. It validates required
+        keys, uses defaults for missing keys, and emits effective_policy
+        in the report.
+        
+        Parameters
+        ----------
+        domain : DomainSpec
+            Geometric domain for the network
+        ports : dict
+            Port configuration with "inlets" and "outlets"
+        backend_params : dict
+            JSON-serializable backend configuration with keys:
+            - mode: "network" | "mesh" (default: "network")
+            - path_algorithm: "astar_voxel" | "straight" | "bezier" | "hybrid"
+            - waypoint_policy: {allow_skip: bool, ...}
+            - pathfinding_policy: {voxel_pitch, clearance, max_nodes, ...}
+            - radius_policy: {...}
+            - steps: [{op: ..., ...}, ...]
+        collision_policy : CollisionPolicy, optional
+            Collision policy from the unified API
+        seed : int, optional
+            Random seed for reproducibility
+            
+        Returns
+        -------
+        component : VascularNetwork or trimesh.Trimesh
+            Generated component (network or mesh based on mode)
+        report : GenerationReport
+            Detailed report with effective_policy reflecting defaults
+        """
+        # Validate and extract backend_params with defaults
+        mode = backend_params.get("mode", "network")
+        path_algorithm = backend_params.get("path_algorithm", "astar_voxel")
+        
+        # Build waypoint policy from backend_params or use defaults
+        waypoint_params = backend_params.get("waypoint_policy", {})
+        waypoint_policy = WaypointPolicy(
+            skip_unreachable=waypoint_params.get("allow_skip", True),
+            max_skip_count=waypoint_params.get("max_skip_count", 3),
+            emit_warnings=waypoint_params.get("emit_warnings", True),
+            fallback_direct=waypoint_params.get("fallback_direct", True),
+        )
+        
+        # Build pathfinding/collision policy from backend_params
+        pathfinding_params = backend_params.get("pathfinding_policy", {})
+        default_clearance = pathfinding_params.get("clearance", 0.0002)
+        
+        # Use collision_policy from unified API if provided
+        if collision_policy is not None:
+            prog_collision_policy = ProgramCollisionPolicy(
+                enabled=collision_policy.check_collisions,
+                min_clearance=collision_policy.collision_clearance,
+                inflate_by_radius=True,
+                check_after_each_step=True,
+            )
+        else:
+            prog_collision_policy = ProgramCollisionPolicy(
+                enabled=pathfinding_params.get("check_collisions", True),
+                min_clearance=default_clearance,
+                inflate_by_radius=True,
+                check_after_each_step=True,
+            )
+        
+        # Build radius policy from backend_params
+        radius_params = backend_params.get("radius_policy", {})
+        radius_policy = RadiusPolicy(
+            mode=radius_params.get("mode", "murray"),
+            murray_exponent=radius_params.get("murray_exponent", 3.0),
+            taper_factor=radius_params.get("taper_factor", 0.8),
+            min_radius=radius_params.get("min_radius", 0.0001),
+            max_radius=radius_params.get("max_radius", 0.005),
+        )
+        
+        # Build retry policy
+        retry_params = backend_params.get("retry_policy", {})
+        retry_policy = RetryPolicy(
+            max_retries=retry_params.get("max_retries", 3),
+            backoff_factor=retry_params.get("backoff_factor", 1.5),
+            retry_with_larger_clearance=retry_params.get("retry_with_larger_clearance", True),
+            clearance_increase_factor=retry_params.get("clearance_increase_factor", 1.2),
+        )
+        
+        # Get default radius from first inlet or use default
+        inlets = ports.get("inlets", [])
+        default_radius = 0.001
+        if inlets:
+            default_radius = inlets[0].get("radius", 0.001)
+        default_radius = backend_params.get("default_radius", default_radius)
+        
+        # Build steps from backend_params or generate default steps
+        steps_data = backend_params.get("steps", [])
+        if steps_data:
+            steps = [StepSpec.from_dict(s) for s in steps_data]
+        else:
+            # Generate default steps: inlet -> outlets
+            steps = []
+            if inlets:
+                inlet = inlets[0]
+                inlet_position = tuple(inlet.get("position", (0, 0, 0)))
+                inlet_radius = inlet.get("radius", default_radius)
+                
+                steps.append(
+                    StepSpec.add_node(
+                        "inlet",
+                        position=inlet_position,
+                        node_type="inlet",
+                        radius=inlet_radius,
+                    )
+                )
+                
+                # Add routes to outlets
+                outlets = ports.get("outlets", [])
+                for i, outlet in enumerate(outlets):
+                    outlet_pos = tuple(outlet.get("position", (0, 0, 0)))
+                    outlet_radius = outlet.get("radius", inlet_radius * 0.5)
+                    steps.append(
+                        StepSpec.route(
+                            "inlet",
+                            to=outlet_pos,
+                            algorithm=path_algorithm,
+                            radius=outlet_radius,
+                            clearance=default_clearance,
+                        )
+                    )
+        
+        # Build program policy
+        policy = ProgramPolicy(
+            mode=mode,
+            steps=steps,
+            path_algorithm=path_algorithm,
+            collision_policy=prog_collision_policy,
+            retry_policy=retry_policy,
+            waypoint_policy=waypoint_policy,
+            radius_policy=radius_policy,
+            default_radius=default_radius,
+            default_clearance=default_clearance,
+        )
+        
+        # Generate using the standard method
+        result, report = self.generate_from_program(domain, ports, policy)
+        
+        # Add effective_policy to report metadata
+        report.metadata["effective_policy"] = policy.to_dict()
+        report.metadata["backend_params_provided"] = backend_params
+        
+        return result, report
+    
     def _execute_step(
         self,
         index: int,

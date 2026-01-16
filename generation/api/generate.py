@@ -328,6 +328,14 @@ def _generate_programmatic(
     - Waypoint-based routing with skip-on-failure
     - Collision detection and resolution (reroute/shrink/terminate)
     - Obstacle inflation = clearance + local radius
+    
+    Backend Params (via GrowthPolicy.backend_params):
+    - mode: "network" | "mesh"
+    - path_algorithm: "astar_voxel" | "straight" | "bezier" | "hybrid"
+    - waypoint_policy: {allow_skip: bool, ...}
+    - pathfinding_policy: {voxel_pitch, clearance, max_nodes, timeout_s, ...}
+    - radius_policy: {...}
+    - steps: [{op: ..., ...}, ...]
     """
     from ..backends.programmatic_backend import (
         ProgrammaticBackend,
@@ -348,60 +356,76 @@ def _generate_programmatic(
     inlet_position = tuple(inlet.get("position", (0, 0, 0)))
     inlet_radius = inlet.get("radius", 0.001)
     
-    # Build collision policy from CollisionPolicy
-    prog_collision_policy = ProgramCollisionPolicy(
-        enabled=collision_policy.check_collisions,
-        min_clearance=collision_policy.collision_clearance,
-        inflate_by_radius=True,
-        check_after_each_step=True,
-    )
+    # Check if backend_params is provided in growth_policy
+    backend_params = growth_policy.backend_params or {}
     
-    # Build waypoint policy with skip-on-failure and warnings
-    waypoint_policy = WaypointPolicy(
-        skip_unreachable=True,
-        max_skip_count=3,
-        emit_warnings=True,
-        fallback_direct=True,
-    )
-    
-    # Build default steps: inlet -> outlets
-    steps = [
-        StepSpec.add_node(
-            "inlet",
-            position=inlet_position,
-            node_type="inlet",
-            radius=inlet_radius,
+    if backend_params:
+        # Use backend_params to configure the programmatic backend
+        # This enables unified API: generate_network(generator_kind="programmatic", 
+        #                                            growth_policy=GrowthPolicy(backend_params={...}))
+        network, report = backend.generate_from_backend_params(
+            domain=domain,
+            ports=ports,
+            backend_params=backend_params,
+            collision_policy=collision_policy,
+            seed=seed,
         )
-    ]
-    
-    # Add routes to outlets
-    outlets = ports.get("outlets", [])
-    for i, outlet in enumerate(outlets):
-        outlet_pos = tuple(outlet.get("position", (0, 0, 0)))
-        outlet_radius = outlet.get("radius", inlet_radius * 0.5)
-        steps.append(
-            StepSpec.route(
+    else:
+        # Build default configuration from collision_policy and ports
+        # Build collision policy from CollisionPolicy
+        prog_collision_policy = ProgramCollisionPolicy(
+            enabled=collision_policy.check_collisions,
+            min_clearance=collision_policy.collision_clearance,
+            inflate_by_radius=True,
+            check_after_each_step=True,
+        )
+        
+        # Build waypoint policy with skip-on-failure and warnings
+        waypoint_policy = WaypointPolicy(
+            skip_unreachable=True,
+            max_skip_count=3,
+            emit_warnings=True,
+            fallback_direct=True,
+        )
+        
+        # Build default steps: inlet -> outlets
+        steps = [
+            StepSpec.add_node(
                 "inlet",
-                to=outlet_pos,
-                algorithm="astar_voxel",
-                radius=outlet_radius,
-                clearance=collision_policy.collision_clearance,
+                position=inlet_position,
+                node_type="inlet",
+                radius=inlet_radius,
             )
+        ]
+        
+        # Add routes to outlets
+        outlets = ports.get("outlets", [])
+        for i, outlet in enumerate(outlets):
+            outlet_pos = tuple(outlet.get("position", (0, 0, 0)))
+            outlet_radius = outlet.get("radius", inlet_radius * 0.5)
+            steps.append(
+                StepSpec.route(
+                    "inlet",
+                    to=outlet_pos,
+                    algorithm="astar_voxel",
+                    radius=outlet_radius,
+                    clearance=collision_policy.collision_clearance,
+                )
+            )
+        
+        # Build program policy
+        policy = ProgramPolicy(
+            mode="network",
+            steps=steps,
+            path_algorithm="astar_voxel",
+            collision_policy=prog_collision_policy,
+            waypoint_policy=waypoint_policy,
+            default_radius=inlet_radius,
+            default_clearance=collision_policy.collision_clearance,
         )
-    
-    # Build program policy
-    policy = ProgramPolicy(
-        mode="network",
-        steps=steps,
-        path_algorithm="astar_voxel",
-        collision_policy=prog_collision_policy,
-        waypoint_policy=waypoint_policy,
-        default_radius=inlet_radius,
-        default_clearance=collision_policy.collision_clearance,
-    )
-    
-    # Generate network
-    network, report = backend.generate_from_program(domain, ports, policy)
+        
+        # Generate network
+        network, report = backend.generate_from_program(domain, ports, policy)
     
     # Count terminals using string node_type
     terminal_count = sum(1 for n in network.nodes.values() if n.node_type == "terminal")
