@@ -24,8 +24,33 @@ class DomainSpec(ABC):
 
     @abstractmethod
     def distance_to_boundary(self, point: Point3D) -> float:
-        """Compute distance from point to domain boundary."""
+        """Compute distance from point to domain boundary (unsigned)."""
         pass
+
+    def signed_distance(self, point: Point3D) -> float:
+        """
+        Compute signed distance from point to domain boundary.
+        
+        Returns negative values for points inside the domain,
+        zero on the boundary, and positive values outside.
+        
+        Default implementation uses contains() and distance_to_boundary().
+        Subclasses may override for more efficient implementations.
+        
+        Parameters
+        ----------
+        point : Point3D
+            Point to check
+            
+        Returns
+        -------
+        float
+            Signed distance (negative inside, positive outside)
+        """
+        dist = self.distance_to_boundary(point)
+        if self.contains(point):
+            return -dist
+        return dist
 
     @abstractmethod
     def sample_points(self, n_points: int, seed: Optional[int] = None) -> np.ndarray:
@@ -206,12 +231,29 @@ class BoxDomain(DomainSpec):
             self.z_min <= point.z <= self.z_max
         )
 
-    def project_inside(self, point: Point3D) -> Point3D:
-        """Project point to nearest point inside box."""
+    def project_inside(self, point: Point3D, margin: Optional[float] = None) -> Point3D:
+        """
+        Project point to nearest point inside box.
+        
+        Parameters
+        ----------
+        point : Point3D
+            Point to project
+        margin : float, optional
+            Margin from boundary. If None, uses 0.1% of smallest dimension.
+        """
         if self.contains(point):
             return point
 
-        margin = 0.001
+        if margin is None:
+            # Use 0.1% of smallest dimension instead of hardcoded 1mm
+            smallest_dim = min(
+                self.x_max - self.x_min,
+                self.y_max - self.y_min,
+                self.z_max - self.z_min,
+            )
+            margin = smallest_dim * 0.001
+        
         x = np.clip(point.x, self.x_min + margin, self.x_max - margin)
         y = np.clip(point.y, self.y_min + margin, self.y_max - margin)
         z = np.clip(point.z, self.z_min + margin, self.z_max - margin)
@@ -332,8 +374,17 @@ class CylinderDomain(DomainSpec):
 
         return r_xy <= self.radius and abs(dz) <= half_height
 
-    def project_inside(self, point: Point3D) -> Point3D:
-        """Project point to nearest point inside cylinder."""
+    def project_inside(self, point: Point3D, margin: Optional[float] = None) -> Point3D:
+        """
+        Project point to nearest point inside cylinder.
+        
+        Parameters
+        ----------
+        point : Point3D
+            Point to project
+        margin : float, optional
+            Margin from boundary. If None, uses 0.1% of smallest dimension.
+        """
         if self.contains(point):
             return point
 
@@ -344,7 +395,10 @@ class CylinderDomain(DomainSpec):
         r_xy = np.sqrt(dx**2 + dy**2)
         half_height = self.height / 2
 
-        margin = 0.001
+        if margin is None:
+            # Use 0.1% of smallest dimension instead of hardcoded 1mm
+            smallest_dim = min(self.radius, self.height)
+            margin = smallest_dim * 0.001
 
         if r_xy > self.radius:
             scale = (self.radius - margin) / r_xy
@@ -666,7 +720,36 @@ class MeshDomain(DomainSpec):
 
 
 def domain_from_dict(d: dict) -> DomainSpec:
-    """Create domain from dictionary based on type."""
+    """
+    Create domain from dictionary based on type.
+    
+    Supports all domain types:
+    - ellipsoid: EllipsoidDomain
+    - box: BoxDomain
+    - cylinder: CylinderDomain
+    - mesh: MeshDomain
+    - transform: TransformDomain (row-major 4x4 or rotation+translation)
+    - composite: CompositeDomain (union/intersect/diff)
+    - implicit: ImplicitDomain (JSON AST SDF)
+    - sphere: SphereDomain
+    - capsule: CapsuleDomain
+    - frustum: FrustumDomain
+    
+    Parameters
+    ----------
+    d : dict
+        Dictionary with "type" key and type-specific parameters.
+        
+    Returns
+    -------
+    DomainSpec
+        Compiled domain object.
+        
+    Raises
+    ------
+    ValueError
+        If domain type is not recognized.
+    """
     domain_type = d.get("type")
 
     if domain_type == "ellipsoid":
@@ -677,5 +760,23 @@ def domain_from_dict(d: dict) -> DomainSpec:
         return CylinderDomain.from_dict(d)
     elif domain_type == "mesh":
         return MeshDomain.from_dict(d)
+    elif domain_type == "transform":
+        from .domain_transform import TransformDomain
+        return TransformDomain.from_dict(d)
+    elif domain_type == "composite":
+        from .domain_composite import CompositeDomain
+        return CompositeDomain.from_dict(d)
+    elif domain_type == "implicit":
+        from .domain_implicit import ImplicitDomain
+        return ImplicitDomain.from_dict(d)
+    elif domain_type == "sphere":
+        from .domain_primitives import SphereDomain
+        return SphereDomain.from_dict(d)
+    elif domain_type == "capsule":
+        from .domain_primitives import CapsuleDomain
+        return CapsuleDomain.from_dict(d)
+    elif domain_type == "frustum":
+        from .domain_primitives import FrustumDomain
+        return FrustumDomain.from_dict(d)
     else:
         raise ValueError(f"Unknown domain type: {domain_type}")

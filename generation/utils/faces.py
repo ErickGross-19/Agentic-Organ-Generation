@@ -224,7 +224,10 @@ def face_center(face: Union[str, FaceId], domain: "DomainSpec") -> Tuple[float, 
     face : str or FaceId
         Face identifier
     domain : DomainSpec
-        Domain specification (BoxDomain, CylinderDomain, or EllipsoidDomain)
+        Domain specification. Supports:
+        - BoxDomain, CylinderDomain, EllipsoidDomain (primitive logic)
+        - TransformDomain, MeshDomain, SphereDomain, CapsuleDomain, FrustumDomain
+          (via domain.get_face_frame())
         
     Returns
     -------
@@ -234,7 +237,7 @@ def face_center(face: Union[str, FaceId], domain: "DomainSpec") -> Tuple[float, 
     Raises
     ------
     TypeError
-        If domain type is not supported
+        If domain type is not supported and doesn't provide get_face_frame()
         
     Examples
     --------
@@ -247,6 +250,17 @@ def face_center(face: Union[str, FaceId], domain: "DomainSpec") -> Tuple[float, 
     from ..core.domain import BoxDomain, CylinderDomain, EllipsoidDomain
     
     canonical = validate_face(face)
+    
+    # First, check if domain provides get_face_frame() method
+    if hasattr(domain, 'get_face_frame') and callable(getattr(domain, 'get_face_frame')):
+        try:
+            frame = domain.get_face_frame(canonical)
+            origin = frame.get("origin", frame.get("center"))
+            if origin is not None:
+                return tuple(origin)
+        except (NotImplementedError, ValueError, KeyError):
+            # Fall through to primitive logic
+            pass
     
     if isinstance(domain, CylinderDomain):
         cx, cy, cz = domain.center.x, domain.center.y, domain.center.z
@@ -314,6 +328,7 @@ def face_center(face: Union[str, FaceId], domain: "DomainSpec") -> Tuple[float, 
 def face_frame(
     face: Union[str, FaceId],
     domain: "DomainSpec",
+    emit_warnings: bool = True,
 ) -> Tuple[
     Tuple[float, float, float],  # origin
     Tuple[float, float, float],  # normal
@@ -332,7 +347,13 @@ def face_frame(
     face : str or FaceId
         Face identifier
     domain : DomainSpec
-        Domain specification
+        Domain specification. Supports:
+        - BoxDomain, CylinderDomain, EllipsoidDomain (primitive logic)
+        - TransformDomain, MeshDomain, SphereDomain, CapsuleDomain, FrustumDomain
+          (via domain.get_face_frame())
+    emit_warnings : bool
+        If True, emit warnings when using implicit faces (e.g., OBB fallback
+        for MeshDomain). Default True.
         
     Returns
     -------
@@ -353,7 +374,34 @@ def face_frame(
     >>> normal
     (0.0, 0.0, 1.0)
     """
+    import logging
+    import warnings
+    
     canonical = validate_face(face)
+    
+    # First, check if domain provides get_face_frame() method
+    if hasattr(domain, 'get_face_frame') and callable(getattr(domain, 'get_face_frame')):
+        try:
+            frame = domain.get_face_frame(canonical)
+            origin = tuple(frame["origin"])
+            normal_vec = tuple(frame["normal"])
+            u_vec = tuple(frame["u"])
+            v_vec = tuple(frame["v"])
+            
+            # Check if this is an implicit/fallback face (e.g., OBB for MeshDomain)
+            if emit_warnings and frame.get("implicit", False):
+                logger = logging.getLogger(__name__)
+                logger.warning(
+                    f"Using implicit face '{canonical}' for {type(domain).__name__}. "
+                    f"Consider defining explicit face planes for precise port placement."
+                )
+            
+            return (origin, normal_vec, u_vec, v_vec, origin)
+        except (NotImplementedError, ValueError, KeyError):
+            # Fall through to primitive logic
+            pass
+    
+    # Primitive logic for Box/Cylinder/Ellipsoid
     center = face_center(canonical, domain)
     normal = face_normal(canonical, domain)
     

@@ -1440,18 +1440,56 @@ class ProgrammaticBackend(GenerationBackend):
         radius: float,
     ) -> Optional[List[np.ndarray]]:
         """
-        Find path for a single segment using A*.
+        Find path for a single segment using hierarchical A*.
         
-        This is a simplified implementation. The full implementation
-        will be in generation/ops/pathfinding/astar_voxel.py.
+        Uses the hierarchical pathfinding implementation for nontrivial
+        obstacle avoidance. Falls back to direct path if collision-free.
         """
         # Check if direct path is collision-free
         if self._is_segment_collision_free(start, end, radius, clearance):
             return [start, end]
         
-        # Simple grid-based A* (placeholder for full implementation)
-        # For now, return None to indicate failure
-        # The full implementation will use voxel-based A*
+        # Use hierarchical pathfinding for nontrivial cases
+        from ..ops.pathfinding.hierarchical_astar import (
+            find_path_hierarchical,
+            HierarchicalPathfindingPolicy,
+        )
+        from aog_policies.pathfinding import HierarchicalPathfindingPolicy as PolicyClass
+        
+        # Build obstacles list from current network
+        obstacles = []
+        for obs in self._obstacles:
+            obstacles.append({
+                "start": np.array(obs["start"]),
+                "end": np.array(obs["end"]),
+                "radius": obs["radius"],
+            })
+        
+        # Create policy with appropriate settings
+        policy = PolicyClass(
+            clearance=clearance,
+            pitch_coarse=max(clearance * 2, 0.0001),  # At least 100µm
+            pitch_fine=max(clearance / 2, 0.000005),  # At least 5µm
+        )
+        
+        # Run hierarchical pathfinding
+        result = find_path_hierarchical(
+            domain=self._current_network.domain,
+            start=start,
+            goal=end,
+            local_radius=radius,
+            obstacles=obstacles,
+            network=self._current_network,
+            policy=policy,
+        )
+        
+        if result.success and result.path_pts:
+            return result.path_pts
+        
+        # Log warning if pathfinding failed
+        if result.errors:
+            logger.warning(f"Hierarchical pathfinding failed: {result.errors}")
+        
         return None
     
     def _find_path_bezier(

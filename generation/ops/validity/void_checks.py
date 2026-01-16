@@ -213,12 +213,13 @@ def check_void_inside_domain(
         
         for pt in points:
             point = Point3D.from_array(pt)
-            dist = domain.distance_to_boundary(point)
+            # Use signed_distance: negative inside, positive outside
+            dist = domain.signed_distance(point)
             
-            # Negative distance means outside
-            if dist < -tolerance:
+            # Positive distance means outside (with tolerance)
+            if dist > tolerance:
                 outside_count += 1
-                max_outside_distance = max(max_outside_distance, abs(dist))
+                max_outside_distance = max(max_outside_distance, dist)
         
         outside_ratio = outside_count / sample_count
         

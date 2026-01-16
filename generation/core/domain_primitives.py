@@ -57,8 +57,17 @@ class SphereDomain(DomainSpec):
         dz = point.z - self.center.z
         return dx*dx + dy*dy + dz*dz <= self.radius * self.radius
     
-    def project_inside(self, point: Point3D) -> Point3D:
-        """Project point to nearest point inside sphere."""
+    def project_inside(self, point: Point3D, margin: Optional[float] = None) -> Point3D:
+        """
+        Project point to nearest point inside sphere.
+        
+        Parameters
+        ----------
+        point : Point3D
+            Point to project
+        margin : float, optional
+            Margin from boundary. If None, uses 0.1% of radius.
+        """
         if self.contains(point):
             return point
         
@@ -70,7 +79,10 @@ class SphereDomain(DomainSpec):
         if r < 1e-10:
             return self.center
         
-        margin = 0.001
+        if margin is None:
+            # Use 0.1% of radius instead of hardcoded 1mm
+            margin = self.radius * 0.001
+        
         scale = (self.radius - margin) / r
         
         return Point3D(
@@ -231,8 +243,17 @@ class CapsuleDomain(DomainSpec):
         dist = self._distance_to_segment(point_arr)
         return dist <= self.radius
     
-    def project_inside(self, point: Point3D) -> Point3D:
-        """Project point to nearest point inside capsule."""
+    def project_inside(self, point: Point3D, margin: Optional[float] = None) -> Point3D:
+        """
+        Project point to nearest point inside capsule.
+        
+        Parameters
+        ----------
+        point : Point3D
+            Point to project
+        margin : float, optional
+            Margin from boundary. If None, uses 0.1% of radius.
+        """
         if self.contains(point):
             return point
         
@@ -263,7 +284,10 @@ class CapsuleDomain(DomainSpec):
         if dist < 1e-10:
             return Point3D(closest_on_axis[0], closest_on_axis[1], closest_on_axis[2])
         
-        margin = 0.001
+        if margin is None:
+            # Use 0.1% of radius instead of hardcoded 1mm
+            margin = self.radius * 0.001
+        
         direction = direction / dist
         inside_point = closest_on_axis + (self.radius - margin) * direction
         
@@ -462,8 +486,17 @@ class FrustumDomain(DomainSpec):
         
         return radial_dist <= radius_at_t
     
-    def project_inside(self, point: Point3D) -> Point3D:
-        """Project point to nearest point inside frustum."""
+    def project_inside(self, point: Point3D, margin: Optional[float] = None) -> Point3D:
+        """
+        Project point to nearest point inside frustum.
+        
+        Parameters
+        ----------
+        point : Point3D
+            Point to project
+        margin : float, optional
+            Margin from boundary. If None, uses 0.1% of smallest dimension.
+        """
         if self.contains(point):
             return point
         
@@ -476,7 +509,11 @@ class FrustumDomain(DomainSpec):
         v = point_arr - bottom
         t = np.dot(v, self.axis) / self.height
         
-        margin = 0.001
+        if margin is None:
+            # Use 0.1% of smallest dimension instead of hardcoded 1mm
+            smallest_dim = min(self.height, self.radius_top, self.radius_bottom)
+            margin = smallest_dim * 0.001
+        
         t = np.clip(t, margin / self.height, 1 - margin / self.height)
         
         radial = v - t * self.height * self.axis

@@ -34,6 +34,10 @@ from aog_policies import (
     # Validity policies (also available here for convenience)
     ValidationPolicy,
     RepairPolicy,
+    # Pathfinding policies
+    PathfindingPolicy,
+    WaypointPolicy,
+    HierarchicalPathfindingPolicy,
 )
 
 
@@ -53,4 +57,8 @@ __all__ = [
     "RepairPolicy",
     "OutputPolicy",
     "OperationReport",
+    # Pathfinding policies
+    "PathfindingPolicy",
+    "WaypointPolicy",
+    "HierarchicalPathfindingPolicy",
 ]

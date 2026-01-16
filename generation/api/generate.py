@@ -11,6 +11,8 @@ All geometric values are in METERS internally.
 
 from typing import Optional, Tuple, Dict, Any, Union, TYPE_CHECKING
 import logging
+import hashlib
+import json
 import numpy as np
 
 from ..policies import (
@@ -23,11 +25,153 @@ from ..specs.design_spec import DesignSpec, DomainSpec
 from ..specs.compile import compile_domain
 from ..core.network import VascularNetwork
 from ..core.types import Point3D
+from ..core.domain import DomainSpec as RuntimeDomainSpec, domain_from_dict
 
 if TYPE_CHECKING:
     import trimesh
 
 logger = logging.getLogger(__name__)
+
+
+def _coerce_domain(domain: Union[Dict[str, Any], DomainSpec, "RuntimeDomainSpec"]) -> "RuntimeDomainSpec":
+    """
+    Coerce domain input to a runtime Domain object.
+    
+    This helper supports three input types:
+    1. Dict domain spec (runner/JSON): {"type": "box", "x_min": ..., ...}
+    2. Runtime Domain objects (already compiled): BoxDomain, CylinderDomain, etc.
+    3. Legacy spec dataclasses: DomainSpec from specs.design_spec
+    
+    Parameters
+    ----------
+    domain : dict, DomainSpec, or RuntimeDomainSpec
+        Domain specification in any supported format
+        
+    Returns
+    -------
+    RuntimeDomainSpec
+        Compiled runtime domain object
+        
+    Raises
+    ------
+    ValueError
+        If domain type is not recognized
+    """
+    if isinstance(domain, dict):
+        return domain_from_dict(domain)
+    
+    if isinstance(domain, RuntimeDomainSpec):
+        return domain
+    
+    if hasattr(domain, 'type') and hasattr(domain, 'to_dict'):
+        return compile_domain(domain)
+    
+    raise ValueError(
+        f"Cannot coerce domain of type {type(domain).__name__}. "
+        "Expected dict, RuntimeDomainSpec, or legacy DomainSpec."
+    )
+
+
+def _compute_cache_key(obj: Any) -> str:
+    """
+    Compute a stable hash key for caching.
+    
+    Parameters
+    ----------
+    obj : Any
+        Object to hash (must be JSON-serializable or have to_dict method)
+        
+    Returns
+    -------
+    str
+        Hex digest of the object's hash
+    """
+    if hasattr(obj, 'to_dict'):
+        data = obj.to_dict()
+    elif isinstance(obj, dict):
+        data = obj
+    else:
+        data = str(obj)
+    
+    json_str = json.dumps(data, sort_keys=True, default=str)
+    return hashlib.sha256(json_str.encode()).hexdigest()[:16]
+
+
+class GenerationContext:
+    """
+    Context for caching expensive computations during generation.
+    
+    This class provides a cache contract for storing and retrieving
+    intermediate results keyed by stable hashes.
+    
+    Cached items include:
+    - compiled_domain: Compiled domain object
+    - domain_mesh: Domain mesh (for embedding)
+    - face_frames: MeshDomain PCA/OBB results
+    - effective_pitches: Derived pitches/tolerances per operation
+    - pathfinding_coarse: Coarse pathfinding solution + corridor info
+    - void_mesh: Unioned void mesh before embedding
+    """
+    
+    def __init__(self):
+        self._cache: Dict[str, Any] = {}
+        self._hits: int = 0
+        self._misses: int = 0
+    
+    def get(self, key: str, default: Any = None) -> Any:
+        """Get a cached value by key."""
+        if key in self._cache:
+            self._hits += 1
+            return self._cache[key]
+        self._misses += 1
+        return default
+    
+    def set(self, key: str, value: Any) -> None:
+        """Set a cached value by key."""
+        self._cache[key] = value
+    
+    def has(self, key: str) -> bool:
+        """Check if a key exists in the cache."""
+        return key in self._cache
+    
+    def get_or_compute(self, key: str, compute_fn: callable) -> Any:
+        """
+        Get a cached value or compute and cache it.
+        
+        Parameters
+        ----------
+        key : str
+            Cache key
+        compute_fn : callable
+            Function to compute the value if not cached
+            
+        Returns
+        -------
+        Any
+            Cached or computed value
+        """
+        if key in self._cache:
+            self._hits += 1
+            return self._cache[key]
+        
+        self._misses += 1
+        value = compute_fn()
+        self._cache[key] = value
+        return value
+    
+    def stats(self) -> Dict[str, int]:
+        """Get cache statistics."""
+        return {
+            "hits": self._hits,
+            "misses": self._misses,
+            "size": len(self._cache),
+        }
+    
+    def clear(self) -> None:
+        """Clear the cache."""
+        self._cache.clear()
+        self._hits = 0
+        self._misses = 0
 
 
 def generate_network(
@@ -77,11 +221,8 @@ def generate_network(
     if collision_policy is None:
         collision_policy = CollisionPolicy()
     
-    # Compile domain if needed
-    if hasattr(domain, 'type'):
-        compiled_domain = compile_domain(domain)
-    else:
-        compiled_domain = domain
+    # Coerce domain to runtime Domain object (supports dict, runtime, and legacy specs)
+    compiled_domain = _coerce_domain(domain)
     
     warnings = []
     metadata = {
@@ -535,9 +676,34 @@ def generate_void_mesh(
             channel_reports.append(channel_report)
             warnings.extend(channel_report.warnings)
         
-        # Merge all channel meshes
+        # Merge all channel meshes using voxel-first union for watertight result
         if channel_meshes:
-            mesh = trimesh.util.concatenate(channel_meshes)
+            if len(channel_meshes) == 1:
+                mesh = channel_meshes[0]
+            else:
+                # Use voxel-based merge for proper union (not just concatenation)
+                # This produces a single watertight void component
+                from ..ops.mesh.merge import merge_meshes
+                try:
+                    mesh = merge_meshes(
+                        channel_meshes,
+                        method="voxel",
+                        voxel_pitch=channel_policy.min_diameter / 4 if channel_policy else 5e-5,
+                    )
+                    if mesh is None or len(mesh.vertices) == 0:
+                        # Fallback to concatenation if merge fails
+                        mesh = trimesh.util.concatenate(channel_meshes)
+                        warnings.append(
+                            "Voxel merge failed, using concatenation. "
+                            "Result may have self-intersections."
+                        )
+                except Exception as e:
+                    # Fallback to concatenation if merge fails
+                    mesh = trimesh.util.concatenate(channel_meshes)
+                    warnings.append(
+                        f"Voxel merge failed ({e}), using concatenation. "
+                        "Result may have self-intersections."
+                    )
         else:
             mesh = trimesh.Trimesh()
         
@@ -581,7 +747,7 @@ def generate_void_mesh(
 
 def build_component(
     component_spec: Dict[str, Any],
-    ctx: Optional[Dict[str, Any]] = None,
+    ctx: Optional[Union[Dict[str, Any], GenerationContext]] = None,
 ) -> Tuple[Any, OperationReport]:
     """
     Build a component from a specification.
@@ -598,8 +764,15 @@ def build_component(
         - "domain": domain spec
         - "ports": port configuration
         - "policies": dict of policy overrides
-    ctx : dict, optional
-        Context with shared state
+    ctx : dict or GenerationContext, optional
+        Context for caching expensive computations. If a dict is provided,
+        it will be wrapped in a GenerationContext. Cached items include:
+        - compiled_domain: Compiled domain object
+        - domain_mesh: Domain mesh (for embedding)
+        - face_frames: MeshDomain PCA/OBB results
+        - effective_pitches: Derived pitches/tolerances per operation
+        - pathfinding_coarse: Coarse pathfinding solution + corridor info
+        - void_mesh: Unioned void mesh before embedding
         
     Returns
     -------
@@ -608,23 +781,40 @@ def build_component(
     report : OperationReport
         Report with metadata
     """
+    if ctx is None:
+        ctx = GenerationContext()
+    elif isinstance(ctx, dict):
+        gen_ctx = GenerationContext()
+        for k, v in ctx.items():
+            gen_ctx.set(k, v)
+        ctx = gen_ctx
+    
     component_type = component_spec.get("type", "network")
     generator = component_spec.get("generator", "space_colonization")
-    domain = component_spec.get("domain")
+    domain_spec = component_spec.get("domain")
     ports = component_spec.get("ports", {})
     policies = component_spec.get("policies", {})
+    
+    domain_cache_key = f"compiled_domain:{_compute_cache_key(domain_spec)}"
+    compiled_domain = ctx.get_or_compute(
+        domain_cache_key,
+        lambda: _coerce_domain(domain_spec)
+    )
     
     if component_type == "network":
         growth_policy = GrowthPolicy.from_dict(policies.get("growth", {}))
         collision_policy = CollisionPolicy.from_dict(policies.get("collision", {}))
         
-        return generate_network(
+        result, report = generate_network(
             generator_kind=generator,
-            domain=domain,
+            domain=compiled_domain,
             ports=ports,
             growth_policy=growth_policy,
             collision_policy=collision_policy,
         )
+        
+        report.metadata["cache_stats"] = ctx.stats()
+        return result, report
         
     elif component_type in ("mesh", "void"):
         from ..policies import ChannelPolicy, MeshSynthesisPolicy
@@ -633,14 +823,17 @@ def build_component(
         growth_policy = GrowthPolicy.from_dict(policies.get("growth", {}))
         synthesis_policy = MeshSynthesisPolicy.from_dict(policies.get("synthesis", {}))
         
-        return generate_void_mesh(
+        result, report = generate_void_mesh(
             kind=generator,
-            domain=domain,
+            domain=compiled_domain,
             ports=ports,
             channel_policy=channel_policy,
             growth_policy=growth_policy,
             synthesis_policy=synthesis_policy,
         )
+        
+        report.metadata["cache_stats"] = ctx.stats()
+        return result, report
         
     else:
         raise ValueError(f"Unknown component type: {component_type}")
@@ -650,4 +843,6 @@ __all__ = [
     "generate_network",
     "generate_void_mesh",
     "build_component",
+    "GenerationContext",
+    "_coerce_domain",
 ]

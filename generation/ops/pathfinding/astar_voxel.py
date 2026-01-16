@@ -26,81 +26,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class PathfindingPolicy:
-    """
-    Policy for A* pathfinding configuration.
-    
-    Controls voxel resolution, clearance requirements, search limits,
-    and path smoothing parameters.
-    
-    JSON Schema:
-    {
-        "voxel_pitch": float (meters),
-        "clearance": float (meters),
-        "max_nodes": int,
-        "timeout_s": float,
-        "turn_penalty": float,
-        "heuristic_weight": float,
-        "smoothing_enabled": bool,
-        "smoothing_iters": int,
-        "smoothing_strength": float,
-        "allow_partial": bool
-    }
-    """
-    voxel_pitch: float = 0.0005  # 0.5mm
-    clearance: float = 0.0002  # 0.2mm
-    max_nodes: int = 100000
-    timeout_s: float = 30.0
-    turn_penalty: float = 0.1
-    heuristic_weight: float = 1.0
-    smoothing_enabled: bool = True
-    smoothing_iters: int = 3
-    smoothing_strength: float = 0.5
-    allow_partial: bool = False
-    diagonal_movement: bool = True
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "voxel_pitch": self.voxel_pitch,
-            "clearance": self.clearance,
-            "max_nodes": self.max_nodes,
-            "timeout_s": self.timeout_s,
-            "turn_penalty": self.turn_penalty,
-            "heuristic_weight": self.heuristic_weight,
-            "smoothing_enabled": self.smoothing_enabled,
-            "smoothing_iters": self.smoothing_iters,
-            "smoothing_strength": self.smoothing_strength,
-            "allow_partial": self.allow_partial,
-            "diagonal_movement": self.diagonal_movement,
-        }
-    
-    @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "PathfindingPolicy":
-        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
-
-
-@dataclass
-class WaypointPolicy:
-    """
-    Policy for handling waypoints during pathfinding.
-    """
-    skip_unreachable: bool = True
-    max_skip_count: int = 3
-    emit_warnings: bool = True
-    fallback_direct: bool = True
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "skip_unreachable": self.skip_unreachable,
-            "max_skip_count": self.max_skip_count,
-            "emit_warnings": self.emit_warnings,
-            "fallback_direct": self.fallback_direct,
-        }
-    
-    @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "WaypointPolicy":
-        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
+from aog_policies.pathfinding import PathfindingPolicy, WaypointPolicy
 
 
 @dataclass
@@ -135,6 +61,7 @@ class VoxelObstacleMap:
     Voxelized obstacle map for collision checking during pathfinding.
     
     Supports both network-based obstacles (capsules) and mesh-based obstacles.
+    Uses lazy evaluation with caching to avoid O(N³) precomputation.
     """
     
     def __init__(
@@ -142,6 +69,8 @@ class VoxelObstacleMap:
         domain: DomainSpec,
         pitch: float,
         clearance: float = 0.0,
+        max_voxels: Optional[int] = None,
+        lazy_domain_check: bool = True,
     ):
         """
         Initialize the voxel obstacle map.
@@ -154,10 +83,16 @@ class VoxelObstacleMap:
             Voxel pitch (resolution) in meters
         clearance : float
             Additional clearance to add around obstacles
+        max_voxels : int, optional
+            Maximum voxel budget. If exceeded, pitch will be relaxed.
+        lazy_domain_check : bool
+            If True, use lazy evaluation for domain containment checks
+            instead of precomputing the full grid. Default True.
         """
         self.domain = domain
         self.pitch = pitch
         self.clearance = clearance
+        self.lazy_domain_check = lazy_domain_check
         
         # Get domain bounds
         bounds = domain.get_bounds()
@@ -175,15 +110,28 @@ class VoxelObstacleMap:
         ).astype(int)
         self.shape = np.maximum(self.shape, 1)
         
+        # Check voxel budget
+        total_voxels = int(np.prod(self.shape))
+        if max_voxels is not None and total_voxels > max_voxels:
+            logger.warning(
+                f"Voxel count {total_voxels:,} exceeds budget {max_voxels:,}. "
+                f"Consider using hierarchical pathfinding or relaxing pitch."
+            )
+        
         # Initialize obstacle grid (False = free, True = obstacle)
         self._grid = np.zeros(tuple(self.shape), dtype=bool)
         
-        # Track which voxels are outside the domain
-        self._outside_domain = np.zeros(tuple(self.shape), dtype=bool)
-        self._compute_domain_mask()
+        # Lazy domain containment: cache checked voxels
+        if lazy_domain_check:
+            self._outside_domain_cache: Dict[Tuple[int, int, int], bool] = {}
+            self._outside_domain = None  # Not precomputed
+        else:
+            self._outside_domain_cache = None
+            self._outside_domain = np.zeros(tuple(self.shape), dtype=bool)
+            self._compute_domain_mask()
     
     def _compute_domain_mask(self) -> None:
-        """Compute mask for voxels outside the domain."""
+        """Compute mask for voxels outside the domain (legacy full-grid method)."""
         for i in range(self.shape[0]):
             for j in range(self.shape[1]):
                 for k in range(self.shape[2]):
@@ -191,6 +139,22 @@ class VoxelObstacleMap:
                     point = Point3D(x=pos[0], y=pos[1], z=pos[2])
                     if not self.domain.contains(point):
                         self._outside_domain[i, j, k] = True
+    
+    def _is_outside_domain(self, voxel: Tuple[int, int, int]) -> bool:
+        """Check if voxel is outside domain (lazy evaluation with caching)."""
+        if self._outside_domain is not None:
+            # Using precomputed grid
+            return self._outside_domain[voxel]
+        
+        # Lazy evaluation with cache
+        if voxel in self._outside_domain_cache:
+            return self._outside_domain_cache[voxel]
+        
+        pos = self.voxel_to_world(voxel)
+        point = Point3D(x=pos[0], y=pos[1], z=pos[2])
+        is_outside = not self.domain.contains(point)
+        self._outside_domain_cache[voxel] = is_outside
+        return is_outside
     
     def world_to_voxel(self, pos: np.ndarray) -> Tuple[int, int, int]:
         """Convert world position to voxel indices."""
@@ -210,7 +174,7 @@ class VoxelObstacleMap:
         """Check if a voxel is free (not obstacle and inside domain)."""
         if not self.is_valid_voxel(voxel):
             return False
-        return not self._grid[voxel] and not self._outside_domain[voxel]
+        return not self._grid[voxel] and not self._is_outside_domain(voxel)
     
     def add_network_obstacles(
         self,

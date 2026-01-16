@@ -31,13 +31,13 @@ class ValidationPolicy:
         "max_components": int
     }
     
-    Note: check_open_ports is currently not implemented and will be
-    ignored with a warning if enabled.
+    When check_open_ports is enabled, use OpenPortPolicy to configure
+    the open-port validation behavior.
     """
     check_watertight: bool = True
     check_components: bool = True
     check_min_diameter: bool = True
-    check_open_ports: bool = False  # Not yet implemented
+    check_open_ports: bool = False
     check_bounds: bool = True
     min_diameter_threshold: float = 0.0005  # 0.5mm
     max_components: int = 1
@@ -94,7 +94,57 @@ class RepairPolicy:
         return RepairPolicy(**{k: v for k, v in d.items() if k in RepairPolicy.__dataclass_fields__})
 
 
+@dataclass
+class OpenPortPolicy:
+    """
+    Policy for open-port validation.
+    
+    Controls how ports are checked for connectivity to the outside.
+    Uses port-axis ROI voxel patches with strict budgeting for performance.
+    
+    JSON Schema:
+    {
+        "enabled": bool,
+        "probe_radius_factor": float,
+        "probe_length": float (meters),
+        "min_connected_volume_voxels": int,
+        "mode": str,
+        "validation_pitch": float or null (meters),
+        "local_region_size": float (meters),
+        "max_voxels_roi": int,
+        "auto_relax_pitch": bool
+    }
+    """
+    enabled: bool = True
+    probe_radius_factor: float = 1.2
+    probe_length: float = 0.002  # 2mm probe length
+    min_connected_volume_voxels: int = 10
+    mode: str = "voxel_connectivity"
+    validation_pitch: Optional[float] = None
+    local_region_size: float = 0.005  # 5mm local region around port
+    max_voxels_roi: int = 1_000_000  # 1M voxels max per port ROI
+    auto_relax_pitch: bool = True  # Relax pitch if ROI exceeds budget
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "probe_radius_factor": self.probe_radius_factor,
+            "probe_length": self.probe_length,
+            "min_connected_volume_voxels": self.min_connected_volume_voxels,
+            "mode": self.mode,
+            "validation_pitch": self.validation_pitch,
+            "local_region_size": self.local_region_size,
+            "max_voxels_roi": self.max_voxels_roi,
+            "auto_relax_pitch": self.auto_relax_pitch,
+        }
+    
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "OpenPortPolicy":
+        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
+
+
 __all__ = [
     "ValidationPolicy",
     "RepairPolicy",
+    "OpenPortPolicy",
 ]
