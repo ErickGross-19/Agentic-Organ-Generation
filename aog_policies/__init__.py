@@ -60,6 +60,17 @@ from .domain import (
     DomainMeshingPolicy,
 )
 
+from .collision import (
+    UnifiedCollisionPolicy,
+    RadiusPolicy,
+    RetryPolicy,
+)
+
+from .features import (
+    RidgePolicy,
+    PortPreservationPolicy,
+)
+
 __all__ = [
     # Base
     "OperationReport",
@@ -96,4 +107,11 @@ __all__ = [
     "MeshDomainPolicy",
     "ImplicitMeshingPolicy",
     "DomainMeshingPolicy",
+    # Collision policies
+    "UnifiedCollisionPolicy",
+    "RadiusPolicy",
+    "RetryPolicy",
+    # Feature policies
+    "RidgePolicy",
+    "PortPreservationPolicy",
 ]

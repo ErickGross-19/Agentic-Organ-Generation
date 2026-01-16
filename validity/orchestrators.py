@@ -24,6 +24,8 @@ from .post_embedding.printability_checks import (
     ManufacturingConfig,
 )
 from .post_embedding.domain_checks import run_all_domain_checks, DomainCheckReport
+from .checks.open_ports import check_open_ports, OpenPortValidationResult
+from aog_policies.validity import OpenPortPolicy, ValidationPolicy
 
 
 @dataclass
@@ -60,6 +62,8 @@ class ValidationConfig:
         Expected number of outlet openings
     manufacturing : ManufacturingConfig
         Manufacturing constraints for printability checks
+    open_port_policy : OpenPortPolicy
+        Policy for open-port validation checks
     """
     voxel_pitch_m: float = 0.0001  # 0.1mm in meters
     murray_gamma: float = 3.0
@@ -73,6 +77,7 @@ class ValidationConfig:
     max_trapped_fraction: float = 0.05
     expected_outlets: int = 2
     manufacturing: ManufacturingConfig = field(default_factory=ManufacturingConfig)
+    open_port_policy: OpenPortPolicy = field(default_factory=OpenPortPolicy)
 
 
 @dataclass
@@ -257,6 +262,8 @@ def run_post_embedding_validation(
     mesh: Optional[trimesh.Trimesh] = None,
     config: Optional[ValidationConfig] = None,
     manufacturing_config: Optional[Union[ManufacturingConfig, Dict[str, Any]]] = None,
+    ports: Optional[List[Dict[str, Any]]] = None,
+    original_domain_mesh: Optional[trimesh.Trimesh] = None,
 ) -> ValidationReport:
     """
     Run all post-embedding validation checks.
@@ -277,6 +284,16 @@ def run_post_embedding_validation(
         Manufacturing constraints. Can be a ManufacturingConfig object
         or a dict with keys like 'min_channel_diameter', 'min_wall_thickness',
         'plate_size', etc.
+    ports : list of dict, optional
+        Port specifications for open-port validation. Each dict should have:
+        - position: (x, y, z) tuple
+        - direction: (dx, dy, dz) tuple (outward direction)
+        - radius: float
+        - type: "inlet" or "outlet" (optional)
+        - id: str (optional)
+    original_domain_mesh : trimesh.Trimesh, optional
+        Original domain mesh (before void embedding) for open-port validation.
+        Required if ports are provided and open-port validation is enabled.
         
     Returns
     -------
@@ -340,8 +357,26 @@ def run_post_embedding_validation(
         pitch=config.voxel_pitch_m,
     )
     
-    # Aggregate results
-    all_passed = all(r.passed for r in reports.values())
+    # Run open-port validation if ports and original domain mesh are provided
+    open_port_result = None
+    if ports and original_domain_mesh and config.open_port_policy.enabled:
+        open_port_result = check_open_ports(
+            ports=ports,
+            domain_with_void_mesh=mesh,
+            original_domain_mesh=original_domain_mesh,
+            policy=config.open_port_policy,
+        )
+        reports["open_ports"] = open_port_result
+    
+    # Aggregate results - handle both CheckReport objects and OpenPortValidationResult
+    def get_passed(r):
+        if hasattr(r, 'passed'):
+            return r.passed
+        if hasattr(r, 'success'):
+            return r.success
+        return True
+    
+    all_passed = all(get_passed(r) for r in reports.values())
     has_warnings = any(
         any(len(c.warnings) > 0 for c in r.checks)
         for r in reports.values()

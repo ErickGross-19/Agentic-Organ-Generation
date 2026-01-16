@@ -31,6 +31,8 @@ from ..core.network import VascularNetwork, Node, VesselSegment
 from ..core.domain import DomainSpec
 from ..core.types import Point3D, TubeGeometry
 from ..core.result import OperationResult, OperationStatus, Delta
+from aog_policies.pathfinding import WaypointPolicy
+from aog_policies.collision import RadiusPolicy, RetryPolicy, UnifiedCollisionPolicy
 
 if TYPE_CHECKING:
     import trimesh
@@ -64,109 +66,7 @@ class CollisionStrategy(str, Enum):
     VOXEL_MERGE_FALLBACK = "voxel_merge_fallback"
 
 
-@dataclass
-class WaypointPolicy:
-    """
-    Policy for handling waypoints during routing.
-    
-    Controls how waypoints are processed and what happens when
-    a waypoint is unreachable.
-    """
-    skip_unreachable: bool = True
-    max_skip_count: int = 3
-    emit_warnings: bool = True
-    fallback_direct: bool = True
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "skip_unreachable": self.skip_unreachable,
-            "max_skip_count": self.max_skip_count,
-            "emit_warnings": self.emit_warnings,
-            "fallback_direct": self.fallback_direct,
-        }
-    
-    @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "WaypointPolicy":
-        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
-
-
-@dataclass
-class RadiusPolicy:
-    """
-    Policy for radius handling during generation.
-    
-    Controls how radii are computed at bifurcations and along paths.
-    """
-    mode: Literal["constant", "taper", "murray"] = "murray"
-    murray_exponent: float = 3.0
-    taper_factor: float = 0.8
-    min_radius: float = 0.0001  # 0.1mm
-    max_radius: float = 0.005  # 5mm
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "mode": self.mode,
-            "murray_exponent": self.murray_exponent,
-            "taper_factor": self.taper_factor,
-            "min_radius": self.min_radius,
-            "max_radius": self.max_radius,
-        }
-    
-    @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "RadiusPolicy":
-        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
-
-
-@dataclass
-class RetryPolicy:
-    """
-    Policy for retrying failed operations.
-    """
-    max_retries: int = 3
-    backoff_factor: float = 1.5
-    retry_with_larger_clearance: bool = True
-    clearance_increase_factor: float = 1.2
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "max_retries": self.max_retries,
-            "backoff_factor": self.backoff_factor,
-            "retry_with_larger_clearance": self.retry_with_larger_clearance,
-            "clearance_increase_factor": self.clearance_increase_factor,
-        }
-    
-    @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "RetryPolicy":
-        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
-
-
-@dataclass
-class ProgramCollisionPolicy:
-    """
-    Policy for collision detection and resolution during programmatic generation.
-    """
-    enabled: bool = True
-    min_clearance: float = 0.0002  # 0.2mm
-    strategy_order: List[str] = field(
-        default_factory=lambda: ["reroute", "shrink", "terminate"]
-    )
-    min_radius: float = 0.0001  # Floor for shrink strategy
-    inflate_by_radius: bool = True
-    check_after_each_step: bool = True
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "enabled": self.enabled,
-            "min_clearance": self.min_clearance,
-            "strategy_order": self.strategy_order,
-            "min_radius": self.min_radius,
-            "inflate_by_radius": self.inflate_by_radius,
-            "check_after_each_step": self.check_after_each_step,
-        }
-    
-    @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "ProgramCollisionPolicy":
-        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
+ProgramCollisionPolicy = UnifiedCollisionPolicy
 
 
 @dataclass
