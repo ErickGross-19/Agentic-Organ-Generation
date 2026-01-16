@@ -115,6 +115,9 @@ class HierarchicalPathfindingPolicy:
     This extends PathfindingPolicy with parameters for two-stage pathfinding
     that enables fine-pitch routing in large domains.
     
+    C1 FIX: This is the mandatory pathfinding policy for all A* requests.
+    C2 FIX: Supports resolution resolver integration for coarse-stage budgeting.
+    
     JSON Schema:
     {
         "pitch_coarse": float (meters),
@@ -136,7 +139,8 @@ class HierarchicalPathfindingPolicy:
         "allow_partial": bool,
         "diagonal_movement": bool,
         "allow_skip_waypoints": bool,
-        "max_skip_count": int
+        "max_skip_count": int,
+        "use_resolution_policy": bool
     }
     """
     pitch_coarse: float = 0.0001  # 100um coarse pitch
@@ -159,6 +163,7 @@ class HierarchicalPathfindingPolicy:
     diagonal_movement: bool = True
     allow_skip_waypoints: bool = True
     max_skip_count: int = 3
+    use_resolution_policy: bool = False  # C2 FIX: Enable resolution resolver integration
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -182,6 +187,7 @@ class HierarchicalPathfindingPolicy:
             "diagonal_movement": self.diagonal_movement,
             "allow_skip_waypoints": self.allow_skip_waypoints,
             "max_skip_count": self.max_skip_count,
+            "use_resolution_policy": self.use_resolution_policy,
         }
     
     @classmethod
