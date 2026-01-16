@@ -13,6 +13,16 @@ from .astar_voxel import (
     find_path_through_waypoints,
     PathfindingPolicy,
     PathfindingResult,
+    WaypointPolicy,
+    VoxelObstacleMap,
+)
+
+# Hierarchical pathfinding for scale-aware routing
+from .hierarchical_astar import (
+    find_path_hierarchical,
+    HierarchicalPathfindingPolicy,
+    HierarchicalPathfindingResult,
+    CorridorVoxelMap,
 )
 
 # Legacy API (from pathfinding_legacy.py)
@@ -27,6 +37,13 @@ __all__ = [
     "find_path_through_waypoints",
     "PathfindingPolicy",
     "PathfindingResult",
+    "WaypointPolicy",
+    "VoxelObstacleMap",
+    # Hierarchical pathfinding
+    "find_path_hierarchical",
+    "HierarchicalPathfindingPolicy",
+    "HierarchicalPathfindingResult",
+    "CorridorVoxelMap",
     # Legacy API
     "CostWeights",
     "grow_toward_targets",

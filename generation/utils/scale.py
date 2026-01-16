@@ -12,7 +12,7 @@ UNIT CONVENTIONS
 All geometric values are in METERS internally.
 """
 
-from typing import Union, Tuple, Optional, TYPE_CHECKING
+from typing import Tuple, Optional, TYPE_CHECKING
 import numpy as np
 
 if TYPE_CHECKING:
@@ -346,6 +346,136 @@ def _get_bounding_box(domain) -> Optional[np.ndarray]:
     return None
 
 
+def compute_effective_pitch(
+    domain,
+    requested_pitch: Optional[float],
+    max_voxels: int,
+    pitch_step_factor: float = 1.5,
+    max_pitch_steps: int = 4,
+    resolution_policy: Optional["ResolutionPolicy"] = None,
+    operation: str = "embed",
+) -> Tuple[float, bool, str]:
+    """
+    Compute effective voxel pitch with budget-aware relaxation.
+    
+    This function implements resolution-aware pitch selection for embed/merge/repair
+    operations. If the requested pitch would exceed the voxel budget, it automatically
+    relaxes the pitch with a warning.
+    
+    Parameters
+    ----------
+    domain : Domain
+        A domain object with a bounding_box property or method.
+    requested_pitch : float or None
+        Requested voxel pitch in meters. If None, uses resolution_policy pitch.
+    max_voxels : int
+        Maximum number of voxels allowed.
+    pitch_step_factor : float
+        Factor to multiply pitch by when relaxing. Default 1.5.
+    max_pitch_steps : int
+        Maximum number of relaxation steps. Default 4.
+    resolution_policy : ResolutionPolicy, optional
+        If provided and requested_pitch is None, uses the policy's pitch for the operation.
+    operation : str
+        Operation type: "embed", "merge", or "repair". Used to select the appropriate
+        pitch from ResolutionPolicy. Default "embed".
+    
+    Returns
+    -------
+    Tuple[float, bool, str]
+        (effective_pitch, was_relaxed, warning_message)
+        - effective_pitch: The pitch to use (may be larger than requested)
+        - was_relaxed: True if pitch was increased to fit budget
+        - warning_message: Warning message if pitch was relaxed, empty string otherwise
+    
+    Examples
+    --------
+    >>> from generation.core.domain import CylinderDomain
+    >>> domain = CylinderDomain(radius=0.025, height=0.05)  # 50mm domain
+    >>> pitch, relaxed, warning = compute_effective_pitch(
+    ...     domain, requested_pitch=2.5e-6, max_voxels=100_000_000
+    ... )
+    >>> # If 2.5µm pitch would exceed budget, pitch is relaxed
+    >>> relaxed
+    True
+    >>> "relaxed" in warning
+    True
+    """
+    base_pitch = requested_pitch
+    
+    if base_pitch is None:
+        if resolution_policy is not None:
+            if operation == "embed":
+                base_pitch = resolution_policy.embed_pitch
+            elif operation == "merge":
+                base_pitch = resolution_policy.merge_pitch
+            elif operation == "repair":
+                base_pitch = resolution_policy.repair_pitch
+            else:
+                base_pitch = resolution_policy.target_pitch
+        else:
+            base_pitch = 1e-4
+    
+    extents = domain_extents(domain)
+    
+    pitch = base_pitch
+    was_relaxed = False
+    warning = ""
+    
+    for step in range(max_pitch_steps + 1):
+        voxels_per_axis = [int(np.ceil(e / pitch)) for e in extents]
+        total_voxels = voxels_per_axis[0] * voxels_per_axis[1] * voxels_per_axis[2]
+        
+        if total_voxels <= max_voxels:
+            break
+        
+        if step == max_pitch_steps:
+            warning = (
+                f"Pitch relaxation hit max_pitch_steps limit ({max_pitch_steps}). "
+                f"Estimated voxels {total_voxels:,} exceeds budget {max_voxels:,}. "
+                f"Final pitch: {pitch:.2e} m."
+            )
+            break
+        
+        new_pitch = pitch * pitch_step_factor
+        
+        if not was_relaxed:
+            warning = (
+                f"Pitch relaxed from {base_pitch:.2e} m to {new_pitch:.2e} m "
+                f"to fit voxel budget {max_voxels:,}. "
+                f"Min diameter resolution may be reduced."
+            )
+        
+        pitch = new_pitch
+        was_relaxed = True
+    
+    return pitch, was_relaxed, warning
+
+
+def estimate_voxel_count(
+    domain,
+    pitch: float,
+) -> int:
+    """
+    Estimate the number of voxels needed to voxelize a domain at a given pitch.
+    
+    Parameters
+    ----------
+    domain : Domain
+        A domain object with a bounding_box property or method.
+    pitch : float
+        Voxel pitch in meters.
+    
+    Returns
+    -------
+    int
+        Estimated number of voxels.
+    """
+    extents = domain_extents(domain)
+    voxels_per_axis = [int(np.ceil(e / pitch)) for e in extents]
+    return voxels_per_axis[0] * voxels_per_axis[1] * voxels_per_axis[2]
+
+
 __all__ = [
     "domain_scale",
     "domain_extents",
@@ -355,4 +485,6 @@ __all__ = [
     "snap_tolerance",
     "prune_tolerance",
     "boundary_mask_tolerance",
+    "compute_effective_pitch",
+    "estimate_voxel_count",
 ]

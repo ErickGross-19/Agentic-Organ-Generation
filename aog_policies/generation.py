@@ -10,7 +10,7 @@ All geometric values are in METERS internally.
 """
 
 from dataclasses import dataclass, field, asdict
-from typing import Optional, Dict, Any, List, Literal, Union
+from typing import Optional, Dict, Any, List, Literal
 from .base import alias_fields
 
 
@@ -24,10 +24,10 @@ PORT_PLACEMENT_ALIASES = {
 class PortPlacementPolicy:
     """
     Policy for port placement on domain surfaces.
-    
+
     Controls how inlet/outlet ports are positioned on domain faces,
     accounting for ridge geometry and clearance requirements.
-    
+
     JSON Schema:
     {
         "enabled": bool,
@@ -43,7 +43,7 @@ class PortPlacementPolicy:
         "placement_fraction": float (0-1),
         "angular_offset": float (radians)
     }
-    
+
     Effective radius convention:
         ridge_inner_radius = R - ridge_width - ridge_clearance
         effective_radius = ridge_inner_radius - port_margin
@@ -60,10 +60,10 @@ class PortPlacementPolicy:
     ridge_constraint_enabled: bool = True
     placement_fraction: float = 0.7
     angular_offset: float = 0.0
-    
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
-    
+
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "PortPlacementPolicy":
         # Apply aliases for backward compatibility
@@ -75,10 +75,10 @@ class PortPlacementPolicy:
 class ChannelPolicy:
     """
     Policy for channel primitive creation.
-    
+
     Controls the geometry of individual channel segments including
     tapering and curved hook shapes.
-    
+
     JSON Schema:
     {
         "enabled": bool,
@@ -125,22 +125,22 @@ class ChannelPolicy:
     path_samples: int = 32
     enforce_effective_radius: bool = True
     constraint_strategy: Literal["reduce_depth", "rotate", "both"] = "reduce_depth"
-    
+
     # Legacy field alias
     channel_type: Optional[str] = None  # Maps to profile
-    
+
     def __post_init__(self):
         # Handle legacy channel_type field
         if self.channel_type is not None and self.profile == "cylinder":
             type_map = {"straight": "cylinder", "tapered": "taper", "fang_hook": "fang_hook"}
             self.profile = type_map.get(self.channel_type, self.profile)
-    
+
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         # Remove legacy field from output
         d.pop("channel_type", None)
         return d
-    
+
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "ChannelPolicy":
         return ChannelPolicy(**{k: v for k, v in d.items() if k in ChannelPolicy.__dataclass_fields__})
@@ -150,10 +150,10 @@ class ChannelPolicy:
 class TissueSamplingPolicy:
     """
     Policy for tissue/attractor point sampling in space colonization.
-    
+
     Controls how tissue points are distributed within the domain for
     guiding vascular network growth.
-    
+
     JSON Schema:
     {
         "enabled": bool,
@@ -188,7 +188,7 @@ class TissueSamplingPolicy:
     n_points: int = 1000
     seed: Optional[int] = None
     strategy: Literal["uniform", "depth_biased", "radial_biased", "boundary_shell", "gaussian", "mixture"] = "uniform"
-    
+
     # Depth-biased parameters
     depth_reference: Dict[str, Any] = field(default_factory=lambda: {"mode": "face", "face": "top"})
     depth_distribution: Literal["linear", "power", "exponential", "beta"] = "power"
@@ -198,34 +198,36 @@ class TissueSamplingPolicy:
     depth_lambda: float = 1.0  # For exponential distribution
     depth_alpha: float = 2.0  # For beta distribution
     depth_beta: float = 5.0  # For beta distribution
-    
+
     # Radial-biased parameters
-    radial_reference: Dict[str, Any] = field(default_factory=lambda: {"mode": "face", "face": "top", "center": "face_center"})
+    radial_reference: Dict[str, Any] = field(
+        default_factory=lambda: {"mode": "face", "face": "top", "center": "face_center"}
+    )
     radial_distribution: Literal["center_heavy", "edge_heavy", "ring"] = "center_heavy"
     r_min: float = 0.0
     r_max: Optional[float] = None  # None = domain radius
     radial_power: float = 2.0
     ring_r0: float = 0.0  # Ring center radius
     ring_sigma: float = 0.001  # Ring width (1mm)
-    
+
     # Boundary shell parameters
     shell_thickness: float = 0.002  # 2mm
     shell_mode: Literal["near_boundary", "near_center"] = "near_boundary"
-    
+
     # Gaussian parameters
     gaussian_mean: List[float] = field(default_factory=lambda: [0.0, 0.0, 0.0])
     gaussian_sigma: List[float] = field(default_factory=lambda: [0.001, 0.001, 0.001])
-    
+
     # Mixture parameters
     mixture_components: List[Dict[str, Any]] = field(default_factory=list)
-    
+
     # Exclusions
     min_distance_to_ports: float = 0.0005  # 0.5mm
     exclude_spheres: List[Dict[str, Any]] = field(default_factory=list)
-    
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
-    
+
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "TissueSamplingPolicy":
         return TissueSamplingPolicy(**{k: v for k, v in d.items() if k in TissueSamplingPolicy.__dataclass_fields__})
@@ -235,10 +237,10 @@ class TissueSamplingPolicy:
 class GrowthPolicy:
     """
     Policy for network growth/generation.
-    
+
     Controls the generation backend and its parameters for growing
     vascular networks.
-    
+
     JSON Schema:
     {
         "enabled": bool,
@@ -252,7 +254,7 @@ class GrowthPolicy:
         "step_size": float (meters),
         "backend_params": dict (JSON-serializable backend-specific configuration)
     }
-    
+
     backend_params Structure (for programmatic backend):
     {
         "mode": "network" | "mesh",
@@ -273,10 +275,10 @@ class GrowthPolicy:
     max_segment_length: float = 0.002  # 2mm
     step_size: float = 0.0003  # 0.3mm
     backend_params: Dict[str, Any] = field(default_factory=dict)
-    
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
-    
+
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "GrowthPolicy":
         return GrowthPolicy(**{k: v for k, v in d.items() if k in GrowthPolicy.__dataclass_fields__})
@@ -286,7 +288,7 @@ class GrowthPolicy:
 class CollisionPolicy:
     """
     Policy for collision detection during generation.
-    
+
     JSON Schema:
     {
         "enabled": bool,
@@ -297,10 +299,10 @@ class CollisionPolicy:
     enabled: bool = True
     check_collisions: bool = True
     collision_clearance: float = 0.0002  # 0.2mm
-    
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
-    
+
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "CollisionPolicy":
         return CollisionPolicy(**{k: v for k, v in d.items() if k in CollisionPolicy.__dataclass_fields__})
@@ -310,9 +312,9 @@ class CollisionPolicy:
 class NetworkCleanupPolicy:
     """
     Policy for network cleanup operations.
-    
+
     Controls node snapping, duplicate merging, and segment pruning.
-    
+
     JSON Schema:
     {
         "enable_snap": bool,
@@ -329,10 +331,10 @@ class NetworkCleanupPolicy:
     min_segment_length: float = 0.0001  # 0.1mm
     enable_merge: bool = True
     merge_tol: float = 0.0001  # 0.1mm
-    
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
-    
+
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "NetworkCleanupPolicy":
         return NetworkCleanupPolicy(**{k: v for k, v in d.items() if k in NetworkCleanupPolicy.__dataclass_fields__})
@@ -342,11 +344,12 @@ class NetworkCleanupPolicy:
 class MeshSynthesisPolicy:
     """
     Policy for mesh synthesis from networks.
-    
+
     PATCH 5: Added voxel repair pitch fields for policy-driven repair.
-    
+    PATCH 7: Added resolution-aware pitch selection with budget-aware relaxation.
+
     Controls how vascular networks are converted to triangle meshes.
-    
+
     JSON Schema:
     {
         "add_node_spheres": bool,
@@ -354,14 +357,22 @@ class MeshSynthesisPolicy:
         "radius_clamp_min": float (meters),
         "radius_clamp_max": float (meters),
         "voxel_repair_synthesis": bool,
-        "voxel_repair_pitch": float (meters),
+        "voxel_repair_pitch": float (meters) | null,
         "voxel_repair_auto_adjust": bool,
         "voxel_repair_max_steps": int,
         "voxel_repair_step_factor": float,
+        "voxel_repair_max_voxels": int,
         "segments_per_circle": int,
         "mutate_network_in_place": bool,
-        "radius_clamp_mode": "copy" | "mutate"
+        "radius_clamp_mode": "copy" | "mutate",
+        "use_resolution_policy": bool
     }
+
+    Resolution-aware pitch selection:
+    - If voxel_repair_pitch is None and use_resolution_policy is True, pitch is derived
+      from ResolutionPolicy.repair_pitch
+    - If voxel_repair_max_voxels would be exceeded, pitch is automatically relaxed with warning
+    - effective_pitch is recorded in the operation report
     """
     add_node_spheres: bool = True
     cap_ends: bool = True
@@ -369,17 +380,20 @@ class MeshSynthesisPolicy:
     radius_clamp_max: Optional[float] = None
     voxel_repair_synthesis: bool = False
     # PATCH 5: New voxel repair policy fields
-    voxel_repair_pitch: float = 1e-4  # 0.1mm default
+    # PATCH 7: Made pitch optional for resolution-aware selection
+    voxel_repair_pitch: Optional[float] = 1e-4  # 0.1mm default, None = use resolution policy
     voxel_repair_auto_adjust: bool = True
     voxel_repair_max_steps: int = 4
     voxel_repair_step_factor: float = 1.5
+    voxel_repair_max_voxels: int = 100_000_000  # 100M voxels budget
     segments_per_circle: int = 16
     mutate_network_in_place: bool = False
     radius_clamp_mode: Literal["copy", "mutate"] = "copy"
-    
+    use_resolution_policy: bool = False
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
-    
+
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "MeshSynthesisPolicy":
         return MeshSynthesisPolicy(**{k: v for k, v in d.items() if k in MeshSynthesisPolicy.__dataclass_fields__})
@@ -389,13 +403,15 @@ class MeshSynthesisPolicy:
 class MeshMergePolicy:
     """
     Policy for mesh merging operations.
-    
+
+    PATCH 7: Added resolution-aware pitch selection with budget-aware relaxation.
+
     Controls how multiple meshes are combined, with voxel-first strategy.
-    
+
     JSON Schema:
     {
         "mode": "auto" | "voxel" | "boolean",
-        "voxel_pitch": float (meters),
+        "voxel_pitch": float (meters) | null,
         "auto_adjust_pitch": bool,
         "max_pitch_steps": int,
         "pitch_step_factor": float,
@@ -404,11 +420,18 @@ class MeshMergePolicy:
         "min_component_faces": int,
         "min_component_volume": float (cubic meters),
         "fill_voxels": bool,
-        "max_voxels": int
+        "max_voxels": int,
+        "use_resolution_policy": bool
     }
+
+    Resolution-aware pitch selection:
+    - If voxel_pitch is None and use_resolution_policy is True, pitch is derived
+      from ResolutionPolicy.merge_pitch
+    - If max_voxels would be exceeded, pitch is automatically relaxed with warning
+    - effective_pitch is recorded in the operation report
     """
     mode: Literal["auto", "voxel", "boolean"] = "auto"
-    voxel_pitch: float = 5e-5  # 50um
+    voxel_pitch: Optional[float] = 5e-5  # 50um, None = use resolution policy
     auto_adjust_pitch: bool = True
     max_pitch_steps: int = 4
     pitch_step_factor: float = 1.5
@@ -418,10 +441,11 @@ class MeshMergePolicy:
     min_component_volume: float = 1e-12  # 1 cubic mm
     fill_voxels: bool = True
     max_voxels: int = 100_000_000  # 100M voxels budget
-    
+    use_resolution_policy: bool = False
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
-    
+
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "MeshMergePolicy":
         return MeshMergePolicy(**{k: v for k, v in d.items() if k in MeshMergePolicy.__dataclass_fields__})
@@ -431,38 +455,51 @@ class MeshMergePolicy:
 class EmbeddingPolicy:
     """
     Policy for embedding voids into domains.
-    
+
     PATCH 3: Removed "mask" mode - only "recarve" is supported.
-    
+    PATCH 7: Added resolution-aware pitch selection with budget-aware relaxation.
+
     Controls the voxelization and carving process for creating
     domain-with-void meshes.
-    
+
     JSON Schema:
     {
-        "voxel_pitch": float (meters),
+        "voxel_pitch": float (meters) | null,
         "shell_thickness": float (meters),
         "auto_adjust_pitch": bool,
         "max_pitch_steps": int,
+        "pitch_step_factor": float,
+        "max_voxels": int,
         "fallback": "auto" | "voxel_subtraction" | "none",
         "preserve_ports_enabled": bool,
         "preserve_mode": "recarve",
         "carve_radius_factor": float,
-        "carve_depth": float (meters)
+        "carve_depth": float (meters),
+        "use_resolution_policy": bool
     }
+
+    Resolution-aware pitch selection:
+    - If voxel_pitch is None and use_resolution_policy is True, pitch is derived
+      from ResolutionPolicy.embed_pitch
+    - If max_voxels would be exceeded, pitch is automatically relaxed with warning
+    - effective_pitch is recorded in the operation report
     """
-    voxel_pitch: float = 3e-4  # 0.3mm
+    voxel_pitch: Optional[float] = 3e-4  # 0.3mm, None = use resolution policy
     shell_thickness: float = 2e-3  # 2mm
     auto_adjust_pitch: bool = True
     max_pitch_steps: int = 4
+    pitch_step_factor: float = 1.5
+    max_voxels: int = 100_000_000  # 100M voxels budget
     fallback: Literal["auto", "voxel_subtraction", "none"] = "auto"
     preserve_ports_enabled: bool = True
     preserve_mode: Literal["recarve"] = "recarve"  # PATCH 3: Removed "mask" mode
     carve_radius_factor: float = 1.2
     carve_depth: float = 0.002  # 2mm
-    
+    use_resolution_policy: bool = False
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
-    
+
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "EmbeddingPolicy":
         # PATCH 3: Convert legacy "mask" mode to "recarve" with warning
@@ -481,9 +518,9 @@ class EmbeddingPolicy:
 class OutputPolicy:
     """
     Policy for output file generation.
-    
+
     Controls output directory, units, and naming conventions.
-    
+
     JSON Schema:
     {
         "output_dir": str,
@@ -498,10 +535,10 @@ class OutputPolicy:
     naming_convention: Literal["default", "timestamped"] = "default"
     save_intermediates: bool = False
     save_reports: bool = True
-    
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
-    
+
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "OutputPolicy":
         return OutputPolicy(**{k: v for k, v in d.items() if k in OutputPolicy.__dataclass_fields__})

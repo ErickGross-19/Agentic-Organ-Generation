@@ -51,9 +51,79 @@ _FROM_METERS = {
 }
 
 
+def to_meters(value: Union[float, np.ndarray], units: str) -> Union[float, np.ndarray]:
+    """
+    Convert value from specified units to meters.
+    
+    This is the primary function for converting user inputs (typically in mm or µm)
+    to the internal meter representation used throughout the library.
+    
+    Parameters
+    ----------
+    value : float or ndarray
+        Value(s) to convert
+    units : str
+        Source unit ('m', 'mm', 'cm', 'um')
+        
+    Returns
+    -------
+    float or ndarray
+        Value in meters
+        
+    Examples
+    --------
+    >>> to_meters(20, 'um')  # 20µm to meters
+    2e-05
+    >>> to_meters(5.0, 'mm')  # 5mm to meters
+    0.005
+    >>> to_meters(np.array([10, 20, 30]), 'um')  # Array conversion
+    array([1.e-05, 2.e-05, 3.e-05])
+    """
+    if units not in _TO_METERS:
+        raise ValueError(f"Unknown unit '{units}'. Supported: {list(_TO_METERS.keys())}")
+    
+    return value * _TO_METERS[units]
+
+
+def from_meters(value: Union[float, np.ndarray], units: str) -> Union[float, np.ndarray]:
+    """
+    Convert value from meters to specified units.
+    
+    This is the primary function for converting internal meter values
+    to user-facing units (typically mm or µm).
+    
+    Parameters
+    ----------
+    value : float or ndarray
+        Value(s) in meters
+    units : str
+        Target unit ('m', 'mm', 'cm', 'um')
+        
+    Returns
+    -------
+    float or ndarray
+        Value in target units
+        
+    Examples
+    --------
+    >>> from_meters(2e-5, 'um')  # 2e-5m to µm
+    20.0
+    >>> from_meters(0.005, 'mm')  # 0.005m to mm
+    5.0
+    >>> from_meters(np.array([1e-5, 2e-5]), 'um')  # Array conversion
+    array([10., 20.])
+    """
+    if units not in _FROM_METERS:
+        raise ValueError(f"Unknown unit '{units}'. Supported: {list(_FROM_METERS.keys())}")
+    
+    return value * _FROM_METERS[units]
+
+
 def to_si_length(value: Union[float, np.ndarray], from_unit: str = CANONICAL_UNIT) -> Union[float, np.ndarray]:
     """
     Convert length from specified unit to SI (meters).
+    
+    DEPRECATED: Use to_meters() instead for clarity.
     
     Parameters
     ----------
@@ -74,15 +144,14 @@ def to_si_length(value: Union[float, np.ndarray], from_unit: str = CANONICAL_UNI
     >>> to_si_length(100.0, 'mm')  # 100mm to meters
     0.1
     """
-    if from_unit not in _TO_METERS:
-        raise ValueError(f"Unknown unit '{from_unit}'. Supported: {list(_TO_METERS.keys())}")
-    
-    return value * _TO_METERS[from_unit]
+    return to_meters(value, from_unit)
 
 
 def from_si_length(value: Union[float, np.ndarray], to_unit: str = CANONICAL_UNIT) -> Union[float, np.ndarray]:
     """
     Convert length from SI (meters) to specified unit.
+    
+    DEPRECATED: Use from_meters() instead for clarity.
     
     Parameters
     ----------
@@ -103,10 +172,7 @@ def from_si_length(value: Union[float, np.ndarray], to_unit: str = CANONICAL_UNI
     >>> from_si_length(0.1, 'mm')  # 0.1m to mm
     100.0
     """
-    if to_unit not in _FROM_METERS:
-        raise ValueError(f"Unknown unit '{to_unit}'. Supported: {list(_FROM_METERS.keys())}")
-    
-    return value * _FROM_METERS[to_unit]
+    return from_meters(value, to_unit)
 
 
 def convert_length(value: Union[float, np.ndarray], from_unit: str, to_unit: str) -> Union[float, np.ndarray]:
@@ -231,34 +297,65 @@ class UnitContext:
     At export time, internal values are converted to the user-specified output_units.
     When output_units="mm", internal value 0.05 becomes 50mm in the output STL file.
     
+    The input_units field specifies what units user inputs are in, enabling
+    automatic conversion to internal meters at API boundaries.
+    
     Attributes
     ----------
     output_units : str
         Units for exported files (STL, JSON, etc.). Default: "mm"
         Supported: "m", "mm", "cm", "um"
+    input_units : str
+        Units for user inputs. Default: "mm"
+        Supported: "m", "mm", "cm", "um"
     
     Examples
     --------
-    >>> ctx = UnitContext(output_units="mm")
-    >>> # Internal value of 0.05 (meters) becomes 50mm in output
-    >>> ctx.to_output(0.05)
-    50.0
+    >>> ctx = UnitContext(output_units="mm", input_units="um")
+    >>> # User input of 20 (µm) becomes 2e-5 meters internally
+    >>> ctx.to_internal(20)
+    2e-05
+    >>> # Internal value of 2e-5 (meters) becomes 20µm in output
+    >>> ctx.to_output(2e-5)
+    0.02  # 20µm in mm
     >>> 
-    >>> ctx = UnitContext(output_units="m")
-    >>> # Internal value of 0.05 (meters) stays 0.05m in output
-    >>> ctx.to_output(0.05)
-    0.05
+    >>> ctx = UnitContext(input_units="um", output_units="um")
+    >>> ctx.to_internal(20)  # 20µm to meters
+    2e-05
+    >>> ctx.to_output(2e-5)  # 2e-5m to µm
+    20.0
     """
     
     output_units: str = "mm"
+    input_units: str = "mm"
     
     def __post_init__(self):
-        """Validate output_units."""
+        """Validate output_units and input_units."""
         if self.output_units not in _TO_METERS:
             raise ValueError(
                 f"Unknown output_units '{self.output_units}'. "
                 f"Supported: {list(_TO_METERS.keys())}"
             )
+        if self.input_units not in _TO_METERS:
+            raise ValueError(
+                f"Unknown input_units '{self.input_units}'. "
+                f"Supported: {list(_TO_METERS.keys())}"
+            )
+    
+    @property
+    def input_scale_factor(self) -> float:
+        """
+        Get scale factor for converting input units to internal meters.
+        
+        Returns
+        -------
+        float
+            Scale factor to multiply input values by for internal use.
+            - input_units="um": 1e-6 (multiply by 1e-6)
+            - input_units="mm": 0.001 (multiply by 0.001)
+            - input_units="m": 1.0 (no scaling)
+        """
+        return _TO_METERS[self.input_units]
     
     @property
     def scale_factor(self) -> float:
@@ -312,19 +409,70 @@ class UnitContext:
         """
         return value / self.scale_factor
     
+    def to_internal(self, value: Union[float, np.ndarray]) -> Union[float, np.ndarray]:
+        """
+        Convert value from input units to internal meters.
+        
+        This is the primary method for converting user inputs to internal representation.
+        
+        Parameters
+        ----------
+        value : float or ndarray
+            Value(s) in input_units
+            
+        Returns
+        -------
+        float or ndarray
+            Value(s) in meters (internal units)
+            
+        Examples
+        --------
+        >>> ctx = UnitContext(input_units="um")
+        >>> ctx.to_internal(20)  # 20µm to meters
+        2e-05
+        """
+        return value * self.input_scale_factor
+    
+    def from_internal(self, value: Union[float, np.ndarray]) -> Union[float, np.ndarray]:
+        """
+        Convert value from internal meters to input units.
+        
+        Parameters
+        ----------
+        value : float or ndarray
+            Value(s) in meters (internal units)
+            
+        Returns
+        -------
+        float or ndarray
+            Value(s) in input_units
+            
+        Examples
+        --------
+        >>> ctx = UnitContext(input_units="um")
+        >>> ctx.from_internal(2e-5)  # 2e-5m to µm
+        20.0
+        """
+        return value / self.input_scale_factor
+    
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
         return {
             "output_units": self.output_units,
+            "input_units": self.input_units,
             "scale_factor": self.scale_factor,
+            "input_scale_factor": self.input_scale_factor,
         }
     
     @classmethod
     def from_dict(cls, d: dict) -> "UnitContext":
         """Create from dictionary."""
-        return cls(output_units=d.get("output_units", "mm"))
+        return cls(
+            output_units=d.get("output_units", "mm"),
+            input_units=d.get("input_units", "mm"),
+        )
     
-    def scale_mesh(self, mesh: "trimesh.Trimesh") -> "trimesh.Trimesh":
+    def scale_mesh(self, mesh):
         """
         Scale a mesh from internal units to output units.
         
@@ -341,8 +489,6 @@ class UnitContext:
         trimesh.Trimesh
             New mesh with vertices scaled to output units
         """
-        import trimesh
-        
         # Create a copy to avoid modifying the original
         scaled_mesh = mesh.copy()
         scaled_mesh.vertices = scaled_mesh.vertices * self.scale_factor
