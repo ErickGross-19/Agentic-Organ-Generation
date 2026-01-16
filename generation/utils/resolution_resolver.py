@@ -31,12 +31,19 @@ class ResolutionResult:
     
     Contains the effective pitch, any warnings generated, and metrics
     for reporting in OperationReport.
+    
+    Supports tuple unpacking for runner contract compatibility:
+        effective_pitch, warnings, metrics = resolve_pitch(...)
     """
     effective_pitch: float
     was_relaxed: bool = False
     relax_factor: float = 1.0
     warnings: List[str] = field(default_factory=list)
     metrics: Dict[str, Any] = field(default_factory=dict)
+    
+    def __iter__(self):
+        """Support tuple unpacking: effective_pitch, warnings, metrics = result"""
+        return iter((self.effective_pitch, self.warnings, self.metrics))
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -175,7 +182,7 @@ def resolve_pitch(
     # Check min diameter constraint
     min_extent = min(extents)
     min_diameter_m = resolution_policy.min_channel_diameter_m
-    voxels_across = resolution_policy.voxels_across_min_diameter
+    voxels_across = resolution_policy.min_voxels_across_feature
     
     # Ensure pitch allows sufficient voxels across min diameter
     max_pitch_for_min_diameter = min_diameter_m / voxels_across
@@ -187,13 +194,18 @@ def resolve_pitch(
         )
     
     # Compute relaxed pitch if needed
-    effective_pitch, was_relaxed, relax_warning = resolution_policy.compute_relaxed_pitch(
+    effective_pitch = resolution_policy.compute_relaxed_pitch(
         base_pitch=base_pitch,
         domain_extents=extents,
         max_voxels=max_voxels,
     )
     
-    if relax_warning:
+    was_relaxed = effective_pitch > base_pitch
+    if was_relaxed:
+        relax_warning = (
+            f"Pitch relaxed from {base_pitch:.2e} m to {effective_pitch:.2e} m "
+            f"to fit voxel budget {max_voxels:,}. Min diameter resolution may be reduced."
+        )
         warnings.append(f"[{op_name}] {relax_warning}")
         logger.warning(f"[{op_name}] {relax_warning}")
     

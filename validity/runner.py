@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class CheckResult:
     """Result of a single validation check."""
-    check_name: str
+    name: str
     passed: bool
     message: str
     details: Dict[str, Any] = field(default_factory=dict)
@@ -41,7 +41,7 @@ class CheckResult:
     
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "check_name": self.check_name,
+            "name": self.name,
             "passed": self.passed,
             "message": self.message,
             "details": self.details,
@@ -57,18 +57,18 @@ class ValidityReport:
     
     G1 FIX: Single JSON-serializable report with requested vs effective policies.
     """
-    passed: bool
-    status: Literal["ok", "warnings", "fail"]
+    success: bool
     checks: List[CheckResult] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
     requested_policies: Dict[str, Any] = field(default_factory=dict)
     effective_policies: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    status: Literal["ok", "warnings", "fail"] = "ok"
     
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "passed": self.passed,
+            "success": self.success,
             "status": self.status,
             "checks": [c.to_dict() for c in self.checks],
             "warnings": self.warnings,
@@ -216,7 +216,7 @@ def run_validity_checks(
         
         for port_result in open_port_result.port_results:
             checks.append(CheckResult(
-                check_name=f"open_port_{port_result.port_id}",
+                name=f"open_port_{port_result.port_id}",
                 passed=port_result.is_open,
                 message=f"Port {port_result.port_id} is {'open' if port_result.is_open else 'closed'}",
                 details=port_result.to_dict(),
@@ -262,7 +262,7 @@ def run_validity_checks(
         metadata["void_faces"] = len(void_mesh.faces)
     
     return ValidityReport(
-        passed=passed,
+        success=passed,
         status=status,
         checks=checks,
         warnings=all_warnings,
@@ -278,14 +278,14 @@ def run_validity_checks(
     )
 
 
-def _check_watertight(mesh: "trimesh.Trimesh", name: str) -> CheckResult:
+def _check_watertight(mesh: "trimesh.Trimesh", mesh_name: str) -> CheckResult:
     """Check if mesh is watertight."""
     is_watertight = mesh.is_watertight
     
     return CheckResult(
-        check_name=f"{name}_watertight",
+        name=f"{mesh_name}_watertight",
         passed=is_watertight,
-        message=f"{name} is {'watertight' if is_watertight else 'not watertight'}",
+        message=f"{mesh_name} is {'watertight' if is_watertight else 'not watertight'}",
         details={
             "is_watertight": is_watertight,
             "euler_number": mesh.euler_number if hasattr(mesh, "euler_number") else None,
@@ -295,7 +295,7 @@ def _check_watertight(mesh: "trimesh.Trimesh", name: str) -> CheckResult:
 
 def _check_components(
     mesh: "trimesh.Trimesh", 
-    name: str, 
+    mesh_name: str, 
     max_components: int,
 ) -> CheckResult:
     """Check number of connected components."""
@@ -305,9 +305,9 @@ def _check_components(
     passed = component_count <= max_components
     
     return CheckResult(
-        check_name=f"{name}_components",
+        name=f"{mesh_name}_components",
         passed=passed,
-        message=f"{name} has {component_count} component(s)" + 
+        message=f"{mesh_name} has {component_count} component(s)" + 
                 ("" if passed else f" (max: {max_components})"),
         details={
             "component_count": component_count,
@@ -318,7 +318,7 @@ def _check_components(
 
 def _check_min_diameter(
     mesh: "trimesh.Trimesh", 
-    name: str,
+    mesh_name: str,
     threshold: float,
 ) -> CheckResult:
     """Check minimum feature diameter."""
@@ -330,9 +330,9 @@ def _check_min_diameter(
     passed = min_extent >= threshold
     
     return CheckResult(
-        check_name=f"{name}_min_diameter",
+        name=f"{mesh_name}_min_diameter",
         passed=passed,
-        message=f"{name} minimum extent: {min_extent*1000:.3f}mm" +
+        message=f"{mesh_name} minimum extent: {min_extent*1000:.3f}mm" +
                 ("" if passed else f" (threshold: {threshold*1000:.3f}mm)"),
         details={
             "min_extent": min_extent,
@@ -370,7 +370,7 @@ def _check_void_inside_domain(
         )
     
     return CheckResult(
-        check_name="void_inside_domain",
+        name="void_inside_domain",
         passed=passed,
         message=f"Void is {'inside' if passed else 'not fully inside'} domain "
                 f"({fraction_inside*100:.1f}% inside)",

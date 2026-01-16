@@ -58,9 +58,10 @@ class ResolutionPolicy:
     {
         "input_units": "m" | "mm" | "um",
         "min_channel_diameter": float (in input_units),
-        "voxels_across_min_diameter": int,
+        "min_voxels_across_feature": int,
         "max_voxels": int,
-        "pitch_limits": {"min_pitch": float, "max_pitch": float} (meters),
+        "min_pitch": float (meters),
+        "max_pitch": float (meters),
         "auto_relax_pitch": bool,
         "pitch_step_factor": float,
         "rel_epsilon": float,
@@ -72,7 +73,7 @@ class ResolutionPolicy:
     }
 
     Derived outputs (computed properties):
-        - target_pitch: min_channel_diameter / voxels_across_min_diameter
+        - target_pitch: min_channel_diameter / min_voxels_across_feature
         - embed_pitch: target_pitch * embed_pitch_factor
         - merge_pitch: target_pitch * merge_pitch_factor
         - repair_pitch: target_pitch * repair_pitch_factor
@@ -82,8 +83,10 @@ class ResolutionPolicy:
 
     input_units: Literal["m", "mm", "um"] = "m"
     min_channel_diameter: float = 2e-5  # 20 µm in meters
-    voxels_across_min_diameter: int = 8
+    min_voxels_across_feature: int = 8
     max_voxels: int = 100_000_000  # 100M voxels budget per operation
+    min_pitch: float = 1e-6  # 1 µm - minimum allowed pitch
+    max_pitch: float = 1e-3  # 1 mm - maximum allowed pitch
     pitch_limits: PitchLimits = field(default_factory=PitchLimits)
     auto_relax_pitch: bool = True
     pitch_step_factor: float = 1.5
@@ -104,6 +107,8 @@ class ResolutionPolicy:
     def __post_init__(self):
         if isinstance(self.pitch_limits, dict):
             self.pitch_limits = PitchLimits.from_dict(self.pitch_limits)
+        self.pitch_limits.min_pitch = self.min_pitch
+        self.pitch_limits.max_pitch = self.max_pitch
 
     @property
     def min_channel_diameter_m(self) -> float:
@@ -113,13 +118,13 @@ class ResolutionPolicy:
     @property
     def target_pitch(self) -> float:
         """
-        Compute target pitch from min_channel_diameter and voxels_across_min_diameter.
+        Compute target pitch from min_channel_diameter and min_voxels_across_feature.
 
         Returns:
             Target pitch in meters.
         """
         diameter_m = self.min_channel_diameter_m
-        pitch = diameter_m / self.voxels_across_min_diameter
+        pitch = diameter_m / self.min_voxels_across_feature
         return self._clamp_pitch(pitch)
 
     @property
@@ -168,30 +173,49 @@ class ResolutionPolicy:
 
     def compute_relaxed_pitch(
         self,
-        base_pitch: float,
-        domain_extents: Tuple[float, float, float],
+        base_pitch: Optional[float] = None,
+        domain_extents: Optional[Tuple[float, float, float]] = None,
         max_voxels: Optional[int] = None,
-    ) -> Tuple[float, bool, str]:
+        *,
+        bbox: Optional[Tuple[float, float, float, float, float, float]] = None,
+        requested_pitch: Optional[float] = None,
+    ) -> float:
         """
         Compute a relaxed pitch if the voxel budget would be exceeded.
 
+        Supports two calling conventions:
+        1. Legacy: compute_relaxed_pitch(base_pitch, domain_extents, max_voxels)
+        2. Runner contract: compute_relaxed_pitch(bbox=..., requested_pitch=...)
+
         Args:
-            base_pitch: The desired pitch in meters.
-            domain_extents: (width, height, depth) of the domain in meters.
+            base_pitch: (Legacy) The desired pitch in meters.
+            domain_extents: (Legacy) (width, height, depth) of the domain in meters.
             max_voxels: Override max voxels budget. Uses self.max_voxels if None.
+            bbox: (Runner contract) Bounding box as (x_min, x_max, y_min, y_max, z_min, z_max).
+            requested_pitch: (Runner contract) The desired pitch in meters.
 
         Returns:
-            Tuple of (effective_pitch, was_relaxed, warning_message).
+            The effective (possibly relaxed) pitch in meters.
         """
+        if bbox is not None and requested_pitch is not None:
+            domain_extents = (
+                bbox[1] - bbox[0],
+                bbox[3] - bbox[2],
+                bbox[5] - bbox[4],
+            )
+            base_pitch = requested_pitch
+        elif base_pitch is None or domain_extents is None:
+            raise ValueError(
+                "Must provide either (base_pitch, domain_extents) or (bbox=, requested_pitch=)"
+            )
+
         if max_voxels is None:
             max_voxels = self.max_voxels
 
         if not self.auto_relax_pitch:
-            return base_pitch, False, ""
+            return base_pitch
 
         pitch = base_pitch
-        was_relaxed = False
-        warning = ""
 
         while True:
             nx = max(1, int(math.ceil(domain_extents[0] / pitch)))
@@ -202,33 +226,14 @@ class ResolutionPolicy:
             if total_voxels <= max_voxels:
                 break
 
-            if pitch >= self.pitch_limits.max_pitch:
-                warning = (
-                    f"Pitch relaxation hit max_pitch limit ({self.pitch_limits.max_pitch:.2e} m). "
-                    f"Voxel count {total_voxels:,} exceeds budget {max_voxels:,}."
-                )
+            new_pitch = pitch * self.pitch_step_factor
+
+            if new_pitch <= pitch:
                 break
 
-            new_pitch = pitch * self.pitch_step_factor
-            new_pitch = min(new_pitch, self.pitch_limits.max_pitch)
-
-            if not was_relaxed:
-                warning = (
-                    f"Pitch relaxed from {base_pitch:.2e} m to {new_pitch:.2e} m "
-                    f"to fit voxel budget {max_voxels:,}. "
-                    f"Min diameter resolution may be reduced."
-                )
-            else:
-                warning = (
-                    f"Pitch relaxed from {base_pitch:.2e} m to {new_pitch:.2e} m "
-                    f"to fit voxel budget {max_voxels:,}. "
-                    f"Min diameter resolution may be reduced."
-                )
-
             pitch = new_pitch
-            was_relaxed = True
 
-        return pitch, was_relaxed, warning
+        return pitch
 
     def eps(self, domain_scale: float) -> float:
         """

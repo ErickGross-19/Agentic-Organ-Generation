@@ -459,12 +459,12 @@ def find_path_hierarchical(
             max_voxels_override=policy.max_voxels_coarse,
         )
         
-        effective_coarse_pitch = resolution_result["effective_pitch"]
-        coarse_pitch_relaxed = resolution_result.get("was_relaxed", False)
+        effective_coarse_pitch = resolution_result.effective_pitch
+        coarse_pitch_relaxed = resolution_result.was_relaxed
         
-        if resolution_result.get("warnings"):
-            result_warnings.extend(resolution_result["warnings"])
-            for warning in resolution_result["warnings"]:
+        if resolution_result.warnings:
+            result_warnings.extend(resolution_result.warnings)
+            for warning in resolution_result.warnings:
                 logger.warning(warning)
     
     coarse_policy = policy.to_coarse_policy()

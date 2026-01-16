@@ -4,6 +4,7 @@ from .types import Point3D, Direction3D, TubeGeometry
 from .network import Node, VesselSegment, VascularNetwork
 from .domain import DomainSpec, EllipsoidDomain, BoxDomain, CylinderDomain, MeshDomain
 from .result import OperationResult, Delta
+from .report import OperationReport
 from .ids import IDGenerator
 
 from .domain_transform import TransformDomain
@@ -30,6 +31,7 @@ __all__ = [
     "CompositeDomain",
     "ImplicitDomain",
     "OperationResult",
+    "OperationReport",
     "Delta",
     "IDGenerator",
 ]
