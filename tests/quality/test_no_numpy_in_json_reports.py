@@ -46,12 +46,20 @@ class TestNoNumpyInJSONReports:
         with pytest.raises(TypeError):
             json.dumps({"value": numpy_int})
     
-    def test_numpy_float_not_json_serializable(self):
-        """Test that numpy float is not directly JSON-serializable."""
-        numpy_float = np.float64(3.14)
+    def test_numpy_float_should_be_converted(self):
+        """Test that numpy float should be converted to Python float before serialization.
         
-        with pytest.raises(TypeError):
-            json.dumps({"value": numpy_float})
+        Note: In some Python/numpy versions, np.float64 may be directly JSON-serializable,
+        but we should still convert to Python primitives for consistency and portability.
+        """
+        numpy_float = np.float64(3.14)
+        python_float = float(numpy_float)
+        
+        assert isinstance(python_float, float)
+        assert not isinstance(python_float, np.floating)
+        
+        json_str = json.dumps({"value": python_float})
+        assert json_str is not None
     
     def test_numpy_array_not_json_serializable(self):
         """Test that numpy array is not directly JSON-serializable."""
