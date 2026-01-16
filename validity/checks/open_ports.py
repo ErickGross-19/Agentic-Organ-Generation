@@ -29,6 +29,7 @@ from aog_policies.validity import OpenPortPolicy
 
 if TYPE_CHECKING:
     import trimesh
+    from aog_policies.resolution import ResolutionPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -215,9 +216,12 @@ class LocalVoxelPatch:
         self,
         domain_with_void_mesh: "trimesh.Trimesh",
         original_domain_mesh: "trimesh.Trimesh",
+        chunk_size: int = 10000,
     ) -> None:
         """
         Classify voxels using domain-with-void mesh.
+        
+        G2 FIX: Uses chunked batch containment checks for performance.
         
         Parameters
         ----------
@@ -225,22 +229,49 @@ class LocalVoxelPatch:
             The domain mesh with void carved out.
         original_domain_mesh : trimesh.Trimesh
             The original domain mesh (before void embedding).
+        chunk_size : int
+            Number of points to check per batch (default 10000).
         """
+        total_voxels = self.shape[0] * self.shape[1] * self.shape[2]
+        all_points = np.zeros((total_voxels, 3))
+        all_indices = []
+        
+        idx = 0
         for i in range(self.shape[0]):
             for j in range(self.shape[1]):
                 for k in range(self.shape[2]):
-                    pos = self.voxel_to_world((i, j, k))
-                    
-                    in_original = self._point_in_mesh(pos, original_domain_mesh)
-                    
-                    if not in_original:
-                        self._outside_domain[i, j, k] = True
-                    else:
-                        in_solid = self._point_in_mesh(pos, domain_with_void_mesh)
-                        if in_solid:
-                            self._solid[i, j, k] = True
-                        else:
-                            self._void[i, j, k] = True
+                    all_points[idx] = self.voxel_to_world((i, j, k))
+                    all_indices.append((i, j, k))
+                    idx += 1
+        
+        for start in range(0, total_voxels, chunk_size):
+            end = min(start + chunk_size, total_voxels)
+            chunk_points = all_points[start:end]
+            chunk_indices = all_indices[start:end]
+            
+            try:
+                in_original = original_domain_mesh.contains(chunk_points)
+            except Exception:
+                in_original = np.array([
+                    self._point_in_mesh(p, original_domain_mesh) 
+                    for p in chunk_points
+                ])
+            
+            try:
+                in_solid = domain_with_void_mesh.contains(chunk_points)
+            except Exception:
+                in_solid = np.array([
+                    self._point_in_mesh(p, domain_with_void_mesh) 
+                    for p in chunk_points
+                ])
+            
+            for local_idx, (i, j, k) in enumerate(chunk_indices):
+                if not in_original[local_idx]:
+                    self._outside_domain[i, j, k] = True
+                elif in_solid[local_idx]:
+                    self._solid[i, j, k] = True
+                else:
+                    self._void[i, j, k] = True
     
     def _point_in_mesh(self, point: np.ndarray, mesh: "trimesh.Trimesh") -> bool:
         """Check if a point is inside a mesh."""
@@ -340,9 +371,12 @@ def check_port_open(
     policy: OpenPortPolicy,
     port_id: str = "unknown",
     port_type: str = "unknown",
+    resolution_policy: Optional["ResolutionPolicy"] = None,
 ) -> PortCheckResult:
     """
     Check if a single port is open.
+    
+    G2 FIX: Supports resolution resolver integration for pitch selection.
     
     Parameters
     ----------
@@ -362,6 +396,8 @@ def check_port_open(
         Identifier for the port.
     port_type : str
         Type of port ("inlet" or "outlet").
+    resolution_policy : ResolutionPolicy, optional
+        Resolution policy for pitch selection via resolver.
     
     Returns
     -------
@@ -371,8 +407,30 @@ def check_port_open(
     port_direction = port_direction / np.linalg.norm(port_direction)
     
     pitch = policy.validation_pitch
+    pitch_was_relaxed = False
+    
     if pitch is None:
-        pitch = port_radius / 4
+        if resolution_policy is not None:
+            from generation.utils.resolution_resolver import resolve_pitch
+            
+            half_size = policy.local_region_size / 2
+            bbox = (
+                port_position[0] - half_size, port_position[0] + half_size,
+                port_position[1] - half_size, port_position[1] + half_size,
+                port_position[2] - half_size, port_position[2] + half_size,
+            )
+            
+            result = resolve_pitch(
+                op_name="open_port_validation",
+                requested_pitch=port_radius / 4,
+                bbox=bbox,
+                resolution_policy=resolution_policy,
+                max_voxels_override=policy.max_voxels_roi,
+            )
+            pitch = result["effective_pitch"]
+            pitch_was_relaxed = result.get("was_relaxed", False)
+        else:
+            pitch = port_radius / 4
     
     patch = LocalVoxelPatch(
         center=port_position,
@@ -437,9 +495,12 @@ def check_open_ports(
     domain_with_void_mesh: "trimesh.Trimesh",
     original_domain_mesh: "trimesh.Trimesh",
     policy: Optional[OpenPortPolicy] = None,
+    resolution_policy: Optional["ResolutionPolicy"] = None,
 ) -> OpenPortValidationResult:
     """
     Check if all ports are open.
+    
+    G2 FIX: Supports resolution resolver integration for pitch selection.
     
     Parameters
     ----------
@@ -456,6 +517,8 @@ def check_open_ports(
         The original domain mesh.
     policy : OpenPortPolicy, optional
         Validation policy.
+    resolution_policy : ResolutionPolicy, optional
+        Resolution policy for pitch selection via resolver.
     
     Returns
     -------
@@ -495,6 +558,7 @@ def check_open_ports(
             policy=policy,
             port_id=port_id,
             port_type=port_type,
+            resolution_policy=resolution_policy,
         )
         
         port_results.append(result)
