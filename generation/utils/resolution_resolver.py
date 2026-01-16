@@ -193,14 +193,12 @@ def resolve_pitch(
             f"Min diameter resolution may be insufficient."
         )
     
-    # Compute relaxed pitch if needed
-    effective_pitch = resolution_policy.compute_relaxed_pitch(
+    # Compute relaxed pitch if needed (legacy call returns tuple)
+    effective_pitch, was_relaxed, relax_warning = resolution_policy.compute_relaxed_pitch(
         base_pitch=base_pitch,
         domain_extents=extents,
         max_voxels=max_voxels,
     )
-    
-    was_relaxed = effective_pitch > base_pitch
     if was_relaxed:
         relax_warning = (
             f"Pitch relaxed from {base_pitch:.2e} m to {effective_pitch:.2e} m "

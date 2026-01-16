@@ -481,11 +481,11 @@ def _generate_programmatic(
     """
     from ..backends.programmatic_backend import (
         ProgrammaticBackend,
-        _ProgramPolicy,
         ProgramCollisionPolicy,
-        WaypointPolicy,
         StepSpec,
     )
+    from aog_policies.generation import ProgramPolicy
+    from aog_policies.pathfinding import WaypointPolicy
     
     backend = ProgrammaticBackend()
     
@@ -496,7 +496,10 @@ def _generate_programmatic(
     
     inlet = inlets[0]
     inlet_position = tuple(inlet.get("position", (0, 0, 0)))
-    inlet_radius = inlet.get("radius", 0.001)
+    
+    # Use ProgramPolicy's default_radius as fallback instead of hardcoded 1mm
+    policy_default_radius = ProgramPolicy().default_radius
+    inlet_radius = inlet.get("radius", policy_default_radius)
     
     # Check if backend_params is provided in growth_policy
     backend_params = growth_policy.backend_params or {}
@@ -556,7 +559,7 @@ def _generate_programmatic(
             )
         
         # Build program policy
-        policy = _ProgramPolicy(
+        policy = ProgramPolicy(
             mode="network",
             steps=steps,
             path_algorithm="astar_voxel",

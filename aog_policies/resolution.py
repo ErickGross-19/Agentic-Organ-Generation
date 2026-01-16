@@ -15,7 +15,7 @@ All geometric values are in METERS internally.
 """
 
 from dataclasses import dataclass, field, asdict
-from typing import Optional, Dict, Any, Literal, Tuple
+from typing import Optional, Dict, Any, Literal, Tuple, Union
 import math
 
 
@@ -190,13 +190,15 @@ class ResolutionPolicy:
         bbox: Optional[Tuple[float, float, float, float, float, float]] = None,
         requested_pitch: Optional[float] = None,
         max_voxels_override: Optional[int] = None,  # Alias for max_voxels
-    ) -> Tuple[float, bool, Optional[str]]:
+    ) -> Union[float, Tuple[float, bool, Optional[str]]]:
         """
         Compute a relaxed pitch if the voxel budget would be exceeded.
 
-        Supports two calling conventions:
+        Supports two calling conventions with different return types:
         1. Legacy: compute_relaxed_pitch(base_pitch, domain_extents, max_voxels)
+           Returns: Tuple[float, bool, Optional[str]] - (pitch, was_relaxed, warning)
         2. Runner contract: compute_relaxed_pitch(bbox=..., requested_pitch=...)
+           Returns: float - just the effective pitch
 
         Args:
             base_pitch: (Legacy) The desired pitch in meters.
@@ -206,12 +208,13 @@ class ResolutionPolicy:
             requested_pitch: (Runner contract) The desired pitch in meters.
 
         Returns:
-            Tuple of (effective_pitch, was_relaxed, warning_message).
-            - effective_pitch: The (possibly relaxed) pitch in meters.
-            - was_relaxed: True if pitch was relaxed from the requested value.
-            - warning_message: Warning string if relaxed, None otherwise.
+            For runner contract mode (bbox=, requested_pitch=): float - effective pitch
+            For legacy mode (base_pitch, domain_extents): Tuple[float, bool, Optional[str]]
         """
-        if bbox is not None and requested_pitch is not None:
+        # Determine which calling convention is being used
+        is_runner_contract_mode = bbox is not None and requested_pitch is not None
+        
+        if is_runner_contract_mode:
             domain_extents = (
                 bbox[1] - bbox[0],
                 bbox[3] - bbox[2],
@@ -230,6 +233,8 @@ class ResolutionPolicy:
             max_voxels = self.max_voxels
 
         if not self.auto_relax_pitch:
+            if is_runner_contract_mode:
+                return base_pitch
             return (base_pitch, False, None)
 
         pitch = base_pitch
@@ -259,6 +264,9 @@ class ResolutionPolicy:
                 f"voxel budget ({max_voxels} voxels)"
             )
 
+        # Return based on calling convention
+        if is_runner_contract_mode:
+            return pitch
         return (pitch, was_relaxed, warning)
 
     def eps(self, domain_scale: float) -> float:
