@@ -430,7 +430,15 @@ class CylinderDomain(DomainSpec):
         )
 
     def distance_to_boundary(self, point: Point3D) -> float:
-        """Compute distance to nearest cylinder surface."""
+        """
+        Compute unsigned distance to nearest cylinder surface.
+        
+        For a capped cylinder, we need to handle different regions:
+        - Inside: minimum distance to any surface (side, top, or bottom)
+        - Outside radially only: distance to side surface
+        - Outside axially only: distance to cap
+        - Outside both: distance to cap edge (corner)
+        """
         dx = point.x - self.center.x
         dy = point.y - self.center.y
         dz = point.z - self.center.z
@@ -438,11 +446,22 @@ class CylinderDomain(DomainSpec):
         r_xy = np.sqrt(dx**2 + dy**2)
         half_height = self.height / 2
 
-        dist_to_side = self.radius - r_xy
-        dist_to_top = half_height - dz
-        dist_to_bottom = half_height + dz
+        # Signed distances (positive = inside, negative = outside)
+        dist_radial = self.radius - r_xy  # positive if inside radially
+        dist_axial = half_height - abs(dz)  # positive if inside axially
 
-        return float(min(dist_to_side, dist_to_top, dist_to_bottom))
+        if dist_radial >= 0 and dist_axial >= 0:
+            # Point is inside: return minimum distance to any surface
+            return float(min(dist_radial, dist_axial))
+        elif dist_radial < 0 and dist_axial >= 0:
+            # Outside radially, inside axially: distance to side surface
+            return float(-dist_radial)
+        elif dist_radial >= 0 and dist_axial < 0:
+            # Inside radially, outside axially: distance to cap
+            return float(-dist_axial)
+        else:
+            # Outside both radially and axially: distance to cap edge
+            return float(np.sqrt(dist_radial**2 + dist_axial**2))
 
     def sample_points(self, n_points: int, seed: Optional[int] = None) -> np.ndarray:
         """Sample random points uniformly inside cylinder."""
