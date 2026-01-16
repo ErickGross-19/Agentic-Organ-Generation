@@ -43,6 +43,16 @@ from .scale import (
     boundary_mask_tolerance,
 )
 
+from .resolution_resolver import (
+    ResolutionResult,
+    ToleranceResult,
+    resolve_pitch,
+    derive_tolerances,
+    resolve_pitch_for_bbox,
+    compute_voxel_count,
+    create_resolution_report,
+)
+
 __all__ = [
     'CANONICAL_UNIT',
     'to_si_length',
@@ -72,4 +82,11 @@ __all__ = [
     'snap_tolerance',
     'prune_tolerance',
     'boundary_mask_tolerance',
+    'ResolutionResult',
+    'ToleranceResult',
+    'resolve_pitch',
+    'derive_tolerances',
+    'resolve_pitch_for_bbox',
+    'compute_voxel_count',
+    'create_resolution_report',
 ]
