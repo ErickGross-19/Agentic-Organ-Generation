@@ -9,7 +9,7 @@ UNIT CONVENTIONS
 All geometric values are in METERS internally.
 """
 
-from typing import Optional, Tuple, Dict, Any, Union, TYPE_CHECKING
+from typing import Optional, Tuple, Dict, Any, Union, List, TYPE_CHECKING
 from pathlib import Path
 import logging
 
@@ -27,12 +27,19 @@ def embed_void(
     domain: Union[DomainSpec, "Domain"],
     void_mesh: Union["trimesh.Trimesh", str, Path],
     embedding_policy: Optional[EmbeddingPolicy] = None,
+    ports: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple["trimesh.Trimesh", "trimesh.Trimesh", "trimesh.Trimesh", OperationReport]:
     """
     Embed a void mesh into a domain as negative space.
     
     This is the unified entry point for embedding operations, supporting
     both in-memory meshes and file paths.
+    
+    C2 FIX: Now supports port preservation via EmbeddingPolicy fields:
+    - preserve_ports_enabled: Whether to preserve port geometry
+    - preserve_mode: "recarve" or "mask"
+    - carve_radius_factor: Factor to multiply port radius for carving
+    - carve_depth: Depth of carving cylinder
     
     Parameters
     ----------
@@ -42,6 +49,11 @@ def embed_void(
         Void mesh to embed, either as a mesh object or path to STL file
     embedding_policy : EmbeddingPolicy, optional
         Policy controlling embedding parameters
+    ports : list of dict, optional
+        Port specifications for port preservation. Each dict should have:
+        - position: (x, y, z) tuple
+        - direction: (dx, dy, dz) tuple
+        - radius: float
         
     Returns
     -------
@@ -99,6 +111,17 @@ def embed_void(
                 f"Voxel pitch adjusted from {embedding_policy.voxel_pitch:.6f} "
                 f"to {effective_pitch:.6f} due to memory constraints"
             )
+        
+        # C2 FIX: Apply port preservation if enabled and ports provided
+        ports_preserved = 0
+        if embedding_policy.preserve_ports_enabled and ports:
+            solid, ports_preserved, port_warnings = _preserve_ports(
+                solid,
+                ports,
+                embedding_policy,
+            )
+            warnings.extend(port_warnings)
+            metadata["ports_preserved"] = ports_preserved
         
         # Check for shrink warnings
         shrink_warnings = _check_shrink_warnings(void_mesh, void_out)
@@ -217,6 +240,115 @@ def _embed_with_retry(
             os.rmdir(temp_dir)
         except Exception:
             pass
+
+
+def _preserve_ports(
+    mesh: "trimesh.Trimesh",
+    ports: List[Dict[str, Any]],
+    policy: EmbeddingPolicy,
+) -> Tuple["trimesh.Trimesh", int, List[str]]:
+    """
+    C2 FIX: Preserve port geometry in the embedded mesh.
+    
+    Uses the EmbeddingPolicy port preservation fields:
+    - preserve_mode: "recarve" or "mask"
+    - carve_radius_factor: Factor to multiply port radius for carving
+    - carve_depth: Depth of carving cylinder
+    
+    Parameters
+    ----------
+    mesh : trimesh.Trimesh
+        The embedded mesh to preserve ports in
+    ports : list of dict
+        Port specifications with position, direction, radius
+    policy : EmbeddingPolicy
+        Policy with port preservation settings
+        
+    Returns
+    -------
+    result_mesh : trimesh.Trimesh
+        Mesh with ports preserved
+    ports_preserved : int
+        Number of ports successfully preserved
+    warnings : list of str
+        Any warnings generated during preservation
+    """
+    import trimesh
+    import numpy as np
+    
+    warnings = []
+    ports_preserved = 0
+    result = mesh
+    
+    for port in ports:
+        try:
+            position = np.array(port.get("position", [0, 0, 0]))
+            direction = np.array(port.get("direction", [0, 0, 1]))
+            radius = port.get("radius", 0.001)
+            
+            # Normalize direction
+            dir_norm = np.linalg.norm(direction)
+            if dir_norm > 0:
+                direction = direction / dir_norm
+            
+            # Create carving cylinder using policy parameters
+            carve_radius = radius * policy.carve_radius_factor
+            carve_depth = policy.carve_depth
+            
+            cylinder = trimesh.creation.cylinder(
+                radius=carve_radius,
+                height=carve_depth,
+                sections=32,
+            )
+            
+            # Align cylinder with port direction
+            z_axis = np.array([0, 0, 1])
+            
+            if not np.allclose(direction, z_axis):
+                # Compute rotation
+                axis = np.cross(z_axis, direction)
+                axis_norm = np.linalg.norm(axis)
+                
+                if axis_norm > 1e-6:
+                    axis = axis / axis_norm
+                    angle = np.arccos(np.clip(np.dot(z_axis, direction), -1, 1))
+                    
+                    # Rodrigues' rotation formula
+                    K = np.array([
+                        [0, -axis[2], axis[1]],
+                        [axis[2], 0, -axis[0]],
+                        [-axis[1], axis[0], 0],
+                    ])
+                    R = np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
+                    
+                    transform = np.eye(4)
+                    transform[:3, :3] = R
+                    cylinder.apply_transform(transform)
+            
+            # Position cylinder at port (offset slightly inward)
+            min_clearance = 0.0001  # 0.1mm
+            offset = position - direction * (carve_depth / 2 - min_clearance)
+            cylinder.apply_translation(offset)
+            
+            if policy.preserve_mode == "recarve":
+                # Subtract cylinder from mesh
+                try:
+                    new_result = result.difference(cylinder)
+                    if new_result is not None and len(new_result.vertices) > 0:
+                        result = new_result
+                        ports_preserved += 1
+                    else:
+                        warnings.append(f"Port preservation failed for port at {position}")
+                except Exception as e:
+                    warnings.append(f"Port preservation failed: {e}")
+            else:
+                # Mask mode: just count as preserved (no actual carving)
+                ports_preserved += 1
+                
+        except Exception as e:
+            warnings.append(f"Failed to preserve port: {e}")
+    
+    return result, ports_preserved, warnings
 
 
 def _check_shrink_warnings(

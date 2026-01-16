@@ -4,10 +4,128 @@ Tests for swept-volume collision detection functions.
 These tests validate:
 - capsule_collision_check() for capsule-to-capsule collision detection
 - check_segment_collision_swept() for network segment collision detection
+- segment_segment_distance() for correct distance computation
 """
 
 import pytest
 import numpy as np
+
+
+class TestSegmentSegmentDistance:
+    """
+    Regression tests for segment-segment distance computation.
+    
+    A1 FIX: These tests ensure that the canonical segment_segment_distance
+    function correctly returns 0.0 for intersecting/crossing segments.
+    """
+    
+    def test_perpendicular_crossing_segments_distance_zero(self):
+        """
+        REGRESSION TEST (A1): Perpendicular crossing segments must have distance == 0.
+        
+        This was a critical bug where the old implementation returned nonzero
+        distance for segments that literally intersect, breaking collision detection.
+        """
+        from generation.utils.geometry import segment_segment_distance
+        
+        # Segment 1: along X axis from (0,0,0) to (1,0,0)
+        p1 = np.array([0.0, 0.0, 0.0])
+        p2 = np.array([1.0, 0.0, 0.0])
+        
+        # Segment 2: along Y axis crossing at (0.5, 0, 0)
+        p3 = np.array([0.5, -0.5, 0.0])
+        p4 = np.array([0.5, 0.5, 0.0])
+        
+        dist = segment_segment_distance(p1, p2, p3, p4)
+        
+        assert dist == pytest.approx(0.0, abs=1e-10), \
+            f"Crossing segments should have distance 0, got {dist}"
+    
+    def test_crossing_segments_in_3d_distance_zero(self):
+        """
+        REGRESSION TEST (A1): 3D crossing segments must have distance == 0.
+        """
+        from generation.utils.geometry import segment_segment_distance
+        
+        # Segment 1: diagonal in XY plane
+        p1 = np.array([0.0, 0.0, 0.0])
+        p2 = np.array([1.0, 1.0, 0.0])
+        
+        # Segment 2: crosses segment 1 at (0.5, 0.5, 0)
+        p3 = np.array([0.0, 1.0, 0.0])
+        p4 = np.array([1.0, 0.0, 0.0])
+        
+        dist = segment_segment_distance(p1, p2, p3, p4)
+        
+        assert dist == pytest.approx(0.0, abs=1e-10), \
+            f"Crossing segments should have distance 0, got {dist}"
+    
+    def test_parallel_segments_nonzero_distance(self):
+        """Test that parallel non-intersecting segments have correct distance."""
+        from generation.utils.geometry import segment_segment_distance
+        
+        # Segment 1: along X axis
+        p1 = np.array([0.0, 0.0, 0.0])
+        p2 = np.array([1.0, 0.0, 0.0])
+        
+        # Segment 2: parallel, offset by 1 in Y
+        p3 = np.array([0.0, 1.0, 0.0])
+        p4 = np.array([1.0, 1.0, 0.0])
+        
+        dist = segment_segment_distance(p1, p2, p3, p4)
+        
+        assert dist == pytest.approx(1.0, rel=1e-6), \
+            f"Parallel segments should have distance 1.0, got {dist}"
+    
+    def test_skew_segments_correct_distance(self):
+        """Test that skew (non-intersecting, non-parallel) segments have correct distance."""
+        from generation.utils.geometry import segment_segment_distance
+        
+        # Segment 1: along X axis at z=0
+        p1 = np.array([0.0, 0.0, 0.0])
+        p2 = np.array([1.0, 0.0, 0.0])
+        
+        # Segment 2: along Y axis at z=1 (skew, closest distance is 1.0)
+        p3 = np.array([0.5, -0.5, 1.0])
+        p4 = np.array([0.5, 0.5, 1.0])
+        
+        dist = segment_segment_distance(p1, p2, p3, p4)
+        
+        assert dist == pytest.approx(1.0, rel=1e-6), \
+            f"Skew segments should have distance 1.0, got {dist}"
+    
+    def test_degenerate_point_segments(self):
+        """Test distance between degenerate (point) segments."""
+        from generation.utils.geometry import segment_segment_distance
+        
+        # Two point segments
+        p1 = np.array([0.0, 0.0, 0.0])
+        p2 = np.array([0.0, 0.0, 0.0])  # Same as p1 (degenerate)
+        
+        p3 = np.array([1.0, 0.0, 0.0])
+        p4 = np.array([1.0, 0.0, 0.0])  # Same as p3 (degenerate)
+        
+        dist = segment_segment_distance(p1, p2, p3, p4)
+        
+        assert dist == pytest.approx(1.0, rel=1e-6), \
+            f"Point-to-point distance should be 1.0, got {dist}"
+    
+    def test_t_intersection_distance_zero(self):
+        """Test T-intersection where one segment endpoint touches another segment."""
+        from generation.utils.geometry import segment_segment_distance
+        
+        # Segment 1: along X axis
+        p1 = np.array([0.0, 0.0, 0.0])
+        p2 = np.array([1.0, 0.0, 0.0])
+        
+        # Segment 2: perpendicular, starting at midpoint of segment 1
+        p3 = np.array([0.5, 0.0, 0.0])
+        p4 = np.array([0.5, 1.0, 0.0])
+        
+        dist = segment_segment_distance(p1, p2, p3, p4)
+        
+        assert dist == pytest.approx(0.0, abs=1e-10), \
+            f"T-intersection should have distance 0, got {dist}"
 
 
 class TestCapsuleCollisionCheck:

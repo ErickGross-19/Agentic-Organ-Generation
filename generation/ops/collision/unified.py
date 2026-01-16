@@ -562,34 +562,14 @@ def _capsule_distance(
     q1: np.ndarray,
     q2: np.ndarray,
 ) -> float:
-    """Compute minimum distance between two line segments (capsule centerlines)."""
-    d1 = p2 - p1
-    d2 = q2 - q1
-    r = p1 - q1
+    """
+    Compute minimum distance between two line segments (capsule centerlines).
     
-    a = np.dot(d1, d1)
-    b = np.dot(d1, d2)
-    c = np.dot(d2, d2)
-    d = np.dot(d1, r)
-    e = np.dot(d2, r)
-    
-    denom = a * c - b * b
-    
-    if abs(denom) < 1e-10:
-        # Parallel segments
-        s = 0.0
-        t = d / a if abs(a) > 1e-10 else 0.0
-    else:
-        s = (b * d - a * e) / denom
-        t = (c * d - b * e) / denom
-    
-    s = np.clip(s, 0, 1)
-    t = np.clip(t, 0, 1)
-    
-    closest_p = p1 + t * d1
-    closest_q = q1 + s * d2
-    
-    return float(np.linalg.norm(closest_p - closest_q))
+    This is a wrapper around the canonical implementation in
+    generation.utils.geometry.segment_segment_distance.
+    """
+    from ...utils.geometry import segment_segment_distance
+    return segment_segment_distance(p1, p2, q1, q2)
 
 
 def _resolve_by_reroute(

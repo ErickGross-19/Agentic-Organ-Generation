@@ -10,6 +10,7 @@ Re-exports both new enhanced API and legacy API for backward compatibility.
 # New enhanced API
 from .enhanced_embedding import (
     embed_with_port_preservation,
+    embed_void_mesh_as_negative_space,  # C1 FIX: Real mesh-based function, not alias
     get_port_constraints,
     EnhancedEmbeddingPolicy,
     PortPreservationPolicy,
@@ -18,23 +19,19 @@ from .enhanced_embedding import (
 
 # Legacy API (from embedding_legacy.py)
 from ..embedding_legacy import (
-    embed_tree_as_negative_space,
+    embed_tree_as_negative_space,  # Takes STL path, not in-memory mesh
     VoxelBudgetExceededError,
 )
 
-# Alias for new primary function
-embed_void_mesh_as_negative_space = embed_tree_as_negative_space
-
 __all__ = [
-    # New enhanced API
+    # New enhanced API (mesh-based)
     "embed_with_port_preservation",
+    "embed_void_mesh_as_negative_space",  # C1 FIX: Takes in-memory mesh
     "get_port_constraints",
     "EnhancedEmbeddingPolicy",
     "PortPreservationPolicy",
     "EmbeddingReport",
-    # Legacy API
-    "embed_tree_as_negative_space",
+    # Legacy API (file-based)
+    "embed_tree_as_negative_space",  # Takes STL path
     "VoxelBudgetExceededError",
-    # New primary alias
-    "embed_void_mesh_as_negative_space",
 ]
