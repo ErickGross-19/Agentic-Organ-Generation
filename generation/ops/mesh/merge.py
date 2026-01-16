@@ -15,6 +15,8 @@ import numpy as np
 import logging
 
 from ...policies import MeshMergePolicy, OperationReport
+from ...utils.resolution_resolver import resolve_pitch, ResolutionResult
+from aog_policies.resolution import ResolutionPolicy
 
 if TYPE_CHECKING:
     import trimesh
@@ -25,6 +27,7 @@ logger = logging.getLogger(__name__)
 def merge_meshes(
     meshes: List["trimesh.Trimesh"],
     policy: Optional[MeshMergePolicy] = None,
+    resolution_policy: Optional[ResolutionPolicy] = None,
 ) -> Tuple["trimesh.Trimesh", OperationReport]:
     """
     Merge multiple meshes using voxel-first strategy.
@@ -35,6 +38,9 @@ def merge_meshes(
         Meshes to merge
     policy : MeshMergePolicy, optional
         Policy controlling merge behavior
+    resolution_policy : ResolutionPolicy, optional
+        Resolution policy for pitch derivation when use_resolution_policy=True.
+        If None and use_resolution_policy=True, uses default ResolutionPolicy.
         
     Returns
     -------
@@ -73,11 +79,41 @@ def merge_meshes(
         "pitch_adjustments": [],
         "voxel_estimate": None,
         "pitch_auto_adjusted": False,
+        "resolution_policy_used": False,
     }
     
-    # Preflight voxel estimate and auto-adjust pitch if needed
+    # Compute combined bounding box for resolution policy
+    all_min = np.array([m.bounds[0] for m in meshes]).min(axis=0)
+    all_max = np.array([m.bounds[1] for m in meshes]).max(axis=0)
+    bbox = (all_min[0], all_max[0], all_min[1], all_max[1], all_min[2], all_max[2])
+    
+    # Determine effective pitch using resolution resolver if enabled
     effective_pitch = policy.voxel_pitch
-    if policy.mode in ("voxel", "auto") and policy.auto_adjust_pitch:
+    resolution_result: Optional[ResolutionResult] = None
+    
+    if policy.use_resolution_policy and (policy.voxel_pitch is None or resolution_policy is not None):
+        # Use resolution resolver to derive pitch
+        if resolution_policy is None:
+            resolution_policy = ResolutionPolicy()
+        
+        resolution_result = resolve_pitch(
+            op_name="merge",
+            requested_pitch=policy.voxel_pitch,
+            bbox=bbox,
+            resolution_policy=resolution_policy,
+            max_voxels_override=policy.max_voxels,
+        )
+        
+        effective_pitch = resolution_result.effective_pitch
+        metadata["resolution_policy_used"] = True
+        metadata["resolution_result"] = resolution_result.to_dict()
+        warnings.extend(resolution_result.warnings)
+        
+        if resolution_result.was_relaxed:
+            metadata["pitch_auto_adjusted"] = True
+    
+    elif policy.mode in ("voxel", "auto") and policy.auto_adjust_pitch:
+        # Legacy preflight voxel estimate
         estimated_voxels, adjusted_pitch = _preflight_voxel_estimate(meshes, policy)
         metadata["voxel_estimate"] = estimated_voxels
         

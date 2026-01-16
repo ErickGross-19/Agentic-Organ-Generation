@@ -94,8 +94,19 @@ class EllipsoidDomain(DomainSpec):
         )
         return normalized <= 1.0
 
-    def project_inside(self, point: Point3D) -> Point3D:
-        """Project point to nearest point inside ellipsoid."""
+    def project_inside(self, point: Point3D, margin: Optional[float] = None) -> Point3D:
+        """
+        Project point to nearest point inside ellipsoid.
+        
+        H1 FIX: Uses margin parameter instead of hardcoded 0.99 factor.
+        
+        Parameters
+        ----------
+        point : Point3D
+            Point to project
+        margin : float, optional
+            Margin from boundary. If None, uses 0.1% of smallest semi-axis.
+        """
         if self.contains(point):
             return point
 
@@ -115,7 +126,12 @@ class EllipsoidDomain(DomainSpec):
             (direction[2] / self.semi_axis_c) ** 2
         )
 
-        t *= 0.99
+        if margin is None:
+            smallest_axis = min(self.semi_axis_a, self.semi_axis_b, self.semi_axis_c)
+            margin = smallest_axis * 0.001
+        
+        margin_factor = 1.0 - (margin / min(self.semi_axis_a, self.semi_axis_b, self.semi_axis_c))
+        t *= max(0.9, margin_factor)
 
         return Point3D(
             self.center.x + t * direction[0],
@@ -533,8 +549,19 @@ class MeshDomain(DomainSpec):
         point_arr = point.to_array().reshape(1, 3)
         return bool(self._mesh.contains(point_arr)[0])
 
-    def project_inside(self, point: Point3D) -> Point3D:
-        """Project point to nearest point inside mesh."""
+    def project_inside(self, point: Point3D, margin: Optional[float] = None) -> Point3D:
+        """
+        Project point to nearest point inside mesh.
+        
+        H1 FIX: Uses margin parameter instead of hardcoded 0.001.
+        
+        Parameters
+        ----------
+        point : Point3D
+            Point to project
+        margin : float, optional
+            Margin from boundary. If None, uses 0.1% of smallest bounding box dimension.
+        """
         if self.contains(point):
             return point
 
@@ -543,7 +570,16 @@ class MeshDomain(DomainSpec):
 
         normal = self._mesh.face_normals[triangle_id[0]]
 
-        offset = -0.001 * normal
+        if margin is None:
+            bounds = self._mesh.bounds
+            smallest_dim = min(
+                bounds[1][0] - bounds[0][0],
+                bounds[1][1] - bounds[0][1],
+                bounds[1][2] - bounds[0][2],
+            )
+            margin = smallest_dim * 0.001
+        
+        offset = -margin * normal
         inside_point = closest[0] + offset
 
         return Point3D.from_array(inside_point)

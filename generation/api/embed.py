@@ -23,6 +23,7 @@ from ..core.domain import (
     DomainSpec as RuntimeDomainSpec,
     domain_from_dict,
 )
+from aog_policies.resolution import ResolutionPolicy
 
 if TYPE_CHECKING:
     import trimesh
@@ -74,6 +75,7 @@ def embed_void(
     void_mesh: Union["trimesh.Trimesh", str, Path],
     embedding_policy: Optional[EmbeddingPolicy] = None,
     ports: Optional[List[Dict[str, Any]]] = None,
+    resolution_policy: Optional[ResolutionPolicy] = None,
 ) -> Tuple["trimesh.Trimesh", "trimesh.Trimesh", "trimesh.Trimesh", OperationReport]:
     """
     Embed a void mesh into a domain as negative space.
@@ -81,11 +83,10 @@ def embed_void(
     This is the unified entry point for embedding operations, supporting
     both in-memory meshes and file paths.
     
-    C2 FIX: Now supports port preservation via EmbeddingPolicy fields:
-    - preserve_ports_enabled: Whether to preserve port geometry
-    - preserve_mode: "recarve" or "mask"
-    - carve_radius_factor: Factor to multiply port radius for carving
-    - carve_depth: Depth of carving cylinder
+    B2/B3 FIX: Now supports resolution policy for unified pitch selection:
+    - If use_resolution_policy=True, uses the resolution resolver for pitch derivation
+    - Respects max_voxels budget with deterministic pitch relaxation
+    - Reports effective pitch and warnings in metadata
     
     Parameters
     ----------
@@ -100,6 +101,8 @@ def embed_void(
         - position: (x, y, z) tuple
         - direction: (dx, dy, dz) tuple
         - radius: float
+    resolution_policy : ResolutionPolicy, optional
+        Resolution policy for pitch derivation when use_resolution_policy=True.
         
     Returns
     -------
@@ -139,11 +142,12 @@ def embed_void(
     
     # Perform embedding with retry logic
     try:
-        solid, void_out, shell = _embed_with_retry(
+        solid, void_out, shell, embed_metadata = _embed_with_retry(
             compiled_domain,
             void_mesh,
             embedding_policy,
             pitch_adjustments,
+            resolution_policy,
         )
         
         if pitch_adjustments:
@@ -152,6 +156,14 @@ def embed_void(
                 f"Voxel pitch adjusted from {embedding_policy.voxel_pitch:.6f} "
                 f"to {effective_pitch:.6f} due to memory constraints"
             )
+        
+        # B2/B3 FIX: Include resolution resolver warnings and metadata
+        if embed_metadata.get("resolution_warnings"):
+            warnings.extend(embed_metadata["resolution_warnings"])
+        if embed_metadata.get("resolution_result"):
+            metadata["resolution_result"] = embed_metadata["resolution_result"]
+            # Update effective pitch from resolution result
+            effective_pitch = embed_metadata["resolution_result"].get("effective_pitch", effective_pitch)
         
         # VOXEL RECARVE: Apply port preservation if enabled and ports provided
         # Uses voxel-based carving (no boolean backend dependency)
@@ -174,6 +186,7 @@ def embed_void(
         
         metadata["pitch_adjustments"] = pitch_adjustments
         metadata["effective_pitch"] = effective_pitch
+        metadata["use_resolution_policy"] = embedding_policy.use_resolution_policy
         metadata["solid_volume"] = float(solid.volume) if solid.is_watertight else None
         metadata["void_volume"] = float(void_out.volume) if void_out.is_watertight else None
         
@@ -209,21 +222,26 @@ def _embed_with_retry(
     void_mesh: "trimesh.Trimesh",
     policy: EmbeddingPolicy,
     pitch_adjustments: list,
-) -> Tuple["trimesh.Trimesh", "trimesh.Trimesh", "trimesh.Trimesh"]:
+    resolution_policy: Optional[ResolutionPolicy] = None,
+) -> Tuple["trimesh.Trimesh", "trimesh.Trimesh", "trimesh.Trimesh", Dict[str, Any]]:
     """
-    PATCH 3: Perform embedding using canonical mesh-based embedding directly.
+    B2/B3 FIX: Perform embedding using canonical mesh-based embedding directly.
     
     Now calls embed_void_mesh_as_negative_space directly with in-memory meshes,
     eliminating the need for temp STL files.
+    
+    Supports resolution policy for unified pitch selection:
+    - If use_resolution_policy=True, uses the resolution resolver for pitch derivation
+    - Respects max_voxels budget with deterministic pitch relaxation
     """
-    from ..ops.embedding.enhanced_embedding import embed_void_mesh_as_negative_space
+    from ..ops.embedding.enhanced_embedding import embed_void_mesh_as_negative_space as enhanced_embed
     import trimesh
     
     current_pitch = policy.voxel_pitch
     
     try:
-        # PATCH 3: Call canonical mesh-based embedding function directly
-        solid, void_out, shell, metadata = embed_void_mesh_as_negative_space(
+        # B2/B3 FIX: Call canonical mesh-based embedding function with resolution policy
+        solid, void_out, shell, metadata = enhanced_embed(
             void_mesh=void_mesh,
             domain=domain,
             voxel_pitch=current_pitch,
@@ -232,12 +250,21 @@ def _embed_with_retry(
             shell_thickness=policy.shell_thickness,
             auto_adjust_pitch=policy.auto_adjust_pitch,
             max_pitch_steps=policy.max_pitch_steps,
+            max_voxels=policy.max_voxels,
+            resolution_policy=resolution_policy,
+            use_resolution_policy=policy.use_resolution_policy,
         )
         
         # Track pitch adjustments from metadata
         if metadata.get("pitch_adjustments", 0) > 0:
             effective_pitch = metadata.get("voxel_pitch_used", current_pitch)
             pitch_adjustments.append(effective_pitch)
+        
+        # Also track resolution policy relaxation
+        if metadata.get("budget_first_relaxed", False):
+            effective_pitch = metadata.get("voxel_pitch", current_pitch)
+            if effective_pitch not in pitch_adjustments:
+                pitch_adjustments.append(effective_pitch)
         
         # Handle None values
         if solid is None:
@@ -247,7 +274,7 @@ def _embed_with_retry(
         if shell is None:
             shell = solid
         
-        return solid, void_out, shell
+        return solid, void_out, shell, metadata
         
     except Exception as e:
         logger.error(f"Mesh-based embedding failed: {e}")

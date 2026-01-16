@@ -46,6 +46,11 @@ from .orchestrators import (
     ValidationReport,
     ValidationConfig,
 )
+from .runner import (
+    run_validity_checks,
+    ValidityReport,
+    CheckResult,
+)
 
 # validate_and_repair_geometry requires pymeshfix which is an optional dependency.
 # We use lazy import to avoid breaking imports when pymeshfix is not installed.
@@ -68,6 +73,10 @@ __all__ = [
     "run_post_embedding_validation",
     "ValidationReport",
     "ValidationConfig",
+    # G1 FIX: Canonical validity runner
+    "run_validity_checks",
+    "ValidityReport",
+    "CheckResult",
     # Legacy pipeline (requires pymeshfix - lazy imported)
     "validate_and_repair_geometry",
 ]

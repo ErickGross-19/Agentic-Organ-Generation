@@ -36,6 +36,7 @@ from aog_policies.collision import RadiusPolicy, RetryPolicy, UnifiedCollisionPo
 
 if TYPE_CHECKING:
     import trimesh
+    from aog_policies.resolution import ResolutionPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -1235,6 +1236,10 @@ class ProgrammaticBackend(GenerationBackend):
         """
         Find a path from start to end, optionally through waypoints.
         
+        C1 FIX: All A* pathfinding requests are routed through hierarchical
+        pathfinding module. Even if caller requests algorithm="astar_voxel",
+        it will use hierarchical A* internally for scale-aware routing.
+        
         Returns (path_points, warnings).
         """
         warnings = []
@@ -1248,7 +1253,9 @@ class ProgrammaticBackend(GenerationBackend):
             return path_pts, warnings
         
         elif algorithm == "astar_voxel":
-            # Use A* pathfinding
+            # C1 FIX: Route through hierarchical pathfinding (mandatory)
+            # Even single-grid A* requests go through hierarchical module
+            warnings.append("Using hierarchical pathfinding (C1: mandatory for all A* requests)")
             return self._find_path_astar(
                 start, end, waypoints, clearance, radius, policy, warnings
             )
@@ -1258,13 +1265,14 @@ class ProgrammaticBackend(GenerationBackend):
             return self._find_path_bezier(start, end, waypoints, warnings)
         
         elif algorithm == "hybrid":
-            # Try A* first, fall back to straight
+            # C1 FIX: Try hierarchical A* first, fall back to straight
             path, astar_warnings = self._find_path_astar(
                 start, end, waypoints, clearance, radius, policy, []
             )
             if path is not None:
+                astar_warnings.append("Using hierarchical pathfinding (C1: mandatory)")
                 return path, astar_warnings
-            warnings.append("A* failed, falling back to straight path")
+            warnings.append("Hierarchical A* failed, falling back to straight path")
             path_pts = [start]
             for wp in waypoints:
                 path_pts.append(wp)
@@ -1289,21 +1297,32 @@ class ProgrammaticBackend(GenerationBackend):
         policy: ProgramPolicy,
         warnings: List[str],
     ) -> Tuple[Optional[List[np.ndarray]], List[str]]:
-        """Find path using A* algorithm."""
+        """
+        Find path using A* algorithm.
+        
+        C4 FIX: Uses hierarchical pathfinding with policy-driven pitch selection
+        and emits warnings/metrics for pitch relaxation.
+        """
         # Build full waypoint list
         all_points = [start] + waypoints + [end]
         
         full_path = [start]
         skipped_waypoints = []
+        pathfinding_metadata: List[Dict[str, Any]] = []
         
         for i in range(len(all_points) - 1):
             segment_start = all_points[i]
             segment_end = all_points[i + 1]
             
-            # Try to find path for this segment
-            segment_path = self._astar_segment(
+            # C4 FIX: _astar_segment now returns (path, metadata) tuple
+            segment_path, segment_metadata = self._astar_segment(
                 segment_start, segment_end, clearance, radius
             )
+            pathfinding_metadata.append(segment_metadata)
+            
+            # C4 FIX: Collect warnings from segment pathfinding
+            if segment_metadata.get("warnings"):
+                warnings.extend(segment_metadata["warnings"])
             
             if segment_path is None:
                 # Segment failed
@@ -1320,7 +1339,9 @@ class ProgrammaticBackend(GenerationBackend):
                 # Can't skip start or end
                 if policy.waypoint_policy.fallback_direct:
                     # Try direct path
-                    direct_path = self._astar_segment(start, end, clearance, radius)
+                    direct_path, direct_metadata = self._astar_segment(start, end, clearance, radius)
+                    if direct_metadata.get("warnings"):
+                        warnings.extend(direct_metadata["warnings"])
                     if direct_path is not None:
                         warnings.append("Using direct path (waypoints skipped)")
                         return direct_path, warnings
@@ -1330,6 +1351,11 @@ class ProgrammaticBackend(GenerationBackend):
             # Add segment path (skip first point to avoid duplicates)
             full_path.extend(segment_path[1:])
         
+        # C4 FIX: Emit summary warnings for pitch relaxation
+        any_pitch_relaxed = any(m.get("pitch_relaxed", False) for m in pathfinding_metadata)
+        if any_pitch_relaxed:
+            warnings.append("Pitch was relaxed during pathfinding due to voxel budget constraints")
+        
         return full_path, warnings
     
     def _astar_segment(
@@ -1338,22 +1364,34 @@ class ProgrammaticBackend(GenerationBackend):
         end: np.ndarray,
         clearance: float,
         radius: float,
-    ) -> Optional[List[np.ndarray]]:
+        resolution_policy: Optional["ResolutionPolicy"] = None,
+    ) -> Tuple[Optional[List[np.ndarray]], Dict[str, Any]]:
         """
         Find path for a single segment using hierarchical A*.
         
+        C4 FIX: Uses policy-driven hierarchical pathfinding with resolution
+        resolver integration. Emits warnings and metrics for pitch relaxation.
+        
         Uses the hierarchical pathfinding implementation for nontrivial
         obstacle avoidance. Falls back to direct path if collision-free.
+        
+        Returns
+        -------
+        tuple
+            (path_points, metadata) where metadata includes warnings and metrics
         """
+        metadata: Dict[str, Any] = {
+            "warnings": [],
+            "hierarchical_used": False,
+            "pitch_relaxed": False,
+        }
+        
         # Check if direct path is collision-free
         if self._is_segment_collision_free(start, end, radius, clearance):
-            return [start, end]
+            return [start, end], metadata
         
         # Use hierarchical pathfinding for nontrivial cases
-        from ..ops.pathfinding.hierarchical_astar import (
-            find_path_hierarchical,
-            HierarchicalPathfindingPolicy,
-        )
+        from ..ops.pathfinding.hierarchical_astar import find_path_hierarchical
         from aog_policies.pathfinding import HierarchicalPathfindingPolicy as PolicyClass
         
         # Build obstacles list from current network
@@ -1365,12 +1403,20 @@ class ProgrammaticBackend(GenerationBackend):
                 "radius": obs["radius"],
             })
         
-        # Create policy with appropriate settings
-        policy = PolicyClass(
-            clearance=clearance,
-            pitch_coarse=max(clearance * 2, 0.0001),  # At least 100µm
-            pitch_fine=max(clearance / 2, 0.000005),  # At least 5µm
-        )
+        # C4 FIX: Create policy from resolution policy if available
+        if resolution_policy is not None:
+            policy = PolicyClass.from_resolution_policy(
+                resolution_policy,
+                clearance=clearance,
+                use_resolution_policy=True,
+            )
+        else:
+            # Fallback to clearance-derived settings
+            policy = PolicyClass(
+                clearance=clearance,
+                pitch_coarse=max(clearance * 2, 0.0001),  # At least 100µm
+                pitch_fine=max(clearance / 2, 0.000005),  # At least 5µm
+            )
         
         # Run hierarchical pathfinding
         result = find_path_hierarchical(
@@ -1381,16 +1427,33 @@ class ProgrammaticBackend(GenerationBackend):
             obstacles=obstacles,
             network=self._current_network,
             policy=policy,
+            resolution_policy=resolution_policy,
         )
         
+        # C4 FIX: Capture metadata from hierarchical pathfinding
+        metadata["hierarchical_used"] = True
+        metadata["coarse_nodes_explored"] = result.coarse_nodes_explored
+        metadata["fine_nodes_explored"] = result.fine_nodes_explored
+        metadata["effective_fine_pitch"] = result.effective_fine_pitch
+        metadata["pitch_relaxed"] = result.pitch_was_relaxed
+        metadata["corridor_voxels"] = result.corridor_voxels
+        
+        if result.warnings:
+            metadata["warnings"].extend(result.warnings)
+        
+        if result.metadata:
+            metadata["coarse_pitch"] = result.metadata.get("coarse_pitch")
+            metadata["coarse_pitch_relaxed"] = result.metadata.get("coarse_pitch_relaxed", False)
+        
         if result.success and result.path_pts:
-            return result.path_pts
+            return result.path_pts, metadata
         
         # Log warning if pathfinding failed
         if result.errors:
             logger.warning(f"Hierarchical pathfinding failed: {result.errors}")
+            metadata["errors"] = result.errors
         
-        return None
+        return None, metadata
     
     def _find_path_bezier(
         self,

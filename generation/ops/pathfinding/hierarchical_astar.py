@@ -34,10 +34,10 @@ from .astar_voxel import (
     find_path,
 )
 from aog_policies.pathfinding import PathfindingPolicy, HierarchicalPathfindingPolicy
+from aog_policies.resolution import ResolutionPolicy
 
 if TYPE_CHECKING:
     from ...core.network import VascularNetwork
-    from aog_policies.resolution import ResolutionPolicy
     import trimesh
 
 logger = logging.getLogger(__name__)
@@ -395,9 +395,13 @@ def find_path_hierarchical(
     network: Optional["VascularNetwork"] = None,
     mesh_obstacles: Optional[List["trimesh.Trimesh"]] = None,
     policy: Optional[HierarchicalPathfindingPolicy] = None,
+    resolution_policy: Optional[ResolutionPolicy] = None,
 ) -> HierarchicalPathfindingResult:
     """
     Find a path using hierarchical coarse-to-fine A*.
+    
+    C1 FIX: This is the mandatory pathfinding entry point for all A* requests.
+    C2 FIX: Coarse-stage uses resolution resolver for voxel budgeting.
     
     Parameters
     ----------
@@ -417,6 +421,8 @@ def find_path_hierarchical(
         Mesh obstacles to avoid.
     policy : HierarchicalPathfindingPolicy, optional
         Pathfinding configuration.
+    resolution_policy : ResolutionPolicy, optional
+        Resolution policy for pitch derivation and voxel budgeting.
     
     Returns
     -------
@@ -429,7 +435,41 @@ def find_path_hierarchical(
     start_time = time.time()
     result_warnings = []
     
+    # C2 FIX: Use resolution resolver for coarse pitch if resolution_policy provided
+    effective_coarse_pitch = policy.pitch_coarse
+    coarse_pitch_relaxed = False
+    
+    if resolution_policy is not None and policy.use_resolution_policy:
+        from ...utils.resolution_resolver import resolve_pitch
+        
+        # Get domain bounding box for pitch calculation
+        domain_bounds = domain.get_bounds()
+        bbox = (
+            domain_bounds[0], domain_bounds[1],  # x_min, x_max
+            domain_bounds[2], domain_bounds[3],  # y_min, y_max
+            domain_bounds[4], domain_bounds[5],  # z_min, z_max
+        )
+        
+        # Resolve coarse pitch with voxel budget
+        resolution_result = resolve_pitch(
+            op_name="pathfinding_coarse",
+            requested_pitch=policy.pitch_coarse,
+            bbox=bbox,
+            resolution_policy=resolution_policy,
+            max_voxels_override=policy.max_voxels_coarse,
+        )
+        
+        effective_coarse_pitch = resolution_result["effective_pitch"]
+        coarse_pitch_relaxed = resolution_result.get("was_relaxed", False)
+        
+        if resolution_result.get("warnings"):
+            result_warnings.extend(resolution_result["warnings"])
+            for warning in resolution_result["warnings"]:
+                logger.warning(warning)
+    
     coarse_policy = policy.to_coarse_policy()
+    coarse_policy.voxel_pitch = effective_coarse_pitch  # Use resolved pitch
+    
     coarse_result = find_path(
         domain=domain,
         start=start,
@@ -578,7 +618,9 @@ def find_path_hierarchical(
         pitch_was_relaxed=pitch_was_relaxed,
         corridor_voxels=corridor_voxels,
         metadata={
-            "coarse_pitch": policy.pitch_coarse,
+            "coarse_pitch": effective_coarse_pitch,  # C2 FIX: Use effective pitch
+            "coarse_pitch_requested": policy.pitch_coarse,
+            "coarse_pitch_relaxed": coarse_pitch_relaxed,
             "fine_pitch": effective_fine_pitch,
             "corridor_radius": corridor_radius,
             "coarse_path_length": coarse_result.path_length,

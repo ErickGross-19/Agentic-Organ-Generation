@@ -17,8 +17,10 @@ import logging
 from ...core.network import VascularNetwork
 from ...core.domain import DomainSpec
 from ...core.types import Point3D
+from ...utils.resolution_resolver import resolve_pitch, ResolutionResult
 from aog_policies.features import PortPreservationPolicy
 from aog_policies.generation import EmbeddingPolicy
+from aog_policies.resolution import ResolutionPolicy
 
 if TYPE_CHECKING:
     import trimesh
@@ -769,19 +771,20 @@ def embed_void_mesh_as_negative_space(
     auto_adjust_pitch: bool = True,
     max_pitch_steps: int = 4,
     max_voxels: Optional[int] = None,
+    resolution_policy: Optional[ResolutionPolicy] = None,
+    use_resolution_policy: bool = False,
 ) -> Tuple["trimesh.Trimesh", "trimesh.Trimesh", Optional["trimesh.Trimesh"], Dict[str, Any]]:
     """
-    C1 FIX: Embed an in-memory void mesh into a domain as negative space.
+    Canonical embedding function: embed an in-memory void mesh into a domain as negative space.
     
     This is the canonical mesh-based embedding function that takes in-memory
-    trimesh objects directly, unlike embed_tree_as_negative_space which takes
-    a file path.
+    trimesh objects directly. Uses voxel subtraction (most robust method) to
+    carve the void from the domain.
     
-    Uses voxel subtraction (most robust method) to carve the void from the domain.
-    
-    Budget-first pitch selection: If max_voxels is specified, the pitch will be
-    relaxed up front if needed to fit within the voxel budget, rather than
-    waiting for MemoryError.
+    B2/B3 FIX: Now supports resolution policy for unified pitch selection:
+    - If use_resolution_policy=True, uses the resolution resolver for pitch derivation
+    - Respects max_voxels budget with deterministic pitch relaxation
+    - Reports effective pitch and warnings in metadata
     
     Parameters
     ----------
@@ -804,6 +807,10 @@ def embed_void_mesh_as_negative_space(
     max_voxels : int, optional
         Maximum voxel budget. If specified, pitch will be relaxed up front
         to fit within budget (budget-first selection).
+    resolution_policy : ResolutionPolicy, optional
+        Resolution policy for pitch derivation when use_resolution_policy=True.
+    use_resolution_policy : bool
+        If True, use resolution resolver for pitch selection (default: False).
         
     Returns
     -------
@@ -820,9 +827,34 @@ def embed_void_mesh_as_negative_space(
     from trimesh.voxel import VoxelGrid
     from ...core.domain import BoxDomain, CylinderDomain, EllipsoidDomain
     
-    # Budget-first pitch selection: compute appropriate pitch up front
+    # Get domain bounds for pitch selection
+    bounds = domain.get_bounds()
+    bbox = (bounds[0], bounds[1], bounds[2], bounds[3], bounds[4], bounds[5])
+    
+    # Pitch selection: use resolution resolver if enabled, otherwise legacy budget-first
     pitch_was_relaxed = False
-    if max_voxels is not None:
+    resolution_result: Optional[ResolutionResult] = None
+    resolution_warnings: List[str] = []
+    
+    if use_resolution_policy:
+        # Use resolution resolver for unified pitch selection
+        if resolution_policy is None:
+            resolution_policy = ResolutionPolicy()
+        
+        resolution_result = resolve_pitch(
+            op_name="embed",
+            requested_pitch=voxel_pitch,
+            bbox=bbox,
+            resolution_policy=resolution_policy,
+            max_voxels_override=max_voxels,
+        )
+        
+        voxel_pitch = resolution_result.effective_pitch
+        pitch_was_relaxed = resolution_result.was_relaxed
+        resolution_warnings = list(resolution_result.warnings)
+        
+    elif max_voxels is not None:
+        # Legacy budget-first pitch selection
         voxel_pitch, pitch_was_relaxed = _compute_budget_first_pitch(
             domain, voxel_pitch, max_voxels
         )
@@ -833,7 +865,18 @@ def embed_void_mesh_as_negative_space(
         "pitch_adjustments": 0,
         "budget_first_relaxed": pitch_was_relaxed,
         "max_voxels_budget": max_voxels,
+        "use_resolution_policy": use_resolution_policy,
+        "resolution_warnings": resolution_warnings,
     }
+    
+    if resolution_result is not None:
+        metadata["resolution_result"] = {
+            "effective_pitch": resolution_result.effective_pitch,
+            "requested_pitch": resolution_result.requested_pitch,
+            "was_relaxed": resolution_result.was_relaxed,
+            "relax_factor": resolution_result.relax_factor,
+            "metrics": resolution_result.metrics,
+        }
     
     # Create domain mesh based on domain type
     if isinstance(domain, CylinderDomain):

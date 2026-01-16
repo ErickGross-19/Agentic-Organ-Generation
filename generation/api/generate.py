@@ -695,22 +695,51 @@ def generate_void_mesh(
                     )
                     merged_mesh, merge_report = merge_meshes(channel_meshes, merge_policy)
                     if merged_mesh is None or len(merged_mesh.vertices) == 0:
-                        # Fallback to concatenation if merge fails
-                        mesh = trimesh.util.concatenate(channel_meshes)
-                        warnings.append(
-                            "Voxel merge failed, using concatenation. "
-                            "Result may have self-intersections."
+                        # E1 FIX: Try coarser voxel merge before falling back to concatenation
+                        coarse_policy = MeshMergePolicy(
+                            mode="voxel",
+                            voxel_pitch=1e-4,  # 100 microns - coarser
+                            auto_adjust_pitch=True,
                         )
+                        merged_mesh, merge_report = merge_meshes(channel_meshes, coarse_policy)
+                        if merged_mesh is not None and len(merged_mesh.vertices) > 0:
+                            mesh = merged_mesh
+                            warnings.append("Used coarser voxel merge (100µm pitch)")
+                            warnings.extend(merge_report.warnings)
+                        else:
+                            mesh = trimesh.util.concatenate(channel_meshes)
+                            warnings.append(
+                                "Voxel merge failed, using concatenation. "
+                                "Result may have self-intersections."
+                            )
                     else:
                         mesh = merged_mesh
                         warnings.extend(merge_report.warnings)
                 except Exception as e:
-                    # Fallback to concatenation if merge fails
-                    mesh = trimesh.util.concatenate(channel_meshes)
-                    warnings.append(
-                        f"Voxel merge failed ({e}), using concatenation. "
-                        "Result may have self-intersections."
-                    )
+                    # E1 FIX: Try coarser voxel merge before falling back to concatenation
+                    try:
+                        coarse_policy = MeshMergePolicy(
+                            mode="voxel",
+                            voxel_pitch=1e-4,  # 100 microns - coarser
+                            auto_adjust_pitch=True,
+                        )
+                        merged_mesh, merge_report = merge_meshes(channel_meshes, coarse_policy)
+                        if merged_mesh is not None and len(merged_mesh.vertices) > 0:
+                            mesh = merged_mesh
+                            warnings.append(f"Primary merge failed ({e}), used coarser voxel merge")
+                            warnings.extend(merge_report.warnings)
+                        else:
+                            mesh = trimesh.util.concatenate(channel_meshes)
+                            warnings.append(
+                                f"Voxel merge failed ({e}), using concatenation. "
+                                "Result may have self-intersections."
+                            )
+                    except Exception:
+                        mesh = trimesh.util.concatenate(channel_meshes)
+                        warnings.append(
+                            f"Voxel merge failed ({e}), using concatenation. "
+                            "Result may have self-intersections."
+                        )
         else:
             mesh = trimesh.Trimesh()
         

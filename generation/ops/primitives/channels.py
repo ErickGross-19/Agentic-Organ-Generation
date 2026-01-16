@@ -845,23 +845,37 @@ def create_channel_from_policy(
     actual_start = start + direction * policy.start_offset
     
     # Calculate channel length based on length_mode
+    # D1 FIX: Apply stop_before_boundary exactly once for to_depth mode
+    # D1 FIX: Remove 1mm minimum clamp - use policy-derived minimum instead
     if policy.length_mode == "explicit":
         if policy.length is None:
             raise ValueError("length_mode='explicit' requires length to be set")
         channel_length = policy.length
+        # For explicit mode, apply stop_before_boundary
+        channel_length = channel_length - policy.stop_before_boundary
     elif policy.length_mode == "to_center_fraction":
         if domain_depth is None:
             raise ValueError("length_mode='to_center_fraction' requires domain_depth")
         channel_length = domain_depth * policy.length_fraction
+        # For fraction mode, apply stop_before_boundary
+        channel_length = channel_length - policy.stop_before_boundary
     elif policy.length_mode == "to_depth":
         if domain_depth is None:
             raise ValueError("length_mode='to_depth' requires domain_depth")
+        # D1 FIX: Apply stop_before_boundary exactly once
         channel_length = domain_depth - policy.stop_before_boundary
     else:
         raise ValueError(f"Unknown length_mode: {policy.length_mode}")
     
-    # Apply stop_before_boundary
-    channel_length = max(0.001, channel_length - policy.stop_before_boundary)
+    # D1 FIX: Use policy-derived minimum instead of hardcoded 1mm
+    # Minimum channel length is k * radius (default k=2 for reasonable geometry)
+    min_channel_length = radius * 2  # At least 2x radius for valid geometry
+    if channel_length < min_channel_length:
+        warnings.append(
+            f"Channel length {channel_length*1000:.3f}mm shortened below minimum "
+            f"{min_channel_length*1000:.3f}mm (2x radius)"
+        )
+        channel_length = min_channel_length
     
     meta["effective_length"] = channel_length
     
@@ -893,12 +907,41 @@ def create_channel_from_policy(
         if hook_meta.get("constraint_warning"):
             warnings.append(hook_meta["constraint_warning"])
     elif policy.profile == "path_channel":
-        # Path channel uses the path_sweep module for more complex paths
-        # For now, fall back to straight channel
-        warnings.append("path_channel profile not fully implemented, using cylinder")
-        mesh = create_straight_channel(
-            tuple(actual_start), tuple(end), radius, policy.radial_sections
+        # D2 FIX: Implement path_channel via tube sweep
+        from .path_sweep import sweep_tube_along_path, RadiusSchedule, MeshPolicy
+        
+        # Build path points from start to end (can be extended with waypoints)
+        path_pts = [actual_start, end]
+        
+        # Create radius schedule based on policy
+        if policy.radius_end is not None:
+            radius_sched = RadiusSchedule.taper(radius, policy.radius_end)
+        elif policy.taper_factor != 1.0:
+            radius_sched = RadiusSchedule.taper(radius, radius * policy.taper_factor)
+        else:
+            radius_sched = RadiusSchedule.constant(radius)
+        
+        # Create mesh policy
+        sweep_mesh_policy = MeshPolicy(
+            radial_sections=policy.radial_sections,
+            path_samples=policy.path_samples,
+            cap_ends=True,
         )
+        
+        mesh, sweep_report = sweep_tube_along_path(
+            path_pts=path_pts,
+            radius_schedule=radius_sched,
+            mesh_policy=sweep_mesh_policy,
+        )
+        
+        if not sweep_report.success:
+            warnings.extend(sweep_report.errors)
+            mesh = create_straight_channel(
+                tuple(actual_start), tuple(end), radius, policy.radial_sections
+            )
+        else:
+            warnings.extend(sweep_report.warnings)
+            meta["sweep_report"] = sweep_report.to_dict()
     else:
         warnings.append(f"Unknown profile '{policy.profile}', using cylinder")
         mesh = create_straight_channel(
