@@ -490,6 +490,9 @@ class FrustumDomain(DomainSpec):
         """
         Project point to nearest point inside frustum.
         
+        Uses iterative refinement to ensure the projected point is truly inside
+        the domain within numerical tolerance.
+        
         Parameters
         ----------
         point : Point3D
@@ -506,30 +509,57 @@ class FrustumDomain(DomainSpec):
         
         bottom = center - half_height * self.axis
         
-        v = point_arr - bottom
-        t = np.dot(v, self.axis) / self.height
-        
         if margin is None:
-            # Use 0.1% of smallest dimension instead of hardcoded 1mm
             smallest_dim = min(self.height, self.radius_top, self.radius_bottom)
-            margin = smallest_dim * 0.001
-        
-        t = np.clip(t, margin / self.height, 1 - margin / self.height)
-        
-        radial = v - t * self.height * self.axis
-        radial_dist = np.linalg.norm(radial)
-        
-        radius_at_t = self._radius_at_height(t)
-        
-        if radial_dist > radius_at_t:
-            if radial_dist > 1e-10:
-                radial = radial / radial_dist * (radius_at_t - margin)
+            if smallest_dim > 0:
+                margin = smallest_dim * 0.01  # Use 1% for reliable convergence
             else:
-                radial = np.zeros(3)
+                margin = 1e-5
         
-        inside_point = bottom + t * self.height * self.axis + radial
+        # Iterative projection with increasing margin until point is inside
+        current_margin = margin
+        max_iterations = 20
         
-        return Point3D(inside_point[0], inside_point[1], inside_point[2])
+        for iteration in range(max_iterations):
+            # Compute position along axis relative to bottom
+            v = point_arr - bottom
+            t = np.dot(v, self.axis) / self.height
+            
+            # Clamp t to be strictly within [0, 1] with margin
+            # t_margin ensures we stay away from the caps
+            t_min = current_margin / self.height if self.height > 0 else 0.01
+            t_max = 1.0 - t_min
+            t_clamped = np.clip(t, t_min, t_max)
+            
+            # Compute the point on the axis at height t_clamped
+            axis_point = bottom + t_clamped * self.height * self.axis
+            
+            # Compute radial vector from axis to original point
+            radial = point_arr - axis_point
+            radial_dist = np.linalg.norm(radial)
+            
+            # Get radius at this height and apply margin
+            radius_at_t = self._radius_at_height(t_clamped)
+            target_radius = max(0, radius_at_t - current_margin)
+            
+            # Scale radial component if needed
+            if radial_dist > target_radius:
+                if radial_dist > 1e-10:
+                    radial = radial / radial_dist * target_radius
+                else:
+                    radial = np.zeros(3)
+            
+            inside_point = axis_point + radial
+            result = Point3D(inside_point[0], inside_point[1], inside_point[2])
+            
+            if self.contains(result):
+                return result
+            
+            # Increase margin for next iteration
+            current_margin *= 1.3
+        
+        # Final fallback: return the last computed point
+        return result
     
     def distance_to_boundary(self, point: Point3D) -> float:
         """Compute distance to frustum surface (approximate)."""

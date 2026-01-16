@@ -82,8 +82,13 @@ class CompositeDomain(DomainSpec):
         """
         Project point to nearest point inside composite domain.
         
-        This is an approximation that projects to the first child that contains
-        the projected point, or uses rejection sampling as fallback.
+        For intersection: projects to the child with largest signed distance (most outside),
+        then iterates until all constraints are satisfied. The result is near the boundary
+        of the active constraint.
+        
+        For union: finds the closest projection among all children.
+        
+        For difference: projects to base domain, avoiding subtracted regions.
         """
         if self.contains(point):
             return point
@@ -104,12 +109,57 @@ class CompositeDomain(DomainSpec):
                 return best_point
         
         elif self.operation == "intersection":
+            # For intersection, we need to find a point that:
+            # 1. Is inside all children (satisfies all constraints)
+            # 2. Is near the boundary of the intersection (not deep inside)
+            
+            # First, find a point inside the intersection using iterative projection
             current = point
-            for _ in range(10):
-                for child in self.children:
-                    if not child.contains(current):
-                        current = child.project_inside(current)
-                if self.contains(current):
+            max_iterations = 20
+            
+            for iteration in range(max_iterations):
+                # Find the child with the largest signed distance (most outside)
+                max_sd = float('-inf')
+                active_child_idx = 0
+                
+                for i, child in enumerate(self.children):
+                    sd = child.signed_distance(current)
+                    if sd > max_sd:
+                        max_sd = sd
+                        active_child_idx = i
+                
+                # If we're inside all children, we found a valid point
+                if max_sd <= 0:
+                    break
+                
+                # Project to the active constraint (the one we're most outside of)
+                current = self.children[active_child_idx].project_inside(current)
+            
+            # If we found a point inside, use binary search to find a point near the boundary
+            if self.contains(current):
+                # Binary search between original point and current to find boundary
+                low, high = 0.0, 1.0
+                for _ in range(30):
+                    mid = (low + high) / 2
+                    test_point = Point3D(
+                        point.x + mid * (current.x - point.x),
+                        point.y + mid * (current.y - point.y),
+                        point.z + mid * (current.z - point.z),
+                    )
+                    if self.contains(test_point):
+                        high = mid
+                    else:
+                        low = mid
+                
+                # Return a point just inside the boundary (use high which is inside)
+                result = Point3D(
+                    point.x + high * (current.x - point.x),
+                    point.y + high * (current.y - point.y),
+                    point.z + high * (current.z - point.z),
+                )
+                if self.contains(result):
+                    return result
+                else:
                     return current
         
         elif self.operation == "difference":
@@ -117,6 +167,7 @@ class CompositeDomain(DomainSpec):
             if self.contains(projected):
                 return projected
         
+        # Fallback: rejection sampling
         samples = self.sample_points(100, seed=42)
         if len(samples) > 0:
             point_arr = np.array([point.x, point.y, point.z])
@@ -132,11 +183,13 @@ class CompositeDomain(DomainSpec):
     
     def distance_to_boundary(self, point: Point3D) -> float:
         """
-        Approximate distance to composite domain boundary.
+        Compute distance to composite domain boundary.
         
-        For union: min of child distances
-        For intersection: max of child distances (signed)
-        For difference: max of base distance and negated subtracted distances
+        For union: min of child distances (closest child boundary)
+        For intersection: 
+            - If inside: min of child distances (closest constraint boundary)
+            - If outside: distance to the most violated constraint
+        For difference: distance to base or subtracted boundaries
         """
         child_distances = [child.distance_to_boundary(point) for child in self.children]
         
@@ -144,7 +197,22 @@ class CompositeDomain(DomainSpec):
             return min(child_distances)
         
         elif self.operation == "intersection":
-            return max(child_distances)
+            # For intersection, the boundary is where ANY child's boundary is reached
+            # When inside, we want the minimum distance (closest boundary)
+            # When outside, we want the distance to the most violated constraint
+            if self.contains(point):
+                # Inside: closest boundary is the minimum distance
+                return min(child_distances)
+            else:
+                # Outside: find the child we're most outside of
+                max_sd = float('-inf')
+                max_sd_idx = 0
+                for i, child in enumerate(self.children):
+                    sd = child.signed_distance(point)
+                    if sd > max_sd:
+                        max_sd = sd
+                        max_sd_idx = i
+                return child_distances[max_sd_idx]
         
         elif self.operation == "difference":
             base_dist = child_distances[0]

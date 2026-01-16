@@ -27,6 +27,7 @@ class ValidationPolicy:
         "check_min_diameter": bool,
         "check_open_ports": bool,
         "check_bounds": bool,
+        "check_void_inside_domain": bool,
         "min_diameter_threshold": float (meters),
         "max_components": int
     }
@@ -39,6 +40,7 @@ class ValidationPolicy:
     check_min_diameter: bool = True
     check_open_ports: bool = False
     check_bounds: bool = True
+    check_void_inside_domain: bool = True  # Added for backward compatibility
     min_diameter_threshold: float = 0.0005  # 0.5mm
     max_components: int = 1
     
@@ -112,7 +114,10 @@ class OpenPortPolicy:
         "validation_pitch": float or null (meters),
         "local_region_size": float (meters),
         "max_voxels_roi": int,
-        "auto_relax_pitch": bool
+        "auto_relax_pitch": bool,
+        "roi_size_factor": float (deprecated alias for probe_radius_factor),
+        "roi_min_size": float (deprecated alias for local_region_size),
+        "roi_max_size": float (deprecated, ignored)
     }
     """
     enabled: bool = True
@@ -124,6 +129,31 @@ class OpenPortPolicy:
     local_region_size: float = 0.005  # 5mm local region around port
     max_voxels_roi: int = 1_000_000  # 1M voxels max per port ROI
     auto_relax_pitch: bool = True  # Relax pitch if ROI exceeds budget
+    
+    # Alias fields for backward compatibility (not stored, just for constructor)
+    roi_size_factor: Optional[float] = field(default=None, repr=False)
+    roi_min_size: Optional[float] = field(default=None, repr=False)
+    roi_max_size: Optional[float] = field(default=None, repr=False)
+    
+    def __post_init__(self):
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # Handle alias: roi_size_factor -> probe_radius_factor
+        # Keep the alias field readable for backward compatibility
+        if self.roi_size_factor is not None:
+            self.probe_radius_factor = self.roi_size_factor
+            logger.warning("OpenPortPolicy: 'roi_size_factor' is deprecated, use 'probe_radius_factor' instead.")
+        
+        # Handle alias: roi_min_size -> local_region_size
+        # Keep the alias field readable for backward compatibility
+        if self.roi_min_size is not None:
+            self.local_region_size = self.roi_min_size
+            logger.warning("OpenPortPolicy: 'roi_min_size' is deprecated, use 'local_region_size' instead.")
+        
+        # Handle alias: roi_max_size (deprecated, ignored but kept readable)
+        if self.roi_max_size is not None:
+            logger.warning("OpenPortPolicy: 'roi_max_size' is deprecated and ignored.")
     
     def to_dict(self) -> Dict[str, Any]:
         return {
