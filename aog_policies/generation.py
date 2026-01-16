@@ -114,7 +114,7 @@ class ChannelPolicy:
     taper_factor: float = 0.5
     radius_end: Optional[float] = None
     bend_mode: Literal["radial_out", "arbitrary"] = "radial_out"
-    hook_depth: float = 0.001  # 1mm
+    hook_depth: float = 0.002  # 2mm (default, not hardcoded 1mm)
     hook_strength: float = 0.5
     hook_angle_deg: float = 90.0
     straight_fraction: float = 0.3
@@ -126,19 +126,68 @@ class ChannelPolicy:
     enforce_effective_radius: bool = True
     constraint_strategy: Literal["reduce_depth", "rotate", "both"] = "reduce_depth"
 
-    # Legacy field alias
-    channel_type: Optional[str] = None  # Maps to profile
+    # Legacy field aliases (not stored, just for constructor)
+    channel_type: Optional[str] = field(default=None, repr=False)  # Maps to profile
+    min_length: Optional[float] = field(default=None, repr=False)  # Alias for length (when length_mode="fixed")
+    hook_strategy: Optional[str] = field(default=None, repr=False)  # Alias for constraint_strategy
+    inlet_radius: Optional[float] = field(default=None, repr=False)  # Alias for radius_end (taper start)
+    outlet_radius: Optional[float] = field(default=None, repr=False)  # Alias for radius_end (taper end)
+    target_depth: Optional[float] = field(default=None, repr=False)  # Alias for hook_depth
+    hook_angle: Optional[float] = field(default=None, repr=False)  # Alias for hook_angle_deg
 
     def __post_init__(self):
+        import logging
+        logger = logging.getLogger(__name__)
+        
         # Handle legacy channel_type field
         if self.channel_type is not None and self.profile == "cylinder":
             type_map = {"straight": "cylinder", "tapered": "taper", "fang_hook": "fang_hook"}
             self.profile = type_map.get(self.channel_type, self.profile)
+        
+        # Handle alias: min_length -> length (with length_mode="explicit")
+        # Keep the alias field readable for backward compatibility
+        if self.min_length is not None:
+            if self.length is None:
+                self.length = self.min_length
+            logger.warning("ChannelPolicy: 'min_length' is deprecated, use 'length' instead.")
+        
+        # Handle alias: hook_strategy -> constraint_strategy
+        # Keep the alias field readable for backward compatibility
+        if self.hook_strategy is not None:
+            self.constraint_strategy = self.hook_strategy
+            logger.warning("ChannelPolicy: 'hook_strategy' is deprecated, use 'constraint_strategy' instead.")
+        
+        # Handle alias: inlet_radius/outlet_radius -> radius_end
+        if self.inlet_radius is not None or self.outlet_radius is not None:
+            if self.radius_end is None and self.outlet_radius is not None:
+                self.radius_end = self.outlet_radius
+            logger.warning("ChannelPolicy: 'inlet_radius'/'outlet_radius' are deprecated, use 'radius_end' instead.")
+        
+        # Handle alias: target_depth -> hook_depth
+        # Keep the alias field readable for backward compatibility
+        if self.target_depth is not None:
+            self.hook_depth = self.target_depth
+            logger.warning("ChannelPolicy: 'target_depth' is deprecated, use 'hook_depth' instead.")
+        
+        # Handle alias: hook_angle -> hook_angle_deg
+        if self.hook_angle is not None:
+            self.hook_angle_deg = self.hook_angle
+            logger.warning("ChannelPolicy: 'hook_angle' is deprecated, use 'hook_angle_deg' instead.")
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
-        # Remove legacy field from output
-        d.pop("channel_type", None)
+        # Include alias fields in output if they have values (for backward compatibility)
+        # but remove None values for cleaner output
+        for alias in ["channel_type", "min_length", "inlet_radius", "outlet_radius"]:
+            if d.get(alias) is None:
+                d.pop(alias, None)
+        # Keep hook_strategy, target_depth, hook_angle if they have values
+        if d.get("hook_strategy") is None:
+            d.pop("hook_strategy", None)
+        if d.get("target_depth") is None:
+            d.pop("target_depth", None)
+        if d.get("hook_angle") is None:
+            d.pop("hook_angle", None)
         return d
 
     @staticmethod
@@ -502,20 +551,45 @@ class EmbeddingPolicy:
     output_shell: bool = False  # Runner contract: output shell mesh
     output_domain_with_void: bool = True  # Runner contract: output domain with void
     output_void_mesh: bool = True  # Runner contract: output void mesh
+    
+    # Alias field for backward compatibility (not stored, just for constructor)
+    preserve_ports_mode: Optional[str] = field(default=None, repr=False)
+
+    def __post_init__(self):
+        import logging
+        # Handle alias: preserve_ports_mode -> preserve_mode
+        if self.preserve_ports_mode is not None:
+            self.preserve_mode = self.preserve_ports_mode
+            self.preserve_ports_mode = None  # Clear the alias field
+            logging.getLogger(__name__).warning(
+                "EmbeddingPolicy: 'preserve_ports_mode' is deprecated, use 'preserve_mode' instead."
+            )
 
     def to_dict(self) -> Dict[str, Any]:
+        d = asdict(self)
+        # Remove alias field from output
+        d.pop("preserve_ports_mode", None)
+        return d
         return asdict(self)
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "EmbeddingPolicy":
-        # PATCH 3: Convert legacy "mask" mode to "recarve" with warning
         import logging
+        d = dict(d)  # Make a copy to avoid mutating input
+        
+        # Alias: preserve_ports_mode -> preserve_mode
+        if "preserve_ports_mode" in d and "preserve_mode" not in d:
+            d["preserve_mode"] = d.pop("preserve_ports_mode")
+            logging.getLogger(__name__).warning(
+                "EmbeddingPolicy: 'preserve_ports_mode' is deprecated, use 'preserve_mode' instead."
+            )
+        
+        # PATCH 3: Convert legacy "mask" mode to "recarve" with warning
         if d.get("preserve_mode") == "mask":
             logging.getLogger(__name__).warning(
                 "EmbeddingPolicy: 'mask' preserve_mode is deprecated and has been "
                 "converted to 'recarve'. The 'mask' mode was a no-op and is no longer supported."
             )
-            d = dict(d)  # Make a copy to avoid mutating input
             d["preserve_mode"] = "recarve"
         return EmbeddingPolicy(**{k: v for k, v in d.items() if k in EmbeddingPolicy.__dataclass_fields__})
 

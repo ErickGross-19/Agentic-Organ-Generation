@@ -103,6 +103,7 @@ class ResolutionPolicy:
     max_voxels_repair: Optional[int] = None
     max_voxels_pathfinding_coarse: Optional[int] = None
     max_voxels_pathfinding_fine: Optional[int] = None
+    max_voxels_open_port_roi: Optional[int] = None  # Added for backward compatibility
     
     # Alias field for backward compatibility (not stored, just for constructor)
     voxels_across_min_diameter: Optional[int] = field(default=None, repr=False)
@@ -165,7 +166,7 @@ class ResolutionPolicy:
         Get max voxels budget for a specific operation.
 
         Args:
-            operation: One of "embed", "merge", "repair", "pathfinding_coarse", "pathfinding_fine"
+            operation: One of "embed", "merge", "repair", "pathfinding_coarse", "pathfinding_fine", "open_port_roi"
 
         Returns:
             Max voxels budget for the operation.
@@ -176,6 +177,7 @@ class ResolutionPolicy:
             "repair": self.max_voxels_repair,
             "pathfinding_coarse": self.max_voxels_pathfinding_coarse,
             "pathfinding_fine": self.max_voxels_pathfinding_fine,
+            "open_port_roi": self.max_voxels_open_port_roi,
         }
         return op_budgets.get(operation) or self.max_voxels
 
@@ -187,7 +189,8 @@ class ResolutionPolicy:
         *,
         bbox: Optional[Tuple[float, float, float, float, float, float]] = None,
         requested_pitch: Optional[float] = None,
-    ) -> float:
+        max_voxels_override: Optional[int] = None,  # Alias for max_voxels
+    ) -> Tuple[float, bool, Optional[str]]:
         """
         Compute a relaxed pitch if the voxel budget would be exceeded.
 
@@ -203,7 +206,10 @@ class ResolutionPolicy:
             requested_pitch: (Runner contract) The desired pitch in meters.
 
         Returns:
-            The effective (possibly relaxed) pitch in meters.
+            Tuple of (effective_pitch, was_relaxed, warning_message).
+            - effective_pitch: The (possibly relaxed) pitch in meters.
+            - was_relaxed: True if pitch was relaxed from the requested value.
+            - warning_message: Warning string if relaxed, None otherwise.
         """
         if bbox is not None and requested_pitch is not None:
             domain_extents = (
@@ -217,13 +223,18 @@ class ResolutionPolicy:
                 "Must provide either (base_pitch, domain_extents) or (bbox=, requested_pitch=)"
             )
 
+        # Handle alias: max_voxels_override -> max_voxels
+        if max_voxels_override is not None:
+            max_voxels = max_voxels_override
         if max_voxels is None:
             max_voxels = self.max_voxels
 
         if not self.auto_relax_pitch:
-            return base_pitch
+            return (base_pitch, False, None)
 
         pitch = base_pitch
+        was_relaxed = False
+        warning = None
 
         while True:
             nx = max(1, int(math.ceil(domain_extents[0] / pitch)))
@@ -240,8 +251,15 @@ class ResolutionPolicy:
                 break
 
             pitch = new_pitch
+            was_relaxed = True
 
-        return pitch
+        if was_relaxed:
+            warning = (
+                f"Pitch relaxed from {base_pitch:.2e} to {pitch:.2e} to stay within "
+                f"voxel budget ({max_voxels} voxels)"
+            )
+
+        return (pitch, was_relaxed, warning)
 
     def eps(self, domain_scale: float) -> float:
         """
