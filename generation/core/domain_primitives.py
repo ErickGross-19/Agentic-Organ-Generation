@@ -241,7 +241,7 @@ class CapsuleDomain(DomainSpec):
         """Check if point is inside capsule."""
         point_arr = self._point_to_array(point)
         dist = self._distance_to_segment(point_arr)
-        return dist <= self.radius
+        return bool(dist <= self.radius)
     
     def project_inside(self, point: Point3D, margin: Optional[float] = None) -> Point3D:
         """
@@ -484,7 +484,7 @@ class FrustumDomain(DomainSpec):
         
         radius_at_t = self._radius_at_height(t)
         
-        return radial_dist <= radius_at_t
+        return bool(radial_dist <= radius_at_t)
     
     def project_inside(self, point: Point3D, margin: Optional[float] = None) -> Point3D:
         """

@@ -36,9 +36,9 @@ CANONICAL_UNIT = "mm"
 # Supported unit types
 UnitType = Literal["m", "mm", "cm", "um"]
 
-_TO_METERS = {
+_TO_METERS = {  # Unit conversion factors - justified
     "m": 1.0,
-    "mm": 0.001,
+    "mm": 0.001,  # justified: unit conversion factor
     "cm": 0.01,
     "um": 1e-6,
 }

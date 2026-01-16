@@ -33,6 +33,7 @@ from ..core.types import Point3D, TubeGeometry
 from ..core.result import OperationResult, OperationStatus, Delta
 from aog_policies.pathfinding import WaypointPolicy
 from aog_policies.collision import RadiusPolicy, RetryPolicy, UnifiedCollisionPolicy
+from aog_policies.generation import ProgramPolicy
 
 if TYPE_CHECKING:
     import trimesh
@@ -183,72 +184,6 @@ class StepSpec:
         return cls(
             op=StepOp.CONNECT_TO_OUTLET.value,
             params={"from": from_node, "outlet": outlet, "algorithm": algorithm},
-        )
-
-
-@dataclass
-class ProgramPolicy:
-    """
-    Policy for programmatic network generation.
-    
-    This is the main configuration object for the ProgrammaticBackend,
-    containing the DSL steps and all sub-policies.
-    
-    JSON Schema:
-    {
-        "mode": "network" | "mesh",
-        "steps": [StepSpec, ...],
-        "path_algorithm": "astar_voxel" | "straight" | "bezier" | "hybrid",
-        "collision_policy": ProgramCollisionPolicy,
-        "retry_policy": RetryPolicy,
-        "waypoint_policy": WaypointPolicy,
-        "radius_policy": RadiusPolicy,
-        "units_policy": {...}
-    }
-    """
-    mode: Literal["network", "mesh"] = "network"
-    steps: List[StepSpec] = field(default_factory=list)
-    path_algorithm: str = "astar_voxel"
-    collision_policy: ProgramCollisionPolicy = field(default_factory=ProgramCollisionPolicy)
-    retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
-    waypoint_policy: WaypointPolicy = field(default_factory=WaypointPolicy)
-    radius_policy: RadiusPolicy = field(default_factory=RadiusPolicy)
-    default_radius: float = 0.001  # 1mm
-    default_clearance: float = 0.0002  # 0.2mm
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "mode": self.mode,
-            "steps": [s.to_dict() for s in self.steps],
-            "path_algorithm": self.path_algorithm,
-            "collision_policy": self.collision_policy.to_dict(),
-            "retry_policy": self.retry_policy.to_dict(),
-            "waypoint_policy": self.waypoint_policy.to_dict(),
-            "radius_policy": self.radius_policy.to_dict(),
-            "default_radius": self.default_radius,
-            "default_clearance": self.default_clearance,
-        }
-    
-    @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "ProgramPolicy":
-        steps = [StepSpec.from_dict(s) for s in d.get("steps", [])]
-        collision_policy = ProgramCollisionPolicy.from_dict(
-            d.get("collision_policy", {})
-        )
-        retry_policy = RetryPolicy.from_dict(d.get("retry_policy", {}))
-        waypoint_policy = WaypointPolicy.from_dict(d.get("waypoint_policy", {}))
-        radius_policy = RadiusPolicy.from_dict(d.get("radius_policy", {}))
-        
-        return cls(
-            mode=d.get("mode", "network"),
-            steps=steps,
-            path_algorithm=d.get("path_algorithm", "astar_voxel"),
-            collision_policy=collision_policy,
-            retry_policy=retry_policy,
-            waypoint_policy=waypoint_policy,
-            radius_policy=radius_policy,
-            default_radius=d.get("default_radius", 0.001),
-            default_clearance=d.get("default_clearance", 0.0002),
         )
 
 
@@ -596,11 +531,13 @@ class ProgrammaticBackend(GenerationBackend):
             clearance_increase_factor=retry_params.get("clearance_increase_factor", 1.2),
         )
         
-        # Get default radius from first inlet or use default
+        # Get default radius from first inlet or use policy default
         inlets = ports.get("inlets", [])
-        default_radius = 0.001
+        # Use ProgramPolicy's default_radius as the base default
+        policy_default_radius = ProgramPolicy().default_radius
+        default_radius = policy_default_radius
         if inlets:
-            default_radius = inlets[0].get("radius", 0.001)
+            default_radius = inlets[0].get("radius", policy_default_radius)
         default_radius = backend_params.get("default_radius", default_radius)
         
         # Build steps from backend_params or generate default steps

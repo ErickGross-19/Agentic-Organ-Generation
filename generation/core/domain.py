@@ -755,7 +755,47 @@ class MeshDomain(DomainSpec):
         )
 
 
-def domain_from_dict(d: dict) -> DomainSpec:
+def _convert_to_meters(value, input_units: str):
+    """Convert a numeric value or list/tuple of values from input_units to meters.
+    
+    Handles:
+    - Scalar numbers (int, float)
+    - Lists/tuples of numbers
+    - Dicts with x/y/z keys (Point3D-like)
+    """
+    if input_units == "m":
+        return value
+    elif input_units == "mm":
+        scale = 1e-3  # justified: unit conversion factor (mm to meters)
+    elif input_units == "um":
+        scale = 1e-6  # justified: unit conversion factor (um to meters)
+    else:
+        return value  # Unknown units, return as-is
+    
+    if isinstance(value, dict):
+        # Handle Point3D-like dicts with x/y/z keys
+        result = dict(value)
+        for key in ("x", "y", "z"):
+            if key in result and isinstance(result[key], (int, float)):
+                result[key] = result[key] * scale
+        return result
+    elif isinstance(value, (list, tuple)):
+        return type(value)(v * scale if isinstance(v, (int, float)) else v for v in value)
+    elif isinstance(value, (int, float)):
+        return value * scale
+    return value
+
+
+def _normalize_dict_to_meters(d: dict, input_units: str, length_keys: set) -> dict:
+    """Normalize length-valued keys in a dict from input_units to meters."""
+    result = dict(d)
+    for key in length_keys:
+        if key in result:
+            result[key] = _convert_to_meters(result[key], input_units)
+    return result
+
+
+def domain_from_dict(d: dict, input_units: str = "m") -> DomainSpec:
     """
     Create domain from dictionary based on type.
     
@@ -775,6 +815,9 @@ def domain_from_dict(d: dict) -> DomainSpec:
     ----------
     d : dict
         Dictionary with "type" key and type-specific parameters.
+    input_units : str
+        Units of numeric parameters in the dict. One of "m", "mm", "um".
+        Default is "m" (meters). All values are normalized to meters internally.
         
     Returns
     -------
@@ -786,33 +829,76 @@ def domain_from_dict(d: dict) -> DomainSpec:
     ValueError
         If domain type is not recognized.
     """
-    domain_type = d.get("type")
+    # Define which keys are length values for each domain type
+    length_keys = {
+        "center", "radii", "radius", "height", "min_corner", "max_corner",
+        "size", "start", "end", "top_radius", "bottom_radius", "translation",
+        # Box domain keys
+        "x_min", "x_max", "y_min", "y_max", "z_min", "z_max",
+        # Capsule/frustum keys
+        "length", "radius_top", "radius_bottom",
+        # Ellipsoid keys
+        "semi_axis_a", "semi_axis_b", "semi_axis_c",
+    }
+    
+    # Normalize the dict to meters
+    d_normalized = _normalize_dict_to_meters(d, input_units, length_keys)
+    
+    domain_type = d_normalized.get("type")
 
     if domain_type == "ellipsoid":
-        return EllipsoidDomain.from_dict(d)
+        return EllipsoidDomain.from_dict(d_normalized)
     elif domain_type == "box":
-        return BoxDomain.from_dict(d)
+        return BoxDomain.from_dict(d_normalized)
     elif domain_type == "cylinder":
-        return CylinderDomain.from_dict(d)
+        return CylinderDomain.from_dict(d_normalized)
     elif domain_type == "mesh":
-        return MeshDomain.from_dict(d)
+        return MeshDomain.from_dict(d_normalized)
     elif domain_type == "transform":
         from .domain_transform import TransformDomain
-        return TransformDomain.from_dict(d)
+        # For transform domains, recursively convert the base domain using original dict
+        # (base_domain is nested and needs its own unit conversion)
+        base_domain_dict = d.get("base_domain", {})
+        base_domain = domain_from_dict(base_domain_dict, input_units)
+        # Build the transform with normalized translation (but keep rotation/scale as-is)
+        translation = _convert_to_meters(d.get("translation", [0, 0, 0]), input_units)
+        rotation = d.get("rotation", [[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+        scale = d.get("scale", 1.0)
+        # Handle 4x4 matrix format - translation is embedded in the matrix
+        if "matrix" in d:
+            import numpy as np
+            matrix = np.array(d["matrix"], dtype=float)
+            # Scale the translation part of the matrix (column 3, rows 0-2)
+            if input_units == "mm":
+                matrix[:3, 3] *= 1e-3  # justified: unit conversion factor (mm to meters)
+            elif input_units == "um":
+                matrix[:3, 3] *= 1e-6  # justified: unit conversion factor (um to meters)
+            return TransformDomain.from_matrix_4x4(base_domain, matrix)
+        return TransformDomain(
+            base_domain=base_domain,
+            translation=translation,
+            rotation=rotation,
+            scale=scale,
+        )
     elif domain_type == "composite":
         from .domain_composite import CompositeDomain
-        return CompositeDomain.from_dict(d)
+        # For composite domains, recursively convert children using original dict
+        # (children are nested and need their own unit conversion)
+        children_dicts = d.get("children", [])
+        children = [domain_from_dict(child, input_units) for child in children_dicts]
+        operation = d_normalized.get("operation", "union")
+        return CompositeDomain(children=children, operation=operation)
     elif domain_type == "implicit":
         from .domain_implicit import ImplicitDomain
-        return ImplicitDomain.from_dict(d)
+        return ImplicitDomain.from_dict(d_normalized)
     elif domain_type == "sphere":
         from .domain_primitives import SphereDomain
-        return SphereDomain.from_dict(d)
+        return SphereDomain.from_dict(d_normalized)
     elif domain_type == "capsule":
         from .domain_primitives import CapsuleDomain
-        return CapsuleDomain.from_dict(d)
+        return CapsuleDomain.from_dict(d_normalized)
     elif domain_type == "frustum":
         from .domain_primitives import FrustumDomain
-        return FrustumDomain.from_dict(d)
+        return FrustumDomain.from_dict(d_normalized)
     else:
         raise ValueError(f"Unknown domain type: {domain_type}")

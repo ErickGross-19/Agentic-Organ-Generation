@@ -13,7 +13,9 @@ from typing import Optional, Tuple, Dict, Any, Union, List, TYPE_CHECKING
 from pathlib import Path
 import logging
 
-from ..policies import EmbeddingPolicy, OperationReport
+# Import policies from aog_policies (canonical source for runner contract)
+from aog_policies import EmbeddingPolicy, OperationReport
+from aog_policies.resolution import ResolutionPolicy
 from ..specs.design_spec import DomainSpec
 from ..specs.compile import compile_domain
 from ..core.domain import (
@@ -23,7 +25,6 @@ from ..core.domain import (
     DomainSpec as RuntimeDomainSpec,
     domain_from_dict,
 )
-from aog_policies.resolution import ResolutionPolicy
 
 if TYPE_CHECKING:
     import trimesh

@@ -134,6 +134,8 @@ class HierarchicalPathfindingPolicy:
         "auto_relax_fine_pitch": bool,
         "pitch_step_factor": float,
         "clearance": float (meters),
+        "local_radius": float (meters),
+        "inflation_mode": str,
         "max_nodes_coarse": int,
         "max_nodes_fine": int,
         "timeout_s": float,
@@ -159,6 +161,8 @@ class HierarchicalPathfindingPolicy:
     auto_relax_fine_pitch: bool = True
     pitch_step_factor: float = 1.5
     clearance: float = 0.0002  # 0.2mm
+    local_radius: float = 0.0002  # 0.2mm - Runner contract: local radius for inflation
+    inflation_mode: str = "clearance_plus_local_radius"  # Runner contract: inflation = clearance + local_radius
     max_nodes_coarse: int = 100_000
     max_nodes_fine: int = 500_000
     timeout_s: float = 60.0
@@ -185,6 +189,8 @@ class HierarchicalPathfindingPolicy:
             "auto_relax_fine_pitch": self.auto_relax_fine_pitch,
             "pitch_step_factor": self.pitch_step_factor,
             "clearance": self.clearance,
+            "local_radius": self.local_radius,
+            "inflation_mode": self.inflation_mode,
             "max_nodes_coarse": self.max_nodes_coarse,
             "max_nodes_fine": self.max_nodes_fine,
             "timeout_s": self.timeout_s,

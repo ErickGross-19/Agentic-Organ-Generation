@@ -30,6 +30,7 @@ from .generation import (
     MeshMergePolicy,
     EmbeddingPolicy,
     OutputPolicy,
+    ProgramPolicy,
 )
 
 from .validity import (
@@ -89,6 +90,7 @@ __all__ = [
     "MeshMergePolicy",
     "EmbeddingPolicy",
     "OutputPolicy",
+    "ProgramPolicy",
     # Validity policies
     "ValidationPolicy",
     "RepairPolicy",

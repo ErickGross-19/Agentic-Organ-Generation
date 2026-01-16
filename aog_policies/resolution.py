@@ -103,8 +103,16 @@ class ResolutionPolicy:
     max_voxels_repair: Optional[int] = None
     max_voxels_pathfinding_coarse: Optional[int] = None
     max_voxels_pathfinding_fine: Optional[int] = None
+    
+    # Alias field for backward compatibility (not stored, just for constructor)
+    voxels_across_min_diameter: Optional[int] = field(default=None, repr=False)
 
     def __post_init__(self):
+        # Handle alias: voxels_across_min_diameter -> min_voxels_across_feature
+        if self.voxels_across_min_diameter is not None:
+            self.min_voxels_across_feature = self.voxels_across_min_diameter
+            self.voxels_across_min_diameter = None  # Clear the alias field
+        
         if isinstance(self.pitch_limits, dict):
             self.pitch_limits = PitchLimits.from_dict(self.pitch_limits)
         self.pitch_limits.min_pitch = self.min_pitch
@@ -264,6 +272,8 @@ class ResolutionPolicy:
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
+        # Remove alias field from serialization
+        d.pop("voxels_across_min_diameter", None)
         d["pitch_limits"] = self.pitch_limits.to_dict()
         d["target_pitch"] = self.target_pitch
         d["embed_pitch"] = self.embed_pitch
@@ -271,11 +281,20 @@ class ResolutionPolicy:
         d["repair_pitch"] = self.repair_pitch
         d["pathfinding_pitch_coarse"] = self.pathfinding_pitch_coarse
         d["pathfinding_pitch_fine"] = self.pathfinding_pitch_fine
+        # Also include the alias for backward compatibility in serialized output
+        d["voxels_across_min_diameter"] = self.min_voxels_across_feature
         return d
 
     @staticmethod
     def from_dict(d: Dict[str, Any]) -> "ResolutionPolicy":
         d = dict(d)
+        
+        # Handle alias: voxels_across_min_diameter -> min_voxels_across_feature
+        if "voxels_across_min_diameter" in d and "min_voxels_across_feature" not in d:
+            d["min_voxels_across_feature"] = d.pop("voxels_across_min_diameter")
+        elif "voxels_across_min_diameter" in d:
+            d.pop("voxels_across_min_diameter")  # Remove duplicate if both present
+        
         for key in ["target_pitch", "embed_pitch", "merge_pitch", "repair_pitch",
                     "pathfinding_pitch_coarse", "pathfinding_pitch_fine"]:
             d.pop(key, None)

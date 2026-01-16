@@ -248,11 +248,10 @@ class TestModuleImports:
         """Test programmatic backend imports cleanly."""
         from generation.backends.programmatic_backend import (
             ProgrammaticBackend,
-            ProgramPolicy,
-            WaypointPolicy,
             StepSpec,
             GenerationReport,
         )
+        from aog_policies import ProgramPolicy, WaypointPolicy
         
         assert ProgrammaticBackend is not None
         assert ProgramPolicy is not None

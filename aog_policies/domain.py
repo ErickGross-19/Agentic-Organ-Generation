@@ -136,8 +136,8 @@ class ImplicitMeshingPolicy:
     ) -> "ImplicitMeshingPolicy":
         """Create from ResolutionPolicy with optional overrides."""
         return cls(
-            voxel_pitch=overrides.get("voxel_pitch", resolution_policy.embedding_pitch),
-            max_voxels=overrides.get("max_voxels", resolution_policy.max_voxels_embedding),
+            voxel_pitch=overrides.get("voxel_pitch", resolution_policy.embed_pitch),
+            max_voxels=overrides.get("max_voxels", resolution_policy.get_max_voxels_for_operation("embed")),
             auto_relax_pitch=overrides.get("auto_relax_pitch", resolution_policy.auto_relax_pitch),
             pitch_step_factor=overrides.get("pitch_step_factor", resolution_policy.pitch_step_factor),
             **{k: v for k, v in overrides.items() if k not in [
@@ -161,7 +161,11 @@ class DomainMeshingPolicy:
         "mesh_policy": MeshDomainPolicy,
         "implicit_policy": ImplicitMeshingPolicy,
         "cache_meshes": bool,
-        "emit_warnings": bool
+        "emit_warnings": bool,
+        "target_face_count": int (optional),
+        "min_face_count": int (optional),
+        "max_face_count": int (optional),
+        "voxel_pitch": float (optional, meters)
     }
     """
     primitive_policy: Optional[PrimitiveMeshingPolicy] = None
@@ -169,6 +173,12 @@ class DomainMeshingPolicy:
     implicit_policy: Optional[ImplicitMeshingPolicy] = None
     cache_meshes: bool = True
     emit_warnings: bool = True
+    # Front-door config for face count control (maps to sub-policies)
+    target_face_count: Optional[int] = None
+    min_face_count: Optional[int] = None
+    max_face_count: Optional[int] = None
+    # Front-door config for voxel pitch (maps to implicit_policy)
+    voxel_pitch: Optional[float] = None
     
     def __post_init__(self):
         if self.primitive_policy is None:
@@ -179,13 +189,23 @@ class DomainMeshingPolicy:
             self.implicit_policy = ImplicitMeshingPolicy()
     
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        result = {
             "primitive_policy": self.primitive_policy.to_dict() if self.primitive_policy else None,
             "mesh_policy": self.mesh_policy.to_dict() if self.mesh_policy else None,
             "implicit_policy": self.implicit_policy.to_dict() if self.implicit_policy else None,
             "cache_meshes": self.cache_meshes,
             "emit_warnings": self.emit_warnings,
         }
+        # Include front-door config if set
+        if self.target_face_count is not None:
+            result["target_face_count"] = self.target_face_count
+        if self.min_face_count is not None:
+            result["min_face_count"] = self.min_face_count
+        if self.max_face_count is not None:
+            result["max_face_count"] = self.max_face_count
+        if self.voxel_pitch is not None:
+            result["voxel_pitch"] = self.voxel_pitch
+        return result
     
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "DomainMeshingPolicy":
@@ -206,6 +226,10 @@ class DomainMeshingPolicy:
             implicit_policy=implicit_policy,
             cache_meshes=d.get("cache_meshes", True),
             emit_warnings=d.get("emit_warnings", True),
+            target_face_count=d.get("target_face_count"),
+            min_face_count=d.get("min_face_count"),
+            max_face_count=d.get("max_face_count"),
+            voxel_pitch=d.get("voxel_pitch"),
         )
 
 
