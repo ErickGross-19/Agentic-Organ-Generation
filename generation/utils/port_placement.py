@@ -86,6 +86,7 @@ def place_ports_circle(
     port_radius: float,
     z_position: float,
     policy: Optional[PortPlacementPolicy] = None,
+    effective_radius_override: Optional[float] = None,
 ) -> Tuple[PlacementResult, OperationReport]:
     """
     Place ports in a circular pattern on a domain face.
@@ -102,6 +103,10 @@ def place_ports_circle(
         Z coordinate for port placement in meters
     policy : PortPlacementPolicy, optional
         Policy controlling placement parameters
+    effective_radius_override : float, optional
+        B1 FIX: Pre-computed effective radius from place_ports_on_domain.
+        If provided, this value is used instead of recomputing from policy.
+        This ensures ridge_constraint_enabled is respected at the top level.
         
     Returns
     -------
@@ -116,13 +121,16 @@ def place_ports_circle(
     warnings = []
     clamp_count = 0
     
-    # Compute effective radius
-    effective_radius = compute_effective_radius(
-        domain_radius,
-        policy.ridge_width,
-        policy.ridge_clearance,
-        policy.port_margin,
-    )
+    # B1 FIX: Use pre-computed effective radius if provided, otherwise compute
+    if effective_radius_override is not None:
+        effective_radius = effective_radius_override
+    else:
+        effective_radius = compute_effective_radius(
+            domain_radius,
+            policy.ridge_width,
+            policy.ridge_clearance,
+            policy.port_margin,
+        )
     
     # Maximum placement radius (center of ports must be inside effective radius)
     max_placement_radius = effective_radius - port_radius
@@ -174,11 +182,12 @@ def place_ports_circle(
             positions.append((x, y, z_position))
             projection_distances.append(offset)
     
-    # Check and clamp positions that exceed effective radius
+    # B1 FIX: Check and clamp positions that exceed effective radius
+    # Only apply disk constraint if disk_constraint_enabled is True
     clamped_positions = []
     for i, (x, y, z) in enumerate(positions):
         dist = sqrt(x * x + y * y)
-        if dist + port_radius > effective_radius:
+        if policy.disk_constraint_enabled and dist + port_radius > effective_radius:
             # Clamp to effective radius
             if dist > 0:
                 scale = (effective_radius - port_radius) / dist
@@ -221,6 +230,7 @@ def place_ports_grid(
     port_radius: float,
     z_position: float,
     policy: Optional[PortPlacementPolicy] = None,
+    effective_radius_override: Optional[float] = None,
 ) -> Tuple[PlacementResult, OperationReport]:
     """
     Place ports in a grid pattern on a domain face.
@@ -237,6 +247,8 @@ def place_ports_grid(
         Z coordinate for port placement in meters
     policy : PortPlacementPolicy, optional
         Policy controlling placement parameters
+    effective_radius_override : float, optional
+        B1 FIX: Pre-computed effective radius from place_ports_on_domain.
         
     Returns
     -------
@@ -251,13 +263,16 @@ def place_ports_grid(
     warnings = []
     clamp_count = 0
     
-    # Compute effective radius
-    effective_radius = compute_effective_radius(
-        domain_radius,
-        policy.ridge_width,
-        policy.ridge_clearance,
-        policy.port_margin,
-    )
+    # B1 FIX: Use pre-computed effective radius if provided, otherwise compute
+    if effective_radius_override is not None:
+        effective_radius = effective_radius_override
+    else:
+        effective_radius = compute_effective_radius(
+            domain_radius,
+            policy.ridge_width,
+            policy.ridge_clearance,
+            policy.port_margin,
+        )
     
     # Calculate grid dimensions
     grid_size = int(np.ceil(np.sqrt(num_ports)))
@@ -275,9 +290,9 @@ def place_ports_grid(
             x = -effective_radius + spacing * (i + 1)
             y = -effective_radius + spacing * (j + 1)
             
-            # Check if inside effective radius
+            # B1 FIX: Check if inside effective radius only if disk_constraint_enabled
             dist = sqrt(x * x + y * y)
-            if dist + port_radius <= effective_radius:
+            if not policy.disk_constraint_enabled or dist + port_radius <= effective_radius:
                 positions.append((x, y, z_position))
                 projection_distances.append(dist)
                 count += 1
@@ -328,6 +343,7 @@ def place_ports_center_rings(
     z_position: float,
     policy: Optional[PortPlacementPolicy] = None,
     spacing_factor: float = 0.5,
+    effective_radius_override: Optional[float] = None,
 ) -> Tuple[PlacementResult, OperationReport]:
     """
     Place ports in center + concentric rings pattern.
@@ -348,6 +364,8 @@ def place_ports_center_rings(
         Policy controlling placement parameters
     spacing_factor : float
         Extra gap between ports as fraction of diameter
+    effective_radius_override : float, optional
+        B1 FIX: Pre-computed effective radius from place_ports_on_domain.
         
     Returns
     -------
@@ -362,13 +380,16 @@ def place_ports_center_rings(
     warnings = []
     clamp_count = 0
     
-    # Compute effective radius
-    effective_radius = compute_effective_radius(
-        domain_radius,
-        policy.ridge_width,
-        policy.ridge_clearance,
-        policy.port_margin,
-    )
+    # B1 FIX: Use pre-computed effective radius if provided, otherwise compute
+    if effective_radius_override is not None:
+        effective_radius = effective_radius_override
+    else:
+        effective_radius = compute_effective_radius(
+            domain_radius,
+            policy.ridge_width,
+            policy.ridge_clearance,
+            policy.port_margin,
+        )
     
     max_placement_radius = effective_radius - port_radius
     
@@ -389,7 +410,8 @@ def place_ports_center_rings(
         while len(positions) < num_ports:
             ring_radius = ring_k * pitch
             
-            if ring_radius > max_placement_radius:
+            # B1 FIX: Only enforce disk constraint if disk_constraint_enabled
+            if policy.disk_constraint_enabled and ring_radius > max_placement_radius:
                 warnings.append(
                     f"Could only fit {len(positions)} of {num_ports} ports "
                     f"within effective radius"
@@ -445,6 +467,7 @@ def place_ports(
     port_radius: float,
     z_position: float,
     policy: Optional[PortPlacementPolicy] = None,
+    effective_radius_override: Optional[float] = None,
 ) -> Tuple[PlacementResult, OperationReport]:
     """
     Place ports using the pattern specified in the policy.
@@ -463,6 +486,8 @@ def place_ports(
         Z coordinate for port placement in meters
     policy : PortPlacementPolicy, optional
         Policy controlling placement parameters
+    effective_radius_override : float, optional
+        B1 FIX: Pre-computed effective radius from place_ports_on_domain.
         
     Returns
     -------
@@ -475,14 +500,14 @@ def place_ports(
         policy = PortPlacementPolicy()
     
     if policy.pattern == "circle":
-        return place_ports_circle(num_ports, domain_radius, port_radius, z_position, policy)
+        return place_ports_circle(num_ports, domain_radius, port_radius, z_position, policy, effective_radius_override)
     elif policy.pattern == "grid":
-        return place_ports_grid(num_ports, domain_radius, port_radius, z_position, policy)
+        return place_ports_grid(num_ports, domain_radius, port_radius, z_position, policy, effective_radius_override)
     elif policy.pattern == "center_rings":
-        return place_ports_center_rings(num_ports, domain_radius, port_radius, z_position, policy)
+        return place_ports_center_rings(num_ports, domain_radius, port_radius, z_position, policy, effective_radius_override=effective_radius_override)
     else:
         # Default to circle
-        return place_ports_circle(num_ports, domain_radius, port_radius, z_position, policy)
+        return place_ports_circle(num_ports, domain_radius, port_radius, z_position, policy, effective_radius_override)
 
 
 @dataclass
@@ -554,6 +579,80 @@ def _get_domain_face_radius(
     return 0.001
 
 
+def _project_to_ellipsoid_boundary(
+    point: np.ndarray,
+    domain: "EllipsoidDomain",
+    direction: np.ndarray,
+) -> np.ndarray:
+    """
+    B2 FIX: Project a point onto the ellipsoid boundary along a direction.
+    
+    Solves for the intersection of a ray from the point along the direction
+    with the ellipsoid surface. Uses the parametric form:
+    
+    P(t) = point + t * direction
+    
+    And the ellipsoid equation:
+    (x/a)^2 + (y/b)^2 + (z/c)^2 = 1
+    
+    Parameters
+    ----------
+    point : np.ndarray
+        Starting point (shape (3,))
+    domain : EllipsoidDomain
+        Ellipsoid domain with semi_axis_a, semi_axis_b, semi_axis_c
+    direction : np.ndarray
+        Direction to project along (typically face normal)
+        
+    Returns
+    -------
+    np.ndarray
+        Point on ellipsoid surface
+    """
+    # Get ellipsoid center and semi-axes
+    cx, cy, cz = domain.center
+    a, b, c = domain.semi_axis_a, domain.semi_axis_b, domain.semi_axis_c
+    
+    # Translate point to ellipsoid-centered coordinates
+    px, py, pz = point[0] - cx, point[1] - cy, point[2] - cz
+    dx, dy, dz = direction[0], direction[1], direction[2]
+    
+    # Coefficients for quadratic equation At^2 + Bt + C = 0
+    # From substituting P(t) into ellipsoid equation
+    A = (dx/a)**2 + (dy/b)**2 + (dz/c)**2
+    B = 2 * (px*dx/a**2 + py*dy/b**2 + pz*dz/c**2)
+    C = (px/a)**2 + (py/b)**2 + (pz/c)**2 - 1
+    
+    discriminant = B**2 - 4*A*C
+    
+    if discriminant < 0 or A == 0:
+        # No intersection - return original point
+        return point
+    
+    # Find the intersection closest to the point (smallest positive t)
+    sqrt_disc = np.sqrt(discriminant)
+    t1 = (-B + sqrt_disc) / (2*A)
+    t2 = (-B - sqrt_disc) / (2*A)
+    
+    # Choose the t that moves us toward the boundary
+    # For points inside, we want the positive t
+    # For points outside, we want the negative t (moving back)
+    if C <= 0:  # Point is inside or on ellipsoid
+        t = max(t1, t2) if max(t1, t2) >= 0 else min(t1, t2)
+    else:  # Point is outside ellipsoid
+        t = min(abs(t1), abs(t2))
+        t = t1 if abs(t1) < abs(t2) else t2
+    
+    # Compute intersection point
+    result = np.array([
+        point[0] + t * dx,
+        point[1] + t * dy,
+        point[2] + t * dz,
+    ])
+    
+    return result
+
+
 def place_ports_on_domain(
     domain: Union["BoxDomain", "CylinderDomain", "EllipsoidDomain"],
     num_ports: int,
@@ -608,14 +707,16 @@ def place_ports_on_domain(
     else:
         effective_radius = domain_radius - policy.port_margin
     
-    # Place ports in 2D local coordinates (on the face plane)
-    # Use z_position=0 since we'll transform to world coordinates
+    # B1 FIX: Place ports in 2D local coordinates (on the face plane)
+    # Pass the pre-computed effective_radius to prevent lower-level functions
+    # from recomputing it (which would ignore ridge_constraint_enabled)
     local_result, local_report = place_ports(
         num_ports=num_ports,
         domain_radius=domain_radius,
         port_radius=port_radius,
         z_position=0.0,
         policy=policy,
+        effective_radius_override=effective_radius,
     )
     
     # Transform local positions to world coordinates
@@ -624,10 +725,22 @@ def place_ports_on_domain(
     n = np.array(normal)
     origin_pt = np.array(origin)
     
+    # B2 FIX: Check if we need to project to ellipsoid boundary
+    from ..core.domain import EllipsoidDomain
+    is_ellipsoid = isinstance(domain, EllipsoidDomain)
+    project_to_boundary = policy.projection_mode == "project_to_boundary"
+    
     world_positions = []
     for local_x, local_y, _ in local_result.positions:
         # Transform: world = origin + local_x * u + local_y * v
         world_pt = origin_pt + local_x * u + local_y * v
+        
+        # B2 FIX: Project to ellipsoid boundary if requested
+        if is_ellipsoid and project_to_boundary:
+            world_pt = _project_to_ellipsoid_boundary(
+                world_pt, domain, np.array(normal)
+            )
+        
         world_positions.append(tuple(world_pt.tolist()))
     
     # All ports have the same direction (inward normal)

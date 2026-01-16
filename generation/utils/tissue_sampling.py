@@ -61,33 +61,32 @@ def sample_tissue_points(
             metadata={"n_points": 0, "reason": "sampling disabled"},
         )
     
-    # Set random seed
-    if seed is not None:
-        np.random.seed(seed)
-    elif policy.seed is not None:
-        np.random.seed(policy.seed)
+    # B5 FIX: Use local RNG instead of global np.random.seed
+    # This prevents leaking randomness across runs and ensures reproducibility
+    effective_seed = seed if seed is not None else policy.seed
+    rng = np.random.default_rng(effective_seed)
     
     # Get port positions for exclusion
     port_positions = _get_port_positions(ports)
     
-    # Sample based on strategy
+    # B5 FIX: Pass RNG to all sampling functions
     strategy = policy.strategy
     
     if strategy == "uniform":
-        points, meta = _sample_uniform(domain, policy, port_positions)
+        points, meta = _sample_uniform(domain, policy, port_positions, rng)
     elif strategy == "depth_biased":
-        points, meta = _sample_depth_biased(domain, policy, port_positions)
+        points, meta = _sample_depth_biased(domain, policy, port_positions, rng)
     elif strategy == "radial_biased":
-        points, meta = _sample_radial_biased(domain, policy, port_positions)
+        points, meta = _sample_radial_biased(domain, policy, port_positions, rng)
     elif strategy == "boundary_shell":
-        points, meta = _sample_boundary_shell(domain, policy, port_positions)
+        points, meta = _sample_boundary_shell(domain, policy, port_positions, rng)
     elif strategy == "gaussian":
-        points, meta = _sample_gaussian(domain, policy, port_positions)
+        points, meta = _sample_gaussian(domain, policy, port_positions, rng)
     elif strategy == "mixture":
-        points, meta = _sample_mixture(domain, policy, port_positions)
+        points, meta = _sample_mixture(domain, policy, port_positions, rng)
     else:
         logger.warning(f"Unknown sampling strategy '{strategy}', falling back to uniform")
-        points, meta = _sample_uniform(domain, policy, port_positions)
+        points, meta = _sample_uniform(domain, policy, port_positions, rng)
     
     report = OperationReport(
         operation="sample_tissue_points",
@@ -148,6 +147,7 @@ def _sample_uniform(
     domain: "DomainSpec",
     policy: TissueSamplingPolicy,
     port_positions: List[np.ndarray],
+    rng: np.random.Generator,
 ) -> Tuple[List[Point3D], Dict[str, Any]]:
     """Sample points uniformly within the domain."""
     n_points = policy.n_points
@@ -162,11 +162,11 @@ def _sample_uniform(
     max_attempts = n_points * 10
     
     while len(points) < n_points and attempts < max_attempts:
-        # Sample random point in bounding box
+        # B5 FIX: Use local RNG instead of np.random
         point = np.array([
-            np.random.uniform(bounds[0], bounds[1]),
-            np.random.uniform(bounds[2], bounds[3]),
-            np.random.uniform(bounds[4], bounds[5]),
+            rng.uniform(bounds[0], bounds[1]),
+            rng.uniform(bounds[2], bounds[3]),
+            rng.uniform(bounds[4], bounds[5]),
         ])
         
         if _is_valid_point(point, domain, port_positions, min_dist, exclude_spheres):
@@ -189,6 +189,7 @@ def _sample_depth_biased(
     domain: "DomainSpec",
     policy: TissueSamplingPolicy,
     port_positions: List[np.ndarray],
+    rng: np.random.Generator,
 ) -> Tuple[List[Point3D], Dict[str, Any]]:
     """
     Sample points with depth bias (more points deeper into domain).
@@ -224,11 +225,11 @@ def _sample_depth_biased(
     max_attempts = n_points * 10
     
     while len(points) < n_points and attempts < max_attempts:
-        # Sample depth based on distribution
-        depth = _sample_depth_value(policy, depth_min, depth_max)
+        # B5 FIX: Sample depth based on distribution using local RNG
+        depth = _sample_depth_value(policy, depth_min, depth_max, rng)
         
-        # Sample random point in the plane perpendicular to depth axis
-        point = _sample_point_at_depth(bounds, depth_axis, depth_sign, depth_origin, depth)
+        # B5 FIX: Sample random point in the plane perpendicular to depth axis using local RNG
+        point = _sample_point_at_depth(bounds, depth_axis, depth_sign, depth_origin, depth, rng)
         
         if _is_valid_point(point, domain, port_positions, min_dist, exclude_spheres):
             points.append(Point3D(*point))
@@ -252,29 +253,30 @@ def _sample_depth_biased(
     }
 
 
-def _sample_depth_value(policy: TissueSamplingPolicy, depth_min: float, depth_max: float) -> float:
+def _sample_depth_value(policy: TissueSamplingPolicy, depth_min: float, depth_max: float, rng: np.random.Generator) -> float:
     """Sample a depth value based on the distribution type."""
     distribution = policy.depth_distribution
     
+    # B5 FIX: Use local RNG instead of np.random
     # Normalize to [0, 1] then scale
     if distribution == "linear":
         # Linear: uniform distribution
-        t = np.random.uniform(0, 1)
+        t = rng.uniform(0, 1)
     elif distribution == "power":
         # Power: more points deeper (t^p where p > 1)
         p = policy.depth_power
-        t = np.random.uniform(0, 1) ** (1.0 / p)  # Inverse CDF
+        t = rng.uniform(0, 1) ** (1.0 / p)  # Inverse CDF
     elif distribution == "exponential":
         # Exponential: more points deeper
         lam = policy.depth_lambda
-        t = 1 - np.exp(-lam * np.random.uniform(0, 1))
+        t = 1 - np.exp(-lam * rng.uniform(0, 1))
     elif distribution == "beta":
         # Beta distribution for flexible control
         alpha = policy.depth_alpha
         beta = policy.depth_beta
-        t = np.random.beta(alpha, beta)
+        t = rng.beta(alpha, beta)
     else:
-        t = np.random.uniform(0, 1)
+        t = rng.uniform(0, 1)
     
     return depth_min + t * (depth_max - depth_min)
 
@@ -303,12 +305,14 @@ def _sample_point_at_depth(
     depth_sign: int,
     depth_origin: float,
     depth: float,
+    rng: np.random.Generator,
 ) -> np.ndarray:
     """Sample a random point at a given depth."""
+    # B5 FIX: Use local RNG instead of np.random
     point = np.array([
-        np.random.uniform(bounds[0], bounds[1]),
-        np.random.uniform(bounds[2], bounds[3]),
-        np.random.uniform(bounds[4], bounds[5]),
+        rng.uniform(bounds[0], bounds[1]),
+        rng.uniform(bounds[2], bounds[3]),
+        rng.uniform(bounds[4], bounds[5]),
     ])
     
     # Set the depth coordinate
@@ -321,6 +325,7 @@ def _sample_radial_biased(
     domain: "DomainSpec",
     policy: TissueSamplingPolicy,
     port_positions: List[np.ndarray],
+    rng: np.random.Generator,
 ) -> Tuple[List[Point3D], Dict[str, Any]]:
     """Sample points with radial bias from face center."""
     n_points = policy.n_points
@@ -346,30 +351,30 @@ def _sample_radial_biased(
     max_attempts = n_points * 10
     
     while len(points) < n_points and attempts < max_attempts:
-        # Sample radius based on distribution
-        r = _sample_radial_value(policy, r_min, r_max)
+        # B5 FIX: Sample radius based on distribution using local RNG
+        r = _sample_radial_value(policy, r_min, r_max, rng)
         
-        # Sample angle
-        theta = np.random.uniform(0, 2 * np.pi)
+        # B5 FIX: Sample angle using local RNG
+        theta = rng.uniform(0, 2 * np.pi)
         
-        # Sample depth uniformly
+        # B5 FIX: Sample depth uniformly using local RNG
         depth_axis = _get_depth_params(bounds, face)[0]
         if depth_axis == 2:
-            z = np.random.uniform(bounds[4], bounds[5])
+            z = rng.uniform(bounds[4], bounds[5])
             point = np.array([
                 face_center[0] + r * np.cos(theta),
                 face_center[1] + r * np.sin(theta),
                 z,
             ])
         elif depth_axis == 0:
-            x = np.random.uniform(bounds[0], bounds[1])
+            x = rng.uniform(bounds[0], bounds[1])
             point = np.array([
                 x,
                 face_center[1] + r * np.cos(theta),
                 face_center[2] + r * np.sin(theta),
             ])
         else:
-            y = np.random.uniform(bounds[2], bounds[3])
+            y = rng.uniform(bounds[2], bounds[3])
             point = np.array([
                 face_center[0] + r * np.cos(theta),
                 y,
@@ -398,26 +403,27 @@ def _sample_radial_biased(
     }
 
 
-def _sample_radial_value(policy: TissueSamplingPolicy, r_min: float, r_max: float) -> float:
+def _sample_radial_value(policy: TissueSamplingPolicy, r_min: float, r_max: float, rng: np.random.Generator) -> float:
     """Sample a radial value based on the distribution type."""
     distribution = policy.radial_distribution
     
+    # B5 FIX: Use local RNG instead of np.random
     if distribution == "center_heavy":
         # More points near center
         p = policy.radial_power
-        t = np.random.uniform(0, 1) ** p
+        t = rng.uniform(0, 1) ** p
     elif distribution == "edge_heavy":
         # More points near edge
         p = policy.radial_power
-        t = 1 - (1 - np.random.uniform(0, 1)) ** p
+        t = 1 - (1 - rng.uniform(0, 1)) ** p
     elif distribution == "ring":
         # Gaussian ring at r0
         r0 = policy.ring_r0
         sigma = policy.ring_sigma
-        r = np.random.normal(r0, sigma)
+        r = rng.normal(r0, sigma)
         return np.clip(r, r_min, r_max)
     else:
-        t = np.random.uniform(0, 1)
+        t = rng.uniform(0, 1)
     
     return r_min + t * (r_max - r_min)
 
@@ -448,6 +454,7 @@ def _sample_boundary_shell(
     domain: "DomainSpec",
     policy: TissueSamplingPolicy,
     port_positions: List[np.ndarray],
+    rng: np.random.Generator,
 ) -> Tuple[List[Point3D], Dict[str, Any]]:
     """Sample points near domain boundary."""
     n_points = policy.n_points
@@ -464,11 +471,11 @@ def _sample_boundary_shell(
     max_attempts = n_points * 10
     
     while len(points) < n_points and attempts < max_attempts:
-        # Sample random point in bounding box
+        # B5 FIX: Sample random point in bounding box using local RNG
         point = np.array([
-            np.random.uniform(bounds[0], bounds[1]),
-            np.random.uniform(bounds[2], bounds[3]),
-            np.random.uniform(bounds[4], bounds[5]),
+            rng.uniform(bounds[0], bounds[1]),
+            rng.uniform(bounds[2], bounds[3]),
+            rng.uniform(bounds[4], bounds[5]),
         ])
         
         # Check distance to boundary
@@ -515,6 +522,7 @@ def _sample_gaussian(
     domain: "DomainSpec",
     policy: TissueSamplingPolicy,
     port_positions: List[np.ndarray],
+    rng: np.random.Generator,
 ) -> Tuple[List[Point3D], Dict[str, Any]]:
     """Sample points from a Gaussian distribution."""
     n_points = policy.n_points
@@ -529,8 +537,8 @@ def _sample_gaussian(
     max_attempts = n_points * 10
     
     while len(points) < n_points and attempts < max_attempts:
-        # Sample from Gaussian
-        point = np.random.normal(mean, sigma)
+        # B5 FIX: Sample from Gaussian using local RNG
+        point = rng.normal(mean, sigma)
         
         if _is_valid_point(point, domain, port_positions, min_dist, exclude_spheres):
             points.append(Point3D(*point))
@@ -552,13 +560,14 @@ def _sample_mixture(
     domain: "DomainSpec",
     policy: TissueSamplingPolicy,
     port_positions: List[np.ndarray],
+    rng: np.random.Generator,
 ) -> Tuple[List[Point3D], Dict[str, Any]]:
     """Sample points from a mixture of distributions."""
     components = policy.mixture_components
     
     if not components:
-        # Fall back to uniform
-        return _sample_uniform(domain, policy, port_positions)
+        # B5 FIX: Fall back to uniform with local RNG
+        return _sample_uniform(domain, policy, port_positions, rng)
     
     # Normalize weights
     total_weight = sum(c.get("weight", 1.0) for c in components)
@@ -578,19 +587,19 @@ def _sample_mixture(
             **{k: v for k, v in sub_policy_dict.items() if k != "strategy" and k != "n_points"}
         )
         
-        # Sample from component
+        # B5 FIX: Sample from component using local RNG
         if sub_policy.strategy == "uniform":
-            points, meta = _sample_uniform(domain, sub_policy, port_positions)
+            points, meta = _sample_uniform(domain, sub_policy, port_positions, rng)
         elif sub_policy.strategy == "depth_biased":
-            points, meta = _sample_depth_biased(domain, sub_policy, port_positions)
+            points, meta = _sample_depth_biased(domain, sub_policy, port_positions, rng)
         elif sub_policy.strategy == "radial_biased":
-            points, meta = _sample_radial_biased(domain, sub_policy, port_positions)
+            points, meta = _sample_radial_biased(domain, sub_policy, port_positions, rng)
         elif sub_policy.strategy == "boundary_shell":
-            points, meta = _sample_boundary_shell(domain, sub_policy, port_positions)
+            points, meta = _sample_boundary_shell(domain, sub_policy, port_positions, rng)
         elif sub_policy.strategy == "gaussian":
-            points, meta = _sample_gaussian(domain, sub_policy, port_positions)
+            points, meta = _sample_gaussian(domain, sub_policy, port_positions, rng)
         else:
-            points, meta = _sample_uniform(domain, sub_policy, port_positions)
+            points, meta = _sample_uniform(domain, sub_policy, port_positions, rng)
         
         all_points.extend(points)
         component_stats.append({

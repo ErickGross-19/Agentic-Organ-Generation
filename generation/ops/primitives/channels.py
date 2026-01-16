@@ -278,15 +278,29 @@ def create_fang_hook(
         "face_center_used": face_center is not None,
     }
     
-    # Check effective radius constraint
+    # B4 FIX: Check effective radius constraint with distance from start to face center
     if effective_radius is not None and policy.enforce_effective_radius:
-        max_hook_depth = effective_radius - radius
+        # Calculate distance from start to face center in the face plane
+        start_to_center_dist = 0.0
+        if face_center is not None:
+            face_center_arr = np.array(face_center)
+            # Project onto face plane (perpendicular to direction)
+            start_to_center = start - face_center_arr
+            # Remove component along direction to get in-plane distance
+            start_to_center_in_plane = start_to_center - np.dot(start_to_center, direction_norm) * direction_norm
+            start_to_center_dist = np.linalg.norm(start_to_center_in_plane)
+            meta["start_to_center_dist"] = start_to_center_dist
+        
+        # B4 FIX: max_hook_depth = (effective_radius - radius) - dist(start_xy, face_center_xy)
+        max_hook_depth = (effective_radius - radius) - start_to_center_dist
+        max_hook_depth = max(0.0, max_hook_depth)  # Ensure non-negative
+        
         if hook_depth > max_hook_depth:
             meta["hook_depth_used"] = max_hook_depth
             meta["constraint_modified"] = True
             meta["constraint_warning"] = (
                 f"Hook depth reduced from {hook_depth:.6f} to {max_hook_depth:.6f} "
-                f"due to effective radius constraint"
+                f"due to effective radius constraint (start_to_center_dist={start_to_center_dist:.6f})"
             )
             hook_depth = max_hook_depth
             logger.warning(meta["constraint_warning"])

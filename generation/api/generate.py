@@ -462,12 +462,63 @@ def generate_void_mesh(
     metadata = {"kind": kind}
     
     if kind == "primitive_channels":
-        from ..ops.primitives.channels import create_channels_from_ports
+        # B3 FIX: Use create_channel_from_policy instead of legacy create_channels_from_ports
+        from ..ops.primitives.channels import create_channel_from_policy
+        from ..utils.port_placement import place_ports_on_domain
+        from ..utils.faces import face_frame
+        import trimesh
+        import numpy as np
         
-        mesh, channel_meta = create_channels_from_ports(
-            domain, ports, channel_policy
-        )
-        metadata.update(channel_meta)
+        channel_meshes = []
+        channel_reports = []
+        
+        # Get domain depth for length calculations
+        if hasattr(domain, 'height'):
+            domain_depth = domain.height
+        elif hasattr(domain, 'z_max') and hasattr(domain, 'z_min'):
+            domain_depth = domain.z_max - domain.z_min
+        elif hasattr(domain, 'semi_axis_c'):
+            domain_depth = 2 * domain.semi_axis_c
+        else:
+            domain_depth = 0.01  # Default 10mm
+        
+        # Get face center for fang-hook radial direction
+        face = channel_policy.to_dict().get('face', 'top') if hasattr(channel_policy, 'to_dict') else 'top'
+        try:
+            _, _, _, _, face_center = face_frame(face, domain)
+        except Exception:
+            face_center = None
+        
+        # Get effective radius from port placement policy if available
+        effective_radius = None
+        
+        # Create channels from inlets
+        for inlet in ports.get("inlets", []):
+            pos = inlet.get("position", (0, 0, 0))
+            direction = inlet.get("direction", (0, 0, -1))
+            radius = inlet.get("radius", 0.001)
+            
+            channel_mesh, channel_report = create_channel_from_policy(
+                start=pos,
+                direction=direction,
+                radius=radius,
+                policy=channel_policy,
+                domain_depth=domain_depth,
+                face_center=face_center,
+                effective_radius=effective_radius,
+            )
+            channel_meshes.append(channel_mesh)
+            channel_reports.append(channel_report)
+            warnings.extend(channel_report.warnings)
+        
+        # Merge all channel meshes
+        if channel_meshes:
+            mesh = trimesh.util.concatenate(channel_meshes)
+        else:
+            mesh = trimesh.Trimesh()
+        
+        metadata["channel_count"] = len(channel_meshes)
+        metadata["channel_reports"] = [r.metadata for r in channel_reports]
         
     elif kind == "network_synthesis":
         if growth_policy is None:

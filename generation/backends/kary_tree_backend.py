@@ -124,24 +124,24 @@ class KaryTreeBackend(GenerationBackend):
                 collision_clearance=config.collision_clearance,
             )
         
-        if rng_seed is not None:
-            np.random.seed(rng_seed)
-        elif config.seed is not None:
-            np.random.seed(config.seed)
+        # D FIX: Use local RNG instead of global np.random.seed
+        effective_seed = rng_seed if rng_seed is not None else config.seed
+        rng = np.random.default_rng(effective_seed)
         
         # Create network
         network = VascularNetwork(domain=domain)
         
-        # Add inlet node
+        # D FIX: Add inlet node using network.id_gen and network.add_node
         inlet_pos = Point3D(*inlet_position)
+        inlet_id = network.id_gen.next_id()
         inlet_node = Node(
-            id=0,
+            id=inlet_id,
             position=inlet_pos,
             node_type="inlet",
             vessel_type=vessel_type,
             attributes={"radius": inlet_radius},
         )
-        network.nodes[0] = inlet_node
+        network.add_node(inlet_node)
         
         # Calculate depth needed for target terminals
         # For k-ary tree: terminals = k^depth
@@ -152,7 +152,7 @@ class KaryTreeBackend(GenerationBackend):
             f"for target_terminals={config.target_terminals}"
         )
         
-        # Generate tree recursively
+        # D FIX: Generate tree recursively with local RNG
         self._generate_subtree(
             network=network,
             parent_node=inlet_node,
@@ -164,6 +164,7 @@ class KaryTreeBackend(GenerationBackend):
             config=config,
             vessel_type=vessel_type,
             domain=domain,
+            rng=rng,
         )
         
         # Count terminals and check tolerance
@@ -201,6 +202,7 @@ class KaryTreeBackend(GenerationBackend):
         config: KaryTreeConfig,
         vessel_type: str,
         domain: DomainSpec,
+        rng: np.random.Generator,
     ) -> None:
         """Recursively generate subtree from parent node."""
         if current_depth >= max_depth:
@@ -223,15 +225,15 @@ class KaryTreeBackend(GenerationBackend):
         angle_var = config.angle_variation_deg
         
         for i in range(k):
-            # Calculate child direction with rotation
+            # D FIX: Calculate child direction with rotation using local RNG
             angle_offset = (i - (k - 1) / 2) * base_angle * 2 / max(k - 1, 1)
-            angle_offset += np.random.uniform(-angle_var, angle_var)
+            angle_offset += rng.uniform(-angle_var, angle_var)
             
-            # Rotate parent direction
+            # D FIX: Rotate parent direction using local RNG for azimuth
             child_direction = self._rotate_direction(
                 parent_direction, 
                 np.radians(angle_offset),
-                np.radians(np.random.uniform(0, 360))  # Random azimuth
+                np.radians(rng.uniform(0, 360))  # Random azimuth
             )
             
             # Calculate child position
@@ -247,8 +249,8 @@ class KaryTreeBackend(GenerationBackend):
                     # Project back inside
                     child_pos = self._project_inside(child_pos, domain)
             
-            # Create child node
-            child_id = len(network.nodes)
+            # D FIX: Create child node using network.id_gen and network.add_node
+            child_id = network.id_gen.next_id()
             child_node = Node(
                 id=child_id,
                 position=Point3D(*child_pos),
@@ -256,10 +258,10 @@ class KaryTreeBackend(GenerationBackend):
                 vessel_type=vessel_type,
                 attributes={"radius": child_radius},
             )
-            network.nodes[child_id] = child_node
+            network.add_node(child_node)
             
-            # Create segment with proper TubeGeometry
-            segment_id = len(network.segments)
+            # D FIX: Create segment using network.id_gen and network.add_segment
+            segment_id = network.id_gen.next_id()
             geometry = TubeGeometry(
                 start=parent_node.position,
                 end=child_node.position,
@@ -273,9 +275,9 @@ class KaryTreeBackend(GenerationBackend):
                 geometry=geometry,
                 vessel_type=vessel_type,
             )
-            network.segments[segment_id] = segment
+            network.add_segment(segment)
             
-            # Recurse
+            # D FIX: Recurse with local RNG
             self._generate_subtree(
                 network=network,
                 parent_node=child_node,
@@ -287,6 +289,7 @@ class KaryTreeBackend(GenerationBackend):
                 config=config,
                 vessel_type=vessel_type,
                 domain=domain,
+                rng=rng,
             )
     
     def _rotate_direction(
