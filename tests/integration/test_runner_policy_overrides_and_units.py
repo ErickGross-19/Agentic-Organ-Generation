@@ -209,6 +209,157 @@ class TestPolicyCompilation:
             assert isinstance(report.metadata, dict)
 
 
+class TestComponentPolicyOverridesNormalization:
+    """Test that policy_overrides inside components are normalized."""
+    
+    def test_policy_overrides_length_fields_normalized(self):
+        """Test that length fields in policy_overrides are normalized to meters."""
+        # Create a spec with policy_overrides containing length fields in mm
+        spec_dict = {
+            "schema": {
+                "name": "aog_designspec",
+                "version": "1.0.0"
+            },
+            "meta": {
+                "name": "test_policy_overrides_normalization",
+                "version": "1.0",
+                "input_units": "mm"
+            },
+            "domains": {
+                "test_domain": {
+                    "x_min": 0, "x_max": 10,
+                    "y_min": 0, "y_max": 10,
+                    "z_min": 0, "z_max": 10
+                }
+            },
+            "components": [
+                {
+                    "name": "test_component",
+                    "kind": "space_colonization",
+                    "domain_ref": "test_domain",
+                    "policy_overrides": {
+                        "growth": {
+                            "step_size": 0.5,  # 0.5 mm should become 0.0005 m
+                            "min_segment_length": 0.1  # 0.1 mm should become 0.0001 m
+                        },
+                        "channels": {
+                            "length": 1.0,  # 1.0 mm should become 0.001 m
+                            "start_offset": 0.2   # 0.2 mm should become 0.0002 m
+                        }
+                    },
+                    "ports": {
+                        "inlets": [{"position": [5, 5, 0], "direction": [0, 0, 1], "radius": 0.2}],
+                        "outlets": [{"position": [5, 5, 10], "direction": [0, 0, -1], "radius": 0.1}]
+                    }
+                }
+            ],
+            "policies": {}
+        }
+        
+        spec = DesignSpec.from_dict(spec_dict)
+        
+        # Check that policy_overrides are normalized
+        component = spec.components[0]
+        overrides = component.get("policy_overrides", {})
+        
+        growth_overrides = overrides.get("growth", {})
+        if "step_size" in growth_overrides:
+            # 0.5 mm = 0.0005 m
+            assert growth_overrides["step_size"] == pytest.approx(0.0005, rel=1e-6), (
+                f"step_size should be normalized to meters (got {growth_overrides['step_size']})"
+            )
+        
+        if "min_segment_length" in growth_overrides:
+            # 0.1 mm = 0.0001 m
+            assert growth_overrides["min_segment_length"] == pytest.approx(0.0001, rel=1e-6), (
+                f"min_segment_length should be normalized to meters (got {growth_overrides['min_segment_length']})"
+            )
+        
+        channel_overrides = overrides.get("channels", {})
+        if "length" in channel_overrides:
+            # 1.0 mm = 0.001 m
+            assert channel_overrides["length"] == pytest.approx(0.001, rel=1e-6), (
+                f"length should be normalized to meters (got {channel_overrides['length']})"
+            )
+
+
+class TestBackendParamsNormalization:
+    """Test that backend_params length fields are normalized."""
+    
+    def test_backend_params_length_fields_normalized(self):
+        """Test that known length fields in backend_params are normalized to meters."""
+        # Create a spec with backend_params containing length fields in mm
+        spec_dict = {
+            "schema": {
+                "name": "aog_designspec",
+                "version": "1.0.0"
+            },
+            "meta": {
+                "name": "test_backend_params_normalization",
+                "version": "1.0",
+                "input_units": "mm"
+            },
+            "domains": {
+                "test_domain": {
+                    "x_min": 0, "x_max": 10,
+                    "y_min": 0, "y_max": 10,
+                    "z_min": 0, "z_max": 10
+                }
+            },
+            "components": [
+                {
+                    "name": "test_component",
+                    "kind": "space_colonization",
+                    "domain_ref": "test_domain",
+                    "build": {
+                        "backend_params": {
+                            "step_size": 0.5,  # 0.5 mm should become 0.0005 m
+                            "influence_radius": 1.0,  # 1.0 mm should become 0.001 m
+                            "kill_radius": 0.2,  # 0.2 mm should become 0.0002 m
+                            "perception_radius": 2.0  # 2.0 mm should become 0.002 m
+                        }
+                    },
+                    "ports": {
+                        "inlets": [{"position": [5, 5, 0], "direction": [0, 0, 1], "radius": 0.2}],
+                        "outlets": [{"position": [5, 5, 10], "direction": [0, 0, -1], "radius": 0.1}]
+                    }
+                }
+            ],
+            "policies": {}
+        }
+        
+        spec = DesignSpec.from_dict(spec_dict)
+        
+        # Check that backend_params are normalized
+        component = spec.components[0]
+        build = component.get("build", {})
+        backend_params = build.get("backend_params", {})
+        
+        if "step_size" in backend_params:
+            # 0.5 mm = 0.0005 m
+            assert backend_params["step_size"] == pytest.approx(0.0005, rel=1e-6), (
+                f"step_size should be normalized to meters (got {backend_params['step_size']})"
+            )
+        
+        if "influence_radius" in backend_params:
+            # 1.0 mm = 0.001 m
+            assert backend_params["influence_radius"] == pytest.approx(0.001, rel=1e-6), (
+                f"influence_radius should be normalized to meters (got {backend_params['influence_radius']})"
+            )
+        
+        if "kill_radius" in backend_params:
+            # 0.2 mm = 0.0002 m
+            assert backend_params["kill_radius"] == pytest.approx(0.0002, rel=1e-6), (
+                f"kill_radius should be normalized to meters (got {backend_params['kill_radius']})"
+            )
+        
+        if "perception_radius" in backend_params:
+            # 2.0 mm = 0.002 m
+            assert backend_params["perception_radius"] == pytest.approx(0.002, rel=1e-6), (
+                f"perception_radius should be normalized to meters (got {backend_params['perception_radius']})"
+            )
+
+
 class TestEffectivePolicySnapshot:
     """Test effective policy snapshot in reports."""
     

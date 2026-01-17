@@ -131,12 +131,35 @@ def synthesize_mesh(
     
     # Synthesize mesh using adapter (use work_network which may be clamped)
     try:
-        mesh = to_trimesh(
+        # Note: to_trimesh uses different parameter names than policy fields
+        # include_node_spheres (not add_node_spheres)
+        # include_caps (not cap_ends)
+        # radial_resolution (not segments_per_circle)
+        result = to_trimesh(
             work_network,
-            add_node_spheres=policy.add_node_spheres,
-            cap_ends=policy.cap_ends,
-            segments_per_circle=policy.segments_per_circle,
+            include_node_spheres=policy.add_node_spheres,
+            include_caps=policy.cap_ends,
+            radial_resolution=policy.segments_per_circle,
         )
+        # to_trimesh returns OperationResult with mesh in metadata['mesh']
+        # Check if operation failed first using is_success() method
+        if hasattr(result, 'is_success') and not result.is_success():
+            raise ValueError(f"to_trimesh failed: {getattr(result, 'message', 'unknown error')}")
+        
+        # Extract mesh from OperationResult.metadata['mesh']
+        mesh = None
+        if hasattr(result, 'metadata') and isinstance(result.metadata, dict):
+            mesh = result.metadata.get('mesh')
+        
+        if mesh is None:
+            # Fallback: check if result has mesh attribute directly
+            if hasattr(result, 'mesh'):
+                mesh = result.mesh
+            elif hasattr(result, 'vertices'):
+                # Result is the mesh itself
+                mesh = result
+            else:
+                raise ValueError(f"to_trimesh returned no mesh. Result type: {type(result)}, metadata keys: {list(result.metadata.keys()) if hasattr(result, 'metadata') else 'N/A'}")
         
         # PATCH 5: Apply voxel repair if requested, using policy-driven parameters
         if policy.voxel_repair_synthesis:

@@ -234,6 +234,29 @@ def _normalize_component_to_meters(
                     for port in result["ports"][port_type]
                 ]
     
+    # Normalize policy_overrides if present
+    if "policy_overrides" in result and isinstance(result["policy_overrides"], dict):
+        for policy_name, policy_dict in result["policy_overrides"].items():
+            if isinstance(policy_dict, dict):
+                result["policy_overrides"][policy_name] = _normalize_policy_to_meters(
+                    policy_name, policy_dict, scale
+                )
+    
+    # Normalize known length fields in build.backend_params
+    if "build" in result and isinstance(result["build"], dict):
+        backend_params = result["build"].get("backend_params", {})
+        if isinstance(backend_params, dict):
+            # Known length fields in backend_params
+            backend_length_fields = {
+                "step_size", "min_segment_length", "max_segment_length",
+                "influence_radius", "kill_radius", "perception_radius",
+                "clearance", "min_radius", "max_radius",
+            }
+            for field_name in backend_length_fields:
+                if field_name in backend_params and backend_params[field_name] is not None:
+                    backend_params[field_name] = _convert_value(backend_params[field_name], scale)
+            result["build"]["backend_params"] = backend_params
+    
     return result
 
 

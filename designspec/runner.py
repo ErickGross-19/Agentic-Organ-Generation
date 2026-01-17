@@ -911,11 +911,19 @@ class DesignSpecRunner:
     ) -> Tuple["trimesh.Trimesh", Any]:
         """Build primitive channels (e.g., fang hooks)."""
         from generation.api.generate import generate_void_mesh
+        from aog_policies import ChannelPolicy
+        
+        # Get channel policy from compiled policies or spec
+        channel_policy = self._compiled_policies.get("channels")
+        if channel_policy is None:
+            channel_policy_dict = self.spec.policies.get("channels", {})
+            channel_policy = ChannelPolicy.from_dict(channel_policy_dict)
         
         void_mesh, report = generate_void_mesh(
             kind="primitive_channels",
             domain=domain,
             ports=ports,
+            channel_policy=channel_policy,
         )
         
         self.artifacts.register(
