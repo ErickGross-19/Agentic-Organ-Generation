@@ -151,9 +151,9 @@ Agentic-Organ-Generation/
 │   └── plan.py           # ExecutionPlan for partial runs
 │
 ├── aog_policies/         # Policy surface for runner behavior
-│   ├── resolution.py     # Voxel pitch and budget
-│   ├── embedding.py      # Domain embedding
-│   ├── channels.py       # Channel generation
+│   ├── resolution.py     # ResolutionPolicy (voxel pitch and budget)
+│   ├── generation.py     # ChannelPolicy, GrowthPolicy, EmbeddingPolicy, MeshSynthesisPolicy
+│   ├── validity.py       # ValidationPolicy, RepairPolicy
 │   └── base.py           # OperationReport for stage feedback
 │
 ├── generation/           # Core generation library
