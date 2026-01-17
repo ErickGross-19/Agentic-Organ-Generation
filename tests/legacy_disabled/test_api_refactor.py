@@ -8,6 +8,9 @@ These tests verify the key functionality specified in the refactor proposal:
 4. Voxel-first merge
 5. Embedding mesh input
 6. Validity pipeline
+
+NOTE: This file is LEGACY and tests deprecated APIs (generation/specs/*, generation/policies, validity/api/*).
+These tests are not run by default. Use `pytest -m legacy` to run them.
 """
 
 import json
@@ -15,6 +18,9 @@ import numpy as np
 import pytest
 import tempfile
 from pathlib import Path
+
+
+pytestmark = pytest.mark.legacy
 
 
 class TestPortPlacement:

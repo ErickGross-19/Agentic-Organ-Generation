@@ -6,12 +6,18 @@ These tests validate:
 - Network creation and manipulation
 - Space colonization algorithm
 - Serialization/deserialization
+
+NOTE: This file is LEGACY and tests deprecated APIs (generation/specs/design_spec.py).
+These tests are not run by default. Use `pytest -m legacy` to run them.
 """
 
 import pytest
 import json
 import tempfile
 import os
+
+
+pytestmark = pytest.mark.legacy
 
 
 class TestDesignSpec:
