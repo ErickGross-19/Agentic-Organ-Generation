@@ -300,6 +300,7 @@ class GrowthPolicy:
         "seed": int | null,
         "min_segment_length": float (meters),
         "max_segment_length": float (meters),
+        "min_radius": float (meters),
         "step_size": float (meters),
         "backend_params": dict (JSON-serializable backend-specific configuration)
     }
@@ -322,6 +323,7 @@ class GrowthPolicy:
     seed: Optional[int] = None
     min_segment_length: float = 0.0002  # 0.2mm
     max_segment_length: float = 0.002  # 2mm
+    min_radius: float = 0.0001  # 0.1mm - minimum vessel radius for growth
     step_size: float = 0.0003  # 0.3mm
     backend_params: Dict[str, Any] = field(default_factory=dict)
 

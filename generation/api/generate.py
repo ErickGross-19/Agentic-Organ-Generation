@@ -350,9 +350,8 @@ def _generate_space_colonization(
     )
     
     # Run colonization with policy-driven parameters
-    # Derive min_radius from growth_policy.min_segment_length (radius is half of segment length)
-    # GrowthPolicy.min_segment_length always has a default value (0.0002m), so no fallback needed
-    min_radius = growth_policy.min_segment_length / 2
+    # Use explicit min_radius from GrowthPolicy (default 0.0001m = 0.1mm)
+    min_radius = growth_policy.min_radius
     
     params = SpaceColonizationParams(
         max_steps=growth_policy.max_iterations,
@@ -360,8 +359,8 @@ def _generate_space_colonization(
         min_radius=min_radius,
     )
     
-    # Create constraints with policy-driven min_segment_length
-    # This ensures the growth respects the policy's min_segment_length constraint
+    # Create constraints with policy-driven min_segment_length and min_radius
+    # This ensures the growth respects the policy's constraints
     constraints = BranchingConstraints(
         min_segment_length=growth_policy.min_segment_length,
         min_radius=min_radius,
