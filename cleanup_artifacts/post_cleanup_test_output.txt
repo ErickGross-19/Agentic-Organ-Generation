@@ -16,7 +16,7 @@
 =================================== FAILURES ===================================
 _ TestBuildComponentReturnsOperationReport.test_build_component_returns_operation_report _
 
-self = <tests.contract.test_operation_report_pattern.TestBuildComponentReturnsOperationReport object at 0x7f42a4b89c70>
+self = <tests.contract.test_operation_report_pattern.TestBuildComponentReturnsOperationReport object at 0x7f4a13791e80>
 
     def test_build_component_returns_operation_report(self):
         """Test build_component returns OperationReport."""
@@ -41,7 +41,7 @@ E       TypeError: build_component() got an unexpected keyword argument 'domain'
 tests/contract/test_operation_report_pattern.py:143: TypeError
 ______ TestOperationReportContract.test_operation_report_json_round_trip _______
 
-self = <tests.contract.test_operation_report_pattern.TestOperationReportContract object at 0x7f42a4b88680>
+self = <tests.contract.test_operation_report_pattern.TestOperationReportContract object at 0x7f4a137909b0>
 
     def test_operation_report_json_round_trip(self):
         """Test OperationReport JSON round-trip."""
@@ -59,7 +59,7 @@ E       TypeError: OperationReport.__init__() got an unexpected keyword argument
 tests/contract/test_operation_report_pattern.py:192: TypeError
 _ TestResolutionPolicyPitchRelaxation.test_resolution_policy_respects_max_pitch _
 
-self = <tests.unit.resolution.test_budget_behavior.TestResolutionPolicyPitchRelaxation object at 0x7f42a4450c50>
+self = <tests.unit.resolution.test_budget_behavior.TestResolutionPolicyPitchRelaxation object at 0x7f4a13050ad0>
 
     def test_resolution_policy_respects_max_pitch(self):
         """Test that relaxed pitch respects max_pitch constraint."""
@@ -85,8 +85,8 @@ E        +  where 0.001 = ResolutionPolicy(input_units='m', min_channel_diameter
 tests/unit/resolution/test_budget_behavior.py:78: AssertionError
 _ TestBackendParamsAffectBehavior.test_different_seeds_produce_different_results _
 
-self = <tests.integration.test_runner_backend_params_plumbing.TestBackendParamsAffectBehavior object at 0x7f42a3b58d70>
-tmp_path = PosixPath('/tmp/pytest-of-ubuntu/pytest-6/test_different_seeds_produce_d0')
+self = <tests.integration.test_runner_backend_params_plumbing.TestBackendParamsAffectBehavior object at 0x7f4a12748050>
+tmp_path = PosixPath('/tmp/pytest-of-ubuntu/pytest-4/test_different_seeds_produce_d0')
 
     def test_different_seeds_produce_different_results(self, tmp_path):
         """Test that different seeds produce different results."""
@@ -114,8 +114,8 @@ E        +  and   5678 = DesignSpec(raw={'schema': {'name': 'aog_designspec', 'v
 tests/integration/test_runner_backend_params_plumbing.py:253: AssertionError
 ______ TestRunnerEndToEndUnionOnly.test_runner_can_run_until_union_voids _______
 
-self = <tests.integration.test_runner_end_to_end_union_only.TestRunnerEndToEndUnionOnly object at 0x7f42a3b823f0>
-tmp_path = PosixPath('/tmp/pytest-of-ubuntu/pytest-6/test_runner_can_run_until_unio0')
+self = <tests.integration.test_runner_end_to_end_union_only.TestRunnerEndToEndUnionOnly object at 0x7f4a12782780>
+tmp_path = PosixPath('/tmp/pytest-of-ubuntu/pytest-4/test_runner_can_run_until_unio0')
 
     def test_runner_can_run_until_union_voids(self, tmp_path):
         """Test that runner can execute until union_voids stage."""
@@ -133,8 +133,8 @@ tmp_path = PosixPath('/tmp/pytest-of-ubuntu/pytest-6/test_runner_can_run_until_u
         assert isinstance(result, RunnerResult)
 >       assert "union_voids" in result.stages_completed or result.success
 E       assert ('union_voids' in ['compile_policies', 'compile_domains', 'component_ports:net_1', 'component_ports:chan_1'] or False)
-E        +  where ['compile_policies', 'compile_domains', 'component_ports:net_1', 'component_ports:chan_1'] = RunnerResult(success=False, spec_hash='11dced3fe6859550', stages_completed=['compile_policies', 'compile_domains', 'co...dd_inlet() missing 1 required positional argument: 'direction'"], artifacts={}, total_duration_s=0.0005412101745605469).stages_completed
-E        +  and   False = RunnerResult(success=False, spec_hash='11dced3fe6859550', stages_completed=['compile_policies', 'compile_domains', 'co...dd_inlet() missing 1 required positional argument: 'direction'"], artifacts={}, total_duration_s=0.0005412101745605469).success
+E        +  where ['compile_policies', 'compile_domains', 'component_ports:net_1', 'component_ports:chan_1'] = RunnerResult(success=False, spec_hash='11dced3fe6859550', stages_completed=['compile_policies', 'compile_domains', 'co...dd_inlet() missing 1 required positional argument: 'direction'"], artifacts={}, total_duration_s=0.0006113052368164062).stages_completed
+E        +  and   False = RunnerResult(success=False, spec_hash='11dced3fe6859550', stages_completed=['compile_policies', 'compile_domains', 'co...dd_inlet() missing 1 required positional argument: 'direction'"], artifacts={}, total_duration_s=0.0006113052368164062).success
 
 tests/integration/test_runner_end_to_end_union_only.py:37: AssertionError
 ------------------------------ Captured log call -------------------------------
@@ -158,4 +158,4 @@ FAILED tests/contract/test_operation_report_pattern.py::TestOperationReportContr
 FAILED tests/unit/resolution/test_budget_behavior.py::TestResolutionPolicyPitchRelaxation::test_resolution_policy_respects_max_pitch
 FAILED tests/integration/test_runner_backend_params_plumbing.py::TestBackendParamsAffectBehavior::test_different_seeds_produce_different_results
 FAILED tests/integration/test_runner_end_to_end_union_only.py::TestRunnerEndToEndUnionOnly::test_runner_can_run_until_union_voids
-5 failed, 1056 passed, 11 skipped in 33.39s
+5 failed, 1056 passed, 11 skipped in 29.26s
