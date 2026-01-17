@@ -1,6 +1,17 @@
 """
 Design specifications and evaluation results for LLM-driven vascular design.
 
+DEPRECATION NOTICE
+------------------
+This module (generation.specs) is DEPRECATED and will be moved to legacy/ in a future version.
+
+For new code, use:
+    - JSON DesignSpec files loaded via `designspec.DesignSpec`
+    - `designspec.DesignSpecRunner` for full pipeline orchestration
+    - `aog_policies` for all policy configuration
+
+This module is kept only for backward compatibility with existing automation/ and examples/ code.
+
 UNIT CONVENTIONS
 ----------------
 All spec classes use METERS internally. See generation/specs/compile.py for details on:
@@ -11,6 +22,16 @@ All spec classes use METERS internally. See generation/specs/compile.py for deta
 
 Use compile_domain() to convert spec classes to runtime domain objects.
 """
+
+import warnings
+
+warnings.warn(
+    "generation.specs is deprecated. For new code, use JSON DesignSpec files loaded via "
+    "designspec.DesignSpec and designspec.DesignSpecRunner for pipeline orchestration. "
+    "This module will be moved to legacy/ in a future version.",
+    DeprecationWarning,
+    stacklevel=2,
+)
 
 from .design_spec import (
     DomainSpec,
