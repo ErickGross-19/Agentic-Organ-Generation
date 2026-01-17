@@ -301,14 +301,16 @@ class DesignSpecRunner:
             CollisionPolicy,
             EmbeddingPolicy,
             TissueSamplingPolicy,
+            ValidationPolicy,
+            OpenPortPolicy,
+            RepairPolicy,
+            ComposePolicy,
+            PathfindingPolicy,
+            PortPlacementPolicy,
+            ChannelPolicy,
+            OutputPolicy,
+            DomainMeshingPolicy,
         )
-        from aog_policies.validity import ValidationPolicy, OpenPortPolicy, RepairPolicy
-        from aog_policies.composition import ComposePolicy
-        from aog_policies.pathfinding import PathfindingPolicy
-        from aog_policies.ports import PortsPolicy
-        from aog_policies.channels import ChannelsPolicy
-        from aog_policies.output import OutputPolicy
-        from aog_policies.domain_meshing import DomainMeshingPolicy
         
         warnings = []
         metadata = {}
@@ -325,8 +327,8 @@ class DesignSpecRunner:
             "repair": RepairPolicy,
             "composition": ComposePolicy,
             "pathfinding": PathfindingPolicy,
-            "ports": PortsPolicy,
-            "channels": ChannelsPolicy,
+            "ports": PortPlacementPolicy,
+            "channels": ChannelPolicy,
             "output": OutputPolicy,
             "domain_meshing": DomainMeshingPolicy,
         }
@@ -545,7 +547,7 @@ class DesignSpecRunner:
         
         try:
             from generation.ops.compose import compose_components, ComponentSpec
-            from aog_policies.composition import ComposePolicy
+            from aog_policies import ComposePolicy
             
             compose_policy_dict = self.spec.policies.get("composition", {})
             compose_policy = self._compiled_policies.get("composition")
@@ -640,8 +642,7 @@ class DesignSpecRunner:
         
         try:
             from generation.api.embed import embed_void
-            from aog_policies import EmbeddingPolicy
-            from aog_policies.resolution import ResolutionPolicy
+            from aog_policies import EmbeddingPolicy, ResolutionPolicy
             
             embedding_policy = self._compiled_policies.get("embedding")
             if embedding_policy is None:
@@ -714,8 +715,7 @@ class DesignSpecRunner:
         """Run validity checks."""
         try:
             from validity.runner import run_validity_checks
-            from aog_policies.validity import ValidationPolicy, OpenPortPolicy, RepairPolicy
-            from aog_policies.resolution import ResolutionPolicy
+            from aog_policies import ValidationPolicy, OpenPortPolicy, RepairPolicy, ResolutionPolicy
             
             validation_policy = self._compiled_policies.get("validation")
             if validation_policy is None:
