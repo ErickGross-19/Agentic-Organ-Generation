@@ -509,6 +509,29 @@ class DesignSpecRunner:
             policy = MeshSynthesisPolicy()
             void_mesh, synth_report = synthesize_mesh(network, policy)
             
+            # Check for mesh synthesis failure or empty/degenerate mesh
+            is_empty_mesh = (
+                void_mesh is None or 
+                len(void_mesh.vertices) == 0 or 
+                len(void_mesh.faces) == 0
+            )
+            synth_failed = synth_report is not None and not synth_report.success
+            
+            if is_empty_mesh or synth_failed:
+                error_msg = "Mesh synthesis produced empty mesh"
+                if synth_report is not None and synth_report.errors:
+                    error_msg = f"Mesh synthesis failed: {'; '.join(synth_report.errors)}"
+                return StageReport(
+                    stage=f"{Stage.COMPONENT_MESH.value}:{component_id}",
+                    success=False,
+                    errors=[error_msg],
+                    metadata={
+                        "vertex_count": len(void_mesh.vertices) if void_mesh is not None else 0,
+                        "face_count": len(void_mesh.faces) if void_mesh is not None else 0,
+                        "synth_report_success": synth_report.success if synth_report else None,
+                    },
+                )
+            
             self._component_voids[component_id] = void_mesh
             
             artifact_name = f"{component_id}_void_mesh"

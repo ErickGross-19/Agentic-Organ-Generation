@@ -294,6 +294,7 @@ def _generate_space_colonization(
     from ..ops import create_network, add_inlet, add_outlet, space_colonization_step
     from ..ops.space_colonization import SpaceColonizationParams
     from ..utils.tissue_sampling import sample_tissue_points
+    from ..rules.constraints import BranchingConstraints
     
     network = create_network(domain=domain, seed=seed)
     
@@ -348,11 +349,24 @@ def _generate_space_colonization(
         seed=seed,
     )
     
-    # Run colonization
+    # Run colonization with policy-driven parameters
+    # Use explicit min_radius from GrowthPolicy (default 0.0001m = 0.1mm)
+    min_radius = growth_policy.min_radius
+    
     params = SpaceColonizationParams(
         max_steps=growth_policy.max_iterations,
+        step_size=growth_policy.step_size,
+        min_radius=min_radius,
     )
-    space_colonization_step(network, tissue_points=tissue_points, params=params, seed=seed)
+    
+    # Create constraints with policy-driven min_segment_length and min_radius
+    # This ensures the growth respects the policy's constraints
+    constraints = BranchingConstraints(
+        min_segment_length=growth_policy.min_segment_length,
+        min_radius=min_radius,
+    )
+    
+    space_colonization_step(network, tissue_points=tissue_points, params=params, constraints=constraints, seed=seed)
     
     # Count terminals using string node_type
     terminal_count = sum(1 for n in network.nodes.values() if n.node_type == "terminal")

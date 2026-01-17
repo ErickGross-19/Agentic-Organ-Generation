@@ -138,7 +138,13 @@ def space_colonization_step(
         params = SpaceColonizationParams()
     
     if constraints is None:
-        constraints = BranchingConstraints()
+        # Create constraints with min_segment_length equal to step_size
+        # This ensures segments are at least as long as the growth step
+        # Callers should pass explicit constraints with policy-driven min_segment_length
+        constraints = BranchingConstraints(
+            min_segment_length=params.step_size,
+            min_radius=params.min_radius,
+        )
     
     rng = np.random.default_rng(seed) if seed is not None else network.id_gen.rng
     
@@ -319,8 +325,8 @@ def space_colonization_step(
                                     continue
                                 
                                 new_radius = child_radii[cluster_idx]
-                                if new_radius < params.min_radius:
-                                    continue
+                                # Policy-driven clamping: clamp to min_radius instead of skipping
+                                new_radius = max(new_radius, params.min_radius)
                                 
                                 result = grow_branch(
                                     network,
@@ -376,8 +382,9 @@ def space_colonization_step(
             parent_radius = node.attributes.get("radius", params.min_radius * 2)
             new_radius = parent_radius * params.taper_factor
             
-            if new_radius < params.min_radius:
-                continue
+            # Policy-driven clamping: clamp to min_radius instead of skipping growth
+            # This ensures growth continues even when taper would drop below min_radius
+            new_radius = max(new_radius, params.min_radius)
             
             from .growth import grow_branch
             result = grow_branch(
