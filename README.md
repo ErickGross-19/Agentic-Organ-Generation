@@ -35,15 +35,48 @@ pip install -e .
 
 ## Quick Start
 
-### Generating a Vascular Network
+### Generating a Vascular Network (Recommended: JSON DesignSpec)
 
-The following example demonstrates how to generate a liver vascular network using the high-level API:
+The recommended way to generate vascular networks is using JSON DesignSpec files with the DesignSpecRunner:
 
 ```python
-from generation.api import run_experiment
-from generation.specs import DesignSpec, TreeSpec
+from designspec import DesignSpec, DesignSpecRunner
+from designspec.plan import ExecutionPlan
 
-# Define the design specification
+# Load a JSON design specification
+spec = DesignSpec.from_json("examples/designspec/golden_example_v1.json")
+
+# Create a runner and execute the full pipeline
+runner = DesignSpecRunner(spec=spec, output_dir="./output")
+result = runner.run()
+
+print(f"Success: {result.success}")
+print(f"Stages completed: {result.stages_completed}")
+
+# Or run until a specific stage (partial execution)
+plan = ExecutionPlan(run_until="union_voids")
+runner = DesignSpecRunner(spec=spec, plan=plan, output_dir="./output")
+partial_result = runner.run()
+```
+
+The JSON DesignSpec format provides full control over policies, domains, and components. See `examples/designspec/golden_example_v1.json` for a complete example.
+
+### Running the Readiness Gate Tests
+
+```bash
+# Run all readiness gate tests
+pytest -q tests/contract tests/unit tests/integration tests/regression tests/quality
+```
+
+### Legacy API (Deprecated)
+
+The older Python dataclass-based API (`generation.specs`) is deprecated but still available for backward compatibility:
+
+```python
+# DEPRECATED - use JSON DesignSpec instead
+from generation.api import run_experiment
+from generation.specs import DesignSpec, TreeSpec  # Triggers deprecation warning
+
 spec = DesignSpec(
     domain_type="ellipsoid",
     domain_params={"a": 50.0, "b": 40.0, "c": 30.0},
@@ -57,7 +90,6 @@ spec = DesignSpec(
     ],
 )
 
-# Execute the generation pipeline
 result = run_experiment(
     spec=spec,
     output_dir="./output",
@@ -67,9 +99,6 @@ result = run_experiment(
         "plate_size": (200, 200, 200), # mm
     },
 )
-
-print(f"Domain mesh: {result.domain_mesh_path}")
-print(f"Surface mesh: {result.surface_mesh_path}")
 ```
 
 ### Validating a Structure
