@@ -315,15 +315,58 @@ python -m automation.cli workflow
 python -m automation.cli interactive
 ```
 
+## Current Architecture: DesignSpec + DesignSpecRunner
+
+The recommended way to use this system is through the **DesignSpec + DesignSpecRunner** architecture, which provides a JSON-based specification format and policy-controlled execution:
+
+```python
+from designspec import DesignSpec, DesignSpecRunner
+from aog_policies import ResolutionPolicy, EmbeddingPolicy
+
+# Load a JSON design specification
+spec = DesignSpec.from_json("my_design.json")
+
+# Create a runner with custom policies
+runner = DesignSpecRunner(
+    spec=spec,
+    resolution_policy=ResolutionPolicy(min_diameter_um=20, max_voxel_budget=1_000_000),
+    embedding_policy=EmbeddingPolicy(recarve_ports=True),
+)
+
+# Run the full pipeline
+result = runner.run()
+
+# Or run until a specific stage
+partial_result = runner.run_until("union_voids")
+```
+
+The runner orchestrates all geometry generation, embedding, and validity checking through `aog_policies/`, ensuring consistent behavior and JSON-serializable reports.
+
+**Note**: The older `generation/specs/` module (Python dataclasses) is deprecated. New code should use JSON DesignSpec files loaded via `designspec.DesignSpec`. The `gui/`, `automation/`, and `examples/` directories have not yet been migrated to the new architecture.
+
 ## Project Structure
 
 ```
 Agentic-Organ-Generation/
+├── designspec/                 # NEW: JSON-based design specification system
+│   ├── spec.py                 # DesignSpec class for loading JSON specs
+│   ├── runner.py               # DesignSpecRunner for orchestrating execution
+│   ├── ast/                    # AST evaluation for spec expressions
+│   └── reports/                # JSON-serializable run reports
+│
+├── aog_policies/               # NEW: Policy surface for controlling runner behavior
+│   ├── resolution.py           # Resolution and voxel budget policies
+│   ├── embedding.py            # Embedding and port recarve policies
+│   └── validity.py             # Validity check policies
+│
+├── legacy/                     # Deprecated code moved here for reference
+│   └── generation/cfd/         # CFD simulation modules (not used by runner)
+│
 ├── generation/                 # Part A: Generation Library
 │   ├── core/                   # Data structures (Network, Node, Segment)
 │   ├── ops/                    # Operations (space colonization, growth, etc.)
 │   ├── api/                    # High-level API (design_from_spec, run_experiment)
-│   ├── specs/                  # Design specifications
+│   ├── specs/                  # Design specifications (DEPRECATED - use designspec/)
 │   ├── params/                 # Parameter presets
 │   ├── adapters/               # Export adapters (STL, NetworkX)
 │   ├── organ_generators/       # Organ-specific generators
@@ -575,6 +618,30 @@ The `examples/` directory contains working demonstrations of the system's capabi
 | Visualization | Render and inspect generated STL meshes |
 | Provider Configuration | Configure different LLM providers |
 | Direct Generation | Generate structures without LLM assistance |
+
+## Running Tests
+
+The repository includes a comprehensive test suite organized into the following categories:
+
+```bash
+# Fast suite (CI-safe, runs in seconds)
+pytest -q tests/contract tests/unit tests/regression tests/quality
+
+# Full readiness gate (includes integration tests)
+pytest -q tests/contract tests/unit tests/integration tests/regression tests/quality
+
+# Legacy tests only (not run by default)
+pytest -q -m legacy tests/legacy_disabled
+```
+
+| Test Category | Purpose |
+|---------------|---------|
+| `tests/contract/` | Policy ownership, JSON serializability, schema versioning |
+| `tests/unit/` | Domains, AST eval, resolution budgeting, pathfinding, primitives |
+| `tests/integration/` | DesignSpecRunner end-to-end tests with golden fixtures |
+| `tests/regression/` | Previously fixed bug regressions |
+| `tests/quality/` | Code hygiene for runner-critical code |
+| `tests/legacy_disabled/` | Quarantined legacy tests, not run by default |
 
 ## Contributing
 

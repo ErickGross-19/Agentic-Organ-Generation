@@ -1,0 +1,161 @@
+................................F..F.................................... [  6%]
+........................................................................ [ 13%]
+........................................................................ [ 20%]
+........................................................................ [ 26%]
+........................................................................ [ 33%]
+........................................................................ [ 40%]
+........ss..............sss............................................. [ 47%]
+........................................................................ [ 53%]
+.....ss...ss...ss....................................................... [ 60%]
+...................................................................F.... [ 67%]
+........................................................................ [ 73%]
+........................................................................ [ 80%]
+........................................................................ [ 87%]
+..................F............................F........................ [ 94%]
+................................................................         [100%]
+=================================== FAILURES ===================================
+_ TestBuildComponentReturnsOperationReport.test_build_component_returns_operation_report _
+
+self = <tests.contract.test_operation_report_pattern.TestBuildComponentReturnsOperationReport object at 0x7f3a7a82d640>
+
+    def test_build_component_returns_operation_report(self):
+        """Test build_component returns OperationReport."""
+        from generation.api import build_component
+        from generation.core.domain import CylinderDomain
+        from aog_policies import GrowthPolicy, OperationReport
+    
+        domain = CylinderDomain(radius=0.005, height=0.003)
+        ports = {
+            "inlets": [{"position": (0, 0, 0.0015), "radius": 0.0005, "direction": (0, 0, -1), "vessel_type": "arterial"}],
+            "outlets": [{"position": (0, 0, -0.0015), "radius": 0.0003, "direction": (0, 0, 1), "vessel_type": "venous"}],
+        }
+        growth_policy = GrowthPolicy(backend="cco_hybrid", max_iterations=10, target_terminals=5)
+    
+>       component, report = build_component(
+            domain=domain,
+            ports=ports,
+            growth_policy=growth_policy,
+        )
+E       TypeError: build_component() got an unexpected keyword argument 'domain'
+
+tests/contract/test_operation_report_pattern.py:143: TypeError
+______ TestOperationReportContract.test_operation_report_json_round_trip _______
+
+self = <tests.contract.test_operation_report_pattern.TestOperationReportContract object at 0x7f3a7a82e0c0>
+
+    def test_operation_report_json_round_trip(self):
+        """Test OperationReport JSON round-trip."""
+        import json
+        from aog_policies import OperationReport
+    
+>       report = OperationReport(
+            operation="test_op",
+            requested_policy={"key": "value"},
+            effective_policy={"key": "value", "extra": "field"},
+            metrics={"duration_s": 1.5, "voxel_count": 1000},
+        )
+E       TypeError: OperationReport.__init__() got an unexpected keyword argument 'metrics'
+
+tests/contract/test_operation_report_pattern.py:192: TypeError
+_ TestResolutionPolicyPitchRelaxation.test_resolution_policy_respects_max_pitch _
+
+self = <tests.unit.resolution.test_budget_behavior.TestResolutionPolicyPitchRelaxation object at 0x7f3a7a1800e0>
+
+    def test_resolution_policy_respects_max_pitch(self):
+        """Test that relaxed pitch respects max_pitch constraint."""
+        from aog_policies import ResolutionPolicy
+    
+        policy = ResolutionPolicy(
+            min_pitch=1e-6,
+            max_pitch=1e-3,
+            max_voxels=100,
+        )
+    
+        large_bbox = (0, 10.0, 0, 10.0, 0, 10.0)
+    
+        relaxed_pitch = policy.compute_relaxed_pitch(
+            bbox=large_bbox,
+            requested_pitch=1e-5,
+        )
+    
+>       assert relaxed_pitch <= policy.max_pitch
+E       AssertionError: assert 2.876265888493262 <= 0.001
+E        +  where 0.001 = ResolutionPolicy(input_units='m', min_channel_diameter=2e-05, min_voxels_across_feature=8, max_voxels=100, min_pitch=1...oxels_repair=None, max_voxels_pathfinding_coarse=None, max_voxels_pathfinding_fine=None, max_voxels_open_port_roi=None).max_pitch
+
+tests/unit/resolution/test_budget_behavior.py:78: AssertionError
+_ TestBackendParamsAffectBehavior.test_different_seeds_produce_different_results _
+
+self = <tests.integration.test_runner_backend_params_plumbing.TestBackendParamsAffectBehavior object at 0x7f3a797a1970>
+tmp_path = PosixPath('/tmp/pytest-of-ubuntu/pytest-0/test_different_seeds_produce_d0')
+
+    def test_different_seeds_produce_different_results(self, tmp_path):
+        """Test that different seeds produce different results."""
+        golden_path = FIXTURES_DIR / "golden_example_v1.json"
+        if not golden_path.exists():
+            pytest.skip("Golden example fixture not found")
+    
+        with open(golden_path) as f:
+            data = json.load(f)
+    
+        data1 = data.copy()
+        data1["meta"]["seed"] = 1234
+    
+        data2 = data.copy()
+        data2["meta"]["seed"] = 5678
+    
+        spec1 = DesignSpec.from_dict(data1)
+        spec2 = DesignSpec.from_dict(data2)
+    
+>       assert spec1.seed != spec2.seed
+E       AssertionError: assert 5678 != 5678
+E        +  where 5678 = DesignSpec(raw={'schema': {'name': 'aog_designspec', 'version': '1.0.0', 'compatible_with': ['1.0.x']}, 'meta': {'name...hemaInfo(name='aog_designspec', version='1.0.0', compatible_with=['1.0.x']), spec_hash='02c60613060079b5', warnings=[]).seed
+E        +  and   5678 = DesignSpec(raw={'schema': {'name': 'aog_designspec', 'version': '1.0.0', 'compatible_with': ['1.0.x']}, 'meta': {'name...hemaInfo(name='aog_designspec', version='1.0.0', compatible_with=['1.0.x']), spec_hash='02c60613060079b5', warnings=[]).seed
+
+tests/integration/test_runner_backend_params_plumbing.py:253: AssertionError
+______ TestRunnerEndToEndUnionOnly.test_runner_can_run_until_union_voids _______
+
+self = <tests.integration.test_runner_end_to_end_union_only.TestRunnerEndToEndUnionOnly object at 0x7f3a797a29c0>
+tmp_path = PosixPath('/tmp/pytest-of-ubuntu/pytest-0/test_runner_can_run_until_unio0')
+
+    def test_runner_can_run_until_union_voids(self, tmp_path):
+        """Test that runner can execute until union_voids stage."""
+        golden_path = FIXTURES_DIR / "golden_example_v1.json"
+        if not golden_path.exists():
+            pytest.skip("Golden example fixture not found")
+    
+        spec = DesignSpec.from_json(golden_path)
+    
+        plan = ExecutionPlan(run_until="union_voids")
+    
+        runner = DesignSpecRunner(spec, plan=plan, output_dir=tmp_path)
+        result = runner.run()
+    
+        assert isinstance(result, RunnerResult)
+>       assert "union_voids" in result.stages_completed or result.success
+E       assert ('union_voids' in ['compile_policies', 'compile_domains', 'component_ports:net_1', 'component_ports:chan_1'] or False)
+E        +  where ['compile_policies', 'compile_domains', 'component_ports:net_1', 'component_ports:chan_1'] = RunnerResult(success=False, spec_hash='11dced3fe6859550', stages_completed=['compile_policies', 'compile_domains', 'co...dd_inlet() missing 1 required positional argument: 'direction'"], artifacts={}, total_duration_s=0.0005080699920654297).stages_completed
+E        +  and   False = RunnerResult(success=False, spec_hash='11dced3fe6859550', stages_completed=['compile_policies', 'compile_domains', 'co...dd_inlet() missing 1 required positional argument: 'direction'"], artifacts={}, total_duration_s=0.0005080699920654297).success
+
+tests/integration/test_runner_end_to_end_union_only.py:37: AssertionError
+------------------------------ Captured log call -------------------------------
+ERROR    designspec.runner:runner.py:480 Component build failed: net_1
+Traceback (most recent call last):
+  File "/home/ubuntu/repos/Agentic-Organ-Generation/designspec/runner.py", line 444, in _stage_component_build
+    network, report = self._build_backend_network(
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/repos/Agentic-Organ-Generation/designspec/runner.py", line 888, in _build_backend_network
+    network, report = generate_network(
+                      ^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/repos/Agentic-Organ-Generation/generation/api/generate.py", line 236, in generate_network
+    network, gen_meta = _generate_space_colonization(
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/repos/Agentic-Organ-Generation/generation/api/generate.py", line 305, in _generate_space_colonization
+    add_inlet(
+TypeError: add_inlet() missing 1 required positional argument: 'direction'
+=========================== short test summary info ============================
+FAILED tests/contract/test_operation_report_pattern.py::TestBuildComponentReturnsOperationReport::test_build_component_returns_operation_report
+FAILED tests/contract/test_operation_report_pattern.py::TestOperationReportContract::test_operation_report_json_round_trip
+FAILED tests/unit/resolution/test_budget_behavior.py::TestResolutionPolicyPitchRelaxation::test_resolution_policy_respects_max_pitch
+FAILED tests/integration/test_runner_backend_params_plumbing.py::TestBackendParamsAffectBehavior::test_different_seeds_produce_different_results
+FAILED tests/integration/test_runner_end_to_end_union_only.py::TestRunnerEndToEndUnionOnly::test_runner_can_run_until_union_voids
+5 failed, 1056 passed, 11 skipped in 38.03s
