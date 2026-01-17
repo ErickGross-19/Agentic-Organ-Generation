@@ -7,6 +7,7 @@ or at least appear in effective policy snapshot/metrics.
 
 import pytest
 import json
+import copy
 from pathlib import Path
 
 from designspec.spec import DesignSpec
@@ -241,10 +242,10 @@ class TestBackendParamsAffectBehavior:
         with open(golden_path) as f:
             data = json.load(f)
         
-        data1 = data.copy()
+        data1 = copy.deepcopy(data)
         data1["meta"]["seed"] = 1234
         
-        data2 = data.copy()
+        data2 = copy.deepcopy(data)
         data2["meta"]["seed"] = 5678
         
         spec1 = DesignSpec.from_dict(data1)

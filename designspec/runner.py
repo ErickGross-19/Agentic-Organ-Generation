@@ -916,7 +916,6 @@ class DesignSpecRunner:
             kind="primitive_channels",
             domain=domain,
             ports=ports,
-            seed=self.spec.seed,
         )
         
         self.artifacts.register(

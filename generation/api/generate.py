@@ -299,24 +299,40 @@ def _generate_space_colonization(
     
     # Add inlets
     for inlet in ports.get("inlets", []):
-        pos = inlet.get("position", (0, 0, 0))
-        radius = inlet.get("radius", 0.001)
+        pos = inlet.get("position")
+        if pos is None:
+            raise ValueError("Inlet missing required 'position' field")
+        direction = inlet.get("direction")
+        if direction is None:
+            raise ValueError("Inlet missing required 'direction' field")
+        radius = inlet.get("radius")
+        if radius is None:
+            raise ValueError("Inlet missing required 'radius' field")
         vessel_type = inlet.get("vessel_type", "arterial")
         add_inlet(
             network,
             position=Point3D(*pos),
+            direction=tuple(direction),
             radius=radius,
             vessel_type=vessel_type,
         )
     
     # Add outlets
     for outlet in ports.get("outlets", []):
-        pos = outlet.get("position", (0, 0, 0))
-        radius = outlet.get("radius", 0.001)
+        pos = outlet.get("position")
+        if pos is None:
+            raise ValueError("Outlet missing required 'position' field")
+        direction = outlet.get("direction")
+        if direction is None:
+            raise ValueError("Outlet missing required 'direction' field")
+        radius = outlet.get("radius")
+        if radius is None:
+            raise ValueError("Outlet missing required 'radius' field")
         vessel_type = outlet.get("vessel_type", "venous")
         add_outlet(
             network,
             position=Point3D(*pos),
+            direction=tuple(direction),
             radius=radius,
             vessel_type=vessel_type,
         )
@@ -786,8 +802,14 @@ def generate_void_mesh(
 
 
 def build_component(
-    component_spec: Dict[str, Any],
+    component_spec: Optional[Dict[str, Any]] = None,
     ctx: Optional[Union[Dict[str, Any], GenerationContext]] = None,
+    *,
+    domain: Optional[Any] = None,
+    ports: Optional[Dict[str, Any]] = None,
+    growth_policy: Optional[GrowthPolicy] = None,
+    collision_policy: Optional[CollisionPolicy] = None,
+    generator_kind: Optional[str] = None,
 ) -> Tuple[Any, OperationReport]:
     """
     Build a component from a specification.
@@ -795,9 +817,13 @@ def build_component(
     This is a high-level function that dispatches to the appropriate
     generator based on the component type.
     
+    Supports two calling conventions:
+    A) New style: build_component(component_spec: dict, ctx=...)
+    B) Legacy style: build_component(domain=..., ports=..., growth_policy=..., ...)
+    
     Parameters
     ----------
-    component_spec : dict
+    component_spec : dict, optional
         Component specification with keys:
         - "type": "network" | "mesh" | "void"
         - "generator": generator kind
@@ -813,6 +839,16 @@ def build_component(
         - effective_pitches: Derived pitches/tolerances per operation
         - pathfinding_coarse: Coarse pathfinding solution + corridor info
         - void_mesh: Unioned void mesh before embedding
+    domain : Domain, optional
+        (Legacy) Domain object for network generation
+    ports : dict, optional
+        (Legacy) Port configuration
+    growth_policy : GrowthPolicy, optional
+        (Legacy) Growth policy for network generation
+    collision_policy : CollisionPolicy, optional
+        (Legacy) Collision policy for network generation
+    generator_kind : str, optional
+        (Legacy) Generator kind (default: "space_colonization")
         
     Returns
     -------
@@ -821,6 +857,24 @@ def build_component(
     report : OperationReport
         Report with metadata
     """
+    # Handle legacy calling convention
+    if domain is not None:
+        # Legacy style: build_component(domain=..., ports=..., growth_policy=...)
+        component_spec = {
+            "type": "network",
+            "generator": generator_kind or "cco_hybrid",
+            "domain": domain,
+            "ports": ports or {},
+            "policies": {
+                "growth": growth_policy.to_dict() if growth_policy else {},
+                "collision": collision_policy.to_dict() if collision_policy else {},
+            },
+        }
+    elif component_spec is None:
+        raise ValueError(
+            "Must provide either component_spec dict or legacy kwargs (domain=, ports=, growth_policy=)"
+        )
+    
     if ctx is None:
         ctx = GenerationContext()
     elif isinstance(ctx, dict):
@@ -832,7 +886,7 @@ def build_component(
     component_type = component_spec.get("type", "network")
     generator = component_spec.get("generator", "space_colonization")
     domain_spec = component_spec.get("domain")
-    ports = component_spec.get("ports", {})
+    ports_spec = component_spec.get("ports", {})
     policies = component_spec.get("policies", {})
     
     domain_cache_key = f"compiled_domain:{_compute_cache_key(domain_spec)}"
@@ -842,15 +896,15 @@ def build_component(
     )
     
     if component_type == "network":
-        growth_policy = GrowthPolicy.from_dict(policies.get("growth", {}))
-        collision_policy = CollisionPolicy.from_dict(policies.get("collision", {}))
+        growth_policy_obj = GrowthPolicy.from_dict(policies.get("growth", {}))
+        collision_policy_obj = CollisionPolicy.from_dict(policies.get("collision", {}))
         
         result, report = generate_network(
             generator_kind=generator,
             domain=compiled_domain,
-            ports=ports,
-            growth_policy=growth_policy,
-            collision_policy=collision_policy,
+            ports=ports_spec,
+            growth_policy=growth_policy_obj,
+            collision_policy=collision_policy_obj,
         )
         
         report.metadata["cache_stats"] = ctx.stats()
@@ -860,15 +914,15 @@ def build_component(
         from ..policies import ChannelPolicy, MeshSynthesisPolicy
         
         channel_policy = ChannelPolicy.from_dict(policies.get("channel", {}))
-        growth_policy = GrowthPolicy.from_dict(policies.get("growth", {}))
+        growth_policy_obj = GrowthPolicy.from_dict(policies.get("growth", {}))
         synthesis_policy = MeshSynthesisPolicy.from_dict(policies.get("synthesis", {}))
         
         result, report = generate_void_mesh(
             kind=generator,
             domain=compiled_domain,
-            ports=ports,
+            ports=ports_spec,
             channel_policy=channel_policy,
-            growth_policy=growth_policy,
+            growth_policy=growth_policy_obj,
             synthesis_policy=synthesis_policy,
         )
         

@@ -144,10 +144,13 @@ class OperationReport:
     Standard report structure for all operations.
     
     Every operation returns a report with requested vs effective policy,
-    warnings, and operation-specific metadata.
+    warnings, and operation-specific metadata/metrics.
     
     The "requested vs effective" pattern allows tracking of runtime
     adjustments (e.g., pitch stepping, constraint enforcement).
+    
+    Note: Both `metadata` and `metrics` are supported for backward compatibility.
+    They are aliases - `metrics` is preferred for new code.
     """
     operation: str = "unknown"  # Default to "unknown" for convenience
     success: bool = True
@@ -156,9 +159,28 @@ class OperationReport:
     warnings: List[str] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    metrics: Dict[str, Any] = field(default_factory=dict)
+    
+    def __post_init__(self):
+        # Merge metrics into metadata for backward compatibility
+        # and ensure both fields stay in sync
+        if self.metrics and not self.metadata:
+            self.metadata = dict(self.metrics)
+        elif self.metadata and not self.metrics:
+            self.metrics = dict(self.metadata)
+        elif self.metrics and self.metadata:
+            # Both provided - merge metrics into metadata
+            merged = dict(self.metadata)
+            merged.update(self.metrics)
+            self.metadata = merged
+            self.metrics = merged
     
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        # Ensure metrics is always present in output
+        if "metrics" not in d:
+            d["metrics"] = d.get("metadata", {})
+        return d
     
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), indent=2)
