@@ -138,10 +138,11 @@ def space_colonization_step(
         params = SpaceColonizationParams()
     
     if constraints is None:
-        # Create constraints with min_segment_length derived from params.step_size
-        # This ensures the growth step_size is respected by the branching constraints
+        # Create constraints with min_segment_length equal to step_size
+        # This ensures segments are at least as long as the growth step
+        # Callers should pass explicit constraints with policy-driven min_segment_length
         constraints = BranchingConstraints(
-            min_segment_length=params.step_size * 0.5,  # Allow segments down to half the step_size
+            min_segment_length=params.step_size,
             min_radius=params.min_radius,
         )
     
