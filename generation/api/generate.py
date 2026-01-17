@@ -348,9 +348,15 @@ def _generate_space_colonization(
         seed=seed,
     )
     
-    # Run colonization
+    # Run colonization with policy-driven parameters
+    # Derive min_radius from growth_policy.min_segment_length or resolution policy
+    # Use min_segment_length / 2 as a reasonable min_radius (radius is half of diameter)
+    min_radius = growth_policy.min_segment_length / 2 if growth_policy.min_segment_length else 0.0001
+    
     params = SpaceColonizationParams(
         max_steps=growth_policy.max_iterations,
+        step_size=growth_policy.step_size,
+        min_radius=min_radius,
     )
     space_colonization_step(network, tissue_points=tissue_points, params=params, seed=seed)
     

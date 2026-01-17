@@ -367,11 +367,15 @@ class ArtifactStore:
         if mesh.is_watertight:
             entry.metadata["volume"] = float(mesh.volume)
         
+        # Handle empty/degenerate meshes gracefully
         bbox = mesh.bounds
-        entry.metadata["bbox"] = {
-            "min": bbox[0].tolist(),
-            "max": bbox[1].tolist(),
-        }
+        if bbox is not None and len(mesh.vertices) > 0:
+            entry.metadata["bbox"] = {
+                "min": bbox[0].tolist(),
+                "max": bbox[1].tolist(),
+            }
+        else:
+            entry.metadata["bbox"] = None
         
         return entry.path
     
