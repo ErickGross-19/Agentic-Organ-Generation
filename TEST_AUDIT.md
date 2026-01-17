@@ -40,6 +40,8 @@ tests/
 | `tests/runner_contract/test_policy_serialization.py` | `tests/contract/test_policy_serialization.py` | A1, A2: Verifies all policy classes round-trip through JSON without data loss and contain no callables |
 | `tests/designspec/test_run_report_json_clean.py` | `tests/contract/test_run_report_json_clean.py` | Validates JSON serialization of reports - core contract requirement |
 | `tests/validity/test_reports_json_schema.py` | `tests/contract/test_reports_json_schema.py` | H3: Reports are JSON serializable and include requested vs effective policies |
+| (NEW) | `tests/contract/test_module_imports.py` | Smoke tests for module import cleanness - validates no circular dependencies or naming collisions |
+| (NEW) | `tests/contract/test_operation_report_pattern.py` | Tests that public API functions return OperationReport with requested/effective policy |
 
 #### Unit Tests (tests/unit/)
 
@@ -65,6 +67,7 @@ tests/
 | `tests/primitives/test_path_channel_tube_sweep.py` | `tests/unit/primitives/test_path_channel_tube_sweep.py` | E3: Tests path channel tube sweep |
 | `tests/resolution/test_operation_pitch_resolver_shared.py` | `tests/unit/resolution/test_operation_pitch_resolver_shared.py` | C4: Tests shared resolver behavior |
 | `tests/resolution/test_pitch_resolution_budgeting.py` | `tests/unit/resolution/test_pitch_resolution_budgeting.py` | C1, C2, C3: Tests pitch resolution budgeting |
+| (NEW) | `tests/unit/resolution/test_budget_behavior.py` | Tests budget stress scenarios with pitch relaxation - validates scale/budget behavior |
 | `tests/validity/test_open_port_roi_budgeted_connectivity.py` | `tests/unit/validity/test_open_port_roi_budgeted_connectivity.py` | H2: Tests open-port ROI budgeted connectivity |
 | `tests/validity/test_validity_runner_orchestrates_checks.py` | `tests/unit/validity/test_validity_runner_orchestrates_checks.py` | H1: Tests validity runner orchestration |
 | `tests/test_adapters.py` | `tests/unit/test_adapters.py` | Tests mesh adapters and unit scaling |
@@ -237,12 +240,22 @@ pytest -q tests/
 
 | Category | File Count | Status |
 |----------|------------|--------|
-| Contract Tests | 5 | Keep |
-| Unit Tests | 31 | Keep |
-| Integration Tests | 4 existing + 4 new = 8 | Keep/Add |
+| Contract Tests | 5 existing + 2 new = 7 | Keep/Add |
+| Unit Tests | 31 existing + 1 new = 32 | Keep/Add |
+| Integration Tests | 4 existing + 5 new = 9 | Keep/Add |
 | Regression Tests | 2 | Keep |
 | Quality Tests | 2 | Keep |
-| Legacy/Quarantine | 3 | Quarantine |
+| Legacy/Quarantine | 2 | Quarantine |
 | Duplicates | 2 | Delete |
 | Non-Runner (Exclude) | 2 | Exclude from gate |
-| **Total** | **57 original** | |
+| **Total** | **57 original → 54 after cleanup + 8 new = 62** | |
+
+## Coverage Restoration Notes
+
+The following coverage was restored from deleted files to ensure no important test coverage was lost:
+
+1. **Budget Behavior Tests** (`tests/unit/resolution/test_budget_behavior.py`): Tests for pitch relaxation and budget stress scenarios, critical for validating "scale/budget behavior works (mm/µm, 20µm min diameter, budgets, pitch relaxation)" requirement.
+
+2. **Module Import Smoke Tests** (`tests/contract/test_module_imports.py`): Tests that all key modules can be imported without circular dependencies or naming collisions.
+
+3. **Operation Report Pattern Tests** (`tests/contract/test_operation_report_pattern.py`): Tests that public API functions return OperationReport with requested/effective policy.
