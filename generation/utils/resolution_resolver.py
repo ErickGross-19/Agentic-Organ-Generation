@@ -206,6 +206,14 @@ def resolve_pitch(
         )
         warnings.append(f"[{op_name}] {relax_warning}")
         logger.warning(f"[{op_name}] {relax_warning}")
+    elif effective_pitch > base_pitch:
+        # Pitch was clamped to max_pitch (not relaxed in discrete steps)
+        clamp_warning = (
+            f"Pitch clamped from {base_pitch:.2e} m to {effective_pitch:.2e} m "
+            f"(max_pitch limit). Voxel budget {max_voxels:,} cannot be satisfied."
+        )
+        warnings.append(f"[{op_name}] {clamp_warning}")
+        logger.warning(f"[{op_name}] {clamp_warning}")
     
     # Compute relax factor
     relax_factor = effective_pitch / base_pitch if base_pitch > 0 else 1.0

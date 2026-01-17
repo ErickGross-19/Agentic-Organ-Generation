@@ -239,6 +239,7 @@ class ResolutionPolicy:
 
         pitch = base_pitch
         was_relaxed = False
+        was_clamped = False
         warning = None
 
         while True:
@@ -254,11 +255,29 @@ class ResolutionPolicy:
 
             if new_pitch <= pitch:
                 break
+            
+            # Stop at max_pitch - clamping is different from relaxation
+            if new_pitch > self.max_pitch:
+                pitch = self.max_pitch
+                was_clamped = True
+                was_relaxed = False  # Reset - clamping overrides relaxation
+                break
 
             pitch = new_pitch
             was_relaxed = True
 
-        if was_relaxed:
+        # Clamp to max_pitch if exceeded (safety check)
+        if pitch > self.max_pitch:
+            pitch = self.max_pitch
+            was_clamped = True
+            was_relaxed = False
+        
+        if was_clamped:
+            warning = (
+                f"Pitch clamped to max_pitch ({self.max_pitch:.2e}) - voxel budget "
+                f"({max_voxels} voxels) cannot be satisfied at this pitch"
+            )
+        elif was_relaxed:
             warning = (
                 f"Pitch relaxed from {base_pitch:.2e} to {pitch:.2e} to stay within "
                 f"voxel budget ({max_voxels} voxels)"

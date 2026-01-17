@@ -17,11 +17,12 @@ class TestResolutionPolicyPitchRelaxation:
         
         policy = ResolutionPolicy(
             min_pitch=1e-6,
-            max_pitch=1e-3,
+            max_pitch=1e-2,  # 10mm - large enough to satisfy budget for 0.1m domain
             max_voxels=1_000_000,
         )
         
-        large_bbox = (0, 1.0, 0, 1.0, 0, 1.0)
+        # Use smaller domain that can satisfy budget within max_pitch
+        large_bbox = (0, 0.1, 0, 0.1, 0, 0.1)  # 0.1m cube = 1e6 voxels at 1e-4 pitch
         
         relaxed_pitch = policy.compute_relaxed_pitch(
             bbox=large_bbox,

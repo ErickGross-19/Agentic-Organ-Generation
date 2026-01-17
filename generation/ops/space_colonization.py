@@ -172,7 +172,11 @@ def space_colonization_step(
             errors=["No terminal nodes"],
         )
     
-    tissue_points_list = [Point3D.from_array(p) for p in tissue_points]
+    # Handle both Point3D objects and array-like inputs
+    tissue_points_list = [
+        p if isinstance(p, Point3D) else Point3D.from_array(p)
+        for p in tissue_points
+    ]
     active_tissue_points = set(range(len(tissue_points_list)))
     initial_count = len(tissue_points_list)
     
