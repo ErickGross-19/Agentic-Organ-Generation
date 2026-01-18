@@ -24,13 +24,14 @@ from designspec.plan import ExecutionPlan
 VALID_STAGES = [
     "compile_policies",
     "compile_domains",
-    "place_ports",
-    "build_components",
-    "synthesize_meshes",
-    "merge_meshes",
+    "component_ports",
+    "component_build",
+    "component_mesh",
     "union_voids",
+    "mesh_domain",
     "embed",
-    "validate",
+    "port_recarve",
+    "validity",
     "export",
 ]
 
@@ -48,8 +49,8 @@ Examples:
     python scripts/run_designspec_example.py --spec examples/designspec/01_minimal_box_network.json --out ./output --run-until compile_domains
 
 Available stages:
-    compile_policies, compile_domains, place_ports, build_components,
-    synthesize_meshes, merge_meshes, union_voids, embed, validate, export
+    compile_policies, compile_domains, component_ports, component_build,
+    component_mesh, union_voids, mesh_domain, embed, port_recarve, validity, export
         """,
     )
     parser.add_argument(
@@ -93,8 +94,8 @@ def print_stage_summary(result, verbose=False):
         print("\nStage Reports:")
         for report in result.stage_reports:
             status = "OK" if report.success else "FAILED"
-            duration = getattr(report, "duration_seconds", None)
-            duration_str = f" ({duration:.2f}s)" if duration else ""
+            duration = getattr(report, "duration_s", None)
+            duration_str = f" ({duration:.2f}s)" if duration is not None else ""
             print(f"  - {report.stage}: {status}{duration_str}")
 
             if verbose and hasattr(report, "metadata") and report.metadata:
@@ -132,7 +133,7 @@ def main():
     start_time = time.time()
 
     try:
-        spec = DesignSpec.from_file(str(spec_path))
+        spec = DesignSpec.from_json(str(spec_path))
     except Exception as e:
         print(f"Error loading spec: {e}", file=sys.stderr)
         sys.exit(1)

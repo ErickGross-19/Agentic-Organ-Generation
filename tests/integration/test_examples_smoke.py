@@ -62,7 +62,7 @@ def load_example(example_name: str) -> DesignSpec:
     example_path = EXAMPLES_DIR / example_name
     if not example_path.exists():
         pytest.skip(f"Example not found: {example_path}")
-    return DesignSpec.from_file(str(example_path))
+    return DesignSpec.from_json(str(example_path))
 
 
 def run_example_until_stage(spec: DesignSpec, stage: str, tmp_path: Path) -> RunnerResult:
