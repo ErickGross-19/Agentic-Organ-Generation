@@ -231,11 +231,12 @@ class DesignSpecAgent:
         
         patches = self._extract_patches_from_message(user_message, spec)
         if patches:
+            explanation = self._generate_patch_explanation(user_message, patches, spec)
             return AgentResponse(
                 response_type=AgentResponseType.PATCH_PROPOSAL,
-                message="I've prepared a patch based on your request.",
+                message=explanation,
                 patch_proposal=PatchProposal(
-                    explanation=f"Changes based on: {user_message}",
+                    explanation=explanation,
                     patches=patches,
                     confidence=0.8,
                     requires_confirmation=True,
@@ -250,9 +251,7 @@ class DesignSpecAgent:
             questions = self._generate_questions_for_fields(missing_fields, spec)
             if questions:
                 checklist = self._build_missing_fields_checklist(spec)
-                message = "I need some more information to complete the spec."
-                if checklist:
-                    message += f"\n\nMissing fields checklist:\n{checklist}"
+                message = self._generate_conversational_question_prompt(questions, checklist, spec)
                 return AgentResponse(
                     response_type=AgentResponseType.QUESTION,
                     message=message,
@@ -262,12 +261,7 @@ class DesignSpecAgent:
         if self.llm_client:
             return self._llm_process_message(user_message, spec, validation_report)
         
-        return AgentResponse(
-            response_type=AgentResponseType.MESSAGE,
-            message="I understand. What would you like to do with the spec? "
-                    "You can describe changes, ask me to run the pipeline, "
-                    "or ask questions about the current configuration.",
-        )
+        return self._generate_conversational_fallback(user_message, spec)
     
     def _is_run_request(self, message: str) -> bool:
         """Check if the message is a run request."""
@@ -979,6 +973,148 @@ class DesignSpecAgent:
             })
         
         return patches
+    
+    def _generate_patch_explanation(
+        self,
+        user_message: str,
+        patches: List[Dict[str, Any]],
+        spec: Dict[str, Any],
+    ) -> str:
+        """Generate a conversational explanation for the proposed patches."""
+        if self.llm_client:
+            try:
+                prompt = f"""Generate a brief, friendly explanation (1-2 sentences) for these spec changes.
+User request: {user_message}
+Changes: {json.dumps(patches, indent=2)[:500]}
+Be conversational and helpful. Don't be overly formal."""
+                response = self.llm_client.chat(message=prompt)
+                return response.content.strip()
+            except Exception:
+                pass
+        
+        patch_descriptions = []
+        for patch in patches:
+            op = patch.get("op", "")
+            path = patch.get("path", "")
+            
+            if "/domains" in path:
+                if "main_domain" in str(patch.get("value", {})):
+                    value = patch.get("value", {}).get("main_domain", {})
+                    dtype = value.get("type", "")
+                    if dtype == "box":
+                        x_size = value.get("x_max", 0) - value.get("x_min", 0)
+                        y_size = value.get("y_max", 0) - value.get("y_min", 0)
+                        z_size = value.get("z_max", 0) - value.get("z_min", 0)
+                        patch_descriptions.append(f"create a {x_size}x{y_size}x{z_size} box domain")
+                    else:
+                        patch_descriptions.append(f"create a {dtype} domain")
+                else:
+                    patch_descriptions.append("update the domain")
+            elif "/components" in path:
+                value = patch.get("value", {})
+                build_type = value.get("build", {}).get("type", "")
+                if build_type == "primitive_channels":
+                    patch_descriptions.append("add a channel component")
+                else:
+                    patch_descriptions.append("add a component")
+            elif "/features" in path:
+                value = patch.get("value", {})
+                ridges = value.get("ridges", [])
+                if ridges:
+                    faces = [r.get("face", "") for r in ridges]
+                    patch_descriptions.append(f"add ridges on {', '.join(faces)} faces")
+            elif "/meta" in path:
+                if "seed" in path:
+                    patch_descriptions.append(f"set the seed to {patch.get('value')}")
+                elif "name" in path:
+                    patch_descriptions.append(f"set the name to '{patch.get('value')}'")
+        
+        if patch_descriptions:
+            if len(patch_descriptions) == 1:
+                return f"I'll {patch_descriptions[0]}. Does this look right?"
+            else:
+                return f"I'll {', '.join(patch_descriptions[:-1])}, and {patch_descriptions[-1]}. Does this look right?"
+        
+        return "I've prepared some changes based on your request. Please review and approve."
+    
+    def _generate_conversational_question_prompt(
+        self,
+        questions: List[Question],
+        checklist: str,
+        spec: Dict[str, Any],
+    ) -> str:
+        """Generate a conversational prompt for asking questions."""
+        if self.llm_client:
+            try:
+                questions_text = "\n".join(f"- {q.question_text}" for q in questions)
+                prompt = f"""Rephrase these questions in a friendly, conversational way (keep it brief):
+{questions_text}
+
+Current spec status:
+{checklist}
+
+Be helpful and guide the user. Ask one main question at a time."""
+                response = self.llm_client.chat(message=prompt)
+                return response.content.strip()
+            except Exception:
+                pass
+        
+        if len(questions) == 1:
+            q = questions[0]
+            if "domain" in q.field_path.lower():
+                return f"Let's start with the basics - {q.question_text}"
+            elif "component" in q.field_path.lower():
+                return f"Now for the vascular structure - {q.question_text}"
+            else:
+                return q.question_text
+        
+        main_question = questions[0].question_text
+        message = f"I have a few questions to help build your spec. First: {main_question}"
+        if checklist:
+            message += f"\n\nCurrent progress:\n{checklist}"
+        return message
+    
+    def _generate_conversational_fallback(
+        self,
+        user_message: str,
+        spec: Dict[str, Any],
+    ) -> AgentResponse:
+        """Generate a conversational fallback response when no specific action is detected."""
+        domains = spec.get("domains", {})
+        components = spec.get("components", [])
+        features = spec.get("features", {})
+        
+        if not domains:
+            return AgentResponse(
+                response_type=AgentResponseType.MESSAGE,
+                message="I'd love to help! To get started, could you describe the shape and size "
+                        "of the structure you want to create? For example: 'Create a 20mm cube' "
+                        "or 'Make a cylinder 10mm radius and 30mm tall'.",
+            )
+        
+        if not components:
+            domain_names = list(domains.keys())
+            return AgentResponse(
+                response_type=AgentResponseType.MESSAGE,
+                message=f"Great, you have a domain set up ({domain_names[0]}). "
+                        "What kind of vascular structure would you like inside it? "
+                        "You could say 'add a straight channel through it' or describe "
+                        "a branching network.",
+            )
+        
+        if not features.get("ridges"):
+            return AgentResponse(
+                response_type=AgentResponseType.MESSAGE,
+                message="Your spec is looking good! Would you like to add any surface features "
+                        "like ridges? You can say 'add ridges on the left and right faces' "
+                        "or we can proceed to run the pipeline.",
+            )
+        
+        return AgentResponse(
+            response_type=AgentResponseType.MESSAGE,
+            message="Your spec looks ready! You can say 'run' to generate the structure, "
+                    "or describe any other changes you'd like to make.",
+        )
     
     def _llm_process_message(
         self,
