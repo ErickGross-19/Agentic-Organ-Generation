@@ -52,7 +52,28 @@
       "backend": "space_colonization",
       "max_iterations": 200,
       "step_size": 0.3,
-      "backend_params": {}
+      "backend_params": {
+        "space_colonization_policy": {
+          "enabled": true,
+          "trunk_steps": 10,
+          "trunk_direction_mode": "inlet_direction",
+          "max_root_children": 1,
+          "branch_enable_after_steps": 10,
+          "branch_enable_after_distance": 0.002,
+          "apical_dominance_alpha": 1.5,
+          "active_tip_fraction": 0.4,
+          "min_active_tips": 5,
+          "dominance_mode": "probabilistic",
+          "enable_cluster_splitting": true,
+          "cluster_angle_threshold_deg": 35.0,
+          "min_attractors_to_split": 8,
+          "max_children_per_split": 3,
+          "split_cooldown_steps": 8,
+          "allow_trifurcation_prob": 0.25,
+          "noise_angle_deg": 5.0,
+          "max_children_per_node_total": 3
+        }
+      }
     },
     "collision": {
       "enabled": true,

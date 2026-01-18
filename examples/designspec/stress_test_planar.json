@@ -38,7 +38,27 @@
         "kill_distance": 0.5,
         "num_attractors": 1000,
         "planar_mode": true,
-        "planar_z": 0.0
+        "planar_z": 0.0,
+        "space_colonization_policy": {
+          "enabled": true,
+          "trunk_steps": 8,
+          "trunk_direction_mode": "inlet_direction",
+          "max_root_children": 1,
+          "branch_enable_after_steps": 8,
+          "branch_enable_after_distance": 0.001,
+          "apical_dominance_alpha": 1.5,
+          "active_tip_fraction": 0.5,
+          "min_active_tips": 8,
+          "dominance_mode": "probabilistic",
+          "enable_cluster_splitting": true,
+          "cluster_angle_threshold_deg": 35.0,
+          "min_attractors_to_split": 6,
+          "max_children_per_split": 3,
+          "split_cooldown_steps": 6,
+          "allow_trifurcation_prob": 0.2,
+          "noise_angle_deg": 5.0,
+          "max_children_per_node_total": 3
+        }
       }
     },
     "collision": {
