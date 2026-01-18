@@ -86,6 +86,11 @@ automation/
 ├── agent_runner.py          # Task orchestration and execution
 ├── workflow.py              # V3/V4 workflow implementation
 ├── cli.py                   # Command-line interface
+├── designspec_session.py    # DesignSpec project session management
+├── designspec_agent.py      # DesignSpec patch-only agent
+├── workflows/               # Workflow implementations
+│   ├── __init__.py
+│   └── designspec_workflow.py  # DesignSpec workflow
 ├── single_agent_organ_generation/
 │   └── v5/                  # V5 Goal-Driven Controller
 │       ├── __init__.py      # V5 public exports
@@ -103,6 +108,78 @@ automation/
     ├── generate_structure.py   # Generation task prompts
     ├── validate_structure.py   # Validation task prompts
     └── iterate_design.py       # Iteration task prompts
+```
+
+## DesignSpec Workflow (Recommended)
+
+The DesignSpec workflow is the recommended approach for creating organ specifications. It provides a conversation-driven experience where the system proposes JSON patches rather than generating code.
+
+### Core Components
+
+**DesignSpecSession** (`designspec_session.py`): Manages project state and persistence including spec storage, patch history, compile orchestration, and artifact tracking.
+
+**DesignSpecAgent** (`designspec_agent.py`): Processes user messages and generates patch proposals or clarifying questions. Never generates Python code.
+
+**DesignSpecWorkflow** (`workflows/designspec_workflow.py`): Integrates session and agent with the GUI, providing project lifecycle management and callback notifications.
+
+### Project Directory Structure
+
+Every DesignSpec project has this structure:
+
+```
+project_dir/
+  spec.json           # Current specification (always saved)
+  spec_history/       # Historical snapshots after each patch
+  patches/            # Applied patches with metadata
+  reports/            # Compile and run reports
+  artifacts/          # Generated outputs
+  logs/               # Session logs
+```
+
+### Patch Approval Flow
+
+All spec modifications go through a patch approval flow:
+
+1. User sends a message describing desired changes
+2. Agent analyzes the request and current spec
+3. Agent proposes a JSON Patch (RFC 6902) with explanation
+4. User reviews the diff and approves or rejects
+5. If approved, patch is applied and compile runs automatically
+6. Results are reported back to the user
+
+### Auto-Compile Behavior
+
+After every approved patch, the system automatically runs compile_policies and compile_domains. If compilation fails, the error is surfaced immediately. The system does not proceed to run stages automatically.
+
+### Usage Example
+
+```python
+from automation.workflows.designspec_workflow import DesignSpecWorkflow
+
+workflow = DesignSpecWorkflow()
+
+# Set callbacks for GUI updates
+workflow.set_callbacks(
+    on_spec_update=handle_spec_update,
+    on_patch_proposal=handle_patch_proposal,
+    on_compile_status=handle_compile_status,
+)
+
+# Start with a new project
+workflow.on_start(
+    project_dir="/path/to/project",
+    template_spec={"meta": {"name": "My Organ", "seed": 42}}
+)
+
+# Handle user messages
+response = workflow.on_user_message("Create a box domain 20mm x 60mm x 30mm")
+
+# Approve patches
+workflow.approve_patch(patch_id)
+
+# Run pipeline stages
+workflow.run_until("union_voids")
+workflow.run_full()
 ```
 
 ## Quick Start

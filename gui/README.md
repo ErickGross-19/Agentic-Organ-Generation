@@ -6,7 +6,7 @@ A graphical user interface for the Agentic Organ Generation system. Provides wor
 
 The GUI wraps the existing command-line workflows with a professional interface:
 
-**Workflow Selection** - Supports both Single Agent Organ Generator V5 (goal-driven controller, recommended) and V4 (state-machine workflow). V5 provides a more flexible, engineer-like experience with intelligent questioning, approval tracking, and safe fix policies.
+**Workflow Selection** - Supports DesignSpec Project (recommended), Single Agent Organ Generator V5 (goal-driven controller), and V4 (state-machine workflow). DesignSpec Project provides a conversation-driven spec editing experience with JSON patches. V5 provides a flexible, engineer-like experience with intelligent questioning, approval tracking, and safe fix policies.
 
 **Agent Configuration** - Configure LLM providers including OpenAI, Anthropic, Google Gemini, Mistral, xAI (Grok), Groq, and local OpenAI-compatible endpoints. API keys are stored securely with machine-specific encryption.
 
@@ -138,6 +138,53 @@ gui/
 Configuration is stored in `~/.organ_generator/`:
 - `config.json` - General settings (window geometry, last provider, etc.)
 - `credentials.enc` - Encrypted API keys (when keyring unavailable)
+
+## DesignSpec Project Workflow
+
+The DesignSpec Project workflow is the recommended way to create and edit organ specifications. Instead of writing code, users interact through a conversation that proposes JSON patches to the specification.
+
+### Getting Started with DesignSpec
+
+1. Launch the GUI with `python -m gui`
+2. Select "File > New Workflow" or press Ctrl+N
+3. Choose "DesignSpec Project (Recommended)"
+4. Either create a new project or open an existing one
+
+### Project Structure
+
+When you create a new DesignSpec project, the following folder structure is created:
+
+```
+project_name/
+  spec.json           # Current specification
+  spec_history/       # Historical spec snapshots
+  patches/            # Applied patch history
+  reports/            # Compile and run reports
+  artifacts/          # Generated meshes and outputs
+  logs/               # Session logs
+```
+
+### DesignSpec Panels
+
+The DesignSpec workflow provides several panels:
+
+**Spec Panel**: Displays the current spec.json with pretty-printing and validation status (green/yellow/red).
+
+**Patch Panel**: Shows proposed patches with explanation, diff view, and Approve/Reject buttons.
+
+**Compile Status Panel**: Shows compile_policies and compile_domains results. Automatically updates after each approved patch.
+
+**Run Panel**: Controls for running the pipeline with stage selection (compile_domains, component_build, union_voids, embed, validity).
+
+**Artifacts Panel**: Lists generated artifacts with file paths. Click STL files to load them into the 3D viewer.
+
+### Patch Approval Mechanism
+
+The system never modifies your spec without approval. When you request a change, the agent proposes a JSON Patch (RFC 6902 format) with an explanation. You can review the diff and either approve or reject.
+
+### Auto-Compile Behavior
+
+After every approved patch, the system automatically runs compile stages (compile_policies and compile_domains). If compilation fails, the error is displayed immediately.
 
 ## Troubleshooting
 

@@ -18,6 +18,8 @@ from .security import SecureConfig
 from .agent_config import AgentConfigPanel, AgentConfiguration
 from .workflow_manager import WorkflowManager, WorkflowConfig, WorkflowType, WorkflowStatus, WorkflowMessage
 from .stl_viewer import STLViewer
+from .designspec_workflow_manager import DesignSpecWorkflowManager
+from .designspec_panels import SpecPanel, PatchPanel, CompilePanel, RunPanel, ArtifactsPanel
 
 
 class WorkflowSelectionDialog(tk.Toplevel):
@@ -79,6 +81,22 @@ class WorkflowSelectionDialog(tk.Toplevel):
         ttk.Label(
             single_frame,
             text="Interactive workflow with topology-first questioning.\nBest for guided organ structure design.",
+            foreground="gray",
+        ).pack(anchor="w", padx=20)
+        
+        designspec_frame = ttk.Frame(main_frame)
+        designspec_frame.pack(fill="x", pady=5)
+        
+        ttk.Radiobutton(
+            designspec_frame,
+            text="DesignSpec Project (Recommended)",
+            variable=self.workflow_var,
+            value="designspec",
+        ).pack(anchor="w")
+        
+        ttk.Label(
+            designspec_frame,
+            text="Conversation-driven spec editing with JSON patches.\nPrimary workflow for DesignSpec-first development.",
             foreground="gray",
         ).pack(anchor="w", padx=20)
         
@@ -385,6 +403,10 @@ class MainWindow:
         
         if workflow_type == WorkflowType.SINGLE_AGENT:
             self.workflow_label.config(text="Single Agent Organ Generator")
+        elif workflow_type == WorkflowType.DESIGNSPEC:
+            self.workflow_label.config(text="DesignSpec Project")
+            self._show_designspec_project_dialog()
+            return
         
         self.start_btn.config(state="normal")
         self._append_chat("system", f"Selected workflow: {workflow_type.value}")
@@ -527,6 +549,29 @@ class MainWindow:
                 text = self.input_entry.get().strip()
             except Exception:
                 text = self.input_var.get().strip()
+            
+            # Check if DesignSpec workflow is active
+            if hasattr(self, '_designspec_manager') and self._current_workflow_type == WorkflowType.DESIGNSPEC:
+                if not text:
+                    self._append_chat("system", "Please enter some text to send.")
+                    self.input_var.set("")
+                    self.input_entry.delete(0, "end")
+                    return
+                
+                self._append_chat("user", text)
+                
+                if text.lower() == "approve" and hasattr(self, '_pending_patch_id'):
+                    self._designspec_manager.approve_patch(self._pending_patch_id)
+                    delattr(self, '_pending_patch_id')
+                elif text.lower() == "reject" and hasattr(self, '_pending_patch_id'):
+                    self._designspec_manager.reject_patch(self._pending_patch_id, "User rejected")
+                    delattr(self, '_pending_patch_id')
+                else:
+                    self._designspec_manager.send_message(text)
+                
+                self.input_var.set("")
+                self.input_entry.delete(0, "end")
+                return
             
             # Check if workflow is running
             if not self.workflow_manager.is_running:
@@ -804,11 +849,198 @@ class MainWindow:
         )
         
         if project_dir:
-            stl_files = list(Path(project_dir).glob("**/*.stl"))
-            if stl_files:
-                self.stl_viewer.load_stl(str(stl_files[0]))
-                self._append_output(f"Loaded project: {project_dir}")
-                self._append_output(f"Found {len(stl_files)} STL file(s)")
+            spec_file = Path(project_dir) / "spec.json"
+            if spec_file.exists():
+                self._open_designspec_project(project_dir)
+            else:
+                stl_files = list(Path(project_dir).glob("**/*.stl"))
+                if stl_files:
+                    self.stl_viewer.load_stl(str(stl_files[0]))
+                    self._append_output(f"Loaded project: {project_dir}")
+                    self._append_output(f"Found {len(stl_files)} STL file(s)")
+    
+    def _show_designspec_project_dialog(self):
+        """Show dialog for creating or opening a DesignSpec project."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("DesignSpec Project")
+        dialog.geometry("400x200")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        main_frame = ttk.Frame(dialog, padding=20)
+        main_frame.pack(fill="both", expand=True)
+        
+        ttk.Label(
+            main_frame,
+            text="DesignSpec Project",
+            font=("TkDefaultFont", 14, "bold"),
+        ).pack(pady=(0, 20))
+        
+        ttk.Label(
+            main_frame,
+            text="Create a new project or open an existing one:",
+        ).pack(pady=(0, 10))
+        
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill="x", pady=10)
+        
+        def on_new():
+            dialog.destroy()
+            self._create_designspec_project()
+        
+        def on_open():
+            dialog.destroy()
+            project_dir = filedialog.askdirectory(
+                title="Select DesignSpec Project Directory",
+            )
+            if project_dir:
+                self._open_designspec_project(project_dir)
+        
+        ttk.Button(
+            button_frame,
+            text="New Project",
+            command=on_new,
+        ).pack(side="left", padx=5, expand=True)
+        
+        ttk.Button(
+            button_frame,
+            text="Open Project",
+            command=on_open,
+        ).pack(side="left", padx=5, expand=True)
+        
+        ttk.Button(
+            button_frame,
+            text="Cancel",
+            command=dialog.destroy,
+        ).pack(side="left", padx=5, expand=True)
+        
+        dialog.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - dialog.winfo_width()) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - dialog.winfo_height()) // 2
+        dialog.geometry(f"+{x}+{y}")
+    
+    def _create_designspec_project(self):
+        """Create a new DesignSpec project."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("New DesignSpec Project")
+        dialog.geometry("400x200")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        main_frame = ttk.Frame(dialog, padding=20)
+        main_frame.pack(fill="both", expand=True)
+        
+        ttk.Label(main_frame, text="Project Name:").pack(anchor="w")
+        name_var = tk.StringVar(value="my_organ_project")
+        name_entry = ttk.Entry(main_frame, textvariable=name_var, width=40)
+        name_entry.pack(fill="x", pady=(0, 10))
+        
+        ttk.Label(main_frame, text="Location:").pack(anchor="w")
+        location_frame = ttk.Frame(main_frame)
+        location_frame.pack(fill="x", pady=(0, 10))
+        
+        location_var = tk.StringVar(value=os.path.expanduser("~/projects"))
+        location_entry = ttk.Entry(location_frame, textvariable=location_var)
+        location_entry.pack(side="left", fill="x", expand=True)
+        
+        def browse():
+            path = filedialog.askdirectory(title="Select Location")
+            if path:
+                location_var.set(path)
+        
+        ttk.Button(location_frame, text="Browse", command=browse).pack(side="left", padx=5)
+        
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill="x", pady=10)
+        
+        def on_create():
+            name = name_var.get().strip()
+            location = location_var.get().strip()
+            if not name:
+                messagebox.showwarning("Warning", "Please enter a project name")
+                return
+            if not location:
+                messagebox.showwarning("Warning", "Please select a location")
+                return
+            
+            dialog.destroy()
+            self._init_designspec_workflow(location, name)
+        
+        ttk.Button(button_frame, text="Create", command=on_create).pack(side="right", padx=5)
+        ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side="right", padx=5)
+        
+        dialog.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - dialog.winfo_width()) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - dialog.winfo_height()) // 2
+        dialog.geometry(f"+{x}+{y}")
+    
+    def _open_designspec_project(self, project_dir: str):
+        """Open an existing DesignSpec project."""
+        self._init_designspec_workflow(project_dir=project_dir)
+    
+    def _init_designspec_workflow(
+        self,
+        project_root: str = None,
+        project_name: str = None,
+        project_dir: str = None,
+    ):
+        """Initialize the DesignSpec workflow."""
+        if not hasattr(self, '_designspec_manager'):
+            self._designspec_manager = DesignSpecWorkflowManager(
+                message_callback=self._on_workflow_message,
+                status_callback=self._on_status_change,
+                output_callback=self._on_output,
+                spec_callback=self._on_spec_update,
+                patch_callback=self._on_patch_proposal,
+                compile_callback=self._on_compile_status,
+            )
+        
+        if project_dir:
+            success = self._designspec_manager.load_project(project_dir)
+        else:
+            success = self._designspec_manager.create_project(project_root, project_name)
+        
+        if success:
+            self._current_workflow_type = WorkflowType.DESIGNSPEC
+            self.workflow_label.config(text="DesignSpec Project")
+            self.start_btn.config(state="disabled")
+            self.stop_btn.config(state="normal")
+            self._append_chat("system", "DesignSpec project ready. Describe what you want to create!")
+    
+    def _on_spec_update(self, spec: Dict[str, Any]):
+        """Handle spec update from DesignSpec workflow."""
+        pass
+    
+    def _on_patch_proposal(self, patch_data: Dict[str, Any]):
+        """Handle patch proposal from DesignSpec workflow."""
+        patch_id = patch_data.get("patch_id", "")
+        explanation = patch_data.get("explanation", "")
+        patches = patch_data.get("patches", [])
+        
+        self._pending_patch_id = patch_id
+        
+        msg = f"Proposed patch ({patch_id}):\n{explanation}\n"
+        for i, patch in enumerate(patches[:3]):
+            op = patch.get("op", "")
+            path = patch.get("path", "")
+            msg += f"  {i+1}. {op} {path}\n"
+        if len(patches) > 3:
+            msg += f"  ... and {len(patches) - 3} more\n"
+        msg += "\nType 'approve' to apply or 'reject' to discard."
+        
+        self._append_chat("assistant", msg)
+    
+    def _on_compile_status(self, compile_data: Dict[str, Any]):
+        """Handle compile status from DesignSpec workflow."""
+        status = compile_data.get("status", "")
+        message = compile_data.get("message", "")
+        
+        if status == "running":
+            self._append_chat("system", "Compiling...")
+        elif status == "success":
+            self._append_chat("success", "Compile successful")
+        elif status == "failed":
+            self._append_chat("error", f"Compile failed: {message}")
     
     def _load_stl(self):
         """Load STL file directly."""
