@@ -117,10 +117,13 @@ def merge_networks(
             new_id = old_id + node_id_offset
             node_mapping[old_id] = new_id
             
+            # Use node's radius or derive from policy tolerance
+            node_radius = node.radius if hasattr(node, 'radius') else policy.overlap_tolerance
+            
             new_node = Node(
                 id=new_id,
                 position=Point3D(node.position.x, node.position.y, node.position.z),
-                radius=node.radius if hasattr(node, 'radius') else 0.001,
+                radius=node_radius,
                 node_type=node.node_type,
                 vessel_type=node.vessel_type if hasattr(node, 'vessel_type') else "arterial",
             )
@@ -130,12 +133,16 @@ def merge_networks(
         for old_id, segment in network.segments.items():
             new_id = old_id + segment_id_offset
             
+            # Use segment's radius or derive from policy tolerance
+            seg_start_radius = segment.start_radius if hasattr(segment, 'start_radius') else policy.overlap_tolerance
+            seg_end_radius = segment.end_radius if hasattr(segment, 'end_radius') else policy.overlap_tolerance
+            
             new_segment = VesselSegment(
                 id=new_id,
                 start_node_id=node_mapping[segment.start_node_id],
                 end_node_id=node_mapping[segment.end_node_id],
-                start_radius=segment.start_radius if hasattr(segment, 'start_radius') else 0.001,
-                end_radius=segment.end_radius if hasattr(segment, 'end_radius') else 0.001,
+                start_radius=seg_start_radius,
+                end_radius=seg_end_radius,
                 vessel_type=segment.vessel_type if hasattr(segment, 'vessel_type') else "arterial",
             )
             merged.segments[new_id] = new_segment
@@ -245,7 +252,8 @@ def _resolve_overlaps(
                 else:  # average
                     merged_radius = sum(radii) / len(radii)
             else:
-                merged_radius = 0.001
+                # Use policy tolerance as fallback radius
+                merged_radius = policy.overlap_tolerance
             
             # Update root node
             network.nodes[root].position = Point3D(*centroid)

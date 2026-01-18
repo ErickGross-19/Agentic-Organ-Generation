@@ -45,9 +45,16 @@ class Point3D:
         return {"x": self.x, "y": self.y, "z": self.z}
     
     @classmethod
-    def from_dict(cls, d: dict) -> "Point3D":
-        """Create from dictionary."""
-        return cls(d["x"], d["y"], d["z"])
+    def from_dict(cls, d) -> "Point3D":
+        """Create from dictionary or list.
+        
+        Accepts either:
+        - dict: {"x": float, "y": float, "z": float}
+        - list/tuple: [x, y, z]
+        """
+        if isinstance(d, (list, tuple)):
+            return cls(float(d[0]), float(d[1]), float(d[2]))
+        return cls(float(d["x"]), float(d["y"]), float(d["z"]))
 
 
 @dataclass
