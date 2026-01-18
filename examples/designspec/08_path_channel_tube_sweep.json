@@ -1,0 +1,270 @@
+{
+  "schema": {
+    "name": "aog_designspec",
+    "version": "1.0.0",
+    "compatible_with": ["1.0.x"]
+  },
+  "meta": {
+    "name": "08_path_channel_tube_sweep",
+    "description": "Demonstrates taper channel primitives with explicit length and taper settings. Creates tapered tube channels that narrow from inlet to tip. This showcases the tube sweep primitive with taper schedule.",
+    "seed": 88888,
+    "input_units": "mm",
+    "tags": ["taper", "channels", "tube_sweep", "path"]
+  },
+  "policies": {
+    "resolution": {
+      "input_units": "mm",
+      "min_channel_diameter": 0.15,
+      "min_voxels_across_feature": 4,
+      "max_voxels": 2000000,
+      "auto_relax_pitch": true,
+      "pitch_step_factor": 1.5,
+      "embed_pitch_factor": 1.0,
+      "max_voxels_embed": 1500000
+    },
+    "domain_meshing": {
+      "cache_meshes": true,
+      "emit_warnings": true,
+      "target_face_count": 25000
+    },
+    "growth": {
+      "enabled": false
+    },
+    "collision": {
+      "enabled": false
+    },
+    "ports": {
+      "enabled": true,
+      "face": "top",
+      "pattern": "explicit",
+      "projection_mode": "clamp_to_face",
+      "ridge_width": 0.1,
+      "ridge_clearance": 0.1,
+      "port_margin": 0.4,
+      "disk_constraint_enabled": true,
+      "ridge_constraint_enabled": true,
+      "placement_fraction": 0.7
+    },
+    "channels": {
+      "enabled": true,
+      "profile": "taper",
+      "length_mode": "explicit",
+      "length": 3.5,
+      "stop_before_boundary": 0.2,
+      "taper_factor": 0.4,
+      "radius_end": 0.1,
+      "segments_per_curve": 16,
+      "radial_sections": 16,
+      "path_samples": 32,
+      "enforce_effective_radius": true,
+      "constraint_strategy": "reduce_depth"
+    },
+    "composition": {
+      "repair_enabled": true,
+      "union_before_embed": true,
+      "repair_fill_holes": true,
+      "keep_largest_component": true,
+      "min_component_volume": 0.001
+    },
+    "embedding": {
+      "voxel_pitch": null,
+      "use_resolution_policy": true,
+      "auto_adjust_pitch": true,
+      "max_voxels": 1500000,
+      "fallback": "auto",
+      "preserve_ports_enabled": true,
+      "preserve_mode": "recarve",
+      "carve_radius_factor": 1.2,
+      "carve_depth": 1.5,
+      "output_domain_with_void": true,
+      "output_void_mesh": true,
+      "output_shell": true,
+      "shell_thickness": 0.5
+    },
+    "validity": {
+      "check_watertight": true,
+      "check_components": true,
+      "check_min_diameter": false,
+      "check_open_ports": true,
+      "check_bounds": true,
+      "check_void_inside_domain": true,
+      "max_components": 1
+    },
+    "open_port": {
+      "enabled": true,
+      "probe_radius_factor": 1.2,
+      "probe_length": 1.5,
+      "min_connected_volume_voxels": 10,
+      "mode": "voxel_connectivity",
+      "local_region_size": 4.0,
+      "max_voxels_roi": 300000,
+      "auto_relax_pitch": true
+    },
+    "repair": {
+      "voxel_repair_enabled": true,
+      "auto_adjust_pitch": true,
+      "max_pitch_steps": 3,
+      "pitch_step_factor": 1.5,
+      "fill_voxels": true,
+      "remove_small_components_enabled": true,
+      "min_component_faces": 100,
+      "min_component_volume": 0.001,
+      "fill_holes_enabled": true,
+      "smooth_enabled": false
+    },
+    "output": {
+      "output_dir": "./out/08_path_channel_tube_sweep",
+      "output_units": "mm",
+      "naming_convention": "default",
+      "save_intermediates": true,
+      "save_reports": true,
+      "output_stl": true,
+      "output_json": true,
+      "output_shell": true
+    }
+  },
+  "domains": {
+    "box_domain": {
+      "type": "box",
+      "x_min": -8,
+      "x_max": 8,
+      "y_min": -8,
+      "y_max": 8,
+      "z_min": -4,
+      "z_max": 4
+    }
+  },
+  "components": [
+    {
+      "id": "taper_channel_1",
+      "domain_ref": "box_domain",
+      "ports": {
+        "inlets": [
+          {
+            "name": "inlet_1",
+            "position": [-4, -4, 4],
+            "direction": [0, 0, -1],
+            "radius": 0.3,
+            "vessel_type": "arterial"
+          }
+        ],
+        "outlets": []
+      },
+      "build": {
+        "type": "primitive_channels"
+      },
+      "save_artifacts": {
+        "void_mesh": "artifacts/taper_channel_1_void.stl"
+      }
+    },
+    {
+      "id": "taper_channel_2",
+      "domain_ref": "box_domain",
+      "ports": {
+        "inlets": [
+          {
+            "name": "inlet_2",
+            "position": [4, -4, 4],
+            "direction": [0, 0, -1],
+            "radius": 0.3,
+            "vessel_type": "arterial"
+          }
+        ],
+        "outlets": []
+      },
+      "build": {
+        "type": "primitive_channels"
+      },
+      "save_artifacts": {
+        "void_mesh": "artifacts/taper_channel_2_void.stl"
+      }
+    },
+    {
+      "id": "taper_channel_3",
+      "domain_ref": "box_domain",
+      "ports": {
+        "inlets": [
+          {
+            "name": "inlet_3",
+            "position": [-4, 4, 4],
+            "direction": [0, 0, -1],
+            "radius": 0.3,
+            "vessel_type": "arterial"
+          }
+        ],
+        "outlets": []
+      },
+      "build": {
+        "type": "primitive_channels"
+      },
+      "save_artifacts": {
+        "void_mesh": "artifacts/taper_channel_3_void.stl"
+      }
+    },
+    {
+      "id": "taper_channel_4",
+      "domain_ref": "box_domain",
+      "ports": {
+        "inlets": [
+          {
+            "name": "inlet_4",
+            "position": [4, 4, 4],
+            "direction": [0, 0, -1],
+            "radius": 0.3,
+            "vessel_type": "arterial"
+          }
+        ],
+        "outlets": []
+      },
+      "build": {
+        "type": "primitive_channels"
+      },
+      "save_artifacts": {
+        "void_mesh": "artifacts/taper_channel_4_void.stl"
+      }
+    },
+    {
+      "id": "taper_channel_center",
+      "domain_ref": "box_domain",
+      "ports": {
+        "inlets": [
+          {
+            "name": "inlet_center",
+            "position": [0, 0, 4],
+            "direction": [0, 0, -1],
+            "radius": 0.35,
+            "vessel_type": "arterial"
+          }
+        ],
+        "outlets": []
+      },
+      "build": {
+        "type": "primitive_channels"
+      },
+      "save_artifacts": {
+        "void_mesh": "artifacts/taper_channel_center_void.stl"
+      }
+    }
+  ],
+  "composition": {
+    "save_union": "artifacts/union_void.stl"
+  },
+  "embedding": {
+    "enable": true,
+    "outputs": {
+      "domain_with_void": "domain_with_void.stl",
+      "void_mesh": "void_union.stl",
+      "shell": "shell.stl"
+    }
+  },
+  "validity": {
+    "enable": true,
+    "save_report": "validity_report.json"
+  },
+  "outputs": {
+    "artifacts_dir": "artifacts",
+    "named": {
+      "run_report": "run_report.json"
+    }
+  }
+}

@@ -1,0 +1,205 @@
+{
+  "schema": {
+    "name": "aog_designspec",
+    "version": "1.0.0",
+    "compatible_with": ["1.0.x"]
+  },
+  "meta": {
+    "name": "14_budget_relaxation_showcase",
+    "description": "Demonstrates budget relaxation with max_voxels constraints. Uses a larger domain with tight requested pitch to trigger pitch relaxation. This showcases max_voxels behavior, warnings, and effective pitch in the report.",
+    "seed": 141414,
+    "input_units": "mm",
+    "tags": ["budget", "relaxation", "max_voxels", "pitch", "warnings"]
+  },
+  "policies": {
+    "resolution": {
+      "input_units": "mm",
+      "min_channel_diameter": 0.08,
+      "min_voxels_across_feature": 6,
+      "max_voxels": 800000,
+      "auto_relax_pitch": true,
+      "pitch_step_factor": 1.3,
+      "embed_pitch_factor": 1.0,
+      "merge_pitch_factor": 1.0,
+      "repair_pitch_factor": 1.0,
+      "max_voxels_embed": 600000,
+      "max_voxels_merge": 600000,
+      "max_voxels_pathfinding_coarse": 400000,
+      "max_voxels_pathfinding_fine": 400000,
+      "max_voxels_open_port_roi": 200000
+    },
+    "domain_meshing": {
+      "cache_meshes": true,
+      "emit_warnings": true,
+      "target_face_count": 30000
+    },
+    "growth": {
+      "enabled": true,
+      "backend": "space_colonization",
+      "max_iterations": 100,
+      "step_size": 0.25,
+      "min_segment_length": 0.15,
+      "backend_params": {
+        "influence_radius": 2.0,
+        "kill_radius": 0.5,
+        "perception_angle": 90,
+        "num_attraction_points": 250
+      }
+    },
+    "collision": {
+      "enabled": true,
+      "check_collisions": true,
+      "collision_clearance": 0.08
+    },
+    "ports": {
+      "enabled": true,
+      "face": "top",
+      "pattern": "explicit",
+      "projection_mode": "clamp_to_face",
+      "ridge_width": 0.1,
+      "ridge_clearance": 0.1,
+      "port_margin": 0.3,
+      "disk_constraint_enabled": true,
+      "ridge_constraint_enabled": true,
+      "placement_fraction": 0.7
+    },
+    "channels": {
+      "enabled": false
+    },
+    "composition": {
+      "repair_enabled": true,
+      "union_before_embed": true,
+      "repair_fill_holes": true,
+      "keep_largest_component": true,
+      "min_component_volume": 0.001
+    },
+    "embedding": {
+      "voxel_pitch": null,
+      "use_resolution_policy": true,
+      "auto_adjust_pitch": true,
+      "max_voxels": 600000,
+      "fallback": "auto",
+      "preserve_ports_enabled": true,
+      "preserve_mode": "recarve",
+      "carve_radius_factor": 1.2,
+      "carve_depth": 1.5,
+      "output_domain_with_void": true,
+      "output_void_mesh": true,
+      "output_shell": true,
+      "shell_thickness": 0.4
+    },
+    "validity": {
+      "check_watertight": true,
+      "check_components": true,
+      "check_min_diameter": false,
+      "check_open_ports": true,
+      "check_bounds": true,
+      "check_void_inside_domain": true,
+      "max_components": 1
+    },
+    "open_port": {
+      "enabled": true,
+      "probe_radius_factor": 1.2,
+      "probe_length": 1.5,
+      "min_connected_volume_voxels": 10,
+      "mode": "voxel_connectivity",
+      "local_region_size": 4.0,
+      "max_voxels_roi": 200000,
+      "auto_relax_pitch": true
+    },
+    "repair": {
+      "voxel_repair_enabled": true,
+      "auto_adjust_pitch": true,
+      "max_pitch_steps": 4,
+      "pitch_step_factor": 1.3,
+      "fill_voxels": true,
+      "remove_small_components_enabled": true,
+      "min_component_faces": 100,
+      "min_component_volume": 0.001,
+      "fill_holes_enabled": true,
+      "smooth_enabled": false
+    },
+    "output": {
+      "output_dir": "./out/14_budget_relaxation_showcase",
+      "output_units": "mm",
+      "naming_convention": "default",
+      "save_intermediates": true,
+      "save_reports": true,
+      "output_stl": true,
+      "output_json": true,
+      "output_shell": true
+    }
+  },
+  "domains": {
+    "large_box_domain": {
+      "type": "box",
+      "x_min": -15,
+      "x_max": 15,
+      "y_min": -15,
+      "y_max": 15,
+      "z_min": -8,
+      "z_max": 8
+    }
+  },
+  "components": [
+    {
+      "id": "budget_test_network",
+      "domain_ref": "large_box_domain",
+      "ports": {
+        "inlets": [
+          {
+            "name": "inlet_top",
+            "position": [0, 0, 8],
+            "direction": [0, 0, -1],
+            "radius": 0.35,
+            "vessel_type": "arterial"
+          }
+        ],
+        "outlets": [
+          {
+            "name": "outlet_bottom",
+            "position": [0, 0, -8],
+            "direction": [0, 0, 1],
+            "radius": 0.3,
+            "vessel_type": "venous"
+          }
+        ]
+      },
+      "build": {
+        "type": "backend_network",
+        "backend": "space_colonization",
+        "backend_params": {
+          "influence_radius": 2.0,
+          "kill_radius": 0.5,
+          "perception_angle": 90,
+          "num_attraction_points": 250
+        }
+      },
+      "save_artifacts": {
+        "network": "artifacts/budget_test_network.json",
+        "void_mesh": "artifacts/budget_test_network_void.stl"
+      }
+    }
+  ],
+  "composition": {
+    "save_union": "artifacts/union_void.stl"
+  },
+  "embedding": {
+    "enable": true,
+    "outputs": {
+      "domain_with_void": "domain_with_void.stl",
+      "void_mesh": "void_union.stl",
+      "shell": "shell.stl"
+    }
+  },
+  "validity": {
+    "enable": true,
+    "save_report": "validity_report.json"
+  },
+  "outputs": {
+    "artifacts_dir": "artifacts",
+    "named": {
+      "run_report": "run_report.json"
+    }
+  }
+}
