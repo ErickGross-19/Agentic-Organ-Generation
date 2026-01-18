@@ -42,7 +42,12 @@ class TestAgentBoxParsing:
             domain_value = domain_value["main_domain"]
         
         assert domain_value.get("type") == "box"
-        assert domain_value.get("size") == [20, 60, 30]
+        assert domain_value.get("x_min") == -10.0
+        assert domain_value.get("x_max") == 10.0
+        assert domain_value.get("y_min") == -30.0
+        assert domain_value.get("y_max") == 30.0
+        assert domain_value.get("z_min") == -15.0
+        assert domain_value.get("z_max") == 15.0
 
     def test_parse_cube_with_sides(self):
         """Test parsing 'box with 20 mm sides' format (cube)."""
@@ -75,7 +80,12 @@ class TestAgentBoxParsing:
             domain_value = domain_value["main_domain"]
         
         assert domain_value.get("type") == "box"
-        assert domain_value.get("size") == [20, 20, 20]
+        assert domain_value.get("x_min") == -10.0
+        assert domain_value.get("x_max") == 10.0
+        assert domain_value.get("y_min") == -10.0
+        assert domain_value.get("y_max") == 10.0
+        assert domain_value.get("z_min") == -10.0
+        assert domain_value.get("z_max") == 10.0
 
     def test_parse_cube_alternative_phrasing(self):
         """Test parsing 'cube with 15mm sides' format."""
@@ -108,7 +118,12 @@ class TestAgentBoxParsing:
             domain_value = domain_value["main_domain"]
         
         assert domain_value.get("type") == "box"
-        assert domain_value.get("size") == [15, 15, 15]
+        assert domain_value.get("x_min") == -7.5
+        assert domain_value.get("x_max") == 7.5
+        assert domain_value.get("y_min") == -7.5
+        assert domain_value.get("y_max") == 7.5
+        assert domain_value.get("z_min") == -7.5
+        assert domain_value.get("z_max") == 7.5
 
 
 class TestAgentChannelParsing:

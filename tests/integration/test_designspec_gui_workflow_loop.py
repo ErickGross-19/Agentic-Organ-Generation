@@ -78,7 +78,8 @@ class TestDesignSpecGuiWorkflowLoop:
         assert "domains" in spec, "Spec should have domains after patch"
         assert "main_domain" in spec["domains"], "Spec should have main_domain"
         assert spec["domains"]["main_domain"]["type"] == "box"
-        assert spec["domains"]["main_domain"]["size"] == [20, 20, 20]
+        assert spec["domains"]["main_domain"]["x_min"] == -10.0
+        assert spec["domains"]["main_domain"]["x_max"] == 10.0
 
     def test_channel_request_creates_component(self, tmp_path: Path):
         """Test that a channel request creates a primitive_channels component."""
@@ -190,7 +191,8 @@ class TestDesignSpecGuiWorkflowLoop:
         assert "domains" in spec
         assert "main_domain" in spec["domains"]
         assert spec["domains"]["main_domain"]["type"] == "box"
-        assert spec["domains"]["main_domain"]["size"] == [20, 20, 20]
+        assert spec["domains"]["main_domain"]["x_min"] == -10.0
+        assert spec["domains"]["main_domain"]["x_max"] == 10.0
         
         assert "components" in spec
         assert len(spec["components"]) > 0

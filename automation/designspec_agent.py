@@ -594,8 +594,12 @@ class DesignSpecAgent:
             
             domain_value = {
                 "type": "box",
-                "center": [0, 0, 0],
-                "size": [width, height, depth],
+                "x_min": -width / 2,
+                "x_max": width / 2,
+                "y_min": -height / 2,
+                "y_max": height / 2,
+                "z_min": -depth / 2,
+                "z_max": depth / 2,
             }
             
             if "domains" not in spec or not spec["domains"]:
@@ -618,11 +622,16 @@ class DesignSpecAgent:
                 })
         elif cube_match:
             side_length = float(cube_match.group(1))
+            half_side = side_length / 2
             
             domain_value = {
                 "type": "box",
-                "center": [0, 0, 0],
-                "size": [side_length, side_length, side_length],
+                "x_min": -half_side,
+                "x_max": half_side,
+                "y_min": -half_side,
+                "y_max": half_side,
+                "z_min": -half_side,
+                "z_max": half_side,
             }
             
             if "domains" not in spec or not spec["domains"]:
