@@ -49,6 +49,49 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Deep merge two dictionaries with override semantics.
+    
+    Merge rules:
+    - dict values are merged recursively
+    - lists are replaced (no concatenation)
+    - scalar values override
+    
+    Parameters
+    ----------
+    base : dict
+        Base dictionary (typically global policies)
+    override : dict
+        Override dictionary (typically component-level overrides)
+        
+    Returns
+    -------
+    dict
+        Merged dictionary with override values taking precedence
+    """
+    if not override:
+        return dict(base) if base else {}
+    if not base:
+        return dict(override)
+    
+    result = dict(base)
+    for key, override_value in override.items():
+        if key in result:
+            base_value = result[key]
+            # Both are dicts: merge recursively
+            if isinstance(base_value, dict) and isinstance(override_value, dict):
+                result[key] = deep_merge(base_value, override_value)
+            else:
+                # Lists and scalars: override completely
+                result[key] = override_value
+        else:
+            # Key only in override
+            result[key] = override_value
+    
+    return result
+
+
 @dataclass
 class StageReport:
     """Report from a single pipeline stage."""
@@ -153,6 +196,7 @@ class DesignSpecRunner:
         self._compiled_domains: Dict[str, Any] = {}
         self._component_networks: Dict[str, Any] = {}
         self._component_voids: Dict[str, "trimesh.Trimesh"] = {}
+        self._resolved_ports: Dict[str, Dict[str, Any]] = {}  # component_id -> resolved ports
         self._union_void: Optional["trimesh.Trimesh"] = None
         self._domain_mesh: Optional["trimesh.Trimesh"] = None
         self._embedded_solid: Optional["trimesh.Trimesh"] = None
@@ -363,10 +407,20 @@ class DesignSpecRunner:
         )
     
     def _stage_compile_domains(self) -> StageReport:
-        """Compile domain dicts to runtime Domain objects."""
+        """
+        Compile domain dicts to runtime Domain objects.
+        
+        By default, fails loudly if domain compilation fails.
+        Set meta.allow_domain_compile_fallback = true to allow fallback to dict.
+        """
         from generation.core.domain import domain_from_dict
         
+        # Check if fallback is allowed via meta flag
+        meta = self.spec.normalized.get("meta", {})
+        allow_fallback = meta.get("allow_domain_compile_fallback", False)
+        
         warnings = []
+        errors = []
         metadata = {}
         
         for domain_name, domain_dict in self.spec.domains.items():
@@ -376,9 +430,28 @@ class DesignSpecRunner:
                 metadata[domain_name] = "compiled"
                 
             except Exception as e:
-                warnings.append(f"Failed to compile domain {domain_name}: {e}")
-                self._compiled_domains[domain_name] = domain_dict
-                metadata[domain_name] = f"fallback: {e}"
+                if allow_fallback:
+                    # Fallback allowed - store dict and warn
+                    warnings.append(
+                        f"Failed to compile domain {domain_name}: {e}. "
+                        "Using dict fallback (allow_domain_compile_fallback=true)."
+                    )
+                    self._compiled_domains[domain_name] = domain_dict
+                    metadata[domain_name] = f"fallback: {e}"
+                else:
+                    # Fallback not allowed - fail loudly
+                    errors.append(f"Failed to compile domain {domain_name}: {e}")
+                    metadata[domain_name] = f"error: {e}"
+        
+        # If any errors and fallback not allowed, fail the stage
+        if errors:
+            return StageReport(
+                stage=Stage.COMPILE_DOMAINS.value,
+                success=False,
+                warnings=warnings,
+                errors=errors,
+                metadata=metadata,
+            )
         
         return StageReport(
             stage=Stage.COMPILE_DOMAINS.value,
@@ -388,7 +461,23 @@ class DesignSpecRunner:
         )
     
     def _stage_component_ports(self, component_id: str) -> StageReport:
-        """Resolve port positions for a component."""
+        """
+        Resolve port positions for a component.
+        
+        This stage resolves ports domain-aware using PortPlacementPolicy + ridge
+        constraints + face rules. It outputs resolved ports to _resolved_ports
+        so later stages use resolved positions instead of raw ports.
+        
+        Supports:
+        - layout on reference plane
+        - clamp to face region
+        - optional project to boundary
+        - ridge effective radius convention
+        - port validation: min separation, clamp/project, autofix warnings
+        """
+        from generation.utils.port_placement import place_ports_on_domain
+        from aog_policies import PortPlacementPolicy, RidgePolicy
+        
         component = self._get_component(component_id)
         if component is None:
             return StageReport(
@@ -397,23 +486,147 @@ class DesignSpecRunner:
                 errors=[f"Component not found: {component_id}"],
             )
         
+        # Get domain for this component
+        domain_ref = component.get("domain_ref", "main_domain")
+        domain = self._compiled_domains.get(domain_ref)
+        
+        if domain is None:
+            return StageReport(
+                stage=f"{Stage.COMPONENT_PORTS.value}:{component_id}",
+                success=False,
+                errors=[f"Domain not found for port resolution: {domain_ref}"],
+            )
+        
+        # Check if domain is a dict (fallback) - cannot resolve ports on dict
+        if isinstance(domain, dict):
+            return StageReport(
+                stage=f"{Stage.COMPONENT_PORTS.value}:{component_id}",
+                success=False,
+                errors=[f"Domain {domain_ref} is not compiled - cannot resolve ports"],
+            )
+        
         ports = component.get("ports", {})
         inlets = ports.get("inlets", [])
         outlets = ports.get("outlets", [])
         
+        # Get effective port placement policy for this component
+        effective_ports_dict = self._get_effective_policy_dict(component, "ports")
+        port_policy = PortPlacementPolicy.from_dict(effective_ports_dict)
+        
+        # Get effective ridge policy if present
+        effective_ridge_dict = self._get_effective_policy_dict(component, "ridge")
+        ridge_policy = None
+        if effective_ridge_dict:
+            ridge_policy = RidgePolicy.from_dict(effective_ridge_dict)
+            # Apply ridge constraints to port policy if ridge is defined
+            if ridge_policy.thickness > 0:
+                port_policy.ridge_width = ridge_policy.thickness
+                port_policy.ridge_constraint_enabled = True
+        
+        warnings = []
+        resolved_inlets = []
+        resolved_outlets = []
+        
+        # Resolve inlets
+        for i, inlet in enumerate(inlets):
+            resolved_inlet = dict(inlet)
+            
+            # If position is already specified, use it directly
+            if "position" in inlet and inlet["position"] is not None:
+                resolved_inlet["resolved"] = True
+                resolved_inlet["resolution_method"] = "explicit"
+            else:
+                # Need to place this port using the policy
+                port_radius = inlet.get("radius", 0.0005)  # Default 0.5mm
+                try:
+                    result, report = place_ports_on_domain(
+                        domain=domain,
+                        num_ports=1,
+                        port_radius=port_radius,
+                        policy=port_policy,
+                    )
+                    if result.positions:
+                        resolved_inlet["position"] = list(result.positions[0])
+                        resolved_inlet["direction"] = list(result.directions[0])
+                        resolved_inlet["resolved"] = True
+                        resolved_inlet["resolution_method"] = "policy_placement"
+                        resolved_inlet["effective_radius"] = result.effective_radius
+                        if result.warnings:
+                            warnings.extend([f"Inlet {i}: {w}" for w in result.warnings])
+                    else:
+                        warnings.append(f"Inlet {i}: No position resolved")
+                        resolved_inlet["resolved"] = False
+                except Exception as e:
+                    warnings.append(f"Inlet {i}: Port placement failed: {e}")
+                    resolved_inlet["resolved"] = False
+            
+            resolved_inlets.append(resolved_inlet)
+        
+        # Resolve outlets
+        for i, outlet in enumerate(outlets):
+            resolved_outlet = dict(outlet)
+            
+            # If position is already specified, use it directly
+            if "position" in outlet and outlet["position"] is not None:
+                resolved_outlet["resolved"] = True
+                resolved_outlet["resolution_method"] = "explicit"
+            else:
+                # Need to place this port using the policy
+                port_radius = outlet.get("radius", 0.0005)  # Default 0.5mm
+                try:
+                    result, report = place_ports_on_domain(
+                        domain=domain,
+                        num_ports=1,
+                        port_radius=port_radius,
+                        policy=port_policy,
+                    )
+                    if result.positions:
+                        resolved_outlet["position"] = list(result.positions[0])
+                        resolved_outlet["direction"] = list(result.directions[0])
+                        resolved_outlet["resolved"] = True
+                        resolved_outlet["resolution_method"] = "policy_placement"
+                        resolved_outlet["effective_radius"] = result.effective_radius
+                        if result.warnings:
+                            warnings.extend([f"Outlet {i}: {w}" for w in result.warnings])
+                    else:
+                        warnings.append(f"Outlet {i}: No position resolved")
+                        resolved_outlet["resolved"] = False
+                except Exception as e:
+                    warnings.append(f"Outlet {i}: Port placement failed: {e}")
+                    resolved_outlet["resolved"] = False
+            
+            resolved_outlets.append(resolved_outlet)
+        
+        # Store resolved ports for later stages
+        self._resolved_ports[component_id] = {
+            "inlets": resolved_inlets,
+            "outlets": resolved_outlets,
+        }
+        
         metadata = {
             "inlet_count": len(inlets),
             "outlet_count": len(outlets),
+            "resolved_inlet_count": sum(1 for p in resolved_inlets if p.get("resolved")),
+            "resolved_outlet_count": sum(1 for p in resolved_outlets if p.get("resolved")),
+            "domain_ref": domain_ref,
         }
         
         return StageReport(
             stage=f"{Stage.COMPONENT_PORTS.value}:{component_id}",
             success=True,
+            requested_policy=self.spec.policies.get("ports", {}),
+            effective_policy=effective_ports_dict,
+            warnings=warnings,
             metadata=metadata,
         )
     
     def _stage_component_build(self, component_id: str) -> StageReport:
-        """Generate network/mesh for a component."""
+        """
+        Generate network/mesh for a component.
+        
+        Uses resolved ports from _resolved_ports if available, otherwise falls
+        back to raw ports. Applies component-level policy overrides via deep_merge.
+        """
         component = self._get_component(component_id)
         if component is None:
             return StageReport(
@@ -435,14 +648,31 @@ class DesignSpecRunner:
                 errors=[f"Domain not found: {domain_ref}"],
             )
         
-        ports = component.get("ports", {})
+        # Check if domain is a dict (fallback) - cannot build on dict
+        if isinstance(domain, dict):
+            return StageReport(
+                stage=f"{Stage.COMPONENT_BUILD.value}:{component_id}",
+                success=False,
+                errors=[f"Domain {domain_ref} is not compiled - cannot build component"],
+            )
+        
+        # Use resolved ports if available, otherwise fall back to raw ports
+        if component_id in self._resolved_ports:
+            ports = self._resolved_ports[component_id]
+        else:
+            ports = component.get("ports", {})
+        
         warnings = []
-        metadata = {"build_type": build_type}
+        metadata = {"build_type": build_type, "domain_ref": domain_ref}
+        
+        # Get effective policy dicts for this component (with overrides applied)
+        effective_growth_dict = self._get_effective_policy_dict(component, "growth")
+        effective_collision_dict = self._get_effective_policy_dict(component, "collision")
         
         try:
             if build_type == "backend_network":
                 network, report = self._build_backend_network(
-                    domain, ports, build, component_id
+                    domain, ports, build, component_id, component
                 )
                 self._component_networks[component_id] = network
                 metadata["node_count"] = len(network.nodes)
@@ -450,7 +680,7 @@ class DesignSpecRunner:
                 
             elif build_type == "primitive_channels":
                 void_mesh, report = self._build_primitive_channels(
-                    domain, ports, build, component_id
+                    domain, ports, build, component_id, component
                 )
                 self._component_voids[component_id] = void_mesh
                 metadata["vertex_count"] = len(void_mesh.vertices)
@@ -472,6 +702,15 @@ class DesignSpecRunner:
             return StageReport(
                 stage=f"{Stage.COMPONENT_BUILD.value}:{component_id}",
                 success=True,
+                requested_policy={
+                    "growth": self.spec.policies.get("growth", {}),
+                    "collision": self.spec.policies.get("collision", {}),
+                },
+                effective_policy={
+                    "growth": effective_growth_dict,
+                    "collision": effective_collision_dict,
+                    "backend_params": build.get("backend_params", {}),
+                },
                 warnings=warnings,
                 metadata=metadata,
             )
@@ -486,7 +725,11 @@ class DesignSpecRunner:
             )
     
     def _stage_component_mesh(self, component_id: str) -> StageReport:
-        """Convert network to void mesh for a component."""
+        """
+        Convert network to void mesh for a component.
+        
+        Uses aog_policies MeshSynthesisPolicy with component-level overrides.
+        """
         if component_id in self._component_voids:
             return StageReport(
                 stage=f"{Stage.COMPONENT_MESH.value}:{component_id}",
@@ -502,11 +745,23 @@ class DesignSpecRunner:
                 errors=[f"No network found for component: {component_id}"],
             )
         
+        component = self._get_component(component_id)
+        
         try:
             from generation.ops.mesh.synthesis import synthesize_mesh
-            from generation.policies import MeshSynthesisPolicy
+            from aog_policies import MeshSynthesisPolicy
             
-            policy = MeshSynthesisPolicy()
+            # Get effective mesh synthesis policy with component overrides
+            if component is not None:
+                effective_mesh_dict = self._get_effective_policy_dict(component, "mesh_synthesis")
+                policy = MeshSynthesisPolicy.from_dict(effective_mesh_dict)
+            else:
+                # Fallback to global compiled policy
+                policy = self._compiled_policies.get("mesh_synthesis")
+                if policy is None:
+                    mesh_policy_dict = self.spec.policies.get("mesh_synthesis", {})
+                    policy = MeshSynthesisPolicy.from_dict(mesh_policy_dict)
+            
             void_mesh, synth_report = synthesize_mesh(network, policy)
             
             # Check for mesh synthesis failure or empty/degenerate mesh
@@ -542,9 +797,14 @@ class DesignSpecRunner:
             )
             self.artifacts.save_mesh(artifact_name, void_mesh)
             
+            # Get effective policy dict for reporting
+            effective_mesh_dict = self._get_effective_policy_dict(component, "mesh_synthesis") if component else {}
+            
             return StageReport(
                 stage=f"{Stage.COMPONENT_MESH.value}:{component_id}",
                 success=True,
+                requested_policy=self.spec.policies.get("mesh_synthesis", {}),
+                effective_policy=effective_mesh_dict,
                 metadata={
                     "vertex_count": len(void_mesh.vertices),
                     "face_count": len(void_mesh.faces),
@@ -610,15 +870,29 @@ class DesignSpecRunner:
             )
     
     def _stage_mesh_domain(self) -> StageReport:
-        """Generate domain mesh."""
-        first_domain_name = list(self._compiled_domains.keys())[0]
-        domain = self._compiled_domains.get(first_domain_name)
+        """
+        Generate domain mesh.
         
-        if domain is None:
+        Uses explicit domain selection rule:
+        1. If spec.embedding.domain_ref exists, use it
+        2. Else if single domain, use it
+        3. Else error with clear message
+        """
+        domain_name, domain, error = self._select_domain_for_embedding()
+        
+        if error is not None:
             return StageReport(
                 stage=Stage.MESH_DOMAIN.value,
                 success=False,
-                errors=["No compiled domain found"],
+                errors=[error],
+            )
+        
+        # Check if domain is a dict (fallback) - cannot mesh a dict
+        if isinstance(domain, dict):
+            return StageReport(
+                stage=Stage.MESH_DOMAIN.value,
+                success=False,
+                errors=[f"Domain '{domain_name}' is not compiled - cannot generate mesh"],
             )
         
         try:
@@ -633,6 +907,7 @@ class DesignSpecRunner:
                 metadata={
                     "vertex_count": len(domain_mesh.vertices),
                     "face_count": len(domain_mesh.faces),
+                    "domain_name": domain_name,
                 },
             )
             
@@ -642,10 +917,18 @@ class DesignSpecRunner:
                 stage=Stage.MESH_DOMAIN.value,
                 success=False,
                 errors=[str(e)],
+                metadata={"domain_name": domain_name},
             )
     
     def _stage_embed(self) -> StageReport:
-        """Embed unified void into domain."""
+        """
+        Embed unified void into domain.
+        
+        Uses explicit domain selection rule:
+        1. If spec.embedding.domain_ref exists, use it
+        2. Else if single domain, use it
+        3. Else error with clear message
+        """
         if self._union_void is None:
             return StageReport(
                 stage=Stage.EMBED.value,
@@ -653,14 +936,21 @@ class DesignSpecRunner:
                 errors=["No union void to embed"],
             )
         
-        first_domain_name = list(self._compiled_domains.keys())[0]
-        domain = self._compiled_domains.get(first_domain_name)
+        domain_name, domain, error = self._select_domain_for_embedding()
         
-        if domain is None:
+        if error is not None:
             return StageReport(
                 stage=Stage.EMBED.value,
                 success=False,
-                errors=["No compiled domain found"],
+                errors=[error],
+            )
+        
+        # Check if domain is a dict (fallback) - cannot embed into dict
+        if isinstance(domain, dict):
+            return StageReport(
+                stage=Stage.EMBED.value,
+                success=False,
+                errors=[f"Domain '{domain_name}' is not compiled - cannot embed void"],
             )
         
         try:
@@ -700,13 +990,17 @@ class DesignSpecRunner:
                 self.artifacts.register("shell", Stage.EMBED.value, shell)
                 self.artifacts.save_mesh("shell", shell)
             
+            # Add domain_name to metadata
+            metadata = dict(embed_report.metadata) if embed_report.metadata else {}
+            metadata["domain_name"] = domain_name
+            
             return StageReport(
                 stage=Stage.EMBED.value,
                 success=embed_report.success,
                 requested_policy=embed_report.requested_policy,
                 effective_policy=embed_report.effective_policy,
                 warnings=embed_report.warnings,
-                metadata=embed_report.metadata,
+                metadata=metadata,
             )
             
         except Exception as e:
@@ -861,6 +1155,101 @@ class DesignSpecRunner:
                 return component
         return None
     
+    def _select_domain_for_embedding(self) -> Tuple[Optional[str], Optional[Any], Optional[str]]:
+        """
+        Select domain for embedding/validity using explicit rules.
+        
+        Selection rule:
+        1. If spec.embedding.domain_ref exists, use it
+        2. Else if single domain, use it
+        3. Else error with clear message
+        
+        Returns
+        -------
+        tuple
+            (domain_name, domain_object, error_message)
+            If successful: (name, domain, None)
+            If error: (None, None, error_message)
+        """
+        embedding = self.spec.normalized.get("embedding", {})
+        domain_ref = embedding.get("domain_ref")
+        
+        if domain_ref is not None:
+            # Rule 1: Use explicit domain_ref from embedding
+            domain = self._compiled_domains.get(domain_ref)
+            if domain is None:
+                return (None, None, f"Embedding domain_ref '{domain_ref}' not found in compiled domains")
+            return (domain_ref, domain, None)
+        
+        # Rule 2/3: Check domain count
+        domain_names = list(self._compiled_domains.keys())
+        
+        if len(domain_names) == 0:
+            return (None, None, "No compiled domains available")
+        
+        if len(domain_names) == 1:
+            # Rule 2: Single domain - use it
+            domain_name = domain_names[0]
+            return (domain_name, self._compiled_domains[domain_name], None)
+        
+        # Rule 3: Multiple domains without explicit domain_ref - error
+        return (
+            None,
+            None,
+            f"Multiple domains ({', '.join(domain_names)}) but no embedding.domain_ref specified. "
+            "Please specify which domain to use for embedding via embedding.domain_ref."
+        )
+    
+    def _get_effective_policy_dict(
+        self,
+        component: Dict[str, Any],
+        policy_name: str,
+    ) -> Dict[str, Any]:
+        """
+        Get effective policy dict for a component by merging global with overrides.
+        
+        Parameters
+        ----------
+        component : dict
+            Component specification dict
+        policy_name : str
+            Name of the policy (e.g., "growth", "ports", "channels")
+            
+        Returns
+        -------
+        dict
+            Effective policy dict with component overrides applied
+        """
+        global_policy = self.spec.policies.get(policy_name, {})
+        component_overrides = component.get("policy_overrides", {}).get(policy_name, {})
+        return deep_merge(global_policy, component_overrides)
+    
+    def _compile_effective_policy(
+        self,
+        component: Dict[str, Any],
+        policy_name: str,
+        policy_class: type,
+    ) -> Any:
+        """
+        Compile effective policy object for a component.
+        
+        Parameters
+        ----------
+        component : dict
+            Component specification dict
+        policy_name : str
+            Name of the policy (e.g., "growth", "ports", "channels")
+        policy_class : type
+            Policy class with from_dict method
+            
+        Returns
+        -------
+        Policy object
+            Compiled policy object with component overrides applied
+        """
+        effective_dict = self._get_effective_policy_dict(component, policy_name)
+        return policy_class.from_dict(effective_dict)
+    
     def _collect_all_ports(self) -> List[Dict[str, Any]]:
         """Collect all ports from all components."""
         all_ports = []
@@ -888,23 +1277,45 @@ class DesignSpecRunner:
         ports: Dict[str, Any],
         build: Dict[str, Any],
         component_id: str,
+        component: Optional[Dict[str, Any]] = None,
     ) -> Tuple["VascularNetwork", Any]:
-        """Build a network using a generation backend."""
+        """
+        Build a network using a generation backend.
+        
+        Uses component-level policy overrides if component is provided.
+        Wires backend_params into GrowthPolicy.backend_params.
+        """
         from generation.api.generate import generate_network
         from aog_policies import GrowthPolicy, CollisionPolicy, TissueSamplingPolicy
         
         backend = build.get("backend", "space_colonization")
         backend_params = build.get("backend_params", {})
         
-        growth_policy = self._compiled_policies.get("growth")
-        if growth_policy is None:
-            growth_policy_dict = self.spec.policies.get("growth", {})
-            growth_policy = GrowthPolicy.from_dict(growth_policy_dict)
+        # Get effective policies with component overrides applied
+        if component is not None:
+            effective_growth_dict = self._get_effective_policy_dict(component, "growth")
+            effective_collision_dict = self._get_effective_policy_dict(component, "collision")
+            growth_policy = GrowthPolicy.from_dict(effective_growth_dict)
+            collision_policy = CollisionPolicy.from_dict(effective_collision_dict)
+        else:
+            # Fallback to global compiled policies
+            growth_policy = self._compiled_policies.get("growth")
+            if growth_policy is None:
+                growth_policy_dict = self.spec.policies.get("growth", {})
+                growth_policy = GrowthPolicy.from_dict(growth_policy_dict)
+            
+            collision_policy = self._compiled_policies.get("collision")
+            if collision_policy is None:
+                collision_policy_dict = self.spec.policies.get("collision", {})
+                collision_policy = CollisionPolicy.from_dict(collision_policy_dict)
         
-        collision_policy = self._compiled_policies.get("collision")
-        if collision_policy is None:
-            collision_policy_dict = self.spec.policies.get("collision", {})
-            collision_policy = CollisionPolicy.from_dict(collision_policy_dict)
+        # Wire backend_params into GrowthPolicy
+        # This ensures backend_params from component.build affects behavior
+        if backend_params:
+            # Merge backend_params into growth_policy.backend_params
+            existing_backend_params = getattr(growth_policy, 'backend_params', {}) or {}
+            merged_backend_params = deep_merge(existing_backend_params, backend_params)
+            growth_policy.backend_params = merged_backend_params
         
         tissue_sampling_policy = self._compiled_policies.get("tissue_sampling")
         
@@ -931,16 +1342,26 @@ class DesignSpecRunner:
         ports: Dict[str, Any],
         build: Dict[str, Any],
         component_id: str,
+        component: Optional[Dict[str, Any]] = None,
     ) -> Tuple["trimesh.Trimesh", Any]:
-        """Build primitive channels (e.g., fang hooks)."""
+        """
+        Build primitive channels (e.g., fang hooks).
+        
+        Uses component-level policy overrides if component is provided.
+        """
         from generation.api.generate import generate_void_mesh
         from aog_policies import ChannelPolicy
         
-        # Get channel policy from compiled policies or spec
-        channel_policy = self._compiled_policies.get("channels")
-        if channel_policy is None:
-            channel_policy_dict = self.spec.policies.get("channels", {})
-            channel_policy = ChannelPolicy.from_dict(channel_policy_dict)
+        # Get effective channel policy with component overrides applied
+        if component is not None:
+            effective_channel_dict = self._get_effective_policy_dict(component, "channels")
+            channel_policy = ChannelPolicy.from_dict(effective_channel_dict)
+        else:
+            # Fallback to global compiled policies
+            channel_policy = self._compiled_policies.get("channels")
+            if channel_policy is None:
+                channel_policy_dict = self.spec.policies.get("channels", {})
+                channel_policy = ChannelPolicy.from_dict(channel_policy_dict)
         
         void_mesh, report = generate_void_mesh(
             kind="primitive_channels",
