@@ -267,11 +267,14 @@ class TestDesignSpecSessionCompile:
         project_root.mkdir()
         
         template_spec = {
+            "schema": {"name": "aog_designspec", "version": "1.0"},
             "meta": {"name": "Test", "seed": 42},
             "domain": {
-                "type": "box",
-                "center": [0, 0, 0],
-                "size": [0.02, 0.06, 0.03],
+                "main_domain": {
+                    "type": "box",
+                    "center": [0, 0, 0],
+                    "size": [0.02, 0.06, 0.03],
+                },
             },
         }
         

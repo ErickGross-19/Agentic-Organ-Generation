@@ -202,11 +202,23 @@ class DesignSpecWorkflow:
         
         try:
             if project_dir:
-                self._session = DesignSpecSession.load_project(project_dir)
-                self._emit_event(WorkflowEvent(
-                    event_type=WorkflowEventType.MESSAGE,
-                    message=f"Loaded project from {project_dir}",
-                ))
+                project_path = Path(project_dir)
+                if project_path.exists() and (project_path / "spec.json").exists():
+                    self._session = DesignSpecSession.load_project(project_dir)
+                    self._emit_event(WorkflowEvent(
+                        event_type=WorkflowEventType.MESSAGE,
+                        message=f"Loaded project from {project_dir}",
+                    ))
+                else:
+                    project_root_path = project_path.parent
+                    project_name_str = project_path.name
+                    self._session = DesignSpecSession.create_project(
+                        str(project_root_path), project_name_str, template_spec
+                    )
+                    self._emit_event(WorkflowEvent(
+                        event_type=WorkflowEventType.MESSAGE,
+                        message=f"Created new project: {project_name_str}",
+                    ))
             elif project_root and project_name:
                 self._session = DesignSpecSession.create_project(
                     project_root, project_name, template_spec
@@ -590,6 +602,61 @@ class DesignSpecWorkflow:
             pid: patch.to_dict()
             for pid, patch in self._pending_patches.items()
         }
+    
+    def get_compile_status(self) -> Optional[CompileReport]:
+        """Get the last compile status."""
+        if self._session:
+            return self._session.get_last_compile_report()
+        return None
+    
+    def _propose_patch(
+        self,
+        patches: List[Dict[str, Any]],
+        explanation: str,
+        confidence: float = 0.8,
+    ) -> str:
+        """
+        Propose a patch for testing purposes.
+        
+        Parameters
+        ----------
+        patches : list of dict
+            JSON Patch operations
+        explanation : str
+            Explanation of the patch
+        confidence : float
+            Confidence level (0-1)
+            
+        Returns
+        -------
+        str
+            The patch ID
+        """
+        from automation.designspec_agent import PatchProposal
+        
+        patch_id = f"patch_{len(self._pending_patches) + 1}"
+        
+        proposal = PatchProposal(
+            explanation=explanation,
+            patches=patches,
+            confidence=confidence,
+            requires_confirmation=True,
+        )
+        
+        self._pending_patches[patch_id] = proposal
+        
+        self._emit_event(WorkflowEvent(
+            event_type=WorkflowEventType.PATCH_PROPOSAL,
+            data={
+                "patch_id": patch_id,
+                "explanation": explanation,
+                "patches": patches,
+                "confidence": confidence,
+            },
+            message=f"Proposed patch: {explanation}",
+        ))
+        
+        return patch_id
     
     def compile(self) -> Optional[CompileReport]:
         """Manually trigger compilation."""

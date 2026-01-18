@@ -55,6 +55,20 @@ class CompileReport:
     errors: List[str] = field(default_factory=list)
     duration_s: float = 0.0
     
+    @property
+    def stages(self) -> Dict[str, Any]:
+        """Get stages summary for compatibility."""
+        return {
+            "compile_policies": {
+                "success": len(self.policies_compiled) > 0 or self.success,
+                "compiled": self.policies_compiled,
+            },
+            "compile_domains": {
+                "success": len(self.domains_compiled) > 0 or self.success,
+                "compiled": self.domains_compiled,
+            },
+        }
+    
     def to_dict(self) -> Dict[str, Any]:
         return {
             "success": self.success,
@@ -63,6 +77,7 @@ class CompileReport:
             "warnings": self.warnings,
             "errors": self.errors,
             "duration_s": self.duration_s,
+            "stages": self.stages,
         }
 
 
