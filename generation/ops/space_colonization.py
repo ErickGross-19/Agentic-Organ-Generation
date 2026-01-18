@@ -1,9 +1,19 @@
 """
 Space colonization algorithm for organic vascular growth.
+
+This module implements a policy-driven space colonization algorithm that produces
+tree-like vascular structures by:
+- Preventing "inlet starburst" (root spawning many children immediately)
+- Enabling proper branching when attractor field supports it
+- Using trunk-first growth with apical dominance and angular-clustering-based splitting
+
+All behavior is controlled via SpaceColonizationPolicy - no hidden constants.
+Behavior is reproducible when seed is fixed.
+Max split degree per node <= 3.
 """
 
-from dataclasses import dataclass
-from typing import List, Optional, Set, Dict
+from dataclasses import dataclass, field
+from typing import List, Optional, Set, Dict, Tuple
 import numpy as np
 from scipy.spatial import cKDTree
 from tqdm import tqdm
@@ -762,3 +772,834 @@ def _check_clearance(
             return False  # Too close
     
     return True  # Clearance OK
+
+
+@dataclass
+class TipState:
+    """State tracking for a tip node during space colonization."""
+    node_id: int
+    steps_since_split: int = 0
+    total_steps: int = 0
+    distance_from_root: float = 0.0
+    is_root: bool = False
+
+
+@dataclass
+class SpaceColonizationMetrics:
+    """Metrics for space colonization run."""
+    root_degree: int = 0
+    trunk_length: float = 0.0
+    trunk_nodes: int = 0
+    trunk_segments: int = 0
+    split_event_count: int = 0
+    bifurcation_count: int = 0
+    trifurcation_count: int = 0
+    degree_histogram: Dict[int, int] = field(default_factory=dict)
+    branch_node_count: int = 0
+    terminal_count: int = 0
+    average_segment_length: float = 0.0
+    
+    def to_dict(self) -> Dict[str, any]:
+        return {
+            "root_degree": self.root_degree,
+            "trunk_length": self.trunk_length,
+            "trunk_nodes": self.trunk_nodes,
+            "trunk_segments": self.trunk_segments,
+            "split_event_count": self.split_event_count,
+            "bifurcation_count": self.bifurcation_count,
+            "trifurcation_count": self.trifurcation_count,
+            "degree_histogram": self.degree_histogram,
+            "branch_node_count": self.branch_node_count,
+            "terminal_count": self.terminal_count,
+            "average_segment_length": self.average_segment_length,
+        }
+
+
+def _greedy_angular_clustering(
+    vectors: List[np.ndarray],
+    angle_threshold_deg: float,
+    max_clusters: int = 3,
+) -> List[List[int]]:
+    """
+    Cluster direction vectors using greedy angular clustering.
+    
+    Algorithm:
+    - Start first cluster with first vector
+    - For each vector, assign to existing cluster if angle to cluster mean <= threshold
+    - Otherwise start new cluster (up to max_clusters)
+    
+    Parameters
+    ----------
+    vectors : List[np.ndarray]
+        List of unit direction vectors
+    angle_threshold_deg : float
+        Maximum angle (degrees) to assign to existing cluster
+    max_clusters : int
+        Maximum number of clusters to create
+    
+    Returns
+    -------
+    List[List[int]]
+        List of clusters, each cluster is a list of vector indices
+    """
+    if not vectors:
+        return []
+    
+    if len(vectors) == 1:
+        return [[0]]
+    
+    threshold_rad = np.radians(angle_threshold_deg)
+    cos_threshold = np.cos(threshold_rad)
+    
+    clusters: List[List[int]] = []
+    cluster_means: List[np.ndarray] = []
+    
+    for idx, vec in enumerate(vectors):
+        norm = np.linalg.norm(vec)
+        if norm < 1e-10:
+            continue
+        unit_vec = vec / norm
+        
+        assigned = False
+        best_cluster = -1
+        best_similarity = -1.0
+        
+        for c_idx, c_mean in enumerate(cluster_means):
+            similarity = np.dot(unit_vec, c_mean)
+            if similarity >= cos_threshold and similarity > best_similarity:
+                best_similarity = similarity
+                best_cluster = c_idx
+                assigned = True
+        
+        if assigned and best_cluster >= 0:
+            clusters[best_cluster].append(idx)
+            cluster_vecs = [vectors[i] for i in clusters[best_cluster]]
+            new_mean = np.mean(cluster_vecs, axis=0)
+            new_mean_norm = np.linalg.norm(new_mean)
+            if new_mean_norm > 1e-10:
+                cluster_means[best_cluster] = new_mean / new_mean_norm
+        elif len(clusters) < max_clusters:
+            clusters.append([idx])
+            cluster_means.append(unit_vec.copy())
+        else:
+            best_cluster = 0
+            best_similarity = -1.0
+            for c_idx, c_mean in enumerate(cluster_means):
+                similarity = np.dot(unit_vec, c_mean)
+                if similarity > best_similarity:
+                    best_similarity = similarity
+                    best_cluster = c_idx
+            clusters[best_cluster].append(idx)
+            cluster_vecs = [vectors[i] for i in clusters[best_cluster]]
+            new_mean = np.mean(cluster_vecs, axis=0)
+            new_mean_norm = np.linalg.norm(new_mean)
+            if new_mean_norm > 1e-10:
+                cluster_means[best_cluster] = new_mean / new_mean_norm
+    
+    return clusters
+
+
+def _compute_cluster_support(
+    cluster_indices: List[int],
+    total_attractors: int,
+) -> float:
+    """Compute support (fraction of attractors) for a cluster."""
+    if total_attractors == 0:
+        return 0.0
+    return len(cluster_indices) / total_attractors
+
+
+def _merge_weakest_cluster(
+    clusters: List[List[int]],
+    vectors: List[np.ndarray],
+) -> List[List[int]]:
+    """
+    Merge the weakest (smallest) cluster into the nearest cluster.
+    
+    Returns clusters with one fewer cluster.
+    """
+    if len(clusters) <= 2:
+        return clusters
+    
+    min_size = float('inf')
+    weakest_idx = 0
+    for i, c in enumerate(clusters):
+        if len(c) < min_size:
+            min_size = len(c)
+            weakest_idx = i
+    
+    weakest_mean = np.mean([vectors[i] for i in clusters[weakest_idx]], axis=0)
+    weakest_mean_norm = np.linalg.norm(weakest_mean)
+    if weakest_mean_norm > 1e-10:
+        weakest_mean = weakest_mean / weakest_mean_norm
+    
+    best_target = -1
+    best_similarity = -2.0
+    for i, c in enumerate(clusters):
+        if i == weakest_idx:
+            continue
+        c_mean = np.mean([vectors[j] for j in c], axis=0)
+        c_mean_norm = np.linalg.norm(c_mean)
+        if c_mean_norm > 1e-10:
+            c_mean = c_mean / c_mean_norm
+            similarity = np.dot(weakest_mean, c_mean)
+            if similarity > best_similarity:
+                best_similarity = similarity
+                best_target = i
+    
+    if best_target >= 0:
+        clusters[best_target].extend(clusters[weakest_idx])
+        del clusters[weakest_idx]
+    
+    return clusters
+
+
+def _apply_noise_to_direction(
+    direction: np.ndarray,
+    noise_angle_deg: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """
+    Apply small random noise to a direction vector.
+    
+    Parameters
+    ----------
+    direction : np.ndarray
+        Unit direction vector
+    noise_angle_deg : float
+        Maximum noise angle in degrees
+    rng : np.random.Generator
+        Random number generator
+    
+    Returns
+    -------
+    np.ndarray
+        Noisy unit direction vector
+    """
+    if noise_angle_deg <= 0:
+        return direction
+    
+    noise_rad = np.radians(noise_angle_deg)
+    theta = rng.uniform(0, 2 * np.pi)
+    phi = rng.uniform(0, noise_rad)
+    
+    perp1 = np.array([1.0, 0.0, 0.0])
+    if abs(np.dot(direction, perp1)) > 0.9:
+        perp1 = np.array([0.0, 1.0, 0.0])
+    perp1 = perp1 - np.dot(perp1, direction) * direction
+    perp1 = perp1 / np.linalg.norm(perp1)
+    perp2 = np.cross(direction, perp1)
+    
+    noisy = (direction * np.cos(phi) + 
+             perp1 * np.sin(phi) * np.cos(theta) + 
+             perp2 * np.sin(phi) * np.sin(theta))
+    
+    return noisy / np.linalg.norm(noisy)
+
+
+def _select_active_tips_probabilistic(
+    tip_states: List[TipState],
+    tip_supports: Dict[int, int],
+    alpha: float,
+    active_fraction: float,
+    min_active: int,
+    rng: np.random.Generator,
+) -> List[TipState]:
+    """
+    Select active tips using probabilistic sampling based on support.
+    
+    Probability proportional to (support^alpha + eps).
+    """
+    if not tip_states:
+        return []
+    
+    eps = 1e-6
+    weights = []
+    for ts in tip_states:
+        support = tip_supports.get(ts.node_id, 0)
+        weight = (support ** alpha) + eps
+        weights.append(weight)
+    
+    total_weight = sum(weights)
+    probs = [w / total_weight for w in weights]
+    
+    target_count = max(min_active, int(np.ceil(active_fraction * len(tip_states))))
+    target_count = min(target_count, len(tip_states))
+    
+    selected_indices = set()
+    while len(selected_indices) < target_count:
+        idx = rng.choice(len(tip_states), p=probs)
+        selected_indices.add(idx)
+    
+    return [tip_states[i] for i in selected_indices]
+
+
+def _select_active_tips_topk(
+    tip_states: List[TipState],
+    tip_supports: Dict[int, int],
+    active_fraction: float,
+    min_active: int,
+) -> List[TipState]:
+    """
+    Select active tips using top-k selection based on support.
+    """
+    if not tip_states:
+        return []
+    
+    sorted_tips = sorted(
+        tip_states,
+        key=lambda ts: tip_supports.get(ts.node_id, 0),
+        reverse=True,
+    )
+    
+    target_count = max(min_active, int(np.ceil(active_fraction * len(tip_states))))
+    target_count = min(target_count, len(tip_states))
+    
+    return sorted_tips[:target_count]
+
+
+def _compute_network_metrics(
+    network: VascularNetwork,
+    root_node_id: Optional[int],
+) -> SpaceColonizationMetrics:
+    """
+    Compute structural metrics for the network.
+    
+    Returns metrics including root degree, degree histogram, branch count, etc.
+    """
+    metrics = SpaceColonizationMetrics()
+    
+    out_degrees: Dict[int, int] = {node_id: 0 for node_id in network.nodes}
+    
+    for seg in network.segments.values():
+        out_degrees[seg.start_node_id] = out_degrees.get(seg.start_node_id, 0) + 1
+    
+    if root_node_id is not None and root_node_id in out_degrees:
+        metrics.root_degree = out_degrees[root_node_id]
+    
+    for node_id, degree in out_degrees.items():
+        metrics.degree_histogram[degree] = metrics.degree_histogram.get(degree, 0) + 1
+        if degree >= 2:
+            metrics.branch_node_count += 1
+    
+    metrics.terminal_count = sum(
+        1 for n in network.nodes.values() if n.node_type == "terminal"
+    )
+    
+    if network.segments:
+        total_length = 0.0
+        for seg in network.segments.values():
+            p1 = network.nodes[seg.start_node_id].position
+            p2 = network.nodes[seg.end_node_id].position
+            length = np.sqrt(
+                (p2.x - p1.x)**2 + (p2.y - p1.y)**2 + (p2.z - p1.z)**2
+            )
+            total_length += length
+        metrics.average_segment_length = total_length / len(network.segments)
+    
+    return metrics
+
+
+def space_colonization_step_v2(
+    network: VascularNetwork,
+    tissue_points: np.ndarray,
+    params: Optional[SpaceColonizationParams] = None,
+    constraints: Optional[BranchingConstraints] = None,
+    seed: Optional[int] = None,
+    seed_nodes: Optional[List[str]] = None,
+    sc_policy: Optional["SpaceColonizationPolicy"] = None,
+    disable_progress: bool = False,
+) -> OperationResult:
+    """
+    Policy-driven space colonization with trunk-first growth, apical dominance,
+    and angular-clustering-based splitting.
+    
+    This version implements:
+    A) Trunk-first + root suppression: Prevents "inlet starburst"
+    B) Apical dominance: Reduces parallel linear growth
+    C) Angular clustering: Enables proper branching when attractor field supports it
+    
+    Parameters
+    ----------
+    network : VascularNetwork
+        Network to grow
+    tissue_points : np.ndarray
+        Array of tissue points (N, 3) that need perfusion
+    params : SpaceColonizationParams, optional
+        Algorithm parameters (legacy, used for compatibility)
+    constraints : BranchingConstraints, optional
+        Branching constraints
+    seed : int, optional
+        Random seed
+    seed_nodes : List[str], optional
+        List of node IDs to use as seed nodes for growth
+    sc_policy : SpaceColonizationPolicy, optional
+        Policy controlling all behavior. If None, uses defaults.
+    
+    Returns
+    -------
+    result : OperationResult
+        Result with metadata about growth progress including tree-shape metrics
+    """
+    from aog_policies.space_colonization import SpaceColonizationPolicy
+    
+    if params is None:
+        params = SpaceColonizationParams()
+    
+    if sc_policy is None:
+        sc_policy = SpaceColonizationPolicy()
+    
+    if constraints is None:
+        constraints = BranchingConstraints(
+            min_segment_length=max(params.step_size, sc_policy.min_branch_segment_length),
+            min_radius=params.min_radius,
+        )
+    
+    rng = np.random.default_rng(seed) if seed is not None else network.id_gen.rng
+    
+    root_node_id: Optional[int] = None
+    inlet_direction: Optional[np.ndarray] = None
+    
+    if seed_nodes is not None:
+        initial_nodes = [
+            network.nodes[node_id] for node_id in seed_nodes
+            if node_id in network.nodes and network.nodes[node_id].vessel_type == params.vessel_type
+        ]
+    else:
+        initial_nodes = [
+            node for node in network.nodes.values()
+            if node.node_type in ("inlet", "outlet") and
+            node.vessel_type == params.vessel_type
+        ]
+    
+    if not initial_nodes:
+        return OperationResult.failure(
+            message=f"No inlet/outlet nodes of type {params.vessel_type} found",
+            errors=["No seed nodes"],
+        )
+    
+    root_node = initial_nodes[0]
+    root_node_id = root_node.id
+    
+    if "direction" in root_node.attributes:
+        dir_data = root_node.attributes["direction"]
+        if isinstance(dir_data, dict):
+            inlet_direction = np.array([dir_data.get("dx", 0), dir_data.get("dy", 0), dir_data.get("dz", 1)])
+        elif isinstance(dir_data, (list, tuple)):
+            inlet_direction = np.array(dir_data)
+        else:
+            inlet_direction = np.array([0, 0, 1])
+    else:
+        inlet_direction = np.array([0, 0, 1])
+    
+    inlet_direction = inlet_direction / np.linalg.norm(inlet_direction)
+    
+    tip_states: Dict[int, TipState] = {}
+    for node in initial_nodes:
+        tip_states[node.id] = TipState(
+            node_id=node.id,
+            steps_since_split=sc_policy.split_cooldown_steps,
+            total_steps=0,
+            distance_from_root=0.0,
+            is_root=(node.id == root_node_id),
+        )
+    
+    tissue_points_list = [
+        p if isinstance(p, Point3D) else Point3D.from_array(p)
+        for p in tissue_points
+    ]
+    active_tissue_points = set(range(len(tissue_points_list)))
+    initial_count = len(tissue_points_list)
+    
+    new_node_ids = []
+    new_segment_ids = []
+    warnings = []
+    steps_taken = 0
+    
+    metrics = SpaceColonizationMetrics()
+    trunk_phase_complete = False
+    trunk_tip_id = root_node_id
+    
+    pbar = tqdm(total=params.max_steps, desc="Space colonization v2", unit="step", disable=disable_progress)
+    
+    for step in range(params.max_steps):
+        if not active_tissue_points:
+            pbar.close()
+            break
+        
+        current_tips = [
+            network.nodes[ts.node_id] for ts in tip_states.values()
+            if ts.node_id in network.nodes and
+            network.nodes[ts.node_id].node_type in ("terminal", "inlet", "outlet")
+        ]
+        
+        if not current_tips:
+            pbar.close()
+            break
+        
+        tip_positions = np.array([
+            [node.position.x, node.position.y, node.position.z]
+            for node in current_tips
+        ])
+        tip_kdtree = cKDTree(tip_positions)
+        tip_id_list = [node.id for node in current_tips]
+        
+        attractions: Dict[int, List[int]] = {node.id: [] for node in current_tips}
+        tip_supports: Dict[int, int] = {}
+        
+        active_tp_indices = list(active_tissue_points)
+        if active_tp_indices:
+            active_tp_positions = np.array([
+                [tissue_points_list[idx].x, tissue_points_list[idx].y, tissue_points_list[idx].z]
+                for idx in active_tp_indices
+            ])
+            
+            distances, nearest_indices = tip_kdtree.query(active_tp_positions, k=1)
+            
+            for i, tp_idx in enumerate(active_tp_indices):
+                if distances[i] < params.influence_radius:
+                    nearest_tip_id = tip_id_list[nearest_indices[i]]
+                    attractions[nearest_tip_id].append(tp_idx)
+        
+        for tip_id in tip_id_list:
+            tip_supports[tip_id] = len(attractions[tip_id])
+        
+        in_trunk_phase = (
+            step < sc_policy.trunk_steps or
+            (trunk_tip_id is not None and 
+             tip_states.get(trunk_tip_id, TipState(0)).distance_from_root < sc_policy.branch_enable_after_distance)
+        )
+        
+        if in_trunk_phase and not trunk_phase_complete:
+            active_tip_states = [ts for ts in tip_states.values() if ts.node_id == trunk_tip_id]
+            if not active_tip_states and tip_states:
+                active_tip_states = [list(tip_states.values())[0]]
+        else:
+            if not trunk_phase_complete:
+                trunk_phase_complete = True
+                metrics.trunk_nodes = len(new_node_ids)
+                metrics.trunk_segments = len(new_segment_ids)
+                if trunk_tip_id in tip_states:
+                    metrics.trunk_length = tip_states[trunk_tip_id].distance_from_root
+            
+            all_tip_states = list(tip_states.values())
+            
+            if sc_policy.dominance_mode == "probabilistic":
+                active_tip_states = _select_active_tips_probabilistic(
+                    all_tip_states,
+                    tip_supports,
+                    sc_policy.apical_dominance_alpha,
+                    sc_policy.active_tip_fraction,
+                    sc_policy.min_active_tips,
+                    rng,
+                )
+            else:
+                active_tip_states = _select_active_tips_topk(
+                    all_tip_states,
+                    tip_supports,
+                    sc_policy.active_tip_fraction,
+                    sc_policy.min_active_tips,
+                )
+        
+        grown_any = False
+        
+        for tip_state in active_tip_states:
+            node_id = tip_state.node_id
+            if node_id not in network.nodes:
+                continue
+            
+            node = network.nodes[node_id]
+            attracted_indices = attractions.get(node_id, [])
+            
+            if not attracted_indices:
+                continue
+            
+            attracted_points = [tissue_points_list[idx] for idx in attracted_indices]
+            num_attractions = len(attracted_points)
+            
+            attraction_vectors = []
+            for tp in attracted_points:
+                direction = np.array([
+                    tp.x - node.position.x,
+                    tp.y - node.position.y,
+                    tp.z - node.position.z,
+                ])
+                direction_norm = np.linalg.norm(direction)
+                if direction_norm > 1e-10:
+                    attraction_vectors.append(direction / direction_norm)
+            
+            if not attraction_vectors:
+                continue
+            
+            is_root_node = tip_state.is_root
+            can_split = (
+                sc_policy.enable_cluster_splitting and
+                not in_trunk_phase and
+                tip_state.steps_since_split >= sc_policy.split_cooldown_steps and
+                num_attractions >= sc_policy.min_attractors_to_split
+            )
+            
+            if is_root_node:
+                existing_children = sum(
+                    1 for seg in network.segments.values()
+                    if seg.start_node_id == node_id
+                )
+                if existing_children >= sc_policy.max_root_children:
+                    continue
+                can_split = False
+            
+            existing_children_count = sum(
+                1 for seg in network.segments.values()
+                if seg.start_node_id == node_id
+            )
+            if existing_children_count >= sc_policy.max_children_per_node_total:
+                continue
+            
+            remaining_slots = sc_policy.max_children_per_node_total - existing_children_count
+            
+            if can_split and len(attraction_vectors) >= 2:
+                clusters = _greedy_angular_clustering(
+                    attraction_vectors,
+                    sc_policy.cluster_angle_threshold_deg,
+                    max_clusters=min(sc_policy.max_children_per_split, remaining_slots),
+                )
+                
+                if len(clusters) >= 2:
+                    if len(clusters) == 3:
+                        if rng.random() >= sc_policy.allow_trifurcation_prob:
+                            clusters = _merge_weakest_cluster(clusters, attraction_vectors)
+                    
+                    if len(clusters) > 3:
+                        cluster_supports = [
+                            (i, len(c)) for i, c in enumerate(clusters)
+                        ]
+                        cluster_supports.sort(key=lambda x: x[1], reverse=True)
+                        top_3_indices = [cs[0] for cs in cluster_supports[:3]]
+                        clusters = [clusters[i] for i in sorted(top_3_indices)]
+                    
+                    parent_radius = node.attributes.get("radius", params.min_radius * 2)
+                    n_children = len(clusters)
+                    
+                    if sc_policy.split_strength_mode == "proportional_to_cluster_support":
+                        total_support = sum(len(c) for c in clusters)
+                        child_radii = []
+                        for c in clusters:
+                            fraction = len(c) / total_support if total_support > 0 else 1.0 / n_children
+                            child_radius = parent_radius * (fraction ** (1.0/3.0)) * params.taper_factor
+                            child_radii.append(max(child_radius, params.min_radius))
+                    else:
+                        child_radius = parent_radius * (1.0 / n_children) ** (1.0/3.0) * params.taper_factor
+                        child_radii = [max(child_radius, params.min_radius)] * n_children
+                    
+                    from .growth import grow_branch
+                    
+                    children_created = 0
+                    for cluster_idx, cluster in enumerate(clusters):
+                        if children_created >= remaining_slots:
+                            break
+                        
+                        cluster_vecs = [attraction_vectors[i] for i in cluster]
+                        cluster_direction = np.mean(cluster_vecs, axis=0)
+                        cluster_direction = cluster_direction / np.linalg.norm(cluster_direction)
+                        
+                        cluster_direction = _apply_noise_to_direction(
+                            cluster_direction,
+                            sc_policy.noise_angle_deg,
+                            rng,
+                        )
+                        
+                        cluster_direction = _apply_directional_blending(cluster_direction, node, params)
+                        cluster_direction = _apply_curvature_constraint(cluster_direction, node, params)
+                        
+                        growth_direction = Direction3D.from_array(cluster_direction)
+                        
+                        new_pos = Point3D(
+                            node.position.x + growth_direction.dx * params.step_size,
+                            node.position.y + growth_direction.dy * params.step_size,
+                            node.position.z + growth_direction.dz * params.step_size,
+                        )
+                        
+                        if not _check_clearance(new_pos, network, node_id, params):
+                            continue
+                        
+                        new_radius = child_radii[cluster_idx]
+                        
+                        result = grow_branch(
+                            network,
+                            from_node_id=node_id,
+                            length=params.step_size,
+                            direction=growth_direction,
+                            target_radius=new_radius,
+                            constraints=constraints,
+                            check_collisions=True,
+                            seed=seed,
+                        )
+                        
+                        if result.is_success():
+                            new_node_id = result.new_ids["node"]
+                            new_node_ids.append(new_node_id)
+                            new_segment_ids.append(result.new_ids["segment"])
+                            grown_any = True
+                            children_created += 1
+                            
+                            tip_states[new_node_id] = TipState(
+                                node_id=new_node_id,
+                                steps_since_split=0,
+                                total_steps=tip_state.total_steps + 1,
+                                distance_from_root=tip_state.distance_from_root + params.step_size,
+                                is_root=False,
+                            )
+                        else:
+                            warnings.extend(result.errors)
+                    
+                    if children_created > 0:
+                        metrics.split_event_count += 1
+                        if children_created == 2:
+                            metrics.bifurcation_count += 1
+                        elif children_created == 3:
+                            metrics.trifurcation_count += 1
+                        
+                        if node_id in tip_states:
+                            del tip_states[node_id]
+                    
+                    continue
+            
+            if in_trunk_phase and sc_policy.trunk_direction_mode == "inlet_direction":
+                avg_direction = inlet_direction.copy()
+            else:
+                avg_direction = np.mean(attraction_vectors, axis=0)
+                avg_direction = avg_direction / np.linalg.norm(avg_direction)
+            
+            avg_direction = _apply_noise_to_direction(
+                avg_direction,
+                sc_policy.noise_angle_deg,
+                rng,
+            )
+            
+            avg_direction = _apply_directional_blending(avg_direction, node, params)
+            avg_direction = _apply_curvature_constraint(avg_direction, node, params)
+            
+            growth_direction = Direction3D.from_array(avg_direction)
+            
+            new_pos = Point3D(
+                node.position.x + growth_direction.dx * params.step_size,
+                node.position.y + growth_direction.dy * params.step_size,
+                node.position.z + growth_direction.dz * params.step_size,
+            )
+            
+            if not _check_clearance(new_pos, network, node_id, params):
+                continue
+            
+            parent_radius = node.attributes.get("radius", params.min_radius * 2)
+            new_radius = parent_radius * params.taper_factor
+            new_radius = max(new_radius, params.min_radius)
+            
+            from .growth import grow_branch
+            result = grow_branch(
+                network,
+                from_node_id=node_id,
+                length=params.step_size,
+                direction=growth_direction,
+                target_radius=new_radius,
+                constraints=constraints,
+                check_collisions=True,
+                seed=seed,
+            )
+            
+            if result.is_success():
+                new_node_id = result.new_ids["node"]
+                new_node_ids.append(new_node_id)
+                new_segment_ids.append(result.new_ids["segment"])
+                grown_any = True
+                
+                new_tip_state = TipState(
+                    node_id=new_node_id,
+                    steps_since_split=tip_state.steps_since_split + 1,
+                    total_steps=tip_state.total_steps + 1,
+                    distance_from_root=tip_state.distance_from_root + params.step_size,
+                    is_root=False,
+                )
+                tip_states[new_node_id] = new_tip_state
+                
+                if in_trunk_phase and node_id == trunk_tip_id:
+                    trunk_tip_id = new_node_id
+                
+                if node_id in tip_states:
+                    del tip_states[node_id]
+            else:
+                warnings.extend(result.errors)
+        
+        if not grown_any:
+            pbar.close()
+            break
+        
+        steps_taken += 1
+        pbar.update(1)
+        pbar.set_postfix({
+            'nodes': len(new_node_ids),
+            'tips': len(tip_states),
+            'coverage': f'{(initial_count - len(active_tissue_points)) / initial_count:.1%}' if initial_count > 0 else '0%'
+        })
+        
+        if network.nodes and active_tissue_points:
+            all_node_positions = np.array([
+                [node.position.x, node.position.y, node.position.z]
+                for node in network.nodes.values()
+            ])
+            node_kdtree = cKDTree(all_node_positions)
+            
+            active_tp_indices = list(active_tissue_points)
+            active_tp_positions = np.array([
+                [tissue_points_list[idx].x, tissue_points_list[idx].y, tissue_points_list[idx].z]
+                for idx in active_tp_indices
+            ])
+            
+            nearby_results = node_kdtree.query_ball_point(active_tp_positions, params.kill_radius)
+            
+            for i, tp_idx in enumerate(active_tp_indices):
+                if nearby_results[i]:
+                    active_tissue_points.discard(tp_idx)
+    
+    pbar.close()
+    
+    final_metrics = _compute_network_metrics(network, root_node_id)
+    metrics.root_degree = final_metrics.root_degree
+    metrics.degree_histogram = final_metrics.degree_histogram
+    metrics.branch_node_count = final_metrics.branch_node_count
+    metrics.terminal_count = final_metrics.terminal_count
+    metrics.average_segment_length = final_metrics.average_segment_length
+    
+    perfused_count = initial_count - len(active_tissue_points)
+    coverage_fraction = perfused_count / initial_count if initial_count > 0 else 0.0
+    
+    delta = Delta(
+        created_node_ids=new_node_ids,
+        created_segment_ids=new_segment_ids,
+    )
+    
+    if new_node_ids:
+        status = OperationStatus.SUCCESS if not warnings else OperationStatus.PARTIAL_SUCCESS
+        message = f"Grew {len(new_node_ids)} nodes in {steps_taken} steps, {coverage_fraction:.1%} coverage"
+    else:
+        status = OperationStatus.WARNING
+        message = "No growth occurred"
+    
+    return OperationResult(
+        status=status,
+        message=message,
+        new_ids={
+            "nodes": new_node_ids,
+            "segments": new_segment_ids,
+        },
+        warnings=warnings,
+        delta=delta,
+        rng_state=network.id_gen.get_state(),
+        metadata={
+            "steps_taken": steps_taken,
+            "nodes_grown": len(new_node_ids),
+            "initial_tissue_points": initial_count,
+            "perfused_tissue_points": perfused_count,
+            "coverage_fraction": coverage_fraction,
+            "tree_metrics": metrics.to_dict(),
+        },
+    )
