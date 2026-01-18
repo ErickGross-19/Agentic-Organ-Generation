@@ -1009,7 +1009,42 @@ class MainWindow:
     
     def _on_spec_update(self, spec: Dict[str, Any]):
         """Handle spec update from DesignSpec workflow."""
-        pass
+        domains = spec.get("domains", {})
+        components = spec.get("components", [])
+        features = spec.get("features", {})
+        
+        summary_parts = []
+        
+        if domains:
+            domain_names = list(domains.keys())
+            for name in domain_names[:2]:
+                domain = domains[name]
+                dtype = domain.get("type", "unknown")
+                if dtype == "box":
+                    size = domain.get("size", [0, 0, 0])
+                    summary_parts.append(f"Domain '{name}': box {size[0]}x{size[1]}x{size[2]}")
+                elif dtype == "cylinder":
+                    r = domain.get("radius", 0)
+                    h = domain.get("height", 0)
+                    summary_parts.append(f"Domain '{name}': cylinder r={r} h={h}")
+                else:
+                    summary_parts.append(f"Domain '{name}': {dtype}")
+        
+        if components:
+            for comp in components[:3]:
+                comp_id = comp.get("id", "unnamed")
+                build_type = comp.get("build", {}).get("type", comp.get("build", {}).get("backend", "unknown"))
+                summary_parts.append(f"Component '{comp_id}': {build_type}")
+        
+        if features:
+            ridges = features.get("ridges", [])
+            if ridges:
+                faces = [r.get("face", "?") for r in ridges]
+                summary_parts.append(f"Ridges on faces: {', '.join(faces)}")
+        
+        if summary_parts:
+            summary = "Spec updated:\n" + "\n".join(f"  - {p}" for p in summary_parts)
+            self._append_chat("system", summary)
     
     def _on_patch_proposal(self, patch_data: Dict[str, Any]):
         """Handle patch proposal from DesignSpec workflow."""
@@ -1034,13 +1069,28 @@ class MainWindow:
         """Handle compile status from DesignSpec workflow."""
         status = compile_data.get("status", "")
         message = compile_data.get("message", "")
+        report = compile_data.get("report", {})
         
         if status == "running":
             self._append_chat("system", "Compiling...")
         elif status == "success":
-            self._append_chat("success", "Compile successful")
+            warnings = report.get("warnings", [])
+            if warnings:
+                warning_text = "\n".join(f"  - {w}" for w in warnings[:5])
+                self._append_chat("success", f"Compile successful with warnings:\n{warning_text}")
+            else:
+                self._append_chat("success", "Compile successful")
         elif status == "failed":
-            self._append_chat("error", f"Compile failed: {message}")
+            errors = report.get("errors", [])
+            warnings = report.get("warnings", [])
+            error_msg = f"Compile failed: {message}"
+            if errors:
+                error_text = "\n".join(f"  - {e}" for e in errors[:5])
+                error_msg += f"\nErrors:\n{error_text}"
+            if warnings:
+                warning_text = "\n".join(f"  - {w}" for w in warnings[:3])
+                error_msg += f"\nWarnings:\n{warning_text}"
+            self._append_chat("error", error_msg)
     
     def _load_stl(self):
         """Load STL file directly."""
