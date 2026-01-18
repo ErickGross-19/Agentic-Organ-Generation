@@ -995,6 +995,17 @@ class MainWindow:
                 compile_callback=self._on_compile_status,
             )
         
+        if hasattr(self, '_agent_config') and self._agent_config:
+            config = self._agent_config
+            self._designspec_manager.initialize_llm(
+                provider=config.provider,
+                api_key=config.api_key,
+                model=config.model,
+                api_base=config.api_base,
+                temperature=config.temperature,
+                max_tokens=config.max_tokens,
+            )
+        
         if project_dir:
             success = self._designspec_manager.load_project(project_dir)
         else:
