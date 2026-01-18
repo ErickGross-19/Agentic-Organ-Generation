@@ -300,7 +300,7 @@ class DesignSpecWorkflowManager:
             questions = data.get("questions", [])
             if questions:
                 question_text = "\n".join(
-                    f"- {q.get('text', q.get('question', ''))}"
+                    f"- {q.get('question_text', q.get('text', q.get('question', '')))}"
                     for q in questions
                 )
                 self._send_message("prompt", f"{message}\n{question_text}")

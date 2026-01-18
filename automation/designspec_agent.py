@@ -231,11 +231,12 @@ class DesignSpecAgent:
         
         patches = self._extract_patches_from_message(user_message, spec)
         if patches:
+            explanation = self._generate_patch_explanation(user_message, patches, spec)
             return AgentResponse(
                 response_type=AgentResponseType.PATCH_PROPOSAL,
-                message="I've prepared a patch based on your request.",
+                message=explanation,
                 patch_proposal=PatchProposal(
-                    explanation=f"Changes based on: {user_message}",
+                    explanation=explanation,
                     patches=patches,
                     confidence=0.8,
                     requires_confirmation=True,
@@ -249,21 +250,18 @@ class DesignSpecAgent:
         if missing_fields:
             questions = self._generate_questions_for_fields(missing_fields, spec)
             if questions:
+                checklist = self._build_missing_fields_checklist(spec)
+                message = self._generate_conversational_question_prompt(questions, checklist, spec)
                 return AgentResponse(
                     response_type=AgentResponseType.QUESTION,
-                    message="I need some more information to complete the spec.",
+                    message=message,
                     questions=questions,
                 )
         
         if self.llm_client:
             return self._llm_process_message(user_message, spec, validation_report)
         
-        return AgentResponse(
-            response_type=AgentResponseType.MESSAGE,
-            message="I understand. What would you like to do with the spec? "
-                    "You can describe changes, ask me to run the pipeline, "
-                    "or ask questions about the current configuration.",
-        )
+        return self._generate_conversational_fallback(user_message, spec)
     
     def _is_run_request(self, message: str) -> bool:
         """Check if the message is a run request."""
@@ -439,6 +437,42 @@ class DesignSpecAgent:
         
         return missing
     
+    def _build_missing_fields_checklist(self, spec: Dict[str, Any]) -> str:
+        """Build a checklist of missing fields for user display."""
+        lines = []
+        
+        domains = spec.get("domains", {})
+        if domains:
+            lines.append("[x] domains - defined")
+            for name, domain in domains.items():
+                dtype = domain.get("type", "unknown")
+                lines.append(f"    [x] {name}: {dtype}")
+        else:
+            lines.append("[ ] domains - need at least one domain?")
+        
+        components = spec.get("components", [])
+        if components:
+            lines.append("[x] components - defined")
+            for comp in components:
+                comp_id = comp.get("id", "unnamed")
+                ports = comp.get("ports", {})
+                inlets = ports.get("inlets", [])
+                outlets = ports.get("outlets", [])
+                if inlets:
+                    lines.append(f"    [x] {comp_id}: {len(inlets)} inlet(s)")
+                else:
+                    lines.append(f"    [ ] {comp_id}: needs inlet ports?")
+        else:
+            lines.append("[ ] components - need at least one component?")
+        
+        features = spec.get("features", {})
+        ridges = features.get("ridges", [])
+        if ridges:
+            faces = [r.get("face", "?") for r in ridges]
+            lines.append(f"[x] features.ridges - {len(ridges)} ridge(s) on {', '.join(faces)}")
+        
+        return "\n".join(lines)
+    
     def _generate_questions_for_fields(
         self,
         field_paths: List[str],
@@ -543,6 +577,10 @@ class DesignSpecAgent:
             r"box\s+(\d+(?:\.\d+)?)\s*(?:mm|m)?\s*[x×]\s*(\d+(?:\.\d+)?)\s*(?:mm|m)?\s*[x×]\s*(\d+(?:\.\d+)?)\s*(?:mm|m)?",
             message_lower,
         )
+        cube_match = re.search(
+            r"(?:box|cube)\s+(?:with\s+)?(\d+(?:\.\d+)?)\s*(?:mm|m)?\s+sides?",
+            message_lower,
+        )
         if box_match:
             width = float(box_match.group(1))
             height = float(box_match.group(2))
@@ -550,8 +588,44 @@ class DesignSpecAgent:
             
             domain_value = {
                 "type": "box",
-                "center": [0, 0, 0],
-                "size": [width, height, depth],
+                "x_min": -width / 2,
+                "x_max": width / 2,
+                "y_min": -height / 2,
+                "y_max": height / 2,
+                "z_min": -depth / 2,
+                "z_max": depth / 2,
+            }
+            
+            if "domains" not in spec or not spec["domains"]:
+                patches.append({
+                    "op": "add",
+                    "path": "/domains",
+                    "value": {"main_domain": domain_value},
+                })
+            elif "main_domain" not in spec.get("domains", {}):
+                patches.append({
+                    "op": "add",
+                    "path": "/domains/main_domain",
+                    "value": domain_value,
+                })
+            else:
+                patches.append({
+                    "op": "replace",
+                    "path": "/domains/main_domain",
+                    "value": domain_value,
+                })
+        elif cube_match:
+            side_length = float(cube_match.group(1))
+            half_side = side_length / 2
+            
+            domain_value = {
+                "type": "box",
+                "x_min": -half_side,
+                "x_max": half_side,
+                "y_min": -half_side,
+                "y_max": half_side,
+                "z_min": -half_side,
+                "z_max": half_side,
             }
             
             if "domains" not in spec or not spec["domains"]:
@@ -614,6 +688,14 @@ class DesignSpecAgent:
         if "tree" in message_lower or "network" in message_lower or "vascular" in message_lower:
             component_patches = self._extract_component_patches(message, spec)
             patches.extend(component_patches)
+        
+        if "channel" in message_lower and ("straight" in message_lower or "through" in message_lower):
+            channel_patches = self._extract_channel_patches(message, spec)
+            patches.extend(channel_patches)
+        
+        if "ridge" in message_lower:
+            ridge_patches = self._extract_ridge_patches(message, spec)
+            patches.extend(ridge_patches)
         
         return patches
     
@@ -742,6 +824,297 @@ class DesignSpecAgent:
             })
         
         return patches
+    
+    def _extract_channel_patches(
+        self,
+        message: str,
+        spec: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """
+        Extract primitive_channels component patches from a message.
+        
+        Handles phrases like "straight channel through it".
+        """
+        patches = []
+        message_lower = message.lower()
+        
+        radius_match = re.search(r"radius\s+(\d+(?:\.\d+)?)\s*(?:mm|m)?", message_lower)
+        channel_radius = float(radius_match.group(1)) if radius_match else None
+        
+        components = spec.get("components", [])
+        channel_components = [
+            c for c in components
+            if c.get("build", {}).get("type") == "primitive_channels"
+        ]
+        
+        domains = spec.get("domains", {})
+        domain_ref = "main_domain" if "main_domain" in domains else (
+            list(domains.keys())[0] if domains else "main_domain"
+        )
+        
+        domain = domains.get(domain_ref, {})
+        domain_size = domain.get("size", [20, 20, 20])
+        domain_height = domain.get("height", domain_size[2] if len(domain_size) > 2 else 20)
+        
+        if not channel_components:
+            new_channel = {
+                "id": "channel_1",
+                "domain_ref": domain_ref,
+                "ports": {
+                    "inlets": [
+                        {
+                            "name": "channel_inlet",
+                            "position": [0, 0, domain_height / 2],
+                            "direction": [0, 0, -1],
+                            "radius": channel_radius if channel_radius else 0.5,
+                            "vessel_type": "arterial",
+                        }
+                    ],
+                    "outlets": [],
+                },
+                "build": {
+                    "type": "primitive_channels",
+                },
+            }
+            
+            patches.append({
+                "op": "add",
+                "path": "/components/-",
+                "value": new_channel,
+            })
+            
+            if channel_radius is None:
+                self._pending_channel_radius_confirmation = True
+        
+        return patches
+    
+    def _extract_ridge_patches(
+        self,
+        message: str,
+        spec: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """
+        Extract ridge feature patches from a message.
+        
+        Handles phrases like "ridge on left face" or "ridge on right face".
+        """
+        patches = []
+        message_lower = message.lower()
+        
+        face_map = {
+            "top": "+z",
+            "bottom": "-z",
+            "front": "-y",
+            "back": "+y",
+            "left": "-x",
+            "right": "+x",
+        }
+        
+        ridge_faces = []
+        for face_name, face_code in face_map.items():
+            if face_name in message_lower and "ridge" in message_lower:
+                if (f"ridge on {face_name}" in message_lower or 
+                    f"ridge at {face_name}" in message_lower or
+                    f"{face_name} ridge" in message_lower or
+                    f"{face_name} face" in message_lower):
+                    ridge_faces.append(face_code)
+        
+        if not ridge_faces:
+            return patches
+        
+        policies = spec.get("policies", {})
+        ridge_policy = policies.get("ridge", {})
+        
+        height = ridge_policy.get("height", 0.001)
+        thickness = ridge_policy.get("thickness", 0.001)
+        
+        height_match = re.search(r"height\s+(\d+(?:\.\d+)?)\s*(?:mm|m)?", message_lower)
+        if height_match:
+            height = float(height_match.group(1))
+            if "mm" in message_lower:
+                height = height / 1000.0
+        
+        thickness_match = re.search(r"thickness\s+(\d+(?:\.\d+)?)\s*(?:mm|m)?", message_lower)
+        if thickness_match:
+            thickness = float(thickness_match.group(1))
+            if "mm" in message_lower:
+                thickness = thickness / 1000.0
+        
+        features = spec.get("features", {})
+        ridges = features.get("ridges", [])
+        
+        new_ridges = list(ridges)
+        for face_code in ridge_faces:
+            existing = any(r.get("face") == face_code for r in new_ridges)
+            if not existing:
+                new_ridges.append({
+                    "face": face_code,
+                    "height": height,
+                    "thickness": thickness,
+                })
+        
+        if "features" not in spec:
+            patches.append({
+                "op": "add",
+                "path": "/features",
+                "value": {"ridges": new_ridges},
+            })
+        elif "ridges" not in features:
+            patches.append({
+                "op": "add",
+                "path": "/features/ridges",
+                "value": new_ridges,
+            })
+        else:
+            patches.append({
+                "op": "replace",
+                "path": "/features/ridges",
+                "value": new_ridges,
+            })
+        
+        return patches
+    
+    def _generate_patch_explanation(
+        self,
+        user_message: str,
+        patches: List[Dict[str, Any]],
+        spec: Dict[str, Any],
+    ) -> str:
+        """Generate a conversational explanation for the proposed patches."""
+        if self.llm_client:
+            try:
+                prompt = f"""Generate a brief, friendly explanation (1-2 sentences) for these spec changes.
+User request: {user_message}
+Changes: {json.dumps(patches, indent=2)[:500]}
+Be conversational and helpful. Don't be overly formal."""
+                response = self.llm_client.chat(message=prompt)
+                return response.content.strip()
+            except Exception:
+                pass
+        
+        patch_descriptions = []
+        for patch in patches:
+            op = patch.get("op", "")
+            path = patch.get("path", "")
+            
+            if "/domains" in path:
+                if "main_domain" in str(patch.get("value", {})):
+                    value = patch.get("value", {}).get("main_domain", {})
+                    dtype = value.get("type", "")
+                    if dtype == "box":
+                        x_size = value.get("x_max", 0) - value.get("x_min", 0)
+                        y_size = value.get("y_max", 0) - value.get("y_min", 0)
+                        z_size = value.get("z_max", 0) - value.get("z_min", 0)
+                        patch_descriptions.append(f"create a {x_size}x{y_size}x{z_size} box domain")
+                    else:
+                        patch_descriptions.append(f"create a {dtype} domain")
+                else:
+                    patch_descriptions.append("update the domain")
+            elif "/components" in path:
+                value = patch.get("value", {})
+                build_type = value.get("build", {}).get("type", "")
+                if build_type == "primitive_channels":
+                    patch_descriptions.append("add a channel component")
+                else:
+                    patch_descriptions.append("add a component")
+            elif "/features" in path:
+                value = patch.get("value", {})
+                ridges = value.get("ridges", [])
+                if ridges:
+                    faces = [r.get("face", "") for r in ridges]
+                    patch_descriptions.append(f"add ridges on {', '.join(faces)} faces")
+            elif "/meta" in path:
+                if "seed" in path:
+                    patch_descriptions.append(f"set the seed to {patch.get('value')}")
+                elif "name" in path:
+                    patch_descriptions.append(f"set the name to '{patch.get('value')}'")
+        
+        if patch_descriptions:
+            if len(patch_descriptions) == 1:
+                return f"I'll {patch_descriptions[0]}. Does this look right?"
+            else:
+                return f"I'll {', '.join(patch_descriptions[:-1])}, and {patch_descriptions[-1]}. Does this look right?"
+        
+        return "I've prepared some changes based on your request. Please review and approve."
+    
+    def _generate_conversational_question_prompt(
+        self,
+        questions: List[Question],
+        checklist: str,
+        spec: Dict[str, Any],
+    ) -> str:
+        """Generate a conversational prompt for asking questions."""
+        if self.llm_client:
+            try:
+                questions_text = "\n".join(f"- {q.question_text}" for q in questions)
+                prompt = f"""Rephrase these questions in a friendly, conversational way (keep it brief):
+{questions_text}
+
+Current spec status:
+{checklist}
+
+Be helpful and guide the user. Ask one main question at a time."""
+                response = self.llm_client.chat(message=prompt)
+                return response.content.strip()
+            except Exception:
+                pass
+        
+        if len(questions) == 1:
+            q = questions[0]
+            if "domain" in q.field_path.lower():
+                return f"Let's start with the basics - {q.question_text}"
+            elif "component" in q.field_path.lower():
+                return f"Now for the vascular structure - {q.question_text}"
+            else:
+                return q.question_text
+        
+        main_question = questions[0].question_text
+        message = f"I have a few questions to help build your spec. First: {main_question}"
+        if checklist:
+            message += f"\n\nCurrent progress:\n{checklist}"
+        return message
+    
+    def _generate_conversational_fallback(
+        self,
+        user_message: str,
+        spec: Dict[str, Any],
+    ) -> AgentResponse:
+        """Generate a conversational fallback response when no specific action is detected."""
+        domains = spec.get("domains", {})
+        components = spec.get("components", [])
+        features = spec.get("features", {})
+        
+        if not domains:
+            return AgentResponse(
+                response_type=AgentResponseType.MESSAGE,
+                message="I'd love to help! To get started, could you describe the shape and size "
+                        "of the structure you want to create? For example: 'Create a 20mm cube' "
+                        "or 'Make a cylinder 10mm radius and 30mm tall'.",
+            )
+        
+        if not components:
+            domain_names = list(domains.keys())
+            return AgentResponse(
+                response_type=AgentResponseType.MESSAGE,
+                message=f"Great, you have a domain set up ({domain_names[0]}). "
+                        "What kind of vascular structure would you like inside it? "
+                        "You could say 'add a straight channel through it' or describe "
+                        "a branching network.",
+            )
+        
+        if not features.get("ridges"):
+            return AgentResponse(
+                response_type=AgentResponseType.MESSAGE,
+                message="Your spec is looking good! Would you like to add any surface features "
+                        "like ridges? You can say 'add ridges on the left and right faces' "
+                        "or we can proceed to run the pipeline.",
+            )
+        
+        return AgentResponse(
+            response_type=AgentResponseType.MESSAGE,
+            message="Your spec looks ready! You can say 'run' to generate the structure, "
+                    "or describe any other changes you'd like to make.",
+        )
     
     def _llm_process_message(
         self,
