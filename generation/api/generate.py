@@ -290,15 +290,24 @@ def _generate_space_colonization(
     seed: Optional[int],
     tissue_sampling_policy: Optional[TissueSamplingPolicy] = None,
 ) -> Tuple[VascularNetwork, Dict[str, Any]]:
-    """Generate network using space colonization algorithm."""
-    from ..ops import create_network, add_inlet, add_outlet, space_colonization_step
-    from ..ops.space_colonization import SpaceColonizationParams
+    """Generate network using space colonization algorithm.
+    
+    This function supports the new policy-driven space colonization with:
+    - Trunk-first growth (prevents inlet starburst)
+    - Apical dominance (reduces parallel linear growth)
+    - Angular clustering-based splitting (enables proper branching)
+    
+    The SpaceColonizationPolicy is extracted from growth_policy.backend_params
+    if present. Otherwise, defaults are used.
+    """
+    from ..ops import create_network, add_inlet, add_outlet
+    from ..ops.space_colonization import SpaceColonizationParams, space_colonization_step_v2
     from ..utils.tissue_sampling import sample_tissue_points
     from ..rules.constraints import BranchingConstraints
+    from aog_policies.space_colonization import SpaceColonizationPolicy
     
     network = create_network(domain=domain, seed=seed)
     
-    # Add inlets
     for inlet in ports.get("inlets", []):
         pos = inlet.get("position")
         if pos is None:
@@ -318,7 +327,6 @@ def _generate_space_colonization(
             vessel_type=vessel_type,
         )
     
-    # Add outlets
     for outlet in ports.get("outlets", []):
         pos = outlet.get("position")
         if pos is None:
@@ -338,7 +346,6 @@ def _generate_space_colonization(
             vessel_type=vessel_type,
         )
     
-    # Sample tissue points using policy-driven sampling
     if tissue_sampling_policy is None:
         tissue_sampling_policy = TissueSamplingPolicy()
     
@@ -349,33 +356,58 @@ def _generate_space_colonization(
         seed=seed,
     )
     
-    # Run colonization with policy-driven parameters
-    # Use explicit min_radius from GrowthPolicy (default 0.0001m = 0.1mm)
     min_radius = growth_policy.min_radius
+    
+    sc_policy = None
+    backend_params = getattr(growth_policy, 'backend_params', None) or {}
+    if backend_params:
+        sc_policy_dict = backend_params.get('space_colonization_policy', {})
+        if sc_policy_dict:
+            sc_policy = SpaceColonizationPolicy.from_dict(sc_policy_dict)
+        else:
+            sc_policy = SpaceColonizationPolicy.from_dict(backend_params)
+    
+    if sc_policy is None:
+        sc_policy = SpaceColonizationPolicy()
+    
+    validation_errors = sc_policy.validate()
+    if validation_errors:
+        raise ValueError(f"Invalid SpaceColonizationPolicy: {validation_errors}")
     
     params = SpaceColonizationParams(
         max_steps=growth_policy.max_iterations,
         step_size=growth_policy.step_size,
         min_radius=min_radius,
+        influence_radius=backend_params.get('influence_radius', 0.015),
+        kill_radius=backend_params.get('kill_radius', 0.003),
     )
     
-    # Create constraints with policy-driven min_segment_length and min_radius
-    # This ensures the growth respects the policy's constraints
     constraints = BranchingConstraints(
-        min_segment_length=growth_policy.min_segment_length,
+        min_segment_length=max(growth_policy.min_segment_length, sc_policy.min_branch_segment_length),
         min_radius=min_radius,
     )
     
-    space_colonization_step(network, tissue_points=tissue_points, params=params, constraints=constraints, seed=seed)
+    result = space_colonization_step_v2(
+        network,
+        tissue_points=tissue_points,
+        params=params,
+        constraints=constraints,
+        seed=seed,
+        sc_policy=sc_policy,
+    )
     
-    # Count terminals using string node_type
     terminal_count = sum(1 for n in network.nodes.values() if n.node_type == "terminal")
     
-    return network, {
+    report = {
         "terminal_count": terminal_count,
         "node_count": len(network.nodes),
         "segment_count": len(network.segments),
     }
+    
+    if result.metadata and "tree_metrics" in result.metadata:
+        report["tree_metrics"] = result.metadata["tree_metrics"]
+    
+    return network, report
 
 
 def _generate_kary_tree(

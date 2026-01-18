@@ -72,6 +72,10 @@ from .features import (
     PortPreservationPolicy,
 )
 
+from .space_colonization import (
+    SpaceColonizationPolicy,
+)
+
 __all__ = [
     # Base
     "OperationReport",
@@ -116,4 +120,6 @@ __all__ = [
     # Feature policies
     "RidgePolicy",
     "PortPreservationPolicy",
+    # Space colonization policy
+    "SpaceColonizationPolicy",
 ]
