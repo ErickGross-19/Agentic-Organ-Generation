@@ -249,9 +249,13 @@ class DesignSpecAgent:
         if missing_fields:
             questions = self._generate_questions_for_fields(missing_fields, spec)
             if questions:
+                checklist = self._build_missing_fields_checklist(spec)
+                message = "I need some more information to complete the spec."
+                if checklist:
+                    message += f"\n\nMissing fields checklist:\n{checklist}"
                 return AgentResponse(
                     response_type=AgentResponseType.QUESTION,
-                    message="I need some more information to complete the spec.",
+                    message=message,
                     questions=questions,
                 )
         
@@ -439,6 +443,42 @@ class DesignSpecAgent:
         
         return missing
     
+    def _build_missing_fields_checklist(self, spec: Dict[str, Any]) -> str:
+        """Build a checklist of missing fields for user display."""
+        lines = []
+        
+        domains = spec.get("domains", {})
+        if domains:
+            lines.append("[x] domains - defined")
+            for name, domain in domains.items():
+                dtype = domain.get("type", "unknown")
+                lines.append(f"    [x] {name}: {dtype}")
+        else:
+            lines.append("[ ] domains - need at least one domain?")
+        
+        components = spec.get("components", [])
+        if components:
+            lines.append("[x] components - defined")
+            for comp in components:
+                comp_id = comp.get("id", "unnamed")
+                ports = comp.get("ports", {})
+                inlets = ports.get("inlets", [])
+                outlets = ports.get("outlets", [])
+                if inlets:
+                    lines.append(f"    [x] {comp_id}: {len(inlets)} inlet(s)")
+                else:
+                    lines.append(f"    [ ] {comp_id}: needs inlet ports?")
+        else:
+            lines.append("[ ] components - need at least one component?")
+        
+        features = spec.get("features", {})
+        ridges = features.get("ridges", [])
+        if ridges:
+            faces = [r.get("face", "?") for r in ridges]
+            lines.append(f"[x] features.ridges - {len(ridges)} ridge(s) on {', '.join(faces)}")
+        
+        return "\n".join(lines)
+    
     def _generate_questions_for_fields(
         self,
         field_paths: List[str],
@@ -543,6 +583,10 @@ class DesignSpecAgent:
             r"box\s+(\d+(?:\.\d+)?)\s*(?:mm|m)?\s*[x×]\s*(\d+(?:\.\d+)?)\s*(?:mm|m)?\s*[x×]\s*(\d+(?:\.\d+)?)\s*(?:mm|m)?",
             message_lower,
         )
+        cube_match = re.search(
+            r"(?:box|cube)\s+(?:with\s+)?(\d+(?:\.\d+)?)\s*(?:mm|m)?\s+sides?",
+            message_lower,
+        )
         if box_match:
             width = float(box_match.group(1))
             height = float(box_match.group(2))
@@ -552,6 +596,33 @@ class DesignSpecAgent:
                 "type": "box",
                 "center": [0, 0, 0],
                 "size": [width, height, depth],
+            }
+            
+            if "domains" not in spec or not spec["domains"]:
+                patches.append({
+                    "op": "add",
+                    "path": "/domains",
+                    "value": {"main_domain": domain_value},
+                })
+            elif "main_domain" not in spec.get("domains", {}):
+                patches.append({
+                    "op": "add",
+                    "path": "/domains/main_domain",
+                    "value": domain_value,
+                })
+            else:
+                patches.append({
+                    "op": "replace",
+                    "path": "/domains/main_domain",
+                    "value": domain_value,
+                })
+        elif cube_match:
+            side_length = float(cube_match.group(1))
+            
+            domain_value = {
+                "type": "box",
+                "center": [0, 0, 0],
+                "size": [side_length, side_length, side_length],
             }
             
             if "domains" not in spec or not spec["domains"]:
@@ -614,6 +685,14 @@ class DesignSpecAgent:
         if "tree" in message_lower or "network" in message_lower or "vascular" in message_lower:
             component_patches = self._extract_component_patches(message, spec)
             patches.extend(component_patches)
+        
+        if "channel" in message_lower and ("straight" in message_lower or "through" in message_lower):
+            channel_patches = self._extract_channel_patches(message, spec)
+            patches.extend(channel_patches)
+        
+        if "ridge" in message_lower:
+            ridge_patches = self._extract_ridge_patches(message, spec)
+            patches.extend(ridge_patches)
         
         return patches
     
@@ -739,6 +818,155 @@ class DesignSpecAgent:
                 "op": "add",
                 "path": "/components/-",
                 "value": new_component,
+            })
+        
+        return patches
+    
+    def _extract_channel_patches(
+        self,
+        message: str,
+        spec: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """
+        Extract primitive_channels component patches from a message.
+        
+        Handles phrases like "straight channel through it".
+        """
+        patches = []
+        message_lower = message.lower()
+        
+        radius_match = re.search(r"radius\s+(\d+(?:\.\d+)?)\s*(?:mm|m)?", message_lower)
+        channel_radius = float(radius_match.group(1)) if radius_match else None
+        
+        components = spec.get("components", [])
+        channel_components = [
+            c for c in components
+            if c.get("build", {}).get("type") == "primitive_channels"
+        ]
+        
+        domains = spec.get("domains", {})
+        domain_ref = "main_domain" if "main_domain" in domains else (
+            list(domains.keys())[0] if domains else "main_domain"
+        )
+        
+        domain = domains.get(domain_ref, {})
+        domain_size = domain.get("size", [20, 20, 20])
+        domain_height = domain.get("height", domain_size[2] if len(domain_size) > 2 else 20)
+        
+        if not channel_components:
+            new_channel = {
+                "id": "channel_1",
+                "domain_ref": domain_ref,
+                "ports": {
+                    "inlets": [
+                        {
+                            "name": "channel_inlet",
+                            "position": [0, 0, domain_height / 2],
+                            "direction": [0, 0, -1],
+                            "radius": channel_radius if channel_radius else 0.5,
+                            "vessel_type": "arterial",
+                        }
+                    ],
+                    "outlets": [],
+                },
+                "build": {
+                    "type": "primitive_channels",
+                },
+            }
+            
+            patches.append({
+                "op": "add",
+                "path": "/components/-",
+                "value": new_channel,
+            })
+            
+            if channel_radius is None:
+                self._pending_channel_radius_confirmation = True
+        
+        return patches
+    
+    def _extract_ridge_patches(
+        self,
+        message: str,
+        spec: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """
+        Extract ridge feature patches from a message.
+        
+        Handles phrases like "ridge on left face" or "ridge on right face".
+        """
+        patches = []
+        message_lower = message.lower()
+        
+        face_map = {
+            "top": "+z",
+            "bottom": "-z",
+            "front": "-y",
+            "back": "+y",
+            "left": "-x",
+            "right": "+x",
+        }
+        
+        ridge_faces = []
+        for face_name, face_code in face_map.items():
+            if face_name in message_lower and "ridge" in message_lower:
+                if (f"ridge on {face_name}" in message_lower or 
+                    f"ridge at {face_name}" in message_lower or
+                    f"{face_name} ridge" in message_lower or
+                    f"{face_name} face" in message_lower):
+                    ridge_faces.append(face_code)
+        
+        if not ridge_faces:
+            return patches
+        
+        policies = spec.get("policies", {})
+        ridge_policy = policies.get("ridge", {})
+        
+        height = ridge_policy.get("height", 0.001)
+        thickness = ridge_policy.get("thickness", 0.001)
+        
+        height_match = re.search(r"height\s+(\d+(?:\.\d+)?)\s*(?:mm|m)?", message_lower)
+        if height_match:
+            height = float(height_match.group(1))
+            if "mm" in message_lower:
+                height = height / 1000.0
+        
+        thickness_match = re.search(r"thickness\s+(\d+(?:\.\d+)?)\s*(?:mm|m)?", message_lower)
+        if thickness_match:
+            thickness = float(thickness_match.group(1))
+            if "mm" in message_lower:
+                thickness = thickness / 1000.0
+        
+        features = spec.get("features", {})
+        ridges = features.get("ridges", [])
+        
+        new_ridges = list(ridges)
+        for face_code in ridge_faces:
+            existing = any(r.get("face") == face_code for r in new_ridges)
+            if not existing:
+                new_ridges.append({
+                    "face": face_code,
+                    "height": height,
+                    "thickness": thickness,
+                })
+        
+        if "features" not in spec:
+            patches.append({
+                "op": "add",
+                "path": "/features",
+                "value": {"ridges": new_ridges},
+            })
+        elif "ridges" not in features:
+            patches.append({
+                "op": "add",
+                "path": "/features/ridges",
+                "value": new_ridges,
+            })
+        else:
+            patches.append({
+                "op": "replace",
+                "path": "/features/ridges",
+                "value": new_ridges,
             })
         
         return patches
