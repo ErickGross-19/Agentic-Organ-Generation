@@ -45,6 +45,7 @@ class OutputCapture(io.StringIO):
 class WorkflowType(Enum):
     """Available workflow types."""
     SINGLE_AGENT = "single_agent"
+    DESIGNSPEC = "designspec"
 
 
 class WorkflowStatus(Enum):
