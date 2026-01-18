@@ -1021,8 +1021,16 @@ class MainWindow:
                 domain = domains[name]
                 dtype = domain.get("type", "unknown")
                 if dtype == "box":
-                    size = domain.get("size", [0, 0, 0])
-                    summary_parts.append(f"Domain '{name}': box {size[0]}x{size[1]}x{size[2]}")
+                    if "x_min" in domain and "x_max" in domain:
+                        width = domain.get("x_max", 0) - domain.get("x_min", 0)
+                        height = domain.get("y_max", 0) - domain.get("y_min", 0)
+                        depth = domain.get("z_max", 0) - domain.get("z_min", 0)
+                        summary_parts.append(f"Domain '{name}': box {width}x{height}x{depth}")
+                    elif "size" in domain:
+                        size = domain.get("size", [0, 0, 0])
+                        summary_parts.append(f"Domain '{name}': box {size[0]}x{size[1]}x{size[2]}")
+                    else:
+                        summary_parts.append(f"Domain '{name}': box")
                 elif dtype == "cylinder":
                     r = domain.get("radius", 0)
                     h = domain.get("height", 0)
