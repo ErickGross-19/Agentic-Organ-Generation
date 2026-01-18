@@ -1,0 +1,204 @@
+{
+  "schema": {
+    "name": "aog_designspec",
+    "version": "1.0.0",
+    "compatible_with": ["1.0.x"]
+  },
+  "meta": {
+    "name": "05_implicit_ast_domain",
+    "description": "Demonstrates ImplicitDomain with JSON AST-based signed distance function. Defines a sphere using the AST expression: length(p) - radius. This showcases AST compilation and marching cubes meshing.",
+    "seed": 55555,
+    "input_units": "mm",
+    "tags": ["implicit", "ast", "sdf", "sphere", "marching_cubes"]
+  },
+  "policies": {
+    "resolution": {
+      "input_units": "mm",
+      "min_channel_diameter": 0.1,
+      "min_voxels_across_feature": 4,
+      "max_voxels": 2000000,
+      "auto_relax_pitch": true,
+      "pitch_step_factor": 1.5,
+      "embed_pitch_factor": 1.0,
+      "max_voxels_embed": 1500000
+    },
+    "domain_meshing": {
+      "cache_meshes": true,
+      "emit_warnings": true,
+      "target_face_count": 25000
+    },
+    "growth": {
+      "enabled": true,
+      "backend": "space_colonization",
+      "max_iterations": 80,
+      "step_size": 0.3,
+      "min_segment_length": 0.2,
+      "backend_params": {
+        "influence_radius": 1.5,
+        "kill_radius": 0.4,
+        "perception_angle": 90,
+        "num_attraction_points": 150
+      }
+    },
+    "collision": {
+      "enabled": true,
+      "check_collisions": true,
+      "collision_clearance": 0.1
+    },
+    "ports": {
+      "enabled": true,
+      "face": "top",
+      "pattern": "explicit",
+      "projection_mode": "project_to_boundary",
+      "ridge_width": 0.1,
+      "ridge_clearance": 0.1,
+      "port_margin": 0.3,
+      "disk_constraint_enabled": false,
+      "ridge_constraint_enabled": false,
+      "placement_fraction": 0.7
+    },
+    "channels": {
+      "enabled": false
+    },
+    "composition": {
+      "repair_enabled": true,
+      "union_before_embed": true,
+      "repair_fill_holes": true,
+      "keep_largest_component": true,
+      "min_component_volume": 0.001
+    },
+    "embedding": {
+      "voxel_pitch": null,
+      "use_resolution_policy": true,
+      "auto_adjust_pitch": true,
+      "max_voxels": 1500000,
+      "fallback": "auto",
+      "preserve_ports_enabled": true,
+      "preserve_mode": "recarve",
+      "carve_radius_factor": 1.2,
+      "carve_depth": 1.5,
+      "output_domain_with_void": true,
+      "output_void_mesh": true,
+      "output_shell": false
+    },
+    "validity": {
+      "check_watertight": true,
+      "check_components": true,
+      "check_min_diameter": false,
+      "check_open_ports": true,
+      "check_bounds": true,
+      "check_void_inside_domain": true,
+      "max_components": 1
+    },
+    "open_port": {
+      "enabled": true,
+      "probe_radius_factor": 1.2,
+      "probe_length": 1.5,
+      "min_connected_volume_voxels": 10,
+      "mode": "voxel_connectivity",
+      "local_region_size": 4.0,
+      "max_voxels_roi": 300000,
+      "auto_relax_pitch": true
+    },
+    "repair": {
+      "voxel_repair_enabled": true,
+      "auto_adjust_pitch": true,
+      "max_pitch_steps": 3,
+      "pitch_step_factor": 1.5,
+      "fill_voxels": true,
+      "remove_small_components_enabled": true,
+      "min_component_faces": 100,
+      "min_component_volume": 0.001,
+      "fill_holes_enabled": true,
+      "smooth_enabled": false
+    },
+    "output": {
+      "output_dir": "./out/05_implicit_ast_domain",
+      "output_units": "mm",
+      "naming_convention": "default",
+      "save_intermediates": true,
+      "save_reports": true,
+      "output_stl": true,
+      "output_json": true
+    }
+  },
+  "domains": {
+    "implicit_sphere": {
+      "type": "implicit",
+      "bbox": [-8, 8, -8, 8, -8, 8],
+      "sdf_ast": {
+        "op": "-",
+        "args": [
+          {
+            "op": "length",
+            "args": ["x", "y", "z"]
+          },
+          "radius"
+        ]
+      },
+      "params": {
+        "radius": 7.0
+      }
+    }
+  },
+  "components": [
+    {
+      "id": "implicit_network",
+      "domain_ref": "implicit_sphere",
+      "ports": {
+        "inlets": [
+          {
+            "name": "inlet_top",
+            "position": [0, 0, 6.5],
+            "direction": [0, 0, -1],
+            "radius": 0.3,
+            "vessel_type": "arterial"
+          }
+        ],
+        "outlets": [
+          {
+            "name": "outlet_bottom",
+            "position": [0, 0, -6.5],
+            "direction": [0, 0, 1],
+            "radius": 0.25,
+            "vessel_type": "venous"
+          }
+        ]
+      },
+      "build": {
+        "type": "backend_network",
+        "backend": "space_colonization",
+        "backend_params": {
+          "influence_radius": 1.5,
+          "kill_radius": 0.4,
+          "perception_angle": 90,
+          "num_attraction_points": 150
+        }
+      },
+      "save_artifacts": {
+        "network": "artifacts/implicit_network.json",
+        "void_mesh": "artifacts/implicit_network_void.stl"
+      }
+    }
+  ],
+  "composition": {
+    "save_union": "artifacts/union_void.stl"
+  },
+  "embedding": {
+    "enable": true,
+    "outputs": {
+      "domain_with_void": "domain_with_void.stl",
+      "void_mesh": "void_union.stl"
+    }
+  },
+  "validity": {
+    "enable": true,
+    "save_report": "validity_report.json"
+  },
+  "outputs": {
+    "artifacts_dir": "artifacts",
+    "named": {
+      "run_report": "run_report.json"
+    }
+  }
+}
