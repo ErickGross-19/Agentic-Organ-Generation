@@ -119,6 +119,52 @@ class DesignSpecWorkflowManager:
         if self.compile_callback:
             self.compile_callback(compile_data)
     
+    def _format_run_failure_details(self, result: Dict[str, Any]) -> str:
+        """
+        Format detailed error message for run failures.
+        
+        Includes errors list, failing stage name, and output directory path.
+        
+        Parameters
+        ----------
+        result : dict
+            The run result dictionary containing success, errors, stage_reports, etc.
+            
+        Returns
+        -------
+        str
+            Formatted error message with details
+        """
+        message_parts = ["Run failed"]
+        
+        errors = result.get("errors", [])
+        if errors:
+            message_parts.append("\nErrors:")
+            for error in errors[:5]:
+                message_parts.append(f"  - {error}")
+        
+        stage_reports = result.get("stage_reports", [])
+        failing_stage = None
+        stage_errors = []
+        for report in stage_reports:
+            if isinstance(report, dict) and not report.get("success", True):
+                failing_stage = report.get("stage", "unknown")
+                stage_errors = report.get("errors", [])
+                break
+        
+        if failing_stage:
+            message_parts.append(f"\nFailing stage: {failing_stage}")
+            if stage_errors:
+                message_parts.append("Stage errors:")
+                for err in stage_errors[:3]:
+                    message_parts.append(f"  - {err}")
+        
+        output_dir = result.get("output_dir", "")
+        if output_dir:
+            message_parts.append(f"\nOutput directory: {output_dir}")
+        
+        return "\n".join(message_parts)
+    
     def initialize_llm(
         self,
         provider: str,
@@ -343,7 +389,8 @@ class DesignSpecWorkflowManager:
                     if artifact.get("type") == "stl":
                         self._send_output("stl_file", artifact.get("path"))
             else:
-                self._send_message("error", message)
+                error_details = self._format_run_failure_details(result)
+                self._send_message("error", error_details)
             self._set_status(WorkflowStatus.WAITING_INPUT, "Run completed")
         
         elif event_type == WorkflowEventType.SPEC_UPDATED:

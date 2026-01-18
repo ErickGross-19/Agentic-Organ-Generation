@@ -285,6 +285,15 @@ class WorkflowManager:
             
             if self._config.workflow_type == WorkflowType.SINGLE_AGENT:
                 self._run_single_agent_workflow_v5()
+            elif self._config.workflow_type == WorkflowType.DESIGNSPEC:
+                self._send_message(
+                    "system",
+                    "DesignSpec projects are started via the DesignSpec Project dialog, "
+                    "not Start Workflow. Please use File > New DesignSpec Project or "
+                    "File > Open DesignSpec Project instead."
+                )
+                self._set_status(WorkflowStatus.WAITING_INPUT, "Use DesignSpec Project dialog")
+                return
             else:
                 raise ValueError(f"Unknown workflow type: {self._config.workflow_type}")
             
