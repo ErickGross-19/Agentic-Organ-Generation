@@ -877,7 +877,11 @@ class DesignSpecRunner:
         1. If spec.embedding.domain_ref exists, use it
         2. Else if single domain, use it
         3. Else error with clear message
+        
+        Uses the canonical domain_to_mesh() function with DomainMeshingPolicy.
         """
+        from generation.ops.domain_meshing import domain_to_mesh
+        
         domain_name, domain, error = self._select_domain_for_embedding()
         
         if error is not None:
@@ -896,7 +900,15 @@ class DesignSpecRunner:
             )
         
         try:
-            domain_mesh = domain.to_mesh()
+            # Use canonical domain_to_mesh with policy objects
+            meshing_policy = self._compiled_policies.get("domain_meshing")
+            resolution_policy = self._compiled_policies.get("resolution")
+            
+            domain_mesh, mesh_report = domain_to_mesh(
+                domain,
+                meshing_policy=meshing_policy,
+                resolution_policy=resolution_policy,
+            )
             self._domain_mesh = domain_mesh
             
             self.artifacts.register("domain_mesh", Stage.MESH_DOMAIN.value, domain_mesh)
@@ -904,10 +916,12 @@ class DesignSpecRunner:
             return StageReport(
                 stage=Stage.MESH_DOMAIN.value,
                 success=True,
+                warnings=mesh_report.warnings,
                 metadata={
                     "vertex_count": len(domain_mesh.vertices),
                     "face_count": len(domain_mesh.faces),
                     "domain_name": domain_name,
+                    "is_watertight": mesh_report.metadata.get("is_watertight"),
                 },
             )
             

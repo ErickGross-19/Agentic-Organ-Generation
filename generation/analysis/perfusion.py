@@ -361,14 +361,27 @@ def suggest_anastomosis_locations(
                 if not rules.is_anastomosis_allowed(a_node.vessel_type, v_node.vessel_type):
                     continue
                 
-                a_radius = a_node.attributes.get("radius", 0.0005)
-                v_radius = v_node.attributes.get("radius", 0.0005)
+                a_radius = a_node.attributes.get("radius", None)
+                v_radius = v_node.attributes.get("radius", None)
+                
+                # Derive small vessel threshold from network statistics
+                if arterial_network.segments:
+                    arterial_radii = [s.geometry.mean_radius() for s in list(arterial_network.segments.values())[:50]]
+                    small_threshold = np.median(arterial_radii) * 0.5 if arterial_radii else 1e-6
+                else:
+                    small_threshold = 1e-6
+                
+                # Use small_threshold as fallback for missing radius
+                a_radius = a_radius if a_radius is not None else small_threshold
+                v_radius = v_radius if v_radius is not None else small_threshold
                 
                 is_terminal = (a_node.node_type == "terminal") and (v_node.node_type == "terminal")
-                is_small = (a_radius < 0.001) and (v_radius < 0.001)
+                is_small = (a_radius < small_threshold) and (v_radius < small_threshold)
                 
-                proximity_score = 1.0 / (a_dist + v_dist + 0.001)
-                connection_score = 1.0 / (node_distance + 0.001)
+                # Use small_threshold as epsilon to avoid division by zero
+                epsilon = small_threshold
+                proximity_score = 1.0 / (a_dist + v_dist + epsilon)
+                connection_score = 1.0 / (node_distance + epsilon)
                 terminal_bonus = 2.0 if is_terminal else 1.0
                 small_bonus = 1.5 if is_small else 1.0
                 

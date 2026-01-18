@@ -371,7 +371,8 @@ def place_ports_circle(
             f"Cannot place ports: max_placement_radius <= 0 "
             f"(effective_radius={effective_radius:.6f}, port_radius={port_radius:.6f})"
         )
-        max_placement_radius = 0.001  # Fallback to small radius
+        # Fallback to port_radius as minimum placement radius
+        max_placement_radius = port_radius if port_radius > 0 else effective_radius * 0.01
         clamp_count = num_ports
     
     # PATCH 1: Use layout_config values instead of hardcoded policy values
@@ -692,7 +693,8 @@ def place_ports_center_rings(
     
     if max_placement_radius <= 0:
         warnings.append(f"Cannot place ports: max_placement_radius <= 0")
-        max_placement_radius = 0.001
+        # Fallback to port_radius as minimum placement radius
+        max_placement_radius = port_radius if port_radius > 0 else effective_radius * 0.01
         clamp_count = num_ports
     
     positions = [(0.0, 0.0, z_position)]  # Center port

@@ -344,7 +344,13 @@ def to_trimesh(
                 pitch = voxel_pitch
                 if pitch is None:
                     # Use half of minimum radius for good resolution
-                    pitch = min_radius / 2 if min_radius > 0 else 0.001
+                    # If min_radius is not available, derive from network extent
+                    if min_radius > 0:
+                        pitch = min_radius / 2
+                    else:
+                        # Derive pitch from network extent (1/1000th of diagonal)
+                        extent = combined.bounding_box.extents
+                        pitch = float(np.min(extent)) / 100.0
                 
                 # Voxelize the combined mesh
                 try:
@@ -744,7 +750,7 @@ def to_hollow_tube_mesh(
     wall_thickness: float,
     radial_resolution: int = 16,
     min_segment_length: float = 1e-6,
-    min_inner_radius: float = 0.0001,
+    min_inner_radius: Optional[float] = None,
 ) -> OperationResult:
     """
     Convert VascularNetwork to a hollow tube mesh for fluid flow.
@@ -799,6 +805,15 @@ def to_hollow_tube_mesh(
         inner_meshes = []
         warnings = []
         segments_processed = 0
+        
+        # Derive min_inner_radius from network if not provided
+        if min_inner_radius is None:
+            # Use 1% of minimum vessel radius as minimum inner radius
+            if network.segments:
+                radii = [seg.geometry.mean_radius() for seg in network.segments.values()]
+                min_inner_radius = min(radii) * 0.01 if radii else wall_thickness * 0.1
+            else:
+                min_inner_radius = wall_thickness * 0.1
         
         for seg_id, segment in network.segments.items():
             start = np.array([

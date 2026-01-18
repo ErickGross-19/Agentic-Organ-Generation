@@ -53,7 +53,9 @@ class TestArtifactStorePaths:
             store.register("void_mesh", "union_voids", {"data": "test"})
             
             entry = store._artifacts["void_mesh"]
-            assert "custom/path/void.stl" in str(entry.path) or entry.path is None
+            # Use as_posix() for cross-platform path comparison
+            path_str = entry.path.as_posix() if entry.path else None
+            assert path_str is None or "custom/path/void.stl" in path_str
     
     def test_unrequested_artifact_gets_default_path(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -180,5 +182,6 @@ class TestArtifactEntry:
         
         assert entry.name == "void_mesh"
         assert entry.stage == "union_voids"
-        assert str(entry.path) == "/path/to/file.stl"
+        # Use as_posix() for cross-platform path comparison
+        assert entry.path.as_posix() == "/path/to/file.stl"
         assert entry.content_hash == "abc123"

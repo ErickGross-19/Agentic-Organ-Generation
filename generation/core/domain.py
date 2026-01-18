@@ -127,8 +127,9 @@ class EllipsoidDomain(DomainSpec):
         )
 
         if margin is None:
+            # Use 0.1% of smallest axis as default margin (proportional, not fixed)
             smallest_axis = min(self.semi_axis_a, self.semi_axis_b, self.semi_axis_c)
-            margin = smallest_axis * 0.001
+            margin = smallest_axis * 1e-3  # 0.1% proportional margin
         
         margin_factor = 1.0 - (margin / min(self.semi_axis_a, self.semi_axis_b, self.semi_axis_c))
         t *= max(0.9, margin_factor)
@@ -262,13 +263,13 @@ class BoxDomain(DomainSpec):
             return point
 
         if margin is None:
-            # Use 0.1% of smallest dimension instead of hardcoded 1mm
+            # Use 0.1% of smallest dimension (proportional, not fixed)
             smallest_dim = min(
                 self.x_max - self.x_min,
                 self.y_max - self.y_min,
                 self.z_max - self.z_min,
             )
-            margin = smallest_dim * 0.001
+            margin = smallest_dim * 1e-3  # 0.1% proportional margin
         
         x = np.clip(point.x, self.x_min + margin, self.x_max - margin)
         y = np.clip(point.y, self.y_min + margin, self.y_max - margin)
@@ -412,9 +413,9 @@ class CylinderDomain(DomainSpec):
         half_height = self.height / 2
 
         if margin is None:
-            # Use 0.1% of smallest dimension instead of hardcoded 1mm
+            # Use 0.1% of smallest dimension (proportional, not fixed)
             smallest_dim = min(self.radius, self.height)
-            margin = smallest_dim * 0.001
+            margin = smallest_dim * 1e-3  # 0.1% proportional margin
 
         if r_xy > self.radius:
             scale = (self.radius - margin) / r_xy

@@ -240,13 +240,17 @@ def _compute_nearest_segment_with_spatial_index(
     domain_max = np.max(positions_arr, axis=0)
     domain_diag = float(np.linalg.norm(domain_max - domain_min))
     
-    # Estimate typical vessel radius for initial search
-    typical_radius = 0.001  # 1mm default
+    # Estimate typical vessel radius for initial search from network data
+    typical_radius = None
     if network.segments:
         radii = []
         for seg in list(network.segments.values())[:100]:  # Sample first 100
             radii.append(seg.geometry.mean_radius())
-        typical_radius = float(np.median(radii)) if radii else 0.001
+        typical_radius = float(np.median(radii)) if radii else None
+    
+    # If no radius data available, derive from domain extent
+    if typical_radius is None:
+        typical_radius = domain_diag / 1000.0 if domain_diag > 0 else 1e-6
     
     # Initial search radius
     if search_radius_hint is not None:

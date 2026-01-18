@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 def voxel_repair_mesh(
     mesh: "trimesh.Trimesh",
-    pitch: float = 1e-4,
+    pitch: Optional[float] = None,
     fill: bool = True,
     max_attempts: int = 4,
     pitch_factor: float = 1.5,
@@ -50,6 +50,12 @@ def voxel_repair_mesh(
         Metadata about the repair operation
     """
     import trimesh
+    
+    # Derive pitch from mesh extent if not provided
+    if pitch is None:
+        # Use 1% of smallest mesh extent as default pitch
+        extent = mesh.bounding_box.extents
+        pitch = float(np.min(extent)) / 100.0
     
     current_pitch = pitch
     meta = {
