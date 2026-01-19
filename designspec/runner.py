@@ -470,12 +470,15 @@ class DesignSpecRunner:
         
         Supports:
         - layout on reference plane
-        - clamp to face region
+        - clamp to face region (applies to both explicit and generated positions)
         - optional project to boundary
         - ridge effective radius convention
         - port validation: min separation, clamp/project, autofix warnings
+        
+        When projection_mode is "clamp_to_face", explicit positions are projected
+        onto the specified face to ensure consistency with the policy.
         """
-        from generation.utils.port_placement import place_ports_on_domain
+        from generation.utils.port_placement import place_ports_on_domain, project_position_to_face
         from aog_policies import PortPlacementPolicy, RidgePolicy
         
         component = self._get_component(component_id)
@@ -527,14 +530,47 @@ class DesignSpecRunner:
         resolved_inlets = []
         resolved_outlets = []
         
+        # Check if we should apply face projection to explicit positions
+        should_project_explicit = (
+            port_policy.projection_mode == "clamp_to_face" and
+            port_policy.face is not None
+        )
+        
         # Resolve inlets
         for i, inlet in enumerate(inlets):
             resolved_inlet = dict(inlet)
             
-            # If position is already specified, use it directly
+            # If position is already specified
             if "position" in inlet and inlet["position"] is not None:
-                resolved_inlet["resolved"] = True
-                resolved_inlet["resolution_method"] = "explicit"
+                original_position = tuple(inlet["position"])
+                
+                # Apply face projection if policy requires it
+                if should_project_explicit:
+                    try:
+                        projected_pos, direction, proj_dist = project_position_to_face(
+                            position=original_position,
+                            face=port_policy.face,
+                            domain=domain,
+                        )
+                        resolved_inlet["position"] = list(projected_pos)
+                        resolved_inlet["direction"] = list(direction)
+                        resolved_inlet["resolved"] = True
+                        resolved_inlet["resolution_method"] = "explicit_projected"
+                        resolved_inlet["original_position"] = list(original_position)
+                        resolved_inlet["projection_distance"] = proj_dist
+                        
+                        if proj_dist > 1e-6:
+                            warnings.append(
+                                f"Inlet {i} ({inlet.get('name', 'unnamed')}): "
+                                f"Position projected {proj_dist*1000:.3f}mm to {port_policy.face} face"
+                            )
+                    except Exception as e:
+                        warnings.append(f"Inlet {i}: Face projection failed: {e}, using original position")
+                        resolved_inlet["resolved"] = True
+                        resolved_inlet["resolution_method"] = "explicit"
+                else:
+                    resolved_inlet["resolved"] = True
+                    resolved_inlet["resolution_method"] = "explicit"
             else:
                 # Need to place this port using the policy
                 port_radius = inlet.get("radius", 0.0005)  # Default 0.5mm
@@ -566,10 +602,37 @@ class DesignSpecRunner:
         for i, outlet in enumerate(outlets):
             resolved_outlet = dict(outlet)
             
-            # If position is already specified, use it directly
+            # If position is already specified
             if "position" in outlet and outlet["position"] is not None:
-                resolved_outlet["resolved"] = True
-                resolved_outlet["resolution_method"] = "explicit"
+                original_position = tuple(outlet["position"])
+                
+                # Apply face projection if policy requires it
+                if should_project_explicit:
+                    try:
+                        projected_pos, direction, proj_dist = project_position_to_face(
+                            position=original_position,
+                            face=port_policy.face,
+                            domain=domain,
+                        )
+                        resolved_outlet["position"] = list(projected_pos)
+                        resolved_outlet["direction"] = list(direction)
+                        resolved_outlet["resolved"] = True
+                        resolved_outlet["resolution_method"] = "explicit_projected"
+                        resolved_outlet["original_position"] = list(original_position)
+                        resolved_outlet["projection_distance"] = proj_dist
+                        
+                        if proj_dist > 1e-6:
+                            warnings.append(
+                                f"Outlet {i} ({outlet.get('name', 'unnamed')}): "
+                                f"Position projected {proj_dist*1000:.3f}mm to {port_policy.face} face"
+                            )
+                    except Exception as e:
+                        warnings.append(f"Outlet {i}: Face projection failed: {e}, using original position")
+                        resolved_outlet["resolved"] = True
+                        resolved_outlet["resolution_method"] = "explicit"
+                else:
+                    resolved_outlet["resolved"] = True
+                    resolved_outlet["resolution_method"] = "explicit"
             else:
                 # Need to place this port using the policy
                 port_radius = outlet.get("radius", 0.0005)  # Default 0.5mm
@@ -1265,22 +1328,48 @@ class DesignSpecRunner:
         return policy_class.from_dict(effective_dict)
     
     def _collect_all_ports(self) -> List[Dict[str, Any]]:
-        """Collect all ports from all components."""
+        """
+        Collect all ports from all components.
+        
+        Uses resolved ports from _resolved_ports if available (which includes
+        any face projection applied during _stage_component_ports), otherwise
+        falls back to raw spec ports.
+        
+        Port dict fields are normalized to match what check_open_ports expects:
+        - "id": port identifier (from "name" field or auto-generated)
+        - "type": "inlet" or "outlet" (not "port_type")
+        - "position": [x, y, z] coordinates
+        - "direction": [dx, dy, dz] direction vector
+        - "radius": port radius
+        """
         all_ports = []
         
         for component in self.spec.components:
-            ports = component.get("ports", {})
+            component_id = component["id"]
             
-            for inlet in ports.get("inlets", []):
+            resolved = self._resolved_ports.get(component_id)
+            if resolved:
+                inlets = resolved.get("inlets", [])
+                outlets = resolved.get("outlets", [])
+            else:
+                ports = component.get("ports", {})
+                inlets = ports.get("inlets", [])
+                outlets = ports.get("outlets", [])
+            
+            for i, inlet in enumerate(inlets):
                 port_dict = dict(inlet)
-                port_dict["component_id"] = component["id"]
-                port_dict["port_type"] = "inlet"
+                port_dict["component_id"] = component_id
+                port_dict["type"] = "inlet"
+                if "id" not in port_dict:
+                    port_dict["id"] = inlet.get("name", f"inlet_{i}")
                 all_ports.append(port_dict)
             
-            for outlet in ports.get("outlets", []):
+            for i, outlet in enumerate(outlets):
                 port_dict = dict(outlet)
-                port_dict["component_id"] = component["id"]
-                port_dict["port_type"] = "outlet"
+                port_dict["component_id"] = component_id
+                port_dict["type"] = "outlet"
+                if "id" not in port_dict:
+                    port_dict["id"] = outlet.get("name", f"outlet_{i}")
                 all_ports.append(port_dict)
         
         return all_ports
@@ -1342,11 +1431,17 @@ class DesignSpecRunner:
             seed=self.spec.seed,
         )
         
+        artifact_name = f"{component_id}_network"
         self.artifacts.register(
-            f"{component_id}_network",
+            artifact_name,
             f"{Stage.COMPONENT_BUILD.value}:{component_id}",
             network,
         )
+        
+        # Save network artifact to JSON if requested
+        saved_path = self.artifacts.save_json(artifact_name, network)
+        if saved_path:
+            logger.info(f"Saved network artifact to {saved_path}")
         
         return network, report
     

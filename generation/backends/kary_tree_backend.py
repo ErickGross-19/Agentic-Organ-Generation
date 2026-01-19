@@ -36,7 +36,8 @@ class KaryTreeConfig(BackendConfig):
     terminal_tolerance : float
         Acceptable deviation from target (fraction, default: 0.1 = 10%)
     branch_length : float
-        Initial branch length in meters
+        Initial branch length in meters. If None and tree_extent_fraction is set,
+        branch_length will be computed from domain size.
     branch_length_decay : float
         Factor to multiply branch length at each level
     taper_factor : float
@@ -47,16 +48,26 @@ class KaryTreeConfig(BackendConfig):
         Random variation in bifurcation angle
     min_radius : float
         Minimum vessel radius in meters
+    tree_extent_fraction : float
+        Fraction of domain characteristic size to use for total tree extent.
+        If set, branch_length is computed as:
+        branch_length = (domain_size * tree_extent_fraction) / sum(decay^i for i in 0..depth-1)
+        Default: 0.4 (tree fills ~40% of domain)
+    use_domain_scaling : bool
+        If True and branch_length is None, automatically compute branch_length
+        from domain size using tree_extent_fraction. Default: True.
     """
     k: int = 2
     target_terminals: int = 128
     terminal_tolerance: float = 0.1
-    branch_length: float = 0.001  # 1mm
+    branch_length: Optional[float] = None
     branch_length_decay: float = 0.8
     taper_factor: float = 0.794  # Murray's law: 2^(-1/3)
     angle_deg: float = 30.0
     angle_variation_deg: float = 5.0
     min_radius: float = 0.0001  # 0.1mm
+    tree_extent_fraction: float = 0.4
+    use_domain_scaling: bool = True
 
 
 class KaryTreeBackend(GenerationBackend):
@@ -147,9 +158,39 @@ class KaryTreeBackend(GenerationBackend):
         # For k-ary tree: terminals = k^depth
         depth = self._calculate_depth(config.k, config.target_terminals)
         
+        # Compute branch length from domain size if not explicitly set
+        branch_length = config.branch_length
+        if branch_length is None and config.use_domain_scaling:
+            domain_size = self._get_domain_characteristic_size(domain)
+            # Total tree extent = sum of branch lengths at each level
+            # = branch_length * sum(decay^i for i in 0..depth-1)
+            # = branch_length * (1 - decay^depth) / (1 - decay)
+            decay = config.branch_length_decay
+            if decay < 1.0 and depth > 0:
+                geometric_sum = (1 - decay**depth) / (1 - decay)
+            else:
+                geometric_sum = depth if depth > 0 else 1
+            
+            target_extent = domain_size * config.tree_extent_fraction
+            branch_length = target_extent / geometric_sum
+            
+            logger.info(
+                f"Domain-aware scaling: domain_size={domain_size*1000:.2f}mm, "
+                f"tree_extent_fraction={config.tree_extent_fraction}, "
+                f"computed branch_length={branch_length*1000:.3f}mm"
+            )
+        elif branch_length is None:
+            # Fallback to default 1mm
+            branch_length = 0.001
+            logger.warning(
+                "branch_length is None and use_domain_scaling is False, "
+                "using default 1mm branch length"
+            )
+        
         logger.info(
             f"Generating k={config.k} tree with depth={depth} "
-            f"for target_terminals={config.target_terminals}"
+            f"for target_terminals={config.target_terminals}, "
+            f"branch_length={branch_length*1000:.3f}mm"
         )
         
         # D FIX: Generate tree recursively with local RNG
@@ -160,7 +201,7 @@ class KaryTreeBackend(GenerationBackend):
             current_depth=0,
             max_depth=depth,
             current_radius=inlet_radius,
-            current_length=config.branch_length,
+            current_length=branch_length,
             config=config,
             vessel_type=vessel_type,
             domain=domain,
@@ -189,6 +230,42 @@ class KaryTreeBackend(GenerationBackend):
         # depth >= log_k(target_terminals)
         depth = int(np.ceil(np.log(target_terminals) / np.log(k)))
         return max(1, depth)
+    
+    def _get_domain_characteristic_size(self, domain: DomainSpec) -> float:
+        """
+        Get a characteristic size for the domain to use for scaling.
+        
+        For cylinders: uses the smaller of radius and height/2
+        For boxes: uses the smallest dimension / 2
+        For ellipsoids: uses the smallest semi-axis
+        
+        Returns size in meters.
+        """
+        if hasattr(domain, 'radius') and hasattr(domain, 'height'):
+            # Cylinder domain
+            return min(domain.radius, domain.height / 2)
+        elif hasattr(domain, 'x_min') and hasattr(domain, 'x_max'):
+            # Box domain
+            dx = domain.x_max - domain.x_min
+            dy = domain.y_max - domain.y_min
+            dz = domain.z_max - domain.z_min
+            return min(dx, dy, dz) / 2
+        elif hasattr(domain, 'semi_axes'):
+            # Ellipsoid domain
+            return min(domain.semi_axes)
+        elif hasattr(domain, 'bbox'):
+            # Generic domain with bounding box
+            bbox = domain.bbox
+            if hasattr(bbox, 'min') and hasattr(bbox, 'max'):
+                dims = [bbox.max[i] - bbox.min[i] for i in range(3)]
+                return min(dims) / 2
+        
+        # Fallback: assume 5mm characteristic size
+        logger.warning(
+            f"Could not determine characteristic size for domain type {type(domain).__name__}, "
+            "using default 5mm"
+        )
+        return 0.005
     
     def _generate_subtree(
         self,
