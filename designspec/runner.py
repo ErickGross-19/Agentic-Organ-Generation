@@ -39,7 +39,7 @@ import json
 
 from .spec import DesignSpec
 from .plan import ExecutionPlan, Stage, STAGE_ORDER
-from .context import RunnerContext, ArtifactStore
+from .context import RunnerContext, ArtifactStore, ArtifactSaveError
 
 if TYPE_CHECKING:
     import trimesh
@@ -858,7 +858,10 @@ class DesignSpecRunner:
                 f"{Stage.COMPONENT_MESH.value}:{component_id}",
                 void_mesh,
             )
-            self.artifacts.save_mesh(artifact_name, void_mesh)
+            
+            # Persist void mesh artifact if requested (raises ArtifactSaveError on failure)
+            if self.artifacts.is_requested(artifact_name):
+                self.artifacts.persist(artifact_name, void_mesh)
             
             # Get effective policy dict for reporting
             effective_mesh_dict = self._get_effective_policy_dict(component, "mesh_synthesis") if component else {}
@@ -908,8 +911,12 @@ class DesignSpecRunner:
             
             self._union_void = union_mesh
             
-            self.artifacts.register("union_void", Stage.UNION_VOIDS.value, union_mesh)
-            self.artifacts.save_mesh("union_void", union_mesh)
+            artifact_name = "union_void"
+            self.artifacts.register(artifact_name, Stage.UNION_VOIDS.value, union_mesh)
+            
+            # Persist union void artifact if requested (raises ArtifactSaveError on failure)
+            if self.artifacts.is_requested(artifact_name):
+                self.artifacts.persist(artifact_name, union_mesh)
             
             return StageReport(
                 stage=Stage.UNION_VOIDS.value,
@@ -1057,15 +1064,19 @@ class DesignSpecRunner:
             self._embedded_solid = solid
             self._embedded_shell = shell
             
+            # Register and persist embedding artifacts if requested
             self.artifacts.register("domain_with_void", Stage.EMBED.value, solid)
-            self.artifacts.save_mesh("domain_with_void", solid)
+            if self.artifacts.is_requested("domain_with_void"):
+                self.artifacts.persist("domain_with_void", solid)
             
             self.artifacts.register("void_mesh", Stage.EMBED.value, void_out)
-            self.artifacts.save_mesh("void_mesh", void_out)
+            if self.artifacts.is_requested("void_mesh"):
+                self.artifacts.persist("void_mesh", void_out)
             
             if shell is not None and len(shell.vertices) > 0:
                 self.artifacts.register("shell", Stage.EMBED.value, shell)
-                self.artifacts.save_mesh("shell", shell)
+                if self.artifacts.is_requested("shell"):
+                    self.artifacts.persist("shell", shell)
             
             # Add domain_name to metadata
             metadata = dict(embed_report.metadata) if embed_report.metadata else {}
@@ -1438,10 +1449,9 @@ class DesignSpecRunner:
             network,
         )
         
-        # Save network artifact to JSON if requested
-        saved_path = self.artifacts.save_json(artifact_name, network)
-        if saved_path:
-            logger.info(f"Saved network artifact to {saved_path}")
+        # Persist network artifact if requested (raises ArtifactSaveError on failure)
+        if self.artifacts.is_requested(artifact_name):
+            self.artifacts.persist(artifact_name, network)
         
         return network, report
     
@@ -1479,11 +1489,16 @@ class DesignSpecRunner:
             channel_policy=channel_policy,
         )
         
+        artifact_name = f"{component_id}_void_mesh"
         self.artifacts.register(
-            f"{component_id}_void_mesh",
+            artifact_name,
             f"{Stage.COMPONENT_BUILD.value}:{component_id}",
             void_mesh,
         )
+        
+        # Persist void mesh artifact if requested (raises ArtifactSaveError on failure)
+        if self.artifacts.is_requested(artifact_name):
+            self.artifacts.persist(artifact_name, void_mesh)
         
         return void_mesh, report
     

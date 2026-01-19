@@ -348,6 +348,95 @@ class TestArtifactPersistence:
                 "Saved artifact should have saved=True in manifest"
             assert manifest["unsaved_artifact"]["saved"] is False, \
                 "Unsaved artifact should have saved=False in manifest"
+    
+    def test_persist_saves_json_artifact(self):
+        """Test that persist() saves JSON artifacts correctly."""
+        from designspec.context import ArtifactStore
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = ArtifactStore(tmpdir)
+            
+            store.request_artifact("test_network", "artifacts/test_network.json")
+            
+            mock_network = MagicMock()
+            mock_network.to_dict.return_value = {
+                "nodes": [{"id": "n1", "position": [0, 0, 0]}],
+                "segments": [{"id": "s1", "start": "n1", "end": "n2"}]
+            }
+            
+            store.register("test_network", "component_build:test", mock_network)
+            
+            saved_path = store.persist("test_network", mock_network)
+            
+            assert saved_path.exists(), f"Artifact file should exist at {saved_path}"
+            
+            with open(saved_path) as f:
+                data = json.load(f)
+            assert "nodes" in data, "Saved JSON should contain network data"
+            assert "segments" in data, "Saved JSON should contain segment data"
+            
+            entry = store.get("test_network")
+            assert entry.saved is True, "Artifact entry should be marked as saved"
+    
+    def test_persist_raises_on_unregistered_artifact(self):
+        """Test that persist() raises ArtifactSaveError for unregistered artifacts."""
+        from designspec.context import ArtifactStore, ArtifactSaveError
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = ArtifactStore(tmpdir)
+            
+            with pytest.raises(ArtifactSaveError) as exc_info:
+                store.persist("nonexistent_artifact", {"data": "test"})
+            
+            assert "nonexistent_artifact" in str(exc_info.value)
+            assert "not registered" in str(exc_info.value)
+    
+    def test_persist_raises_on_unrequested_artifact(self):
+        """Test that persist() raises ArtifactSaveError for unrequested artifacts."""
+        from designspec.context import ArtifactStore, ArtifactSaveError
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = ArtifactStore(tmpdir)
+            
+            store.register("unrequested_artifact", "test_stage", {"data": "test"})
+            
+            with pytest.raises(ArtifactSaveError) as exc_info:
+                store.persist("unrequested_artifact", {"data": "test"})
+            
+            assert "unrequested_artifact" in str(exc_info.value)
+            assert "not requested" in str(exc_info.value)
+    
+    def test_persist_raises_on_serialization_failure(self):
+        """Test that persist() raises ArtifactSaveError when serialization fails."""
+        from designspec.context import ArtifactStore, ArtifactSaveError
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = ArtifactStore(tmpdir)
+            
+            store.request_artifact("bad_network", "artifacts/bad_network.json")
+            
+            mock_network = MagicMock()
+            mock_network.to_dict.side_effect = ValueError("Serialization error")
+            
+            store.register("bad_network", "component_build:bad", mock_network)
+            
+            with pytest.raises(ArtifactSaveError) as exc_info:
+                store.persist("bad_network", mock_network)
+            
+            assert "bad_network" in str(exc_info.value)
+            assert "artifacts/bad_network.json" in str(exc_info.value)
+    
+    def test_is_requested_returns_correct_status(self):
+        """Test that is_requested() correctly identifies requested artifacts."""
+        from designspec.context import ArtifactStore
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = ArtifactStore(tmpdir)
+            
+            store.request_artifact("requested_artifact", "artifacts/requested.json")
+            
+            assert store.is_requested("requested_artifact") is True
+            assert store.is_requested("unrequested_artifact") is False
 
 
 class TestBifurcatingTreeSpecIntegration:

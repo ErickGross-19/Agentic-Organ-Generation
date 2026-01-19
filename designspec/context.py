@@ -37,6 +37,35 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class ArtifactSaveError(Exception):
+    """
+    Exception raised when saving an artifact fails.
+    
+    Attributes
+    ----------
+    artifact_name : str
+        Name of the artifact that failed to save
+    target_path : Path or None
+        Target path where the artifact was supposed to be saved
+    reason : str
+        Reason for the failure
+    """
+    
+    def __init__(
+        self,
+        artifact_name: str,
+        target_path: Optional[Path],
+        reason: str,
+    ):
+        self.artifact_name = artifact_name
+        self.target_path = target_path
+        self.reason = reason
+        path_str = str(target_path) if target_path else "<no path>"
+        super().__init__(
+            f"Failed to save artifact '{artifact_name}' to '{path_str}': {reason}"
+        )
+
+
 def _compute_hash(obj: Any) -> str:
     """
     Compute a stable hash for an object.
@@ -326,6 +355,168 @@ class ArtifactStore:
         """Get an artifact entry by name."""
         return self._artifacts.get(name)
     
+    def is_requested(self, name: str) -> bool:
+        """
+        Check if an artifact was requested to be saved.
+        
+        Parameters
+        ----------
+        name : str
+            Artifact name
+            
+        Returns
+        -------
+        bool
+            True if the artifact was requested via request_artifact()
+        """
+        return name in self._requested
+    
+    def persist(self, name: str, value: Any) -> Path:
+        """
+        Persist a registered artifact to disk.
+        
+        This is the unified entry point for saving artifacts. It:
+        1. Checks the artifact is registered and has a requested path
+        2. Dispatches save based on path extension (.json -> save_json, mesh formats -> save_mesh)
+        3. Verifies the file exists after writing
+        4. Sets entry.saved = True only on success
+        5. Raises ArtifactSaveError on failure
+        
+        Parameters
+        ----------
+        name : str
+            Artifact name (must be registered and requested)
+        value : Any
+            The artifact value (mesh, network, dict, etc.)
+            
+        Returns
+        -------
+        Path
+            Path where the artifact was saved
+            
+        Raises
+        ------
+        ArtifactSaveError
+            If the artifact is not registered, not requested, or saving fails
+        """
+        entry = self._artifacts.get(name)
+        if entry is None:
+            raise ArtifactSaveError(
+                name, None,
+                "Artifact is not registered. Call register() before persist()."
+            )
+        
+        if entry.path is None:
+            raise ArtifactSaveError(
+                name, None,
+                "Artifact was not requested. No target path available."
+            )
+        
+        ext = entry.path.suffix.lower()
+        
+        if ext == ".json":
+            return self._persist_json(name, value)
+        elif ext in (".stl", ".ply", ".obj", ".off", ".glb", ".gltf"):
+            return self._persist_mesh(name, value)
+        else:
+            raise ArtifactSaveError(
+                name, entry.path,
+                f"Unsupported file extension '{ext}'. Supported: .json, .stl, .ply, .obj, .off, .glb, .gltf"
+            )
+    
+    def _persist_json(self, name: str, data: Any) -> Path:
+        """
+        Internal method to persist JSON artifact with strict error handling.
+        
+        Raises ArtifactSaveError on any failure.
+        """
+        entry = self._artifacts[name]
+        
+        try:
+            entry.path.parent.mkdir(parents=True, exist_ok=True)
+            
+            if hasattr(data, "to_dict"):
+                serializable_data = data.to_dict()
+            elif isinstance(data, dict):
+                serializable_data = data
+            else:
+                raise ArtifactSaveError(
+                    name, entry.path,
+                    f"Data must be a dict or have to_dict() method, got {type(data).__name__}"
+                )
+            
+            with open(entry.path, "w") as f:
+                json.dump(serializable_data, f, indent=2, default=str)
+            
+            if not entry.path.exists():
+                raise ArtifactSaveError(
+                    name, entry.path,
+                    "File was not created after write operation"
+                )
+            
+            entry.saved = True
+            logger.info(f"Persisted JSON artifact '{name}' to {entry.path}")
+            return entry.path
+            
+        except ArtifactSaveError:
+            raise
+        except json.JSONDecodeError as e:
+            raise ArtifactSaveError(name, entry.path, f"JSON serialization failed: {e}")
+        except PermissionError as e:
+            raise ArtifactSaveError(name, entry.path, f"Permission denied: {e}")
+        except OSError as e:
+            raise ArtifactSaveError(name, entry.path, f"OS error: {e}")
+        except Exception as e:
+            raise ArtifactSaveError(name, entry.path, f"Unexpected error: {e}")
+    
+    def _persist_mesh(self, name: str, mesh: "trimesh.Trimesh") -> Path:
+        """
+        Internal method to persist mesh artifact with strict error handling.
+        
+        Raises ArtifactSaveError on any failure.
+        """
+        entry = self._artifacts[name]
+        
+        try:
+            entry.path.parent.mkdir(parents=True, exist_ok=True)
+            
+            mesh.export(str(entry.path))
+            
+            if not entry.path.exists():
+                raise ArtifactSaveError(
+                    name, entry.path,
+                    "File was not created after export operation"
+                )
+            
+            entry.saved = True
+            
+            entry.metadata["face_count"] = len(mesh.faces)
+            entry.metadata["vertex_count"] = len(mesh.vertices)
+            entry.metadata["is_watertight"] = mesh.is_watertight
+            if mesh.is_watertight:
+                entry.metadata["volume"] = float(mesh.volume)
+            
+            bbox = mesh.bounds
+            if bbox is not None and len(mesh.vertices) > 0:
+                entry.metadata["bbox"] = {
+                    "min": bbox[0].tolist(),
+                    "max": bbox[1].tolist(),
+                }
+            else:
+                entry.metadata["bbox"] = None
+            
+            logger.info(f"Persisted mesh artifact '{name}' to {entry.path}")
+            return entry.path
+            
+        except ArtifactSaveError:
+            raise
+        except PermissionError as e:
+            raise ArtifactSaveError(name, entry.path, f"Permission denied: {e}")
+        except OSError as e:
+            raise ArtifactSaveError(name, entry.path, f"OS error: {e}")
+        except Exception as e:
+            raise ArtifactSaveError(name, entry.path, f"Unexpected error during mesh export: {e}")
+    
     def save_mesh(
         self,
         name: str,
@@ -473,5 +664,6 @@ __all__ = [
     "RunnerContext",
     "ArtifactStore",
     "ArtifactEntry",
+    "ArtifactSaveError",
     "CacheEntry",
 ]
