@@ -104,6 +104,17 @@ class OpenPortPolicy:
     Controls how ports are checked for connectivity to the outside.
     Uses port-axis ROI voxel patches with strict budgeting for performance.
     
+    PITCH SELECTION STRATEGY:
+    The validation pitch determines the resolution of the voxel grid used to check
+    port connectivity. A pitch that is too coarse can cause thin connections to
+    disappear, leading to false "port sealed" errors.
+    
+    To avoid false negatives:
+    - Set min_voxels_across_radius >= 6 (ensures sufficient resolution)
+    - Use adaptive_pitch=True to auto-compute pitch from port radius
+    - Increase max_voxels_roi if pitch relaxation warnings appear
+    - Reduce local_region_size for smaller ROI at finer pitch
+    
     JSON Schema:
     {
         "enabled": bool,
@@ -115,6 +126,10 @@ class OpenPortPolicy:
         "local_region_size": float (meters),
         "max_voxels_roi": int,
         "auto_relax_pitch": bool,
+        "min_voxels_across_radius": int,
+        "adaptive_pitch": bool,
+        "warn_on_pitch_relaxation": bool,
+        "require_port_type": bool,
         "roi_size_factor": float (deprecated alias for probe_radius_factor),
         "roi_min_size": float (deprecated alias for local_region_size),
         "roi_max_size": float (deprecated, ignored)
@@ -126,9 +141,14 @@ class OpenPortPolicy:
     min_connected_volume_voxels: int = 10
     mode: str = "voxel_connectivity"
     validation_pitch: Optional[float] = None
-    local_region_size: float = 0.005  # 5mm local region around port
-    max_voxels_roi: int = 1_000_000  # 1M voxels max per port ROI
+    local_region_size: float = 0.004  # 4mm local region (reduced from 5mm for finer pitch)
+    max_voxels_roi: int = 2_000_000  # 2M voxels max per port ROI (increased from 1M)
     auto_relax_pitch: bool = True  # Relax pitch if ROI exceeds budget
+    
+    min_voxels_across_radius: int = 8  # Minimum voxels across port radius (6-10 recommended)
+    adaptive_pitch: bool = True  # Auto-compute pitch from port radius
+    warn_on_pitch_relaxation: bool = True  # Warn when pitch is relaxed
+    require_port_type: bool = False  # Warn if port_type is "unknown"
     
     # Alias fields for backward compatibility (not stored, just for constructor)
     roi_size_factor: Optional[float] = field(default=None, repr=False)
@@ -155,6 +175,30 @@ class OpenPortPolicy:
         if self.roi_max_size is not None:
             logger.warning("OpenPortPolicy: 'roi_max_size' is deprecated and ignored.")
     
+    def compute_adaptive_pitch(self, port_radius: float) -> float:
+        """
+        Compute the validation pitch based on port radius and min_voxels_across_radius.
+        
+        This ensures sufficient resolution to detect thin connections.
+        
+        Parameters
+        ----------
+        port_radius : float
+            Port radius in meters
+            
+        Returns
+        -------
+        float
+            Computed pitch in meters
+        """
+        if self.validation_pitch is not None:
+            return self.validation_pitch
+        
+        if self.adaptive_pitch and self.min_voxels_across_radius > 0:
+            return port_radius / self.min_voxels_across_radius
+        
+        return port_radius / 4
+    
     def to_dict(self) -> Dict[str, Any]:
         return {
             "enabled": self.enabled,
@@ -166,6 +210,10 @@ class OpenPortPolicy:
             "local_region_size": self.local_region_size,
             "max_voxels_roi": self.max_voxels_roi,
             "auto_relax_pitch": self.auto_relax_pitch,
+            "min_voxels_across_radius": self.min_voxels_across_radius,
+            "adaptive_pitch": self.adaptive_pitch,
+            "warn_on_pitch_relaxation": self.warn_on_pitch_relaxation,
+            "require_port_type": self.require_port_type,
         }
     
     @classmethod

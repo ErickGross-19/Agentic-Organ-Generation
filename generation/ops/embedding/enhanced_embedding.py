@@ -434,6 +434,10 @@ def voxel_recarve_ports(
     carve_radius_factor: float = 1.2,
     carve_depth: float = 0.002,
     carve_shape: Literal["cylinder", "frustum"] = "cylinder",
+    verify_void_connectivity: bool = True,
+    max_extension_iterations: int = 5,
+    extension_step_factor: float = 0.5,
+    min_overlap_voxels: int = 5,
 ) -> Tuple["trimesh.Trimesh", RecarveReport]:
     """
     Voxel-based port preservation via recarving.
@@ -442,12 +446,21 @@ def voxel_recarve_ports(
     eliminating dependency on boolean mesh backends (Blender/Cork/etc.).
     Works consistently across all environments.
     
+    PORT CONNECTIVITY FIX: Now includes connectivity verification and iterative
+    extension to ensure the carved port actually connects to the void space.
+    If the initial carve doesn't reach the void, the function will:
+    1. Extend the carve depth stepwise
+    2. Optionally inflate the carve radius
+    3. Continue until void is reached or max iterations exceeded
+    
     Algorithm:
     1. Voxelize the input mesh
     2. For each port, create a cylinder/frustum mask aligned to port direction
     3. Subtract the mask from the solid voxels
-    4. Reconstruct mesh via marching cubes
-    5. Validate watertightness and boundary reach
+    4. Verify connectivity to void space (if enabled)
+    5. If not connected, extend carve iteratively until connected
+    6. Reconstruct mesh via marching cubes
+    7. Validate watertightness and boundary reach
     
     Parameters
     ----------
@@ -466,6 +479,14 @@ def voxel_recarve_ports(
         Depth of carving in meters (default: 2mm)
     carve_shape : str
         Shape of carving: "cylinder" or "frustum" (default: cylinder)
+    verify_void_connectivity : bool
+        If True, verify that carved port connects to void and extend if needed
+    max_extension_iterations : int
+        Maximum number of extension iterations if void not reached (default: 5)
+    extension_step_factor : float
+        Factor to extend carve depth by each iteration (default: 0.5 = 50% of original)
+    min_overlap_voxels : int
+        Minimum number of voxels that must overlap with void for success (default: 5)
         
     Returns
     -------
@@ -504,8 +525,9 @@ def voxel_recarve_ports(
         mesh_max = mesh.bounds[1]
         ref_extent = float(np.max(mesh.extents))
         
-        # Add padding for port carving
-        pad = carve_depth + 2 * voxel_pitch
+        # Add padding for port carving (extra padding for potential extensions)
+        max_carve_depth = carve_depth * (1 + max_extension_iterations * extension_step_factor)
+        pad = max_carve_depth + 2 * voxel_pitch
         grid_min = mesh_min - pad
         grid_max = mesh_max + pad
         
@@ -541,14 +563,15 @@ def voxel_recarve_ports(
                 src_start[2]:src_start[2] + copy_size[2],
             ]
         
-        # Track original solid voxels for boundary check
-        original_solid_count = int(aligned_solid.sum())
+        # Track original solid for void detection (void = was solid before embedding)
+        original_solid = aligned_solid.copy()
         
         # Process each port
         for i, port in enumerate(ports):
             position = np.array(port.get("position", [0, 0, 0]), dtype=float)
             direction = np.array(port.get("direction", [0, 0, 1]), dtype=float)
             radius = float(port.get("radius") or 0.001)  # Handle None explicitly
+            port_type = port.get("type", "unknown")
             
             # Normalize direction
             dir_norm = np.linalg.norm(direction)
@@ -558,10 +581,10 @@ def voxel_recarve_ports(
                 direction = np.array([0, 0, 1])
             
             carve_radius = radius * carve_radius_factor
+            current_carve_depth = carve_depth
             port_warnings = []
             
-            # Create cylinder mask in voxel space
-            # Generate voxel coordinates
+            # Generate voxel coordinates once (reused for extensions)
             voxel_coords = np.indices(tuple(grid_shape)).reshape(3, -1).T
             world_coords = voxel_coords * voxel_pitch + grid_min
             
@@ -576,54 +599,93 @@ def voxel_recarve_ports(
             perp_vec = rel_pos - proj_on_axis
             dist_from_axis = np.linalg.norm(perp_vec, axis=1)
             
-            # Cylinder mask: within radius and within depth
-            # Carve from port position inward (opposite to direction)
-            # Port position is at the surface, carve inward
-            if carve_shape == "frustum":
-                # Frustum: radius decreases linearly with depth
-                # At surface (along_axis=0): carve_radius
-                # At depth (along_axis=-carve_depth): carve_radius * 0.5
-                depth_fraction = np.clip(-along_axis / carve_depth, 0, 1)
-                effective_radius = carve_radius * (1.0 - 0.5 * depth_fraction)
-                in_shape = dist_from_axis <= effective_radius
-            else:
-                # Cylinder: constant radius
-                in_shape = dist_from_axis <= carve_radius
-            
-            # Within depth range (carve inward from port position)
-            in_depth = (along_axis >= -carve_depth) & (along_axis <= voxel_pitch)
-            
-            # Combined mask
-            carve_mask_flat = in_shape & in_depth
-            carve_mask = carve_mask_flat.reshape(tuple(grid_shape))
-            
-            # Count voxels to carve (only those that are currently solid)
-            voxels_to_carve = aligned_solid & carve_mask
-            voxels_carved = int(voxels_to_carve.sum())
-            
-            # Check if carve reached boundary (at least some voxels at edge of solid)
-            # A port "reaches boundary" if the carved region includes voxels that
-            # were at the edge of the solid (had non-solid neighbors)
+            # Iterative carving with connectivity verification
+            voxels_carved = 0
             reached_boundary = False
-            if voxels_carved > 0:
-                # Check if any carved voxels were at the boundary
-                # by checking if they had any non-solid neighbors before carving
-                from scipy import ndimage
-                
-                # Dilate the inverse of solid to find boundary voxels
-                non_solid = ~aligned_solid
-                boundary_region = ndimage.binary_dilation(non_solid, iterations=1) & aligned_solid
-                reached_boundary = bool(np.any(voxels_to_carve & boundary_region))
-                
-                if not reached_boundary:
-                    port_warnings.append(
-                        f"Port {i}: carve didn't reach outside boundary"
-                    )
-            else:
-                port_warnings.append(f"Port {i}: no voxels carved (port may be outside mesh)")
+            connected_to_void = False
+            void_overlap_voxels = 0
+            extension_iterations = 0
             
-            # Apply carve
-            aligned_solid[carve_mask] = False
+            for iteration in range(max_extension_iterations + 1):
+                # Cylinder mask: within radius and within depth
+                if carve_shape == "frustum":
+                    depth_fraction = np.clip(-along_axis / current_carve_depth, 0, 1)
+                    effective_radius = carve_radius * (1.0 - 0.5 * depth_fraction)
+                    in_shape = dist_from_axis <= effective_radius
+                else:
+                    in_shape = dist_from_axis <= carve_radius
+                
+                # Within depth range (carve inward from port position)
+                in_depth = (along_axis >= -current_carve_depth) & (along_axis <= voxel_pitch)
+                
+                # Combined mask
+                carve_mask_flat = in_shape & in_depth
+                carve_mask = carve_mask_flat.reshape(tuple(grid_shape))
+                
+                # Count voxels to carve (only those that are currently solid)
+                voxels_to_carve = aligned_solid & carve_mask
+                voxels_carved = int(voxels_to_carve.sum())
+                
+                # Check if carve reached boundary
+                if voxels_carved > 0:
+                    from scipy import ndimage
+                    
+                    non_solid = ~aligned_solid
+                    boundary_region = ndimage.binary_dilation(non_solid, iterations=1) & aligned_solid
+                    reached_boundary = bool(np.any(voxels_to_carve & boundary_region))
+                
+                # Apply carve
+                aligned_solid[carve_mask] = False
+                
+                # Verify connectivity to void if enabled
+                if verify_void_connectivity:
+                    # Void voxels are those that were solid in original but are now not solid
+                    # after the carve (i.e., the carved region should connect to existing void)
+                    # For this check, we look at the boundary of the carved region
+                    carved_region = carve_mask & ~aligned_solid
+                    
+                    # Check if carved region connects to non-solid space (void)
+                    # by looking at neighbors of carved voxels
+                    if carved_region.any():
+                        dilated_carved = ndimage.binary_dilation(carved_region, iterations=1)
+                        void_neighbors = dilated_carved & ~original_solid & ~carved_region
+                        void_overlap_voxels = int(void_neighbors.sum())
+                        connected_to_void = void_overlap_voxels >= min_overlap_voxels
+                    
+                    if connected_to_void:
+                        break
+                    
+                    # If not connected and more iterations allowed, extend
+                    if iteration < max_extension_iterations:
+                        extension_iterations += 1
+                        current_carve_depth += carve_depth * extension_step_factor
+                        logger.debug(
+                            f"Port {i}: extending carve depth to {current_carve_depth:.6f}m "
+                            f"(iteration {extension_iterations})"
+                        )
+                else:
+                    break
+            
+            # Generate warnings based on results
+            if not voxels_carved:
+                port_warnings.append(f"Port {i}: no voxels carved (port may be outside mesh)")
+            elif not reached_boundary:
+                port_warnings.append(f"Port {i}: carve didn't reach outside boundary")
+            
+            if verify_void_connectivity:
+                if not connected_to_void:
+                    port_warnings.append(
+                        f"Port {i}: carve did not connect to void space after "
+                        f"{extension_iterations + 1} iterations (max depth: {current_carve_depth:.6f}m, "
+                        f"void overlap: {void_overlap_voxels} voxels, required: {min_overlap_voxels}). "
+                        "Check port position/direction or increase carve_depth."
+                    )
+                elif extension_iterations > 0:
+                    port_warnings.append(
+                        f"Port {i}: required {extension_iterations} extension(s) to connect to void "
+                        f"(final depth: {current_carve_depth:.6f}m, void overlap: {void_overlap_voxels} voxels)"
+                    )
+            
             total_voxels_carved += voxels_carved
             
             port_results.append(PortRecarveResult(
@@ -632,7 +694,7 @@ def voxel_recarve_ports(
                 direction=tuple(direction),
                 original_radius=radius,
                 carve_radius=carve_radius,
-                carve_depth=carve_depth,
+                carve_depth=current_carve_depth,
                 voxels_carved=voxels_carved,
                 reached_boundary=reached_boundary,
                 warnings=port_warnings,
