@@ -249,9 +249,10 @@ def _scale_network_dict(network_dict: Dict[str, Any], scale: float) -> Dict[str,
             elif isinstance(pos, (list, tuple)):
                 node_data["position"] = [p * scale for p in pos]
         
-        # Scale radius in attributes if present
+        # Scale radius in attributes if present and not None
         if "attributes" in node_data and "radius" in node_data["attributes"]:
-            node_data["attributes"]["radius"] *= scale
+            if node_data["attributes"]["radius"] is not None:
+                node_data["attributes"]["radius"] *= scale
     
     # Scale segment geometry
     for seg_id, seg_data in scaled.get("segments", {}).items():
@@ -278,10 +279,10 @@ def _scale_network_dict(network_dict: Dict[str, Any], scale: float) -> Dict[str,
                 elif isinstance(end, (list, tuple)):
                     geom["end"] = [p * scale for p in end]
             
-            # Scale radii
-            if "radius_start" in geom:
+            # Scale radii (handle None values)
+            if "radius_start" in geom and geom["radius_start"] is not None:
                 geom["radius_start"] *= scale
-            if "radius_end" in geom:
+            if "radius_end" in geom and geom["radius_end"] is not None:
                 geom["radius_end"] *= scale
             
             # Scale centerline points if present
@@ -298,12 +299,12 @@ def _scale_network_dict(network_dict: Dict[str, Any], scale: float) -> Dict[str,
                         scaled_points.append([p * scale for p in pt])
                 geom["centerline_points"] = scaled_points
     
-    # Scale domain bounds if present
+    # Scale domain bounds if present (handle None values)
     if "domain" in scaled:
         domain = scaled["domain"]
         for key in ["x_min", "x_max", "y_min", "y_max", "z_min", "z_max", 
                     "radius", "height", "semi_a", "semi_b", "semi_c"]:
-            if key in domain:
+            if key in domain and domain[key] is not None:
                 domain[key] *= scale
         if "center" in domain:
             center = domain["center"]
