@@ -477,6 +477,14 @@ def voxel_recarve_ports(
     import trimesh
     from trimesh.voxel import VoxelGrid
     
+    # Defensive None handling for parameters that may be passed as None from policy
+    if voxel_pitch is None:
+        voxel_pitch = 3e-4  # 0.3mm default
+    if carve_radius_factor is None:
+        carve_radius_factor = 1.2  # default factor
+    if carve_depth is None:
+        carve_depth = 0.002  # 2mm default
+    
     warnings = []
     errors = []
     port_results = []
