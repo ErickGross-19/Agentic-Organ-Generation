@@ -315,3 +315,154 @@ class TestBackendParamsNormalization:
         assert backend_params["terminal_radius"] == pytest.approx(0.0001)
         # num_levels should remain unchanged (not a length field)
         assert backend_params["num_levels"] == 7
+
+
+class TestNestedPolicyNormalization:
+    """Tests for nested policy normalization.
+    
+    Regression tests for the issue where nested policies in composition
+    (merge_policy, repair_policy, synthesis_policy) were not being normalized,
+    causing mm values to be interpreted as meters.
+    """
+    
+    def test_composition_merge_policy_voxel_pitch_normalized(self):
+        """composition.merge_policy.voxel_pitch should be converted from mm to m."""
+        spec_dict = {
+            "schema": {"name": "aog_designspec", "version": "1.0.0"},
+            "meta": {"seed": 42, "input_units": "mm"},
+            "policies": {
+                "composition": {
+                    "merge_policy": {
+                        "voxel_pitch": 0.05,  # 0.05mm = 50um
+                        "min_component_volume": 0.001,  # 0.001 mm³
+                    }
+                }
+            },
+            "domains": {"main": {"type": "box", "x_min": -1, "x_max": 1, "y_min": -1, "y_max": 1, "z_min": -1, "z_max": 1}},
+            "components": [],
+        }
+        spec = DesignSpec.from_dict(spec_dict)
+        
+        merge_policy = spec.policies["composition"]["merge_policy"]
+        # voxel_pitch should be converted from 0.05mm to 5e-5m
+        assert merge_policy["voxel_pitch"] == pytest.approx(5e-5)
+        # min_component_volume should be converted from 0.001mm³ to 1e-12m³ (scale³)
+        assert merge_policy["min_component_volume"] == pytest.approx(1e-12)
+    
+    def test_composition_repair_policy_voxel_pitch_normalized(self):
+        """composition.repair_policy.voxel_pitch should be converted from mm to m."""
+        spec_dict = {
+            "schema": {"name": "aog_designspec", "version": "1.0.0"},
+            "meta": {"seed": 42, "input_units": "mm"},
+            "policies": {
+                "composition": {
+                    "repair_policy": {
+                        "voxel_pitch": 0.1,  # 0.1mm
+                        "min_component_volume": 0.001,  # 0.001 mm³
+                    }
+                }
+            },
+            "domains": {"main": {"type": "box", "x_min": -1, "x_max": 1, "y_min": -1, "y_max": 1, "z_min": -1, "z_max": 1}},
+            "components": [],
+        }
+        spec = DesignSpec.from_dict(spec_dict)
+        
+        repair_policy = spec.policies["composition"]["repair_policy"]
+        # voxel_pitch should be converted from 0.1mm to 1e-4m
+        assert repair_policy["voxel_pitch"] == pytest.approx(1e-4)
+        # min_component_volume should be converted from 0.001mm³ to 1e-12m³ (scale³)
+        assert repair_policy["min_component_volume"] == pytest.approx(1e-12)
+    
+    def test_domain_meshing_sub_policies_normalized(self):
+        """domain_meshing sub-policies should have their pitches normalized."""
+        spec_dict = {
+            "schema": {"name": "aog_designspec", "version": "1.0.0"},
+            "meta": {"seed": 42, "input_units": "mm"},
+            "policies": {
+                "domain_meshing": {
+                    "voxel_pitch": 0.05,  # 0.05mm
+                    "mesh_policy": {
+                        "repair_voxel_pitch": 0.05,  # 0.05mm
+                    },
+                    "implicit_policy": {
+                        "voxel_pitch": 0.05,  # 0.05mm
+                    }
+                }
+            },
+            "domains": {"main": {"type": "box", "x_min": -1, "x_max": 1, "y_min": -1, "y_max": 1, "z_min": -1, "z_max": 1}},
+            "components": [],
+        }
+        spec = DesignSpec.from_dict(spec_dict)
+        
+        domain_meshing = spec.policies["domain_meshing"]
+        # Top-level voxel_pitch should be converted
+        assert domain_meshing["voxel_pitch"] == pytest.approx(5e-5)
+        # mesh_policy.repair_voxel_pitch should be converted
+        assert domain_meshing["mesh_policy"]["repair_voxel_pitch"] == pytest.approx(5e-5)
+        # implicit_policy.voxel_pitch should be converted
+        assert domain_meshing["implicit_policy"]["voxel_pitch"] == pytest.approx(5e-5)
+    
+    def test_malaria_venule_spec_normalization(self):
+        """
+        Regression test: malaria venule spec with input_units=mm should normalize correctly.
+        
+        This test verifies that:
+        - Nested merge voxel pitch is ~5e-5m (from 0.05mm)
+        - Domain radius is 0.005m (from 5mm)
+        """
+        spec_dict = {
+            "schema": {"name": "aog_designspec", "version": "1.0.0"},
+            "meta": {"seed": 42, "input_units": "mm"},
+            "policies": {
+                "composition": {
+                    "merge_policy": {
+                        "voxel_pitch": 0.05,  # 0.05mm = 50um
+                    }
+                }
+            },
+            "domains": {
+                "cylinder_domain": {
+                    "type": "cylinder",
+                    "center": [0, 0, 0],
+                    "radius": 5.0,  # 5mm
+                    "height": 2.0,  # 2mm
+                }
+            },
+            "components": [],
+        }
+        spec = DesignSpec.from_dict(spec_dict)
+        
+        # Assert normalized merge voxel pitch is ~5e-5m
+        merge_policy = spec.policies["composition"]["merge_policy"]
+        assert merge_policy["voxel_pitch"] == pytest.approx(5e-5)
+        
+        # Assert normalized domain radius is 0.005m
+        domain = spec.domains["cylinder_domain"]
+        assert domain["radius"] == pytest.approx(0.005)
+        assert domain["height"] == pytest.approx(0.002)
+    
+    def test_volume_fields_use_cubic_scale(self):
+        """Volume fields should be scaled by scale³, not scale."""
+        spec_dict = {
+            "schema": {"name": "aog_designspec", "version": "1.0.0"},
+            "meta": {"seed": 42, "input_units": "mm"},
+            "policies": {
+                "repair": {
+                    "min_component_volume": 1.0,  # 1 mm³
+                },
+                "composition": {
+                    "min_component_volume": 1.0,  # 1 mm³
+                },
+                "mesh_merge": {
+                    "min_component_volume": 1.0,  # 1 mm³
+                }
+            },
+            "domains": {"main": {"type": "box", "x_min": -1, "x_max": 1, "y_min": -1, "y_max": 1, "z_min": -1, "z_max": 1}},
+            "components": [],
+        }
+        spec = DesignSpec.from_dict(spec_dict)
+        
+        # 1 mm³ = 1e-9 m³ (scale³ = 1e-3³ = 1e-9)
+        assert spec.policies["repair"]["min_component_volume"] == pytest.approx(1e-9)
+        assert spec.policies["composition"]["min_component_volume"] == pytest.approx(1e-9)
+        assert spec.policies["mesh_merge"]["min_component_volume"] == pytest.approx(1e-9)
