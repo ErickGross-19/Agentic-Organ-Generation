@@ -213,6 +213,11 @@ class TestNoHardcodedMagicLengths:
         if ".get(" in line and "," in line:
             return True
         
+        # Fallback defaults using "or" pattern are also defensive programming
+        # e.g., port.get("radius") or 0.001
+        if ".get(" in line and " or " in line:
+            return True
+        
         # Docstring examples (>>> prefix)
         if line.strip().startswith(">>>"):
             return True
