@@ -207,6 +207,63 @@ class TestValidationPolicyConfiguration:
         assert decoded["check_watertight"] is True
 
 
+class TestVoidInsideDomainCheck:
+    """Test void inside domain check handles various input types."""
+    
+    def test_void_inside_domain_handles_numpy_arrays(self):
+        """
+        Regression test: _check_void_inside_domain must handle numpy arrays.
+        
+        This prevents 'TrackedArray' object has no attribute 'x' errors
+        when void_mesh.vertices (which are numpy arrays) are passed to
+        domain.signed_distance() which expects Point3D objects.
+        """
+        import trimesh
+        from validity.runner import _check_void_inside_domain
+        from generation.core.domain import CylinderDomain
+        from generation.core.types import Point3D
+        
+        # Create a simple cylinder domain
+        domain = CylinderDomain(
+            center=Point3D(0, 0, 0),
+            radius=0.01,  # 10mm
+            height=0.02,  # 20mm
+        )
+        
+        # Create a simple void mesh (small sphere inside the cylinder)
+        void_mesh = trimesh.creation.icosphere(radius=0.005, subdivisions=1)
+        
+        # This should not raise AttributeError: 'TrackedArray' object has no attribute 'x'
+        result = _check_void_inside_domain(void_mesh, domain)
+        
+        assert result.name == "void_inside_domain"
+        assert result.passed is True
+        assert result.details["fraction_inside"] >= 0.95
+    
+    def test_void_inside_domain_detects_outside_void(self):
+        """Test that void outside domain is detected."""
+        import trimesh
+        from validity.runner import _check_void_inside_domain
+        from generation.core.domain import CylinderDomain
+        from generation.core.types import Point3D
+        
+        # Create a small cylinder domain
+        domain = CylinderDomain(
+            center=Point3D(0, 0, 0),
+            radius=0.005,  # 5mm
+            height=0.01,   # 10mm
+        )
+        
+        # Create a void mesh that's larger than the domain (will be outside)
+        void_mesh = trimesh.creation.icosphere(radius=0.02, subdivisions=1)
+        
+        result = _check_void_inside_domain(void_mesh, domain)
+        
+        assert result.name == "void_inside_domain"
+        # Most vertices should be outside the small domain
+        assert result.details["outside_count"] > 0
+
+
 class TestValidationReporting:
     """Test validation reporting in operation reports."""
     
