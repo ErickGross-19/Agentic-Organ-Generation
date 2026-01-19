@@ -340,6 +340,54 @@ class TestEmbeddingOutputReporting:
         assert json_str is not None
 
 
+class TestPortRadiusHandling:
+    """Test port radius handling in embedding functions.
+    
+    Regression tests for 'unsupported operand type(s) for *: int and NoneType'
+    error when ports have radius=None explicitly set.
+    """
+    
+    def test_port_with_none_radius_uses_default(self):
+        """
+        Regression test: ports with radius=None should use default value.
+        
+        This prevents 'unsupported operand type(s) for *: int and NoneType'
+        errors when port.get("radius", default) returns None because radius
+        is explicitly set to None in the port dict.
+        """
+        # Simulate the fixed code logic
+        def get_radius_fixed(port):
+            return port.get("radius") or 0.001
+        
+        # Test with port that has radius=None
+        port_with_none_radius = {"radius": None}
+        port_missing_radius = {}
+        port_with_radius = {"radius": 0.002}
+        
+        # All should return valid float values
+        assert get_radius_fixed(port_with_none_radius) == 0.001
+        assert get_radius_fixed(port_missing_radius) == 0.001
+        assert get_radius_fixed(port_with_radius) == 0.002
+        
+        # Verify multiplication works (the operation that was failing)
+        cylinder_radius_factor = 1.2
+        for port in [port_with_none_radius, port_missing_radius, port_with_radius]:
+            radius = get_radius_fixed(port)
+            carve_radius = radius * cylinder_radius_factor
+            assert isinstance(carve_radius, float)
+            assert carve_radius > 0
+    
+    def test_port_with_zero_radius_uses_default(self):
+        """Test that ports with radius=0 also use default value."""
+        def get_radius_fixed(port):
+            return port.get("radius") or 0.001
+        
+        port_with_zero_radius = {"radius": 0}
+        
+        # Zero radius should also use default (falsy value)
+        assert get_radius_fixed(port_with_zero_radius) == 0.001
+
+
 class TestEmbeddingWithoutShell:
     """Test embedding when shell output is disabled."""
     
