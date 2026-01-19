@@ -144,9 +144,9 @@
         "inlets": [
           {
             "name": "inlet_center",
-            "position": [0, 0, 0.9],
+            "position": [0, 0, 0.0],
             "direction": [0, 0, -1],
-            "radius": 1.0,
+            "radius": 0.5,
             "vessel_type": "arterial"
           }
         ],
