@@ -286,6 +286,10 @@ class DesignSpecWorkflow:
             self._set_status(WorkflowStatus.PROCESSING)
             
             try:
+                if self._handle_local_command(text):
+                    self._set_status(WorkflowStatus.WAITING_INPUT)
+                    return
+                
                 spec = self._session.get_spec()
                 validation = self._session.validate_spec()
                 compile_report = self._session.get_last_compile_report()
@@ -307,6 +311,171 @@ class DesignSpecWorkflow:
                     message=f"Error processing message: {str(e)}",
                 ))
                 self._set_status(WorkflowStatus.WAITING_INPUT)
+    
+    def _handle_local_command(self, text: str) -> bool:
+        """
+        Handle local diagnostic commands before passing to agent.
+        
+        Detects and handles commands like:
+        - "show spec", "print spec", "output current design spec"
+        - "what is missing", "what is left", "status"
+        - "why did it fail", "what is the issue", "show last error"
+        
+        Parameters
+        ----------
+        text : str
+            The user's message
+            
+        Returns
+        -------
+        bool
+            True if the message was handled as a command, False otherwise
+        """
+        text_lower = text.lower().strip()
+        
+        show_spec_patterns = [
+            "show spec", "print spec", "output current design spec",
+            "display spec", "show the spec", "show current spec",
+            "what is the spec", "what's the spec",
+        ]
+        if any(pattern in text_lower for pattern in show_spec_patterns):
+            self._handle_show_spec_command()
+            return True
+        
+        missing_patterns = [
+            "what is missing", "what's missing", "what is left",
+            "what's left", "status", "show status", "missing fields",
+            "what do i need", "what else is needed",
+        ]
+        if any(pattern in text_lower for pattern in missing_patterns):
+            self._handle_missing_fields_command()
+            return True
+        
+        error_patterns = [
+            "why did it fail", "what is the issue", "show last error",
+            "what went wrong", "show error", "last error",
+            "what is the error", "what's the error", "show errors",
+        ]
+        if any(pattern in text_lower for pattern in error_patterns):
+            self._handle_last_error_command()
+            return True
+        
+        return False
+    
+    def _handle_show_spec_command(self) -> None:
+        """Handle the 'show spec' command."""
+        spec = self._session.get_spec()
+        spec_path = self._session.project_dir / "spec.json"
+        
+        spec_json = json.dumps(spec, indent=2)
+        if len(spec_json) > 2000:
+            spec_json = spec_json[:2000] + "\n... (truncated, see full spec at path below)"
+        
+        message = f"Current spec:\n```json\n{spec_json}\n```\n\nSpec file: {spec_path}"
+        
+        self._emit_event(WorkflowEvent(
+            event_type=WorkflowEventType.MESSAGE,
+            data={"spec": spec, "spec_path": str(spec_path)},
+            message=message,
+        ))
+    
+    def _handle_missing_fields_command(self) -> None:
+        """Handle the 'what is missing' / 'status' command."""
+        spec = self._session.get_spec()
+        validation = self._session.validate_spec()
+        
+        checklist = self._agent._build_missing_fields_checklist(spec)
+        
+        status_parts = []
+        
+        if validation.valid:
+            status_parts.append("Spec validation: PASSED")
+        else:
+            status_parts.append("Spec validation: FAILED")
+            if validation.errors:
+                status_parts.append("Errors:")
+                for error in validation.errors[:5]:
+                    status_parts.append(f"  - {error}")
+        
+        if validation.warnings:
+            status_parts.append("Warnings:")
+            for warning in validation.warnings[:3]:
+                status_parts.append(f"  - {warning}")
+        
+        status_parts.append("\nSpec checklist:")
+        status_parts.append(checklist)
+        
+        message = "\n".join(status_parts)
+        
+        self._emit_event(WorkflowEvent(
+            event_type=WorkflowEventType.MESSAGE,
+            data={
+                "validation": validation.to_dict(),
+                "checklist": checklist,
+            },
+            message=message,
+        ))
+    
+    def _handle_last_error_command(self) -> None:
+        """Handle the 'show last error' / 'why did it fail' command."""
+        runner_result = self._session.get_last_runner_result()
+        
+        if not runner_result:
+            self._emit_event(WorkflowEvent(
+                event_type=WorkflowEventType.MESSAGE,
+                message="No previous run found. Use 'run' to execute the pipeline first.",
+            ))
+            return
+        
+        success = runner_result.get("success", False)
+        errors = runner_result.get("errors", [])
+        stage_reports = runner_result.get("stage_reports", [])
+        output_dir = runner_result.get("output_dir", "")
+        run_id = runner_result.get("run_id", "")
+        
+        message_parts = []
+        
+        if success:
+            message_parts.append("Last run: SUCCESS")
+        else:
+            message_parts.append("Last run: FAILED")
+        
+        if errors:
+            message_parts.append("\nErrors (first 3):")
+            for error in errors[:3]:
+                message_parts.append(f"  - {error}")
+        
+        failing_stage = None
+        for report in stage_reports:
+            if isinstance(report, dict) and not report.get("success", True):
+                failing_stage = report.get("stage", "unknown")
+                stage_errors = report.get("errors", [])
+                if stage_errors:
+                    message_parts.append(f"\nFailing stage: {failing_stage}")
+                    message_parts.append("Stage errors:")
+                    for err in stage_errors[:3]:
+                        message_parts.append(f"  - {err}")
+                break
+        
+        if output_dir:
+            message_parts.append(f"\nOutput directory: {output_dir}")
+        
+        if run_id:
+            message_parts.append(f"Run ID: {run_id}")
+        
+        message = "\n".join(message_parts)
+        
+        self._emit_event(WorkflowEvent(
+            event_type=WorkflowEventType.MESSAGE,
+            data={
+                "success": success,
+                "errors": errors[:3] if errors else [],
+                "failing_stage": failing_stage,
+                "output_dir": output_dir,
+                "run_id": run_id,
+            },
+            message=message,
+        ))
     
     def _handle_agent_response(self, response: AgentResponse) -> None:
         """Handle an agent response."""

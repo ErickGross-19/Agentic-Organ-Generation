@@ -577,10 +577,18 @@ class DesignSpecAgent:
             r"box\s+(\d+(?:\.\d+)?)\s*(?:mm|m)?\s*[x×]\s*(\d+(?:\.\d+)?)\s*(?:mm|m)?\s*[x×]\s*(\d+(?:\.\d+)?)\s*(?:mm|m)?",
             message_lower,
         )
-        cube_match = re.search(
+        cube_patterns = [
             r"(?:box|cube)\s+(?:with\s+)?(\d+(?:\.\d+)?)\s*(?:mm|m)?\s+sides?",
-            message_lower,
-        )
+            r"(\d+(?:\.\d+)?)\s*(?:mm|m)?\s+(?:box|cube)",
+            r"(?:box|cube)\s+(?:should\s+be\s+|is\s+)?(\d+(?:\.\d+)?)\s*(?:mm|m)?\s+(?:on\s+)?(?:all|each|every)\s+sides?",
+            r"(?:box|cube)\s+(?:of\s+)?(\d+(?:\.\d+)?)\s*(?:mm|m)?\s+(?:on\s+)?(?:all|each|every)\s+sides?",
+            r"(\d+(?:\.\d+)?)\s*(?:mm|m)?\s+(?:on\s+)?(?:all|each|every)\s+sides?",
+        ]
+        cube_match = None
+        for pattern in cube_patterns:
+            cube_match = re.search(pattern, message_lower)
+            if cube_match:
+                break
         if box_match:
             width = float(box_match.group(1))
             height = float(box_match.group(2))
@@ -834,6 +842,8 @@ class DesignSpecAgent:
         Extract primitive_channels component patches from a message.
         
         Handles phrases like "straight channel through it".
+        If left/right is mentioned, creates a straight channel along x-axis
+        with inlet at (-x) and outlet at (+x).
         """
         patches = []
         message_lower = message.lower()
@@ -853,10 +863,40 @@ class DesignSpecAgent:
         )
         
         domain = domains.get(domain_ref, {})
-        domain_size = domain.get("size", [20, 20, 20])
-        domain_height = domain.get("height", domain_size[2] if len(domain_size) > 2 else 20)
+        
+        x_min = domain.get("x_min", -10)
+        x_max = domain.get("x_max", 10)
+        y_min = domain.get("y_min", -10)
+        y_max = domain.get("y_max", 10)
+        z_min = domain.get("z_min", -10)
+        z_max = domain.get("z_max", 10)
+        
+        x_center = (x_min + x_max) / 2
+        y_center = (y_min + y_max) / 2
+        z_center = (z_min + z_max) / 2
+        
+        policies = spec.get("policies", {})
+        resolution = policies.get("resolution", {})
+        default_radius = resolution.get("min_channel_radius", None)
+        
+        if channel_radius is None and default_radius is not None:
+            channel_radius = default_radius
+        
+        mentions_left_right = "left" in message_lower or "right" in message_lower
+        mentions_through = "through" in message_lower or "straight" in message_lower
         
         if not channel_components:
+            if mentions_left_right or mentions_through:
+                inlet_pos = [x_min, y_center, z_center]
+                outlet_pos = [x_max, y_center, z_center]
+                inlet_dir = [1, 0, 0]
+                outlet_dir = [-1, 0, 0]
+            else:
+                inlet_pos = [x_center, y_center, z_max]
+                outlet_pos = [x_center, y_center, z_min]
+                inlet_dir = [0, 0, -1]
+                outlet_dir = [0, 0, 1]
+            
             new_channel = {
                 "id": "channel_1",
                 "domain_ref": domain_ref,
@@ -864,18 +904,28 @@ class DesignSpecAgent:
                     "inlets": [
                         {
                             "name": "channel_inlet",
-                            "position": [0, 0, domain_height / 2],
-                            "direction": [0, 0, -1],
-                            "radius": channel_radius if channel_radius else 0.5,
+                            "position": inlet_pos,
+                            "direction": inlet_dir,
                             "vessel_type": "arterial",
                         }
                     ],
-                    "outlets": [],
+                    "outlets": [
+                        {
+                            "name": "channel_outlet",
+                            "position": outlet_pos,
+                            "direction": outlet_dir,
+                            "vessel_type": "arterial",
+                        }
+                    ],
                 },
                 "build": {
                     "type": "primitive_channels",
                 },
             }
+            
+            if channel_radius is not None:
+                new_channel["ports"]["inlets"][0]["radius"] = channel_radius
+                new_channel["ports"]["outlets"][0]["radius"] = channel_radius
             
             patches.append({
                 "op": "add",
@@ -896,7 +946,8 @@ class DesignSpecAgent:
         """
         Extract ridge feature patches from a message.
         
-        Handles phrases like "ridge on left face" or "ridge on right face".
+        Handles phrases like "ridge on left face", "ridge on right face",
+        "ridge on left side", "ridge on the left", "where inlet is".
         """
         patches = []
         message_lower = message.lower()
@@ -916,8 +967,21 @@ class DesignSpecAgent:
                 if (f"ridge on {face_name}" in message_lower or 
                     f"ridge at {face_name}" in message_lower or
                     f"{face_name} ridge" in message_lower or
-                    f"{face_name} face" in message_lower):
+                    f"{face_name} face" in message_lower or
+                    f"{face_name} side" in message_lower or
+                    f"on the {face_name}" in message_lower or
+                    f"on {face_name}" in message_lower):
                     ridge_faces.append(face_code)
+        
+        if "where inlet is" in message_lower or "where the inlet is" in message_lower:
+            components = spec.get("components", [])
+            for comp in components:
+                ports = comp.get("ports", {})
+                inlets = ports.get("inlets", [])
+                for inlet in inlets:
+                    inlet_face = inlet.get("face")
+                    if inlet_face and inlet_face not in ridge_faces:
+                        ridge_faces.append(inlet_face)
         
         if not ridge_faces:
             return patches
