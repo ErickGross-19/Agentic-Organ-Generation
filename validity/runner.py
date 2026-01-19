@@ -347,6 +347,7 @@ def _check_void_inside_domain(
 ) -> CheckResult:
     """Check that void mesh is inside domain."""
     import numpy as np
+    from generation.core.types import Point3D
     
     sample_points = void_mesh.vertices[::max(1, len(void_mesh.vertices) // 100)]
     
@@ -354,7 +355,9 @@ def _check_void_inside_domain(
     outside_count = 0
     
     for point in sample_points:
-        sd = domain.signed_distance(point)
+        # Convert numpy array to Point3D for domain methods
+        point_3d = Point3D.from_array(point)
+        sd = domain.signed_distance(point_3d)
         if sd <= 0:
             inside_count += 1
         else:
