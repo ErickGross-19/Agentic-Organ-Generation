@@ -250,3 +250,68 @@ class TestPolicyLengthFieldsRegistry:
     def test_embedding_has_length_fields(self):
         assert "embedding" in POLICY_LENGTH_FIELDS
         assert "shell_thickness" in POLICY_LENGTH_FIELDS["embedding"]
+
+
+class TestBackendParamsNormalization:
+    """Tests for backend_params unit conversion in growth policy.
+    
+    Regression tests for the issue where wall_margin_m in backend_params
+    was not being converted from mm to meters, causing the k-ary tree
+    algorithm to be too restrictive.
+    """
+    
+    def test_growth_policy_backend_params_wall_margin_normalized(self):
+        """wall_margin_m in growth.backend_params should be converted from mm to m."""
+        spec_dict = {
+            "schema": {"name": "aog_designspec", "version": "1.0.0"},
+            "meta": {"seed": 42, "input_units": "mm"},
+            "policies": {
+                "growth": {
+                    "backend_params": {
+                        "wall_margin_m": 0.5,  # 0.5mm
+                        "K": 2,  # Not a length field, should not be converted
+                    }
+                }
+            },
+            "domains": {"main": {"type": "box", "x_min": -1, "x_max": 1, "y_min": -1, "y_max": 1, "z_min": -1, "z_max": 1}},
+            "components": [],
+        }
+        spec = DesignSpec.from_dict(spec_dict)
+        
+        # wall_margin_m should be converted from 0.5mm to 0.0005m
+        assert spec.policies["growth"]["backend_params"]["wall_margin_m"] == pytest.approx(0.0005)
+        # K should remain unchanged (not a length field)
+        assert spec.policies["growth"]["backend_params"]["K"] == 2
+    
+    def test_component_build_backend_params_wall_margin_normalized(self):
+        """wall_margin_m in component.build.backend_params should be converted from mm to m."""
+        spec_dict = {
+            "schema": {"name": "aog_designspec", "version": "1.0.0"},
+            "meta": {"seed": 42, "input_units": "mm"},
+            "policies": {},
+            "domains": {"main": {"type": "box", "x_min": -1, "x_max": 1, "y_min": -1, "y_max": 1, "z_min": -1, "z_max": 1}},
+            "components": [
+                {
+                    "id": "tree_1",
+                    "domain_ref": "main",
+                    "ports": {"inlets": [], "outlets": []},
+                    "build": {
+                        "type": "backend_network",
+                        "backend_params": {
+                            "wall_margin_m": 0.5,  # 0.5mm
+                            "terminal_radius": 0.1,  # 0.1mm
+                            "num_levels": 7,  # Not a length field
+                        }
+                    }
+                }
+            ],
+        }
+        spec = DesignSpec.from_dict(spec_dict)
+        
+        backend_params = spec.components[0]["build"]["backend_params"]
+        # wall_margin_m should be converted from 0.5mm to 0.0005m
+        assert backend_params["wall_margin_m"] == pytest.approx(0.0005)
+        # terminal_radius should be converted from 0.1mm to 0.0001m
+        assert backend_params["terminal_radius"] == pytest.approx(0.0001)
+        # num_levels should remain unchanged (not a length field)
+        assert backend_params["num_levels"] == 7

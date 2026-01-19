@@ -179,6 +179,22 @@ def _normalize_policy_to_meters(
     if policy_name == "resolution" and "input_units" in result:
         result["input_units"] = "m"
     
+    # Handle backend_params in growth policy
+    if policy_name == "growth" and "backend_params" in result:
+        backend_params = result["backend_params"]
+        if isinstance(backend_params, dict):
+            # Known length fields in backend_params
+            backend_length_fields = {
+                "step_size", "min_segment_length", "max_segment_length",
+                "influence_radius", "kill_radius", "perception_radius",
+                "clearance", "min_radius", "max_radius",
+                "wall_margin_m", "terminal_radius",  # K-ary tree specific
+            }
+            for field_name in backend_length_fields:
+                if field_name in backend_params and backend_params[field_name] is not None:
+                    backend_params[field_name] = _convert_value(backend_params[field_name], scale)
+            result["backend_params"] = backend_params
+    
     return result
 
 
@@ -251,6 +267,7 @@ def _normalize_component_to_meters(
                 "step_size", "min_segment_length", "max_segment_length",
                 "influence_radius", "kill_radius", "perception_radius",
                 "clearance", "min_radius", "max_radius",
+                "wall_margin_m", "terminal_radius",  # K-ary tree specific
             }
             for field_name in backend_length_fields:
                 if field_name in backend_params and backend_params[field_name] is not None:
