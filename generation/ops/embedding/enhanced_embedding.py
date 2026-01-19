@@ -322,7 +322,7 @@ def _preserve_port(
     
     position = np.array(port.get("position", [0, 0, 0]))
     direction = np.array(port.get("direction", [0, 0, 1]))
-    radius = port.get("radius", 0.001)
+    radius = port.get("radius") or 0.001  # Handle None explicitly
     
     # Normalize direction
     direction = direction / np.linalg.norm(direction)
@@ -410,7 +410,7 @@ def get_port_constraints(
     for port in ports:
         position = np.array(port.get("position", [0, 0, 0]))
         direction = np.array(port.get("direction", [0, 0, 1]))
-        radius = port.get("radius", 0.001)
+        radius = port.get("radius") or 0.001  # Handle None explicitly
         
         # Effective exclusion radius
         exclusion_radius = radius * policy.cylinder_radius_factor + policy.min_clearance
@@ -540,7 +540,7 @@ def voxel_recarve_ports(
         for i, port in enumerate(ports):
             position = np.array(port.get("position", [0, 0, 0]), dtype=float)
             direction = np.array(port.get("direction", [0, 0, 1]), dtype=float)
-            radius = float(port.get("radius", 0.001))
+            radius = float(port.get("radius") or 0.001)  # Handle None explicitly
             
             # Normalize direction
             dir_norm = np.linalg.norm(direction)
