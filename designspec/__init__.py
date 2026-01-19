@@ -44,6 +44,23 @@ from .spec import (
     DesignSpec,
     DesignSpecError,
     DesignSpecValidationError,
+    _get_unit_scale,
+)
+
+from .preflight import (
+    PreflightError,
+    PreflightResult,
+    PreflightValidationError,
+    UnitAuditEntry,
+    UnitAuditReport,
+    DEFAULT_POLICIES,
+    NESTED_POLICY_DEFAULTS,
+    STAGE_REQUIRED_POLICIES,
+    DEBUG_ENV_VAR,
+    is_debug_mode,
+    fill_policy_defaults,
+    run_preflight_checks,
+    create_unit_audit_report,
 )
 
 from .context import (
@@ -84,6 +101,21 @@ __all__ = [
     "DesignSpec",
     "DesignSpecError",
     "DesignSpecValidationError",
+    "_get_unit_scale",
+    # Preflight
+    "PreflightError",
+    "PreflightResult",
+    "PreflightValidationError",
+    "UnitAuditEntry",
+    "UnitAuditReport",
+    "DEFAULT_POLICIES",
+    "NESTED_POLICY_DEFAULTS",
+    "STAGE_REQUIRED_POLICIES",
+    "DEBUG_ENV_VAR",
+    "is_debug_mode",
+    "fill_policy_defaults",
+    "run_preflight_checks",
+    "create_unit_audit_report",
     # Context
     "RunnerContext",
     "ArtifactStore",

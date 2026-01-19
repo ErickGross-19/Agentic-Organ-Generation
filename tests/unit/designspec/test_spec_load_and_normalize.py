@@ -2,6 +2,7 @@
 
 import pytest
 import json
+import os
 from pathlib import Path
 
 from designspec.spec import (
@@ -13,6 +14,13 @@ from designspec.spec import (
     _get_unit_scale,
     _normalize_policy_to_meters,
     _normalize_domain_to_meters,
+)
+from designspec.preflight import (
+    fill_policy_defaults,
+    run_preflight_checks,
+    PreflightValidationError,
+    DEFAULT_POLICIES,
+    DEBUG_ENV_VAR,
 )
 
 
@@ -466,3 +474,347 @@ class TestNestedPolicyNormalization:
         assert spec.policies["repair"]["min_component_volume"] == pytest.approx(1e-9)
         assert spec.policies["composition"]["min_component_volume"] == pytest.approx(1e-9)
         assert spec.policies["mesh_merge"]["min_component_volume"] == pytest.approx(1e-9)
+
+
+class TestCentimeterUnits:
+    """Tests for centimeter unit support."""
+    
+    def test_centimeters_scale(self):
+        """cm units should have scale factor of 0.01."""
+        assert _get_unit_scale("cm") == 0.01
+    
+    def test_cm_units_normalized_to_meters(self):
+        """Spec with cm units should normalize correctly."""
+        spec_dict = {
+            "schema": {"name": "aog_designspec", "version": "1.0.0"},
+            "meta": {"seed": 42, "input_units": "cm"},
+            "policies": {
+                "resolution": {"min_channel_diameter": 0.02}  # 0.02cm = 0.2mm
+            },
+            "domains": {
+                "main": {"type": "cylinder", "center": [0, 0, 0], "radius": 0.5, "height": 0.2}  # 5mm radius, 2mm height
+            },
+            "components": [],
+        }
+        spec = DesignSpec.from_dict(spec_dict)
+        
+        assert spec.domains["main"]["radius"] == pytest.approx(0.005)  # 0.5cm = 0.005m
+        assert spec.domains["main"]["height"] == pytest.approx(0.002)  # 0.2cm = 0.002m
+        assert spec.policies["resolution"]["min_channel_diameter"] == pytest.approx(0.0002)  # 0.02cm = 0.0002m
+
+
+class TestPreflightValidation:
+    """Tests for preflight validation checks."""
+    
+    def test_preflight_detects_unnormalized_pitch(self):
+        """Preflight should detect voxel_pitch values that appear unnormalized."""
+        normalized_spec = {
+            "meta": {"seed": 42, "input_units": "m"},
+            "policies": {
+                "embedding": {
+                    "voxel_pitch": 0.05,  # 50mm - way too large, likely not normalized
+                }
+            },
+            "domains": {
+                "main": {"type": "cylinder", "center": [0, 0, 0], "radius": 0.005, "height": 0.002}
+            },
+            "components": [],
+        }
+        result = run_preflight_checks(normalized_spec)
+        
+        assert not result.success
+        assert any("PITCH_NOT_NORMALIZED" in e.code for e in result.errors)
+    
+    def test_preflight_warns_on_large_pitch_ratio(self):
+        """Preflight should warn when voxel_pitch is too large relative to domain."""
+        normalized_spec = {
+            "meta": {"seed": 42, "input_units": "m"},
+            "policies": {
+                "embedding": {
+                    "voxel_pitch": 0.002,  # 2mm pitch for 10mm domain - ratio is 1:5
+                }
+            },
+            "domains": {
+                "main": {"type": "cylinder", "center": [0, 0, 0], "radius": 0.005, "height": 0.002}
+            },
+            "components": [],
+        }
+        result = run_preflight_checks(normalized_spec)
+        
+        assert any("PITCH_TOO_LARGE" in w.code for w in result.warnings)
+    
+    def test_preflight_detects_missing_domains(self):
+        """Preflight should detect when no domains are defined."""
+        normalized_spec = {
+            "meta": {"seed": 42, "input_units": "m"},
+            "policies": {},
+            "domains": {},
+            "components": [],
+        }
+        result = run_preflight_checks(normalized_spec)
+        
+        assert not result.success
+        assert any("NO_DOMAINS" in e.code for e in result.errors)
+    
+    def test_preflight_detects_invalid_domain_ref(self):
+        """Preflight should detect invalid domain references in components."""
+        normalized_spec = {
+            "meta": {"seed": 42, "input_units": "m"},
+            "policies": {},
+            "domains": {
+                "main": {"type": "cylinder", "center": [0, 0, 0], "radius": 0.005, "height": 0.002}
+            },
+            "components": [
+                {"id": "comp1", "domain_ref": "nonexistent_domain"}
+            ],
+        }
+        result = run_preflight_checks(normalized_spec)
+        
+        assert not result.success
+        assert any("INVALID_DOMAIN_REF" in e.code for e in result.errors)
+    
+    def test_preflight_strict_raises_exception(self):
+        """Preflight with strict mode should raise exception on errors."""
+        spec_dict = {
+            "schema": {"name": "aog_designspec", "version": "1.0.0"},
+            "meta": {"seed": 42, "input_units": "m"},
+            "policies": {
+                "embedding": {"voxel_pitch": 0.05}  # Too large
+            },
+            "domains": {"main": {"type": "box", "x_min": -0.005, "x_max": 0.005, "y_min": -0.005, "y_max": 0.005, "z_min": -0.001, "z_max": 0.001}},
+            "components": [],
+        }
+        with pytest.raises(PreflightValidationError):
+            DesignSpec.from_dict(spec_dict, preflight_strict=True)
+
+
+class TestDefaultPolicyFilling:
+    """Tests for default policy filling."""
+    
+    def test_fill_missing_policy_with_defaults(self):
+        """Missing policies should be filled with defaults."""
+        policies = {}
+        filled, filled_names = fill_policy_defaults(policies)
+        
+        assert "mesh_merge" in filled
+        assert filled["mesh_merge"]["voxel_pitch"] == DEFAULT_POLICIES["mesh_merge"]["voxel_pitch"]
+        assert any("mesh_merge" in name for name in filled_names)
+    
+    def test_fill_missing_keys_in_existing_policy(self):
+        """Missing keys in existing policies should be filled."""
+        policies = {
+            "mesh_merge": {
+                "mode": "voxel",  # Explicitly set
+            }
+        }
+        filled, filled_names = fill_policy_defaults(policies)
+        
+        assert filled["mesh_merge"]["mode"] == "voxel"  # Preserved
+        assert "voxel_pitch" in filled["mesh_merge"]  # Filled
+    
+    def test_fill_nested_policies(self):
+        """Nested policies should be filled with defaults."""
+        policies = {
+            "composition": {}  # Empty composition policy
+        }
+        filled, filled_names = fill_policy_defaults(policies, fill_nested=True)
+        
+        assert "merge_policy" in filled["composition"]
+        assert "repair_policy" in filled["composition"]
+    
+    def test_spec_fills_defaults_by_default(self):
+        """DesignSpec.from_dict should fill defaults by default."""
+        spec_dict = {
+            "schema": {"name": "aog_designspec", "version": "1.0.0"},
+            "meta": {"seed": 42, "input_units": "m"},
+            "policies": {},
+            "domains": {"main": {"type": "box", "x_min": -0.01, "x_max": 0.01, "y_min": -0.01, "y_max": 0.01, "z_min": -0.01, "z_max": 0.01}},
+            "components": [],
+        }
+        spec = DesignSpec.from_dict(spec_dict)
+        
+        assert "mesh_merge" in spec.policies
+        assert len(spec.policies_filled) > 0
+    
+    def test_spec_can_skip_default_filling(self):
+        """DesignSpec.from_dict should allow skipping default filling."""
+        spec_dict = {
+            "schema": {"name": "aog_designspec", "version": "1.0.0"},
+            "meta": {"seed": 42, "input_units": "m"},
+            "policies": {},
+            "domains": {"main": {"type": "box", "x_min": -0.01, "x_max": 0.01, "y_min": -0.01, "y_max": 0.01, "z_min": -0.01, "z_max": 0.01}},
+            "components": [],
+        }
+        spec = DesignSpec.from_dict(spec_dict, fill_defaults=False)
+        
+        assert "mesh_merge" not in spec.policies or spec.policies.get("mesh_merge") is None
+
+
+class TestMalariaVenuleSpecComprehensive:
+    """Comprehensive tests for malaria venule spec normalization and validation."""
+    
+    EXAMPLES_DIR = Path(__file__).parent.parent.parent.parent / "examples" / "designspec"
+    
+    def test_load_malaria_venule_cco_spec(self):
+        """Load and validate malaria_venule_cco.json spec."""
+        spec_path = self.EXAMPLES_DIR / "malaria_venule_cco.json"
+        if not spec_path.exists():
+            pytest.skip("malaria_venule_cco.json not found")
+        
+        spec = DesignSpec.from_json(spec_path)
+        
+        assert spec.seed == 42
+        assert spec.input_units == "mm"
+        assert "cylinder_domain" in spec.domains
+    
+    def test_malaria_venule_domain_normalized(self):
+        """Malaria venule domain should be normalized to meters."""
+        spec_path = self.EXAMPLES_DIR / "malaria_venule_cco.json"
+        if not spec_path.exists():
+            pytest.skip("malaria_venule_cco.json not found")
+        
+        spec = DesignSpec.from_json(spec_path)
+        
+        domain = spec.domains["cylinder_domain"]
+        assert domain["radius"] == pytest.approx(0.005)  # 5mm -> 0.005m
+        assert domain["height"] == pytest.approx(0.002)  # 2mm -> 0.002m
+    
+    def test_malaria_venule_voxel_pitches_normalized(self):
+        """Malaria venule voxel pitches should be normalized to meters."""
+        spec_path = self.EXAMPLES_DIR / "malaria_venule_cco.json"
+        if not spec_path.exists():
+            pytest.skip("malaria_venule_cco.json not found")
+        
+        spec = DesignSpec.from_json(spec_path)
+        
+        merge_policy = spec.policies["composition"]["merge_policy"]
+        assert merge_policy["voxel_pitch"] == pytest.approx(5e-5)  # 0.05mm -> 5e-5m
+        
+        repair_policy = spec.policies["composition"]["repair_policy"]
+        assert repair_policy["voxel_pitch"] == pytest.approx(1e-4)  # 0.1mm -> 1e-4m
+    
+    def test_malaria_venule_volume_fields_normalized(self):
+        """Malaria venule volume fields should be normalized with cubic scale."""
+        spec_path = self.EXAMPLES_DIR / "malaria_venule_cco.json"
+        if not spec_path.exists():
+            pytest.skip("malaria_venule_cco.json not found")
+        
+        spec = DesignSpec.from_json(spec_path)
+        
+        merge_policy = spec.policies["composition"]["merge_policy"]
+        assert merge_policy["min_component_volume"] == pytest.approx(1e-12)  # 0.001mm³ -> 1e-12m³
+    
+    def test_malaria_venule_port_radii_normalized(self):
+        """Malaria venule port radii should be normalized to meters."""
+        spec_path = self.EXAMPLES_DIR / "malaria_venule_cco.json"
+        if not spec_path.exists():
+            pytest.skip("malaria_venule_cco.json not found")
+        
+        spec = DesignSpec.from_json(spec_path)
+        
+        component = spec.components[0]
+        inlet = component["ports"]["inlets"][0]
+        assert inlet["radius"] == pytest.approx(0.0003)  # 0.3mm -> 0.0003m
+    
+    def test_malaria_venule_policies_not_none(self):
+        """Malaria venule resolved policies should not be None."""
+        spec_path = self.EXAMPLES_DIR / "malaria_venule_cco.json"
+        if not spec_path.exists():
+            pytest.skip("malaria_venule_cco.json not found")
+        
+        spec = DesignSpec.from_json(spec_path)
+        
+        assert spec.policies.get("composition") is not None
+        assert spec.policies["composition"].get("merge_policy") is not None
+        assert spec.policies["composition"].get("repair_policy") is not None
+        assert spec.policies.get("embedding") is not None
+        assert spec.policies.get("mesh_merge") is not None
+    
+    def test_malaria_venule_preflight_passes(self):
+        """Malaria venule spec should pass preflight validation."""
+        spec_path = self.EXAMPLES_DIR / "malaria_venule_cco.json"
+        if not spec_path.exists():
+            pytest.skip("malaria_venule_cco.json not found")
+        
+        spec = DesignSpec.from_json(spec_path)
+        
+        assert spec.preflight_result is not None
+        assert spec.preflight_result.success, f"Preflight errors: {[e.message for e in spec.preflight_result.errors]}"
+
+
+class TestUnitAuditReport:
+    """Tests for unit audit report generation."""
+    
+    def test_audit_report_generated_in_debug_mode(self):
+        """Unit audit report should be generated when debug mode is enabled."""
+        os.environ[DEBUG_ENV_VAR] = "1"
+        try:
+            spec_dict = {
+                "schema": {"name": "aog_designspec", "version": "1.0.0"},
+                "meta": {"seed": 42, "input_units": "mm"},
+                "policies": {
+                    "embedding": {"voxel_pitch": 0.05}
+                },
+                "domains": {"main": {"type": "box", "x_min": -5, "x_max": 5, "y_min": -5, "y_max": 5, "z_min": -1, "z_max": 1}},
+                "components": [],
+            }
+            spec = DesignSpec.from_dict(spec_dict)
+            
+            assert spec.unit_audit_report is not None
+            assert spec.unit_audit_report.input_units == "mm"
+            assert spec.unit_audit_report.scale_factor == 0.001
+            assert len(spec.unit_audit_report.entries) > 0
+        finally:
+            os.environ.pop(DEBUG_ENV_VAR, None)
+    
+    def test_audit_report_not_generated_without_debug_mode(self):
+        """Unit audit report should not be generated without debug mode."""
+        os.environ.pop(DEBUG_ENV_VAR, None)
+        
+        spec_dict = {
+            "schema": {"name": "aog_designspec", "version": "1.0.0"},
+            "meta": {"seed": 42, "input_units": "mm"},
+            "policies": {},
+            "domains": {"main": {"type": "box", "x_min": -5, "x_max": 5, "y_min": -5, "y_max": 5, "z_min": -1, "z_max": 1}},
+            "components": [],
+        }
+        spec = DesignSpec.from_dict(spec_dict)
+        
+        assert spec.unit_audit_report is None
+
+
+class TestKnownBadSpecFailsPreflight:
+    """Tests that known-bad specs fail preflight with readable errors."""
+    
+    def test_missing_required_policy_fails_preflight(self):
+        """Spec with missing required policy should fail preflight."""
+        spec_dict = {
+            "schema": {"name": "aog_designspec", "version": "1.0.0"},
+            "meta": {"seed": 42, "input_units": "m"},
+            "policies": {
+                "ports": None,  # Explicitly null
+            },
+            "domains": {"main": {"type": "box", "x_min": -0.01, "x_max": 0.01, "y_min": -0.01, "y_max": 0.01, "z_min": -0.01, "z_max": 0.01}},
+            "components": [],
+        }
+        spec = DesignSpec.from_dict(spec_dict, fill_defaults=False)
+        
+        result = run_preflight_checks(spec.normalized, stages_to_run=["component_ports"])
+        
+        assert not result.success
+        assert any("MISSING_REQUIRED_POLICY" in e.code for e in result.errors)
+        assert any("ports" in e.message for e in result.errors)
+    
+    def test_unnormalized_domain_warns(self):
+        """Spec with unnormalized domain values should generate warnings."""
+        normalized_spec = {
+            "meta": {"seed": 42, "input_units": "m"},
+            "policies": {},
+            "domains": {
+                "main": {"type": "cylinder", "center": [0, 0, 0], "radius": 5.0, "height": 2.0}  # 5m radius - way too large
+            },
+            "components": [],
+        }
+        result = run_preflight_checks(normalized_spec)
+        
+        assert any("DOMAIN_NOT_NORMALIZED" in w.code for w in result.warnings)

@@ -15,12 +15,13 @@ Input units are specified via meta.input_units and converted on load.
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional, Union, Set
+from typing import Dict, Any, List, Optional, Union, Set, Tuple
 from pathlib import Path
 import json
 import hashlib
 import logging
 import copy
+import os
 
 from .schema import (
     SCHEMA_NAME,
@@ -30,6 +31,16 @@ from .schema import (
     SchemaValidationError,
 )
 from .compat import apply_all_aliases
+from .preflight import (
+    fill_policy_defaults,
+    run_preflight_checks,
+    create_unit_audit_report,
+    is_debug_mode,
+    PreflightValidationError,
+    UnitAuditReport,
+    PreflightResult,
+    DEBUG_ENV_VAR,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +180,7 @@ def _get_unit_scale(input_units: str) -> float:
     Parameters
     ----------
     input_units : str
-        Unit string: "m", "mm", or "um"
+        Unit string: "m", "mm", "cm", or "um"
         
     Returns
     -------
@@ -185,10 +196,12 @@ def _get_unit_scale(input_units: str) -> float:
         return 1.0
     elif input_units == "mm":
         return 1e-3
+    elif input_units == "cm":
+        return 1e-2
     elif input_units == "um":
         return 1e-6
     else:
-        raise ValueError(f"Unknown unit: '{input_units}'. Supported units: m, mm, um")
+        raise ValueError(f"Unknown unit: '{input_units}'. Supported units: m, mm, cm, um")
 
 
 def _convert_value(value: Any, scale: float) -> Any:
@@ -459,12 +472,21 @@ class DesignSpec:
         Stable content hash for reproducibility
     warnings : list of str
         Warnings generated during loading (aliases applied, etc.)
+    preflight_result : PreflightResult, optional
+        Result of preflight validation checks
+    unit_audit_report : UnitAuditReport, optional
+        Report of unit conversions (only in debug mode)
+    policies_filled : list of str
+        List of policies that were filled with defaults
     """
     raw: Dict[str, Any]
     normalized: Dict[str, Any]
     schema_info: SchemaInfo
     spec_hash: str
     warnings: List[str] = field(default_factory=list)
+    preflight_result: Optional[PreflightResult] = None
+    unit_audit_report: Optional[UnitAuditReport] = None
+    policies_filled: List[str] = field(default_factory=list)
     
     @property
     def meta(self) -> Dict[str, Any]:
@@ -541,6 +563,9 @@ class DesignSpec:
         spec_dict: Dict[str, Any],
         strict_schema: bool = False,
         allow_unknown_fields: bool = True,
+        fill_defaults: bool = True,
+        run_preflight: bool = True,
+        preflight_strict: bool = False,
     ) -> "DesignSpec":
         """
         Load and validate a spec from a dictionary.
@@ -554,6 +579,12 @@ class DesignSpec:
         allow_unknown_fields : bool
             If True (default), unknown fields generate warnings.
             If False and strict_schema=True, unknown fields raise errors.
+        fill_defaults : bool
+            If True (default), fill missing policies with defaults.
+        run_preflight : bool
+            If True (default), run preflight validation checks.
+        preflight_strict : bool
+            If True, preflight errors raise exceptions. Default False (warnings only).
             
         Returns
         -------
@@ -564,8 +595,13 @@ class DesignSpec:
         ------
         DesignSpecValidationError
             If validation fails
+        PreflightValidationError
+            If preflight_strict=True and preflight validation fails
         """
         warnings = []
+        policies_filled: List[str] = []
+        preflight_result: Optional[PreflightResult] = None
+        unit_audit_report: Optional[UnitAuditReport] = None
         
         spec, alias_warnings = apply_all_aliases(spec_dict)
         warnings.extend(alias_warnings)
@@ -599,7 +635,45 @@ class DesignSpec:
                     f"Unknown top-level keys (strict_schema=True): {unknown_keys}"
                 )
         
+        original_spec = copy.deepcopy(spec) if is_debug_mode() else None
+        
         normalized = _normalize_spec_to_meters(spec)
+        
+        if is_debug_mode() and original_spec is not None:
+            input_units = spec_dict.get("meta", {}).get("input_units", "m")
+            scale = _get_unit_scale(input_units)
+            unit_audit_report = create_unit_audit_report(
+                original_spec, normalized, input_units, scale
+            )
+            logger.info(
+                f"Unit audit: {len(unit_audit_report.entries)} fields converted "
+                f"from {input_units} to meters (scale={scale})"
+            )
+        
+        if fill_defaults:
+            filled_policies, filled_names = fill_policy_defaults(
+                normalized.get("policies", {}),
+                fill_nested=True,
+            )
+            normalized["policies"] = filled_policies
+            policies_filled = filled_names
+            if filled_names:
+                logger.info(f"Filled default policies: {', '.join(filled_names)}")
+        
+        if run_preflight:
+            preflight_result = run_preflight_checks(normalized)
+            
+            for error in preflight_result.errors:
+                logger.error(f"Preflight error [{error.code}]: {error.message}")
+                if error.suggestion:
+                    logger.error(f"  Suggestion: {error.suggestion}")
+            
+            for warning in preflight_result.warnings:
+                logger.warning(f"Preflight warning [{warning.code}]: {warning.message}")
+                warnings.append(f"[{warning.code}] {warning.message}")
+            
+            if preflight_strict and not preflight_result.success:
+                raise PreflightValidationError(preflight_result)
         
         schema_info = SchemaInfo.from_dict(spec.get("schema", {}))
         
@@ -611,6 +685,9 @@ class DesignSpec:
             schema_info=schema_info,
             spec_hash=spec_hash,
             warnings=warnings,
+            preflight_result=preflight_result,
+            unit_audit_report=unit_audit_report,
+            policies_filled=policies_filled,
         )
     
     @classmethod
@@ -619,6 +696,9 @@ class DesignSpec:
         path: Union[str, Path],
         strict_schema: bool = False,
         allow_unknown_fields: bool = True,
+        fill_defaults: bool = True,
+        run_preflight: bool = True,
+        preflight_strict: bool = False,
     ) -> "DesignSpec":
         """
         Load and validate a spec from a JSON file.
@@ -631,6 +711,12 @@ class DesignSpec:
             If True, unknown fields raise errors
         allow_unknown_fields : bool
             If True (default), unknown fields generate warnings
+        fill_defaults : bool
+            If True (default), fill missing policies with defaults.
+        run_preflight : bool
+            If True (default), run preflight validation checks.
+        preflight_strict : bool
+            If True, preflight errors raise exceptions. Default False (warnings only).
             
         Returns
         -------
@@ -648,6 +734,9 @@ class DesignSpec:
             spec_dict,
             strict_schema=strict_schema,
             allow_unknown_fields=allow_unknown_fields,
+            fill_defaults=fill_defaults,
+            run_preflight=run_preflight,
+            preflight_strict=preflight_strict,
         )
 
 
@@ -659,4 +748,5 @@ __all__ = [
     "POLICY_VOLUME_FIELDS",
     "NESTED_POLICY_FIELDS",
     "DOMAIN_LENGTH_FIELDS",
+    "_get_unit_scale",
 ]
