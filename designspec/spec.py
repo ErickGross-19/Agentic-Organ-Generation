@@ -55,6 +55,9 @@ POLICY_LENGTH_FIELDS: Dict[str, Set[str]] = {
     "pathfinding": {
         "clearance",
         "local_radius",
+        "pitch_coarse",
+        "pitch_fine",
+        "corridor_radius_buffer",
     },
     "ports": {
         "ridge_width",
@@ -84,22 +87,65 @@ POLICY_LENGTH_FIELDS: Dict[str, Set[str]] = {
     },
     "repair": {
         "voxel_pitch",
-        "min_component_volume",
     },
     "growth": {
         "min_segment_length",
         "max_segment_length",
         "step_size",
+        "min_radius",
     },
     "collision": {
         "collision_clearance",
     },
+    "unified_collision": {
+        "min_clearance",
+        "min_radius",
+    },
     "composition": {
-        "min_component_volume",
+        "repair_voxel_pitch",
+    },
+    "mesh_synthesis": {
+        "voxel_repair_pitch",
+        "radius_clamp_min",
+        "radius_clamp_max",
+    },
+    "mesh_merge": {
+        "voxel_pitch",
+    },
+    "network_cleanup": {
+        "snap_tol",
+        "min_segment_length",
+        "merge_tol",
+    },
+    "radius": {
+        "min_radius",
+        "max_radius",
     },
     "domain_meshing": {
     },
     "output": {
+    },
+}
+
+# Volume fields need scale³ conversion (cubic units)
+POLICY_VOLUME_FIELDS: Dict[str, Set[str]] = {
+    "repair": {
+        "min_component_volume",
+    },
+    "composition": {
+        "min_component_volume",
+    },
+    "mesh_merge": {
+        "min_component_volume",
+    },
+}
+
+# Nested policy mappings for recursive normalization
+NESTED_POLICY_FIELDS: Dict[str, Dict[str, str]] = {
+    "composition": {
+        "synthesis_policy": "mesh_synthesis",
+        "merge_policy": "mesh_merge",
+        "repair_policy": "repair",
     },
 }
 
@@ -168,13 +214,38 @@ def _normalize_policy_to_meters(
     policy_dict: Dict[str, Any],
     scale: float,
 ) -> Dict[str, Any]:
-    """Normalize length fields in a policy dict to meters."""
+    """
+    Normalize length and volume fields in a policy dict to meters.
+    
+    Handles:
+    - Length fields (multiply by scale)
+    - Volume fields (multiply by scale³)
+    - Nested policy dicts (recursive normalization)
+    - Domain meshing sub-policies
+    - Backend params in growth policy
+    """
     result = dict(policy_dict)
     length_fields = POLICY_LENGTH_FIELDS.get(policy_name, set())
+    volume_fields = POLICY_VOLUME_FIELDS.get(policy_name, set())
+    nested_policies = NESTED_POLICY_FIELDS.get(policy_name, {})
     
+    # Normalize length fields (scale)
     for field_name in length_fields:
         if field_name in result and result[field_name] is not None:
             result[field_name] = _convert_value(result[field_name], scale)
+    
+    # Normalize volume fields (scale³)
+    volume_scale = scale ** 3
+    for field_name in volume_fields:
+        if field_name in result and result[field_name] is not None:
+            result[field_name] = _convert_value(result[field_name], volume_scale)
+    
+    # Recursively normalize nested policy dicts
+    for nested_field, nested_policy_name in nested_policies.items():
+        if nested_field in result and isinstance(result[nested_field], dict):
+            result[nested_field] = _normalize_policy_to_meters(
+                nested_policy_name, result[nested_field], scale
+            )
     
     if policy_name == "resolution" and "input_units" in result:
         result["input_units"] = "m"
@@ -189,11 +260,32 @@ def _normalize_policy_to_meters(
                 "influence_radius", "kill_radius", "perception_radius",
                 "clearance", "min_radius", "max_radius",
                 "wall_margin_m", "terminal_radius",  # K-ary tree specific
+                "collision_clearance", "min_terminal_separation",  # CCO specific
             }
             for field_name in backend_length_fields:
                 if field_name in backend_params and backend_params[field_name] is not None:
                     backend_params[field_name] = _convert_value(backend_params[field_name], scale)
             result["backend_params"] = backend_params
+    
+    # Handle domain_meshing sub-policies
+    if policy_name == "domain_meshing":
+        # mesh_policy has repair_voxel_pitch
+        if "mesh_policy" in result and isinstance(result["mesh_policy"], dict):
+            mesh_policy = result["mesh_policy"]
+            if "repair_voxel_pitch" in mesh_policy and mesh_policy["repair_voxel_pitch"] is not None:
+                mesh_policy["repair_voxel_pitch"] = _convert_value(mesh_policy["repair_voxel_pitch"], scale)
+            result["mesh_policy"] = mesh_policy
+        
+        # implicit_policy has voxel_pitch
+        if "implicit_policy" in result and isinstance(result["implicit_policy"], dict):
+            implicit_policy = result["implicit_policy"]
+            if "voxel_pitch" in implicit_policy and implicit_policy["voxel_pitch"] is not None:
+                implicit_policy["voxel_pitch"] = _convert_value(implicit_policy["voxel_pitch"], scale)
+            result["implicit_policy"] = implicit_policy
+        
+        # top-level voxel_pitch in domain_meshing
+        if "voxel_pitch" in result and result["voxel_pitch"] is not None:
+            result["voxel_pitch"] = _convert_value(result["voxel_pitch"], scale)
     
     return result
 
@@ -564,5 +656,7 @@ __all__ = [
     "DesignSpecError",
     "DesignSpecValidationError",
     "POLICY_LENGTH_FIELDS",
+    "POLICY_VOLUME_FIELDS",
+    "NESTED_POLICY_FIELDS",
     "DOMAIN_LENGTH_FIELDS",
 ]
