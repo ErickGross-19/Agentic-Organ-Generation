@@ -593,7 +593,12 @@ class EmbeddingPolicy:
                 "converted to 'recarve'. The 'mask' mode was a no-op and is no longer supported."
             )
             d["preserve_mode"] = "recarve"
-        return EmbeddingPolicy(**{k: v for k, v in d.items() if k in EmbeddingPolicy.__dataclass_fields__})
+        # Filter out None values so dataclass defaults are used instead
+        # This prevents explicit null in JSON from overriding defaults
+        return EmbeddingPolicy(**{
+            k: v for k, v in d.items() 
+            if k in EmbeddingPolicy.__dataclass_fields__ and v is not None
+        })
 
 
 @dataclass
