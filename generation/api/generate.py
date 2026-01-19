@@ -417,7 +417,15 @@ def _generate_kary_tree(
     collision_policy: CollisionPolicy,
     seed: Optional[int],
 ) -> Tuple[VascularNetwork, Dict[str, Any]]:
-    """Generate network using k-ary tree recursive bifurcation via KaryTreeBackend."""
+    """Generate network using k-ary tree recursive bifurcation via KaryTreeBackend.
+    
+    The tree scale is determined by:
+    1. If growth_policy.step_size is explicitly set (> 0), use it as branch_length
+    2. Otherwise, let KaryTreeBackend compute branch_length from domain size
+       using tree_extent_fraction (default 0.4 = tree fills ~40% of domain)
+    
+    This ensures the tree scales appropriately with the domain size.
+    """
     from ..backends.kary_tree_backend import KaryTreeBackend, KaryTreeConfig
     
     # Get first inlet for the backend
@@ -433,13 +441,31 @@ def _generate_kary_tree(
     # Target terminals
     target = growth_policy.target_terminals or 128
     
+    # Determine branch_length: use explicit step_size if set, otherwise let
+    # KaryTreeBackend compute from domain size (branch_length=None triggers this)
+    explicit_branch_length = None
+    if growth_policy.step_size is not None and growth_policy.step_size > 0:
+        explicit_branch_length = growth_policy.step_size
+    
+    # Get tree_extent_fraction from growth_policy backend_params if available
+    backend_params = getattr(growth_policy, 'backend_params', {}) or {}
+    tree_extent_fraction = backend_params.get('tree_extent_fraction', 0.4)
+    branch_length_decay = backend_params.get('branch_length_decay', 0.8)
+    angle_deg = backend_params.get('angle_deg', 30.0)
+    angle_variation_deg = backend_params.get('angle_variation_deg', 5.0)
+    
     # Create backend config from growth policy
     config = KaryTreeConfig(
         k=2,
         target_terminals=target,
         terminal_tolerance=growth_policy.terminal_tolerance,
-        branch_length=growth_policy.step_size,
+        branch_length=explicit_branch_length,
+        branch_length_decay=branch_length_decay,
+        angle_deg=angle_deg,
+        angle_variation_deg=angle_variation_deg,
         min_radius=growth_policy.min_segment_length / 10,  # Approximate
+        tree_extent_fraction=tree_extent_fraction,
+        use_domain_scaling=(explicit_branch_length is None),
         seed=seed,
     )
     

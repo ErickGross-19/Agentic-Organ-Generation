@@ -1098,6 +1098,60 @@ def place_ports_on_domain(
     return result, report
 
 
+def project_position_to_face(
+    position: Tuple[float, float, float],
+    face: str,
+    domain: Union["BoxDomain", "CylinderDomain", "EllipsoidDomain"],
+) -> Tuple[Tuple[float, float, float], Tuple[float, float, float], float]:
+    """
+    Project a position onto a domain face.
+    
+    This function takes an explicit position and projects it onto the specified
+    face of the domain, preserving the x/y coordinates (relative to face center)
+    while setting the z coordinate to the face plane.
+    
+    Parameters
+    ----------
+    position : tuple of float
+        Original position (x, y, z) in meters
+    face : str
+        Face identifier ("top", "bottom", "+x", "-x", "+y", "-y", "+z", "-z")
+    domain : BoxDomain, CylinderDomain, or EllipsoidDomain
+        Domain to project onto
+        
+    Returns
+    -------
+    projected_position : tuple of float
+        Position projected onto the face (x, y, z) in meters
+    direction : tuple of float
+        Inward-pointing direction vector (unit length)
+    projection_distance : float
+        Distance the position was moved during projection
+    """
+    from .faces import validate_face, face_frame
+    
+    canonical_face = validate_face(face)
+    origin, normal, u_vec, v_vec, center = face_frame(canonical_face, domain)
+    
+    pos = np.array(position)
+    origin_pt = np.array(origin)
+    n = np.array(normal)
+    
+    # Project position onto face plane
+    # The face plane is defined by: (p - origin) . n = 0
+    # Projection: p_proj = p - ((p - origin) . n) * n
+    offset = np.dot(pos - origin_pt, n)
+    projected = pos - offset * n
+    
+    # Compute inward direction (opposite of outward normal)
+    inward_direction = tuple((-n).tolist())
+    
+    # Compute projection distance
+    projection_distance = abs(offset)
+    
+    return tuple(projected.tolist()), inward_direction, projection_distance
+
+
 __all__ = [
     "compute_effective_radius",
     "place_ports",
@@ -1105,6 +1159,7 @@ __all__ = [
     "place_ports_grid",
     "place_ports_center_rings",
     "place_ports_on_domain",
+    "project_position_to_face",
     "PlacementResult",
     "DomainAwarePlacementResult",
     "PortPlacementPolicy",
