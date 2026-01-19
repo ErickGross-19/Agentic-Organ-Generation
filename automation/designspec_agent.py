@@ -877,10 +877,22 @@ class DesignSpecAgent:
         
         policies = spec.get("policies", {})
         resolution = policies.get("resolution", {})
-        default_radius = resolution.get("min_channel_radius", None)
+        channels_policy = policies.get("channels", {})
         
-        if channel_radius is None and default_radius is not None:
-            channel_radius = default_radius
+        # Try to get radius from various policy sources (in order of preference)
+        # 1. User-specified radius from message (already parsed above)
+        # 2. min_channel_radius from resolution policy
+        # 3. default_radius from channels policy
+        # 4. Fallback to a reasonable default based on domain size
+        if channel_radius is None:
+            channel_radius = resolution.get("min_channel_radius")
+        if channel_radius is None:
+            channel_radius = channels_policy.get("default_radius")
+        if channel_radius is None:
+            # Use 5% of the smallest domain dimension as a reasonable default
+            domain_dims = [x_max - x_min, y_max - y_min, z_max - z_min]
+            min_dim = min(domain_dims)
+            channel_radius = min_dim * 0.05  # 5% of smallest dimension
         
         mentions_left_right = "left" in message_lower or "right" in message_lower
         mentions_through = "through" in message_lower or "straight" in message_lower
@@ -906,6 +918,7 @@ class DesignSpecAgent:
                             "name": "channel_inlet",
                             "position": inlet_pos,
                             "direction": inlet_dir,
+                            "radius": channel_radius,
                             "vessel_type": "arterial",
                         }
                     ],
@@ -914,6 +927,7 @@ class DesignSpecAgent:
                             "name": "channel_outlet",
                             "position": outlet_pos,
                             "direction": outlet_dir,
+                            "radius": channel_radius,
                             "vessel_type": "arterial",
                         }
                     ],
@@ -923,18 +937,11 @@ class DesignSpecAgent:
                 },
             }
             
-            if channel_radius is not None:
-                new_channel["ports"]["inlets"][0]["radius"] = channel_radius
-                new_channel["ports"]["outlets"][0]["radius"] = channel_radius
-            
             patches.append({
                 "op": "add",
                 "path": "/components/-",
                 "value": new_channel,
             })
-            
-            if channel_radius is None:
-                self._pending_channel_radius_confirmation = True
         
         return patches
     

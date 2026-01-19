@@ -276,6 +276,61 @@ class TestAgentChannelParsing:
         assert len(inlets) > 0, "Channel should have inlet"
         assert len(outlets) > 0, "Channel should have outlet"
 
+    def test_channel_ports_always_have_radius(self):
+        """
+        Regression test: Channel ports must always have a radius field.
+        
+        This prevents 'unsupported format string passed to NoneType.__format__'
+        errors during embedding when downstream code tries to format the radius.
+        """
+        agent = DesignSpecAgent()
+        spec = {
+            "schema": {"name": "aog_designspec", "version": "1.0"},
+            "meta": {"name": "Test"},
+            "policies": {},
+            "domains": {
+                "main_domain": {
+                    "type": "box",
+                    "x_min": -10, "x_max": 10,
+                    "y_min": -10, "y_max": 10,
+                    "z_min": -10, "z_max": 10,
+                }
+            },
+            "components": [],
+        }
+        
+        response = agent.process_message(
+            "Add a straight channel through it",
+            spec,
+        )
+        
+        assert response.response_type == AgentResponseType.PATCH_PROPOSAL
+        assert response.patch_proposal is not None
+        
+        patches = response.patch_proposal.patches
+        component_patch = next(
+            (p for p in patches if "/components" in p.get("path", "")),
+            None
+        )
+        assert component_patch is not None
+        
+        component_value = component_patch.get("value", {})
+        ports = component_value.get("ports", {})
+        inlets = ports.get("inlets", [])
+        outlets = ports.get("outlets", [])
+        
+        for i, inlet in enumerate(inlets):
+            assert "radius" in inlet, f"Inlet {i} must have radius field"
+            assert inlet["radius"] is not None, f"Inlet {i} radius must not be None"
+            assert isinstance(inlet["radius"], (int, float)), f"Inlet {i} radius must be numeric"
+            assert inlet["radius"] > 0, f"Inlet {i} radius must be positive"
+        
+        for i, outlet in enumerate(outlets):
+            assert "radius" in outlet, f"Outlet {i} must have radius field"
+            assert outlet["radius"] is not None, f"Outlet {i} radius must not be None"
+            assert isinstance(outlet["radius"], (int, float)), f"Outlet {i} radius must be numeric"
+            assert outlet["radius"] > 0, f"Outlet {i} radius must be positive"
+
     def test_parse_straight_channel_through(self):
         """Test parsing 'straight channel through it' creates primitive_channels component."""
         agent = DesignSpecAgent()
