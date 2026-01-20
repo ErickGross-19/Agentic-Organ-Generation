@@ -331,13 +331,6 @@ class SpaceColonizationBackend(GenerationBackend):
         else:
             all_tissue_points = np.zeros((0, 3))
         
-        sc_params = SCParams(
-            influence_radius=config.attraction_distance,
-            kill_radius=config.kill_distance,
-            step_size=config.step_size,
-            vessel_type=vessel_type,
-        )
-        
         # Pre-compute all inlet positions for spatial partitioning
         inlet_positions = np.array([inlet.get("position", [0, 0, 0]) for inlet in inlets])
         
@@ -356,6 +349,20 @@ class SpaceColonizationBackend(GenerationBackend):
                     dir_arr = dir_arr / np.linalg.norm(dir_arr)
                     inlet_direction = Direction3D.from_array(dir_arr)
             
+            inlet_dir_arr = inlet_direction.to_array()
+            
+            # Create per-inlet params with directional constraints to enforce growth
+            # in the inlet's direction (typically downward) rather than towards other inlets
+            sc_params = SCParams(
+                influence_radius=config.attraction_distance,
+                kill_radius=config.kill_distance,
+                step_size=config.step_size,
+                vessel_type=vessel_type,
+                preferred_direction=tuple(inlet_dir_arr),
+                directional_bias=0.7,  # Strong bias towards inlet direction
+                max_deviation_deg=75.0,  # Limit deviation from inlet direction
+            )
+            
             # Filter tissue points using spatial partitioning (Voronoi-like regions)
             # Each inlet only sees points that are closer to it than to any other inlet
             # This prevents trees from growing towards each other
@@ -367,7 +374,6 @@ class SpaceColonizationBackend(GenerationBackend):
             )
             
             # Additionally filter by direction to ensure downward growth
-            inlet_dir_arr = inlet_direction.to_array()
             tissue_points = self._filter_tissue_points_by_direction(
                 tissue_points,
                 inlet_position,
