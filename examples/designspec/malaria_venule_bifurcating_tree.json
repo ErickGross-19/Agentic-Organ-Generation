@@ -115,7 +115,7 @@
     "growth": {
       "enabled": true,
       "backend": "kary_tree",
-      "target_terminals": 128,
+      "target_terminals": 256,
       "terminal_tolerance": 0.1,
       "max_iterations": 200,
       "seed": null,
@@ -184,8 +184,8 @@
       "pattern": "explicit",
       "pattern_params": {},
       "projection_mode": "clamp_to_face",
-      "ridge_width": 0.0001,
-      "ridge_clearance": 0.0001,
+      "ridge_width": 0.0003,
+      "ridge_clearance": 0.0003,
       "port_margin": 0.0005,
       "disk_constraint_enabled": true,
       "ridge_constraint_enabled": true,
@@ -488,7 +488,7 @@
         "backend": "kary_tree",
         "backend_params": {
           "K": 2,
-          "num_levels": 7,
+          "num_levels": 9,
           "terminal_radius": 0.0001
         }
       },
