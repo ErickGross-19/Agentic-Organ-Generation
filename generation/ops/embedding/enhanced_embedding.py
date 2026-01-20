@@ -497,6 +497,7 @@ def voxel_recarve_ports(
     """
     import trimesh
     from trimesh.voxel import VoxelGrid
+    from scipy import ndimage
     
     # Defensive None handling for parameters that may be passed as None from policy
     if voxel_pitch is None:
@@ -628,8 +629,6 @@ def voxel_recarve_ports(
                 
                 # Check if carve reached boundary
                 if voxels_carved > 0:
-                    from scipy import ndimage
-                    
                     non_solid = ~aligned_solid
                     boundary_region = ndimage.binary_dilation(non_solid, iterations=1) & aligned_solid
                     reached_boundary = bool(np.any(voxels_to_carve & boundary_region))
