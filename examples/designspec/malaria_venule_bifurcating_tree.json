@@ -410,11 +410,12 @@
             "direction": [
               0.0,
               0.0,
-              1.0
+              -1.0
             ],
             "radius": 0.0005,
             "vessel_type": "arterial",
-            "is_surface_opening": true
+            "is_surface_opening": true,
+            "_comment": "Direction must point into the domain (inward/down for top-face inlets)"
           },
           {
             "name": "inlet_ring_1",
@@ -426,7 +427,7 @@
             "direction": [
               0.0,
               0.0,
-              1.0
+              -1.0
             ],
             "radius": 0.0004,
             "vessel_type": "arterial",
@@ -442,7 +443,7 @@
             "direction": [
               0.0,
               0.0,
-              1.0
+              -1.0
             ],
             "radius": 0.0004,
             "vessel_type": "arterial",
@@ -458,7 +459,7 @@
             "direction": [
               0.0,
               0.0,
-              1.0
+              -1.0
             ],
             "radius": 0.0004,
             "vessel_type": "arterial",
@@ -474,7 +475,7 @@
             "direction": [
               0.0,
               0.0,
-              1.0
+              -1.0
             ],
             "radius": 0.0004,
             "vessel_type": "arterial",
