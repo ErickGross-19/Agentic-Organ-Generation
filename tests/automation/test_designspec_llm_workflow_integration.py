@@ -274,3 +274,223 @@ class TestDirectiveIntegration:
         assert restored.assistant_message == original.assistant_message
         assert len(restored.questions) == len(original.questions)
         assert len(restored.proposed_patches) == len(original.proposed_patches)
+
+
+class MockLLMClientThatRaises:
+    """Mock LLM client that raises an exception."""
+    
+    def __init__(self, exception_type=Exception, exception_message="Test error"):
+        self.exception_type = exception_type
+        self.exception_message = exception_message
+        self.call_count = 0
+    
+    def chat(self, messages: list, **kwargs) -> str:
+        self.call_count += 1
+        raise self.exception_type(self.exception_message)
+
+
+class MockLegacyAgent:
+    """Mock legacy agent for testing fallback behavior."""
+    
+    def __init__(self, response_type="PATCH_PROPOSAL"):
+        self.response_type = response_type
+        self.process_message_called = False
+        self._conversation_history = []
+    
+    def process_message(self, user_message, spec, validation_report=None, compile_report=None):
+        from automation.designspec_agent import AgentResponse, AgentResponseType
+        from automation.designspec_session import PatchProposal
+        
+        self.process_message_called = True
+        
+        if self.response_type == "PATCH_PROPOSAL":
+            return AgentResponse(
+                response_type=AgentResponseType.PATCH_PROPOSAL,
+                message="Legacy agent response",
+                patch_proposal=PatchProposal(
+                    patch_id="test_patch",
+                    patches=[{"op": "add", "path": "/test", "value": 1}],
+                    explanation="Legacy patch explanation",
+                ),
+            )
+        elif self.response_type == "QUESTION":
+            from automation.designspec_agent import Question
+            return AgentResponse(
+                response_type=AgentResponseType.QUESTION,
+                message="Legacy question response",
+                questions=[Question(
+                    field_path="/test",
+                    question_text="What value?",
+                )],
+            )
+        else:
+            return AgentResponse(
+                response_type=AgentResponseType.MESSAGE,
+                message="Legacy message response",
+            )
+
+
+class TestLLMFallbackWarning:
+    """Tests for LLM fallback warning behavior."""
+    
+    def test_fallback_notice_in_message_on_llm_exception(self):
+        """When LLM raises exception, fallback notice should appear in response message."""
+        mock_session = MagicMock()
+        mock_session.get_spec.return_value = {}
+        mock_session.project_dir = Path("/tmp/test")
+        
+        mock_llm = MockLLMClientThatRaises(
+            exception_type=Exception,
+            exception_message="API connection failed"
+        )
+        mock_legacy = MockLegacyAgent(response_type="MESSAGE")
+        
+        agent = DesignSpecLLMAgent(
+            session=mock_session,
+            llm_client=mock_llm,
+            legacy_agent=mock_legacy,
+        )
+        
+        response = agent.process_message("Create a domain")
+        
+        # Verify fallback notice is in the message
+        assert "LLM failed" in response.message
+        assert "Falling back to legacy parser" in response.message
+        assert "Exception" in response.message
+        assert mock_legacy.process_message_called
+    
+    def test_fallback_notice_in_patch_proposal_explanation(self):
+        """When LLM fails and legacy returns patch proposal, notice should be in explanation."""
+        mock_session = MagicMock()
+        mock_session.get_spec.return_value = {}
+        mock_session.project_dir = Path("/tmp/test")
+        
+        mock_llm = MockLLMClientThatRaises(
+            exception_type=ValueError,
+            exception_message="Invalid response format"
+        )
+        mock_legacy = MockLegacyAgent(response_type="PATCH_PROPOSAL")
+        
+        agent = DesignSpecLLMAgent(
+            session=mock_session,
+            llm_client=mock_llm,
+            legacy_agent=mock_legacy,
+        )
+        
+        response = agent.process_message("Add a component")
+        
+        # Verify fallback notice is in both message and patch explanation
+        assert "LLM failed" in response.message
+        assert response.patch_proposal is not None
+        assert "LLM failed" in response.patch_proposal.explanation
+        assert "Falling back to legacy parser" in response.patch_proposal.explanation
+    
+    def test_fallback_notice_sanitizes_long_error_messages(self):
+        """Error messages should be truncated to avoid leaking too much info."""
+        mock_session = MagicMock()
+        mock_session.get_spec.return_value = {}
+        mock_session.project_dir = Path("/tmp/test")
+        
+        # Create a very long error message
+        long_error = "A" * 500
+        mock_llm = MockLLMClientThatRaises(
+            exception_type=Exception,
+            exception_message=long_error
+        )
+        mock_legacy = MockLegacyAgent(response_type="MESSAGE")
+        
+        agent = DesignSpecLLMAgent(
+            session=mock_session,
+            llm_client=mock_llm,
+            legacy_agent=mock_legacy,
+        )
+        
+        response = agent.process_message("Test message")
+        
+        # The error message should be truncated (200 chars max + "...")
+        assert "LLM failed" in response.message
+        # The full 500-char error should not appear
+        assert long_error not in response.message
+        assert "..." in response.message  # Should be truncated
+    
+    def test_fallback_notice_redacts_potential_api_keys(self):
+        """Potential API keys in error messages should be redacted."""
+        mock_session = MagicMock()
+        mock_session.get_spec.return_value = {}
+        mock_session.project_dir = Path("/tmp/test")
+        
+        # Error message containing something that looks like an API key
+        api_key_like = "sk-" + "a" * 48  # 51 chars total, looks like OpenAI key
+        mock_llm = MockLLMClientThatRaises(
+            exception_type=Exception,
+            exception_message=f"Auth failed with key {api_key_like}"
+        )
+        mock_legacy = MockLegacyAgent(response_type="MESSAGE")
+        
+        agent = DesignSpecLLMAgent(
+            session=mock_session,
+            llm_client=mock_llm,
+            legacy_agent=mock_legacy,
+        )
+        
+        response = agent.process_message("Test message")
+        
+        # The API key should be redacted
+        assert api_key_like not in response.message
+        assert "[REDACTED]" in response.message
+    
+    def test_turn_log_saved_on_fallback(self):
+        """Turn logs should be saved even when falling back to legacy agent."""
+        mock_session = MagicMock()
+        mock_session.get_spec.return_value = {}
+        mock_session.project_dir = Path("/tmp/test")
+        
+        mock_llm = MockLLMClientThatRaises()
+        mock_legacy = MockLegacyAgent(response_type="MESSAGE")
+        
+        agent = DesignSpecLLMAgent(
+            session=mock_session,
+            llm_client=mock_llm,
+            legacy_agent=mock_legacy,
+        )
+        
+        # Mock _save_turn_log to track if it's called
+        save_called = []
+        original_save = agent._save_turn_log
+        def mock_save(turn_log):
+            save_called.append(turn_log)
+        agent._save_turn_log = mock_save
+        
+        response = agent.process_message("Test message")
+        
+        # Verify turn log was saved
+        assert len(save_called) == 1
+        assert save_called[0].user_message == "Test message"
+        assert len(save_called[0].errors) > 0  # Should have recorded the error
+    
+    def test_conversation_history_synced_to_legacy_agent(self):
+        """Conversation history should be synced to legacy agent on fallback."""
+        mock_session = MagicMock()
+        mock_session.get_spec.return_value = {}
+        mock_session.project_dir = Path("/tmp/test")
+        
+        mock_llm = MockLLMClientThatRaises()
+        mock_legacy = MockLegacyAgent(response_type="MESSAGE")
+        
+        agent = DesignSpecLLMAgent(
+            session=mock_session,
+            llm_client=mock_llm,
+            legacy_agent=mock_legacy,
+        )
+        
+        # Add some history before the failing call
+        agent._conversation_history = [
+            {"role": "user", "content": "Previous message"},
+            {"role": "assistant", "content": "Previous response"},
+        ]
+        
+        response = agent.process_message("New message")
+        
+        # Legacy agent should have received the conversation history
+        # (including the new message that was added before fallback)
+        assert len(mock_legacy._conversation_history) >= 2
