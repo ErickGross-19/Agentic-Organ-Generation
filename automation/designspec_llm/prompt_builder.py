@@ -147,6 +147,99 @@ When debugging, prefer early stages first.
 
 ---
 
+## DesignSpec JSON Schema Reference (CRITICAL)
+
+When creating or patching the spec, you MUST use the correct field names and structure. Here are the key schemas:
+
+### Domain Schema (REQUIRED: `type` field)
+
+Every domain MUST have a `"type"` field. Available domain types:
+
+**Box domain:**
+```json
+{
+  "type": "box",
+  "x_min": -10, "x_max": 10,
+  "y_min": -10, "y_max": 10,
+  "z_min": -5, "z_max": 5
+}
+```
+
+**Cylinder domain:**
+```json
+{
+  "type": "cylinder",
+  "center": [0, 0, 0],
+  "radius": 5.0,
+  "height": 2.0
+}
+```
+Note: Cylinder is oriented along Z-axis. `center` is the center of the cylinder, `height` is total height (extends height/2 above and below center).
+
+**Sphere domain:**
+```json
+{
+  "type": "sphere",
+  "center": [0, 0, 0],
+  "radius": 5.0
+}
+```
+
+### Component Schema
+
+Components define vascular networks within domains:
+```json
+{
+  "id": "main_network",
+  "domain_ref": "cylinder_domain",
+  "ports": {
+    "inlets": [
+      {
+        "name": "inlet_top",
+        "position": [0, 0, 1.0],
+        "direction": [0, 0, -1],
+        "radius": 0.3,
+        "vessel_type": "arterial"
+      }
+    ],
+    "outlets": []
+  },
+  "build": {
+    "type": "backend_network",
+    "backend": "space_colonization",
+    "backend_params": {}
+  }
+}
+```
+
+### Features Schema
+
+**Ridges** (raised edges on domain faces):
+```json
+{
+  "features": {
+    "ridges": {
+      "faces": ["+z"],
+      "width": 0.5,
+      "height": 0.5
+    }
+  }
+}
+```
+Valid faces: "+x", "-x", "+y", "-y", "+z", "-z", "top" (alias for +z), "bottom" (alias for -z)
+
+**Channels** (holes/tubes through the domain):
+Channels are typically defined in the component's build section or via policies.
+
+### Common Mistakes to Avoid
+
+1. **Missing `type` field in domains** - ALWAYS include `"type": "box"` or `"type": "cylinder"` etc.
+2. **Wrong field names** - Use `radius` not `r`, use `height` not `h`, use `center` not `origin`
+3. **Incorrect units** - All dimensions should be in the spec's `input_units` (typically mm)
+4. **Missing domain_ref in components** - Components must reference a valid domain by name
+
+---
+
 ## Decision rules you must follow
 
 ### 1) Patch minimalism
