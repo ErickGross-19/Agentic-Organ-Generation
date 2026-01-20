@@ -229,12 +229,17 @@ class DesignSpecLLMAgent:
             except DirectiveParseError as e:
                 logger.warning(f"LLM response parsing failed: {e}")
                 turn_log.errors.append(f"Parse error: {e}")
+                fallback_notice = self._build_fallback_notice("DirectiveParseError", str(e))
                 # Fall through to fallback
                 
             except Exception as e:
                 logger.exception(f"LLM call failed: {e}")
                 turn_log.errors.append(f"LLM error: {e}")
+                fallback_notice = self._build_fallback_notice(type(e).__name__, str(e))
                 # Fall through to fallback
+        else:
+            # No LLM client available
+            fallback_notice = self._build_fallback_notice("NoLLMClient", "LLM client not initialized")
         
         # Fallback to legacy agent or error response
         if self.legacy_agent:
@@ -251,7 +256,12 @@ class DesignSpecLLMAgent:
                 validation_report=validation_report,
                 compile_report=compile_report,
             )
+            
+            # Prepend fallback notice to response message and patch explanation
+            response = self._prepend_fallback_notice(response, fallback_notice)
+            
             self._turn_logs.append(turn_log)
+            self._save_turn_log(turn_log)  # Save turn log for fallback turns too
             return response
         
         # No LLM and no legacy agent - return error
@@ -519,6 +529,91 @@ class DesignSpecLLMAgent:
                 f.write(json.dumps(turn_log.to_dict()) + "\n")
         except Exception as e:
             logger.warning(f"Failed to save turn log: {e}")
+    
+    def _build_fallback_notice(self, error_type: str, error_message: str) -> str:
+        """
+        Build a user-friendly fallback notice for LLM failures.
+        
+        Parameters
+        ----------
+        error_type : str
+            The type/class name of the error
+        error_message : str
+            The error message (will be sanitized and truncated)
+            
+        Returns
+        -------
+        str
+            A formatted fallback notice string
+        """
+        # Sanitize error message: remove potential secrets (API keys, tokens, etc.)
+        # Look for common patterns that might contain secrets
+        import re
+        sanitized = error_message
+        
+        # Remove potential API keys (long alphanumeric strings)
+        sanitized = re.sub(r'[A-Za-z0-9_-]{32,}', '[REDACTED]', sanitized)
+        # Remove potential bearer tokens
+        sanitized = re.sub(r'Bearer\s+\S+', 'Bearer [REDACTED]', sanitized, flags=re.IGNORECASE)
+        # Remove potential URLs with credentials
+        sanitized = re.sub(r'://[^@]+@', '://[REDACTED]@', sanitized)
+        
+        # Truncate to ~200 chars
+        max_len = 200
+        if len(sanitized) > max_len:
+            sanitized = sanitized[:max_len - 3] + "..."
+        
+        return f"⚠️ LLM failed ({error_type}: {sanitized}). Falling back to legacy parser.\n\n"
+    
+    def _prepend_fallback_notice(
+        self,
+        response: "AgentResponse",
+        fallback_notice: str,
+    ) -> "AgentResponse":
+        """
+        Prepend a fallback notice to an AgentResponse.
+        
+        Modifies the response message, patch proposal explanation (if present),
+        and question text (if present) to include the fallback notice.
+        
+        Parameters
+        ----------
+        response : AgentResponse
+            The response from the legacy agent
+        fallback_notice : str
+            The fallback notice to prepend
+            
+        Returns
+        -------
+        AgentResponse
+            The modified response with fallback notice prepended
+        """
+        from ..designspec_agent import AgentResponse, AgentResponseType
+        
+        # Prepend to main message
+        new_message = fallback_notice + response.message
+        
+        # Prepend to patch proposal explanation if present
+        new_patch_proposal = response.patch_proposal
+        if new_patch_proposal and hasattr(new_patch_proposal, 'explanation'):
+            new_patch_proposal.explanation = fallback_notice + (new_patch_proposal.explanation or "")
+        
+        # Prepend to first question if this is a QUESTION response
+        new_questions = response.questions
+        if response.response_type == AgentResponseType.QUESTION and new_questions:
+            # Modify the first question's text to include the notice
+            first_q = new_questions[0]
+            if hasattr(first_q, 'question_text'):
+                first_q.question_text = fallback_notice + first_q.question_text
+        
+        # Return a new response with the modified fields
+        return AgentResponse(
+            response_type=response.response_type,
+            message=new_message,
+            questions=new_questions,
+            patch_proposal=new_patch_proposal,
+            run_request=response.run_request,
+        )
     
     def record_patch_applied(self, patch_id: str, success: bool) -> None:
         """

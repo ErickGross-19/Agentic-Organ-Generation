@@ -1184,6 +1184,9 @@ class MainWindow:
             If True, use the legacy rule-based agent instead of the LLM-first agent.
             Default is False (use LLM-first agent, recommended).
         """
+        from tkinter import messagebox
+        from automation.agent_config import AgentConfiguration
+        
         if not hasattr(self, '_designspec_manager') or self._designspec_manager is None:
             self._designspec_manager = DesignSpecWorkflowManager(
                 message_callback=self._on_workflow_message,
@@ -1197,7 +1200,45 @@ class MainWindow:
         else:
             self._designspec_manager._use_legacy_agent = use_legacy_agent
         
-        if hasattr(self, '_agent_config') and self._agent_config:
+        # For LLM-first mode, require successful LLM initialization
+        if not use_legacy_agent:
+            # Determine config: use _agent_config if exists, otherwise use default
+            if hasattr(self, '_agent_config') and self._agent_config:
+                config = self._agent_config
+            else:
+                # Use default config (allows env-var-based keys to work)
+                config = AgentConfiguration()
+            
+            llm_init_success = self._designspec_manager.initialize_llm(
+                provider=config.provider,
+                api_key=config.api_key,
+                model=config.model,
+                api_base=config.api_base,
+                temperature=config.temperature,
+                max_tokens=config.max_tokens,
+            )
+            
+            if not llm_init_success:
+                # Show error dialog and abort
+                error_msg = self._designspec_manager.last_llm_init_error or "Unknown error"
+                messagebox.showerror(
+                    "LLM Initialization Failed",
+                    f"Failed to initialize LLM for LLM-first mode.\n\n"
+                    f"Provider: {config.provider}\n"
+                    f"Model: {config.model or 'default'}\n\n"
+                    f"Error: {error_msg}\n\n"
+                    f"Please open Agent Config and set a valid API key, "
+                    f"or set the provider environment variable (e.g., OPENAI_API_KEY)."
+                )
+                # Also append error to chat for visibility
+                self._append_chat(
+                    "error",
+                    f"LLM initialization failed: {error_msg}. "
+                    f"Please configure a valid API key in Agent Config."
+                )
+                return  # Do NOT proceed to create/load project
+        elif hasattr(self, '_agent_config') and self._agent_config:
+            # Legacy mode with config available - still try to init LLM (optional)
             config = self._agent_config
             self._designspec_manager.initialize_llm(
                 provider=config.provider,
