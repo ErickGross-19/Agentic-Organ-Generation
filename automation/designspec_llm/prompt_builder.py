@@ -151,6 +151,35 @@ When debugging, prefer early stages first.
 
 When creating or patching the spec, you MUST use the correct field names and structure. Here are the key schemas:
 
+### Top-Level Spec Structure (REQUIRED)
+
+Every DesignSpec MUST have these top-level sections:
+```json
+{
+  "schema": {
+    "name": "aog_designspec",
+    "version": "1.0.0"
+  },
+  "meta": {
+    "name": "project_name",
+    "description": "Description of the project",
+    "seed": 42,
+    "input_units": "mm"
+  },
+  "policies": {},
+  "domains": {},
+  "components": [],
+  "features": {}
+}
+```
+
+**Required fields:**
+- `schema.name`: MUST be "aog_designspec"
+- `schema.version`: MUST be "1.0.0"
+- `meta.name`: Project name (string)
+- `meta.input_units`: MUST be "mm" (millimeters)
+- `meta.seed`: Random seed for reproducibility (integer)
+
 ### Domain Schema (REQUIRED: `type` field)
 
 Every domain MUST have a `"type"` field. Available domain types:
@@ -164,6 +193,7 @@ Every domain MUST have a `"type"` field. Available domain types:
   "z_min": -5, "z_max": 5
 }
 ```
+Required fields: `type`, `x_min`, `x_max`, `y_min`, `y_max`, `z_min`, `z_max`
 
 **Cylinder domain:**
 ```json
@@ -174,6 +204,7 @@ Every domain MUST have a `"type"` field. Available domain types:
   "height": 2.0
 }
 ```
+Required fields: `type`, `center`, `radius`, `height`
 Note: Cylinder is oriented along Z-axis. `center` is the center of the cylinder, `height` is total height (extends height/2 above and below center).
 
 **Sphere domain:**
@@ -184,10 +215,52 @@ Note: Cylinder is oriented along Z-axis. `center` is the center of the cylinder,
   "radius": 5.0
 }
 ```
+Required fields: `type`, `center`, `radius`
 
-### Component Schema
+### Component Schema (CRITICAL - Must follow exactly)
 
-Components define vascular networks within domains:
+Components define vascular networks within domains. Each component MUST have:
+- `id`: Unique string identifier
+- `domain_ref`: Reference to a domain name defined in `domains`
+- `ports`: Object with `inlets` and `outlets` arrays
+- `build`: Object specifying how to generate the component
+
+**Valid build types:**
+1. `"backend_network"` - Generate vascular network using a backend algorithm
+2. `"primitive_channels"` - Create simple channel/tube geometry from ports
+3. `"channel"` - Alias for "primitive_channels"
+4. `"import_void_mesh"` - Import an external mesh file
+
+**Valid backends (for backend_network build type):**
+1. `"space_colonization"` - Organic tree growth using attractor points (RECOMMENDED)
+2. `"cco_hybrid"` - Constrained Constructive Optimization with Murray's Law
+
+### Port Schema (CRITICAL - All fields required)
+
+Each port (inlet or outlet) MUST have ALL of these fields:
+```json
+{
+  "name": "inlet_top",
+  "position": [0, 0, 5.0],
+  "direction": [0, 0, -1],
+  "radius": 0.3,
+  "vessel_type": "arterial"
+}
+```
+
+**Required port fields:**
+- `name`: Unique string identifier for the port
+- `position`: [x, y, z] array - position in domain coordinates (mm)
+- `direction`: [x, y, z] array - direction vector (points INTO the domain for inlets)
+- `radius`: Port radius in mm (typically 0.1-0.5 for small vessels)
+- `vessel_type`: MUST be "arterial" or "venous"
+
+**Optional port fields:**
+- `is_surface_opening`: boolean (default false) - whether port is on domain surface
+
+### Complete Component Examples
+
+**Example 1: Space Colonization Network (most common)**
 ```json
 {
   "id": "main_network",
@@ -195,7 +268,7 @@ Components define vascular networks within domains:
   "ports": {
     "inlets": [
       {
-        "name": "inlet_top",
+        "name": "inlet_center",
         "position": [0, 0, 1.0],
         "direction": [0, 0, -1],
         "radius": 0.3,
@@ -207,6 +280,67 @@ Components define vascular networks within domains:
   "build": {
     "type": "backend_network",
     "backend": "space_colonization",
+    "backend_params": {
+      "influence_radius": 2.0,
+      "kill_radius": 0.5,
+      "perception_angle": 90,
+      "num_attraction_points": 200
+    }
+  }
+}
+```
+
+**Example 2: Simple Channel (primitive_channels)**
+```json
+{
+  "id": "center_channel",
+  "domain_ref": "cylinder_domain",
+  "ports": {
+    "inlets": [
+      {
+        "name": "channel_inlet",
+        "position": [0, 0, 1.0],
+        "direction": [0, 0, -1],
+        "radius": 0.3,
+        "vessel_type": "arterial"
+      }
+    ],
+    "outlets": []
+  },
+  "build": {
+    "type": "primitive_channels"
+  }
+}
+```
+
+**Example 3: CCO Hybrid Network**
+```json
+{
+  "id": "cco_network",
+  "domain_ref": "box_domain",
+  "ports": {
+    "inlets": [
+      {
+        "name": "inlet_top",
+        "position": [0, 0, 5],
+        "direction": [0, 0, -1],
+        "radius": 0.3,
+        "vessel_type": "arterial"
+      }
+    ],
+    "outlets": [
+      {
+        "name": "outlet_bottom",
+        "position": [0, 0, -5],
+        "direction": [0, 0, 1],
+        "radius": 0.25,
+        "vessel_type": "venous"
+      }
+    ]
+  },
+  "build": {
+    "type": "backend_network",
+    "backend": "cco_hybrid",
     "backend_params": {}
   }
 }
@@ -214,22 +348,218 @@ Components define vascular networks within domains:
 
 ### Features Schema
 
-**Ridges** (raised edges on domain faces):
+**Ridges** (raised edges on domain faces) - supports TWO formats:
+
+Format 1 (dictionary with faces array):
 ```json
 {
   "features": {
     "ridges": {
       "faces": ["+z"],
       "width": 0.5,
-      "height": 0.5
+      "height": 0.5,
+      "domain_ref": "cylinder_domain"
     }
   }
 }
 ```
-Valid faces: "+x", "-x", "+y", "-y", "+z", "-z", "top" (alias for +z), "bottom" (alias for -z)
 
-**Channels** (holes/tubes through the domain):
-Channels are typically defined in the component's build section or via policies.
+Format 2 (list of individual ridge objects):
+```json
+{
+  "features": {
+    "ridges": [
+      {
+        "face": "+z",
+        "width": 0.5,
+        "height": 0.5,
+        "domain_ref": "cylinder_domain"
+      }
+    ]
+  }
+}
+```
+
+Valid face values: "+x", "-x", "+y", "-y", "+z", "-z", "top" (alias for +z), "bottom" (alias for -z)
+
+### Complete Working Example Specs
+
+**EXAMPLE A: Minimal Cylinder with Space Colonization Network**
+```json
+{
+  "schema": {"name": "aog_designspec", "version": "1.0.0"},
+  "meta": {
+    "name": "minimal_cylinder_network",
+    "description": "Cylinder domain with space colonization vascular network",
+    "seed": 42,
+    "input_units": "mm"
+  },
+  "policies": {},
+  "domains": {
+    "cylinder_domain": {
+      "type": "cylinder",
+      "center": [0, 0, 0],
+      "radius": 5.0,
+      "height": 2.0
+    }
+  },
+  "components": [
+    {
+      "id": "main_network",
+      "domain_ref": "cylinder_domain",
+      "ports": {
+        "inlets": [
+          {
+            "name": "inlet_center",
+            "position": [0, 0, 1.0],
+            "direction": [0, 0, -1],
+            "radius": 0.3,
+            "vessel_type": "arterial"
+          }
+        ],
+        "outlets": []
+      },
+      "build": {
+        "type": "backend_network",
+        "backend": "space_colonization",
+        "backend_params": {
+          "influence_radius": 2.0,
+          "kill_radius": 0.5,
+          "perception_angle": 90,
+          "num_attraction_points": 200
+        }
+      }
+    }
+  ],
+  "features": {}
+}
+```
+
+**EXAMPLE B: Box Domain with Network and Channel**
+```json
+{
+  "schema": {"name": "aog_designspec", "version": "1.0.0"},
+  "meta": {
+    "name": "box_with_network_and_channel",
+    "description": "Box domain with both a vascular network and a simple channel",
+    "seed": 1234,
+    "input_units": "mm"
+  },
+  "policies": {},
+  "domains": {
+    "main_domain": {
+      "type": "box",
+      "x_min": -15, "x_max": 15,
+      "y_min": -15, "y_max": 15,
+      "z_min": -10, "z_max": 10
+    }
+  },
+  "components": [
+    {
+      "id": "vascular_network",
+      "domain_ref": "main_domain",
+      "ports": {
+        "inlets": [
+          {
+            "name": "inlet_A",
+            "position": [0, 0, 10],
+            "direction": [0, 0, -1],
+            "radius": 0.3,
+            "vessel_type": "arterial"
+          }
+        ],
+        "outlets": [
+          {
+            "name": "outlet_V",
+            "position": [0, 0, -10],
+            "direction": [0, 0, 1],
+            "radius": 0.25,
+            "vessel_type": "venous"
+          }
+        ]
+      },
+      "build": {
+        "type": "backend_network",
+        "backend": "space_colonization",
+        "backend_params": {}
+      }
+    },
+    {
+      "id": "simple_channel",
+      "domain_ref": "main_domain",
+      "ports": {
+        "inlets": [
+          {
+            "name": "channel_inlet",
+            "position": [5, 5, 10],
+            "direction": [0, 0, -1],
+            "radius": 0.3,
+            "vessel_type": "arterial"
+          }
+        ],
+        "outlets": []
+      },
+      "build": {
+        "type": "primitive_channels"
+      }
+    }
+  ],
+  "features": {}
+}
+```
+
+**EXAMPLE C: Cylinder with Ridges**
+```json
+{
+  "schema": {"name": "aog_designspec", "version": "1.0.0"},
+  "meta": {
+    "name": "cylinder_with_ridges",
+    "description": "Cylinder domain with ridges on top face",
+    "seed": 42,
+    "input_units": "mm"
+  },
+  "policies": {},
+  "domains": {
+    "cylinder_domain": {
+      "type": "cylinder",
+      "center": [0, 0, 0],
+      "radius": 4.875,
+      "height": 2.0
+    }
+  },
+  "components": [
+    {
+      "id": "main_network",
+      "domain_ref": "cylinder_domain",
+      "ports": {
+        "inlets": [
+          {
+            "name": "inlet_top",
+            "position": [0, 0, 1.0],
+            "direction": [0, 0, -1],
+            "radius": 0.3,
+            "vessel_type": "arterial"
+          }
+        ],
+        "outlets": []
+      },
+      "build": {
+        "type": "backend_network",
+        "backend": "space_colonization",
+        "backend_params": {}
+      }
+    }
+  ],
+  "features": {
+    "ridges": {
+      "faces": ["+z"],
+      "width": 0.5,
+      "height": 0.5,
+      "domain_ref": "cylinder_domain"
+    }
+  }
+}
+```
 
 ### Common Mistakes to Avoid
 
@@ -237,6 +567,12 @@ Channels are typically defined in the component's build section or via policies.
 2. **Wrong field names** - Use `radius` not `r`, use `height` not `h`, use `center` not `origin`
 3. **Incorrect units** - All dimensions should be in the spec's `input_units` (typically mm)
 4. **Missing domain_ref in components** - Components must reference a valid domain by name
+5. **Missing required port fields** - Every port needs: name, position, direction, radius, vessel_type
+6. **Invalid build type** - Only use: "backend_network", "primitive_channels", "channel", or "import_void_mesh"
+7. **Invalid backend** - Only use: "space_colonization" or "cco_hybrid"
+8. **Invalid vessel_type** - Only use: "arterial" or "venous"
+9. **Wrong direction vector** - For inlets on top face (+z), direction should be [0, 0, -1] (pointing down into domain)
+10. **Position outside domain** - Port positions must be on or near the domain boundary
 
 ---
 
