@@ -51,6 +51,8 @@ class AgentTurnLog:
     run_executed: bool = False
     run_result: Optional[Dict[str, Any]] = None
     errors: List[str] = field(default_factory=list)
+    context_request_fulfilled: bool = False
+    second_directive_json: Optional[Dict[str, Any]] = None
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -62,6 +64,8 @@ class AgentTurnLog:
             "run_executed": self.run_executed,
             "run_result": self.run_result,
             "errors": self.errors,
+            "context_request_fulfilled": self.context_request_fulfilled,
+            "second_directive_json": self.second_directive_json,
         }
 
 
@@ -181,6 +185,31 @@ class DesignSpecLLMAgent:
             try:
                 directive = self._call_llm(user_message, context_pack)
                 turn_log.directive_json = directive.to_dict()
+                
+                # Check if context request fulfillment is needed (automatic second LLM call)
+                if directive.context_requests and directive.context_requests.has_requests():
+                    logger.info(f"Context request detected: {directive.context_requests.why}")
+                    
+                    # Build expanded context pack based on requests
+                    expanded_context = self._build_expanded_context(
+                        directive.context_requests,
+                        validation_report,
+                        compile_report,
+                    )
+                    
+                    # Call LLM second time with expanded context
+                    second_directive = self._call_llm(user_message, expanded_context)
+                    turn_log.context_request_fulfilled = True
+                    turn_log.second_directive_json = second_directive.to_dict()
+                    
+                    # Check if second call still requests more context
+                    if second_directive.context_requests and second_directive.context_requests.has_requests():
+                        logger.warning("Second LLM call still requests more context - returning as-is")
+                        # Don't loop - return the second directive asking user to provide missing files
+                    
+                    # Use the second directive
+                    directive = second_directive
+                
                 self._last_directive = directive
                 
                 # Convert directive to AgentResponse
@@ -314,6 +343,67 @@ class DesignSpecLLMAgent:
         )
         
         return response.content
+    
+    def _build_expanded_context(
+        self,
+        context_request: "ContextRequest",
+        validation_report: Optional["ValidationReport"] = None,
+        compile_report: Optional[Dict[str, Any]] = None,
+    ) -> ContextPack:
+        """
+        Build an expanded context pack based on context requests.
+        
+        This method is called when the LLM requests additional context
+        during the automatic second LLM call.
+        
+        Parameters
+        ----------
+        context_request : ContextRequest
+            The context request from the LLM
+        validation_report : ValidationReport, optional
+            Current validation report
+        compile_report : dict, optional
+            Current compile report
+            
+        Returns
+        -------
+        ContextPack
+            The expanded context pack
+        """
+        # Start with full context if need_full_spec is requested
+        if context_request.need_full_spec:
+            context_pack = self.context_builder.build_full()
+        else:
+            # Build compact context as base
+            context_pack = self.context_builder.build_compact()
+        
+        # Add validation report if requested
+        if context_request.need_validity_report and validation_report:
+            context_pack = self.context_builder.add_validation_details(
+                context_pack, validation_report
+            )
+        
+        # Add last run report if requested
+        if context_request.need_last_run_report:
+            context_pack = self.context_builder.add_run_details(context_pack)
+        
+        # Add network artifact if requested
+        if context_request.need_network_artifact:
+            context_pack = self.context_builder.add_network_artifact(context_pack)
+        
+        # Add specific files if requested
+        if context_request.need_specific_files:
+            context_pack = self.context_builder.add_specific_files(
+                context_pack, context_request.need_specific_files
+            )
+        
+        # Add more conversation history if requested
+        if context_request.need_more_history:
+            context_pack = self.context_builder.add_extended_history(
+                context_pack, self._conversation_history
+            )
+        
+        return context_pack
     
     def _directive_to_response(
         self,

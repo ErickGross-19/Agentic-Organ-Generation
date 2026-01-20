@@ -290,7 +290,7 @@ class MainWindow:
         self.verification_btn.pack(side="right", padx=2)
     
     def _setup_main_panels(self):
-        """Set up three-panel layout."""
+        """Set up three-panel layout with DesignSpec panels in a notebook."""
         paned = ttk.PanedWindow(self.main_frame, orient="horizontal")
         paned.grid(row=1, column=0, sticky="nsew")
         
@@ -338,8 +338,13 @@ class MainWindow:
         )
         self.send_btn.grid(row=0, column=1, padx=(5, 0))
         
-        output_frame = ttk.LabelFrame(left_paned, text="Output")
-        left_paned.add(output_frame, weight=1)
+        # Create notebook for DesignSpec panels
+        self.panels_notebook = ttk.Notebook(left_paned)
+        left_paned.add(self.panels_notebook, weight=1)
+        
+        # Tab 1: Conversation / Log (existing output_text)
+        output_frame = ttk.Frame(self.panels_notebook)
+        self.panels_notebook.add(output_frame, text="Log")
         
         output_frame.columnconfigure(0, weight=1)
         output_frame.rowconfigure(0, weight=1)
@@ -364,6 +369,47 @@ class MainWindow:
             command=self._open_output_folder,
         ).pack(side="right")
         
+        # Tab 2: Spec panel
+        self.spec_panel = SpecPanel(
+            self.panels_notebook,
+            on_refresh=self._on_spec_refresh,
+        )
+        self.panels_notebook.add(self.spec_panel, text="Spec")
+        
+        # Tab 3: Patches panel
+        self.patch_panel = PatchPanel(
+            self.panels_notebook,
+            on_approve=self._on_patch_approve,
+            on_reject=self._on_patch_reject,
+        )
+        self.panels_notebook.add(self.patch_panel, text="Patches")
+        
+        # Tab 4: Run panel with approval buttons
+        self.run_panel = RunPanel(
+            self.panels_notebook,
+            on_run_until=self._on_run_until,
+            on_run_full=self._on_run_full,
+            on_approve_run=self._on_approve_run,
+            on_reject_run=self._on_reject_run,
+        )
+        self.panels_notebook.add(self.run_panel, text="Run")
+        
+        # Tab 5: Artifacts panel
+        self.artifacts_panel = ArtifactsPanel(
+            self.panels_notebook,
+            on_load_stl=self._load_stl,
+            on_open_folder=self._open_artifact_folder,
+        )
+        self.panels_notebook.add(self.artifacts_panel, text="Artifacts")
+        
+        # Tab 6: Compile / Reports panel
+        self.compile_panel = CompilePanel(
+            self.panels_notebook,
+            on_compile=self._on_compile,
+        )
+        self.panels_notebook.add(self.compile_panel, text="Reports")
+        
+        # STL Viewer panel
         viewer_frame = ttk.LabelFrame(paned, text="STL Viewer")
         paned.add(viewer_frame, weight=1)
         
@@ -1267,14 +1313,92 @@ class MainWindow:
                 error_msg += f"\nWarnings:\n{warning_text}"
             self._append_chat("error", error_msg)
     
-    def _load_stl(self):
-        """Load STL file directly."""
-        file_path = filedialog.askopenfilename(
-            title="Select STL File",
-            filetypes=[("STL files", "*.stl"), ("All files", "*.*")],
-        )
+    def _on_spec_refresh(self):
+        """Handle spec refresh request from SpecPanel."""
+        if hasattr(self, '_designspec_manager') and self._designspec_manager:
+            spec = self._designspec_manager.get_spec()
+            if spec and hasattr(self, 'spec_panel'):
+                self.spec_panel.update_spec(spec)
+    
+    def _on_patch_approve(self, patch_id: str):
+        """Handle patch approval from PatchPanel."""
+        if hasattr(self, '_designspec_manager') and self._designspec_manager:
+            self._designspec_manager.approve_patch(patch_id)
+            self._append_chat("system", f"Patch {patch_id} approved and applied")
+            if hasattr(self, 'patch_panel'):
+                self.patch_panel.clear_patches()
+    
+    def _on_patch_reject(self, patch_id: str, reason: str = ""):
+        """Handle patch rejection from PatchPanel."""
+        if hasattr(self, '_designspec_manager') and self._designspec_manager:
+            self._designspec_manager.reject_patch(patch_id, reason)
+            self._append_chat("system", f"Patch {patch_id} rejected")
+            if hasattr(self, 'patch_panel'):
+                self.patch_panel.clear_patches()
+    
+    def _on_run_until(self, stage: str):
+        """Handle run until request from RunPanel."""
+        if hasattr(self, '_designspec_manager') and self._designspec_manager:
+            self._append_chat("system", f"Running until stage: {stage}")
+            if hasattr(self, 'run_panel'):
+                self.run_panel.set_running(True, f"Running until {stage}...")
+            self._designspec_manager.run_until(stage)
+    
+    def _on_run_full(self):
+        """Handle full run request from RunPanel."""
+        if hasattr(self, '_designspec_manager') and self._designspec_manager:
+            self._append_chat("system", "Starting full run...")
+            if hasattr(self, 'run_panel'):
+                self.run_panel.set_running(True, "Running full pipeline...")
+            self._designspec_manager.run_full()
+    
+    def _on_approve_run(self):
+        """Handle run approval from RunPanel."""
+        if hasattr(self, '_designspec_manager') and self._designspec_manager:
+            self._append_chat("system", "Run approved, executing...")
+            if hasattr(self, 'run_panel'):
+                self.run_panel.set_waiting_approval(False)
+                self.run_panel.set_running(True, "Executing approved run...")
+            self._designspec_manager.approve_run()
+    
+    def _on_reject_run(self, reason: str = ""):
+        """Handle run rejection from RunPanel."""
+        if hasattr(self, '_designspec_manager') and self._designspec_manager:
+            self._append_chat("system", "Run rejected")
+            if hasattr(self, 'run_panel'):
+                self.run_panel.set_waiting_approval(False)
+            self._designspec_manager.reject_run(reason)
+    
+    def _open_artifact_folder(self, artifact_path: str):
+        """Open folder containing an artifact."""
+        if artifact_path and os.path.exists(artifact_path):
+            folder = os.path.dirname(artifact_path)
+            if sys.platform == "darwin":
+                os.system(f'open "{folder}"')
+            elif sys.platform == "win32":
+                os.startfile(folder)
+            else:
+                os.system(f'xdg-open "{folder}"')
+        else:
+            messagebox.showinfo("Info", "Artifact folder not available")
+    
+    def _on_compile(self):
+        """Handle compile request from CompilePanel."""
+        if hasattr(self, '_designspec_manager') and self._designspec_manager:
+            self._append_chat("system", "Compiling spec...")
+            if hasattr(self, 'compile_panel'):
+                self.compile_panel.update_status("running", "Compiling...")
+            self._designspec_manager.compile_spec()
+    
+    def _load_stl(self, file_path: str = None):
+        """Load STL file directly or via file dialog."""
+        if not file_path:
+            file_path = filedialog.askopenfilename(
+                title="Select STL File",
+                filetypes=[("STL files", "*.stl"), ("All files", "*.*")],
+            )
         
-        if file_path:
+        if file_path and os.path.exists(file_path):
             self.stl_viewer.load_stl(file_path)
     
     def _export_view(self):

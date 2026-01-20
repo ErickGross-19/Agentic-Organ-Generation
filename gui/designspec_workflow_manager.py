@@ -516,6 +516,65 @@ class DesignSpecWorkflowManager:
         
         self._workflow.reject_patch(patch_id, reason)
     
+    def approve_run(self) -> bool:
+        """
+        Approve the pending run request.
+        
+        Returns
+        -------
+        bool
+            True if run was approved and started successfully
+        """
+        if not self._workflow:
+            self._send_message("error", "No project loaded")
+            return False
+        
+        self._workflow_thread = threading.Thread(
+            target=self._approve_run_thread,
+            daemon=True,
+        )
+        self._workflow_thread.start()
+        return True
+    
+    def _approve_run_thread(self):
+        """Approve run in background thread."""
+        try:
+            self._workflow.approve_pending_run()
+        except Exception as e:
+            self._send_message("error", f"Run approval failed: {e}")
+    
+    def reject_run(self, reason: str = "") -> None:
+        """
+        Reject the pending run request.
+        
+        Parameters
+        ----------
+        reason : str, optional
+            Reason for rejection
+        """
+        if not self._workflow:
+            self._send_message("error", "No project loaded")
+            return
+        
+        self._workflow.reject_pending_run(reason)
+    
+    def get_pending_run_request(self) -> Optional[Dict[str, Any]]:
+        """
+        Get the pending run request if any.
+        
+        Returns
+        -------
+        dict or None
+            The pending run request data, or None if no pending request
+        """
+        if not self._workflow:
+            return None
+        
+        run_req = self._workflow.get_pending_run_request()
+        if run_req:
+            return run_req.to_dict()
+        return None
+    
     def run_until(self, stage: str) -> None:
         """
         Run the pipeline until a specific stage.

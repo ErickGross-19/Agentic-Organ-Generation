@@ -54,6 +54,9 @@ class WorkflowEventType(str, Enum):
     RUN_STARTED = "run_started"
     RUN_COMPLETED = "run_completed"
     RUN_PROGRESS = "run_progress"
+    RUN_APPROVAL_REQUIRED = "run_approval_required"
+    RUN_APPROVED = "run_approved"
+    RUN_REJECTED = "run_rejected"
     SPEC_UPDATED = "spec_updated"
     VALIDATION_RESULT = "validation_result"
     ERROR = "error"
@@ -67,10 +70,13 @@ class WorkflowStatus(str, Enum):
     WAITING_INPUT = "waiting_input"
     PROCESSING = "processing"
     WAITING_APPROVAL = "waiting_approval"
+    WAITING_PATCH_APPROVAL = "waiting_patch_approval"
+    WAITING_RUN_APPROVAL = "waiting_run_approval"
     COMPILING = "compiling"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    ERROR = "error"
 
 
 @dataclass
@@ -550,17 +556,17 @@ class DesignSpecWorkflow:
             self._pending_run_request = run_req
             
             self._emit_event(WorkflowEvent(
-                event_type=WorkflowEventType.MESSAGE,
+                event_type=WorkflowEventType.RUN_APPROVAL_REQUIRED,
                 data={
                     "run_request": run_req.to_dict(),
+                    "run_until": run_req.run_until,
+                    "full_run": run_req.full_run,
+                    "reason": run_req.reason,
+                    "expected_signal": getattr(run_req, "expected_signal", ""),
                 },
                 message=response.message,
             ))
-            
-            if run_req.full_run:
-                self.run_full()
-            else:
-                self.run_until(run_req.run_until)
+            self._set_status(WorkflowStatus.WAITING_RUN_APPROVAL)
         
         elif response.response_type == AgentResponseType.MESSAGE:
             self._emit_event(WorkflowEvent(
@@ -688,6 +694,84 @@ class DesignSpecWorkflow:
             ))
         
         self._set_status(WorkflowStatus.WAITING_INPUT)
+    
+    def approve_pending_run(self) -> bool:
+        """
+        Approve and execute the pending run request.
+        
+        Returns
+        -------
+        bool
+            True if run was executed successfully
+        """
+        if not self._pending_run_request:
+            self._emit_event(WorkflowEvent(
+                event_type=WorkflowEventType.ERROR,
+                message="No pending run request to approve",
+            ))
+            return False
+        
+        if self._status != WorkflowStatus.WAITING_RUN_APPROVAL:
+            self._emit_event(WorkflowEvent(
+                event_type=WorkflowEventType.ERROR,
+                message=f"Cannot approve run in status: {self._status.value}",
+            ))
+            return False
+        
+        run_req = self._pending_run_request
+        self._pending_run_request = None
+        
+        self._emit_event(WorkflowEvent(
+            event_type=WorkflowEventType.RUN_APPROVED,
+            data={
+                "run_until": run_req.run_until,
+                "full_run": run_req.full_run,
+                "reason": run_req.reason,
+            },
+            message="Run approved by user",
+        ))
+        
+        if run_req.full_run:
+            self.run_full()
+        else:
+            self.run_until(run_req.run_until)
+        
+        return True
+    
+    def reject_pending_run(self, reason: str = "") -> None:
+        """
+        Reject the pending run request.
+        
+        Parameters
+        ----------
+        reason : str, optional
+            Reason for rejection
+        """
+        if not self._pending_run_request:
+            self._emit_event(WorkflowEvent(
+                event_type=WorkflowEventType.ERROR,
+                message="No pending run request to reject",
+            ))
+            return
+        
+        run_req = self._pending_run_request
+        self._pending_run_request = None
+        
+        self._emit_event(WorkflowEvent(
+            event_type=WorkflowEventType.RUN_REJECTED,
+            data={
+                "run_until": run_req.run_until,
+                "full_run": run_req.full_run,
+                "reason": reason,
+            },
+            message=f"Run rejected{': ' + reason if reason else ''}",
+        ))
+        
+        self._set_status(WorkflowStatus.WAITING_INPUT)
+    
+    def get_pending_run_request(self) -> Optional[RunRequest]:
+        """Get the pending run request if any."""
+        return self._pending_run_request
     
     def run_until(self, stage: str) -> None:
         """
