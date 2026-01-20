@@ -513,15 +513,19 @@
         "outlets": []
       },
       "build": {
+        "_comment": "Component build.backend_params overrides growth policy. Set multi_inlet_mode to 'blended' for organic shared growth. Use high num_attraction_points (50000+) for dense coverage.",
         "type": "backend_network",
         "backend": "space_colonization",
         "backend_params": {
-          "influence_radius": 0.2,
-          "kill_radius": 0.05,
+          "influence_radius": 0.1,
+          "kill_radius": 0.02,
           "perception_angle": 90,
-          "num_attraction_points": 5000,
-          "multi_inlet_mode": "forest_with_merge",
-          "collision_merge_distance": 0.05
+          "num_attraction_points": 50000,
+          "multi_inlet_mode": "blended",
+          "multi_inlet_blend_sigma": 2.5,
+          "collision_merge_distance": 0.05,
+          "directional_bias": 0.0,
+          "max_deviation_deg": 180.0
         }
       },
       "save_artifacts": {

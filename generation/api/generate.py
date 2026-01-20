@@ -395,6 +395,9 @@ def _generate_space_colonization(
             multi_inlet_mode=multi_inlet_mode,
             collision_merge_distance=backend_params.get('collision_merge_distance', 0.0003),
             max_inlets=backend_params.get('max_inlets', 10),
+            multi_inlet_blend_sigma=backend_params.get('multi_inlet_blend_sigma', 0.0),
+            directional_bias=backend_params.get('directional_bias', 0.0),
+            max_deviation_deg=backend_params.get('max_deviation_deg', 180.0),
             seed=seed,
         )
         

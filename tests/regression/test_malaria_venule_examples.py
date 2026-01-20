@@ -201,6 +201,44 @@ class TestMalariaVenuleSpaceColonization:
             f"Growth may be confined to a cross pattern. Expected at least one > {MIN_XY_VARIANCE}."
         )
     
+    def test_network_not_axis_concentrated(self, network):
+        """Test that network nodes are not concentrated along X or Y axes.
+        
+        A cross pattern would have many nodes with |x| small OR |y| small
+        (clustered along the axes). Organic growth should have nodes spread
+        throughout the domain, not just along axis lines.
+        
+        This test fails if > 50% of nodes are within 0.5 units of either axis.
+        """
+        net, stats = network
+        positions = get_node_positions(net)
+        
+        if len(positions) < 10:
+            pytest.fail(f"Network has only {len(positions)} nodes, not enough for axis test")
+        
+        axis_threshold = 0.5
+        max_axis_fraction = 0.5
+        
+        x_near_axis = np.abs(positions[:, 0]) < axis_threshold
+        y_near_axis = np.abs(positions[:, 1]) < axis_threshold
+        
+        near_x_axis_count = np.sum(x_near_axis)
+        near_y_axis_count = np.sum(y_near_axis)
+        total_nodes = len(positions)
+        
+        near_x_axis_fraction = near_x_axis_count / total_nodes
+        near_y_axis_fraction = near_y_axis_count / total_nodes
+        
+        assert near_x_axis_fraction < max_axis_fraction, (
+            f"{near_x_axis_fraction*100:.1f}% of nodes are near X axis (|y| < {axis_threshold}), "
+            f"expected < {max_axis_fraction*100:.0f}%. Growth may be cross-dominated."
+        )
+        
+        assert near_y_axis_fraction < max_axis_fraction, (
+            f"{near_y_axis_fraction*100:.1f}% of nodes are near Y axis (|x| < {axis_threshold}), "
+            f"expected < {max_axis_fraction*100:.0f}%. Growth may be cross-dominated."
+        )
+    
     def test_network_has_branching(self, network):
         """Test that network has branching beyond immediate inlet stubs."""
         net, stats = network
