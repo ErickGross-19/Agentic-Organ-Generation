@@ -239,6 +239,11 @@ class DesignSpecLLMAgent:
         # Fallback to legacy agent or error response
         if self.legacy_agent:
             logger.info("Falling back to legacy agent")
+            
+            # Sync conversation history to legacy agent so it can properly
+            # detect question answers and maintain context
+            self.legacy_agent._conversation_history = self._conversation_history.copy()
+            
             spec = self.session.get_spec()
             response = self.legacy_agent.process_message(
                 user_message=user_message,

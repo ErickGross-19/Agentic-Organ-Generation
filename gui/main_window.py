@@ -1313,8 +1313,15 @@ class MainWindow:
                 error_msg += f"\nWarnings:\n{warning_text}"
             self._append_chat("error", error_msg)
     
-    def _on_spec_refresh(self):
-        """Handle spec refresh request from SpecPanel."""
+    def _on_spec_refresh(self, action: str = None):
+        """Handle spec refresh request from SpecPanel.
+        
+        Parameters
+        ----------
+        action : str, optional
+            The action requested (e.g., "refresh"). Currently unused but
+            required to match the callback signature from SpecPanel.
+        """
         if hasattr(self, '_designspec_manager') and self._designspec_manager:
             spec = self._designspec_manager.get_spec()
             if spec and hasattr(self, 'spec_panel'):
