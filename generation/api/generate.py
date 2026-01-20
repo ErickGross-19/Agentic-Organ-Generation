@@ -299,6 +299,11 @@ def _generate_space_colonization(
     
     The SpaceColonizationPolicy is extracted from growth_policy.backend_params
     if present. Otherwise, defaults are used.
+    
+    Multi-inlet support:
+    - If multiple inlets are defined and multi_inlet_mode is set, uses
+      SpaceColonizationBackend.generate_multi_inlet() method
+    - Supports "forest" mode (separate trees) and "forest_with_merge" mode (default)
     """
     from ..ops import create_network, add_inlet, add_outlet
     from ..ops.space_colonization import SpaceColonizationParams, space_colonization_step_v2
@@ -306,9 +311,66 @@ def _generate_space_colonization(
     from ..rules.constraints import BranchingConstraints
     from aog_policies.space_colonization import SpaceColonizationPolicy
     
+    inlets = ports.get("inlets", [])
+    backend_params = getattr(growth_policy, 'backend_params', None) or {}
+    multi_inlet_mode = backend_params.get('multi_inlet_mode')
+    
+    # Use SpaceColonizationBackend.generate_multi_inlet() for multiple inlets
+    if len(inlets) > 1 and multi_inlet_mode:
+        from ..backends.space_colonization_backend import SpaceColonizationBackend, SpaceColonizationConfig
+        
+        config = SpaceColonizationConfig(
+            attraction_distance=backend_params.get('influence_radius', 0.010),
+            kill_distance=backend_params.get('kill_radius', 0.002),
+            step_size=growth_policy.step_size or 0.002,
+            num_attractors=backend_params.get('num_attraction_points', 1000),
+            max_iterations=growth_policy.max_iterations or 500,
+            multi_inlet_mode=multi_inlet_mode,
+            collision_merge_distance=backend_params.get('collision_merge_distance', 0.0003),
+            max_inlets=backend_params.get('max_inlets', 10),
+            seed=seed,
+        )
+        
+        inlet_specs = []
+        for inlet in inlets:
+            spec = {
+                "position": inlet.get("position", (0, 0, 0)),
+                "radius": inlet.get("radius", 0.001),
+            }
+            direction = inlet.get("direction") or inlet.get("growth_inward_direction")
+            if direction:
+                spec["direction"] = direction
+            inlet_specs.append(spec)
+        
+        vessel_type = inlets[0].get("vessel_type", "arterial")
+        target = growth_policy.target_terminals or 128
+        
+        backend = SpaceColonizationBackend()
+        network = backend.generate_multi_inlet(
+            domain=domain,
+            num_outlets=target,
+            inlets=inlet_specs,
+            vessel_type=vessel_type,
+            config=config,
+            rng_seed=seed,
+            tissue_sampling_policy=tissue_sampling_policy,
+        )
+        
+        terminal_count = sum(1 for n in network.nodes.values() if n.node_type == "terminal")
+        inlet_count = sum(1 for n in network.nodes.values() if n.node_type == "inlet")
+        
+        return network, {
+            "terminal_count": terminal_count,
+            "inlet_count": inlet_count,
+            "node_count": len(network.nodes),
+            "segment_count": len(network.segments),
+            "multi_inlet_mode": multi_inlet_mode,
+        }
+    
+    # Single inlet or no multi_inlet_mode: use original space_colonization_step_v2 path
     network = create_network(domain=domain, seed=seed)
     
-    for inlet in ports.get("inlets", []):
+    for inlet in inlets:
         pos = inlet.get("position")
         if pos is None:
             raise ValueError("Inlet missing required 'position' field")
