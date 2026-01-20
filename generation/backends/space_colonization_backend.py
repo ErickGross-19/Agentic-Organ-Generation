@@ -327,9 +327,9 @@ class SpaceColonizationBackend(GenerationBackend):
         
         # Convert attractor_list to numpy array for space_colonization_step
         if attractor_list:
-            tissue_points = np.array([[p.x, p.y, p.z] for p in attractor_list])
+            all_tissue_points = np.array([[p.x, p.y, p.z] for p in attractor_list])
         else:
-            tissue_points = np.zeros((0, 3))
+            all_tissue_points = np.zeros((0, 3))
         
         sc_params = SCParams(
             influence_radius=config.attraction_distance,
@@ -338,7 +338,7 @@ class SpaceColonizationBackend(GenerationBackend):
             vessel_type=vessel_type,
         )
         
-        # Generate trees for each inlet
+        # Generate trees for each inlet with per-inlet tissue point filtering
         for i, inlet in enumerate(inlets):
             inlet_position = np.array(inlet.get("position", [0, 0, 0]))
             inlet_radius = inlet.get("radius", 0.001)
@@ -352,6 +352,18 @@ class SpaceColonizationBackend(GenerationBackend):
                 if np.linalg.norm(dir_arr) > 0:
                     dir_arr = dir_arr / np.linalg.norm(dir_arr)
                     inlet_direction = Direction3D.from_array(dir_arr)
+            
+            # Filter tissue points to only include those in the inlet's growth direction
+            # This ensures each tree grows downward (in its inlet direction) rather than
+            # towards other inlets. Using 90° cone (hemisphere) to enforce strictly
+            # downward growth - only points with positive dot product with direction.
+            inlet_dir_arr = np.array([inlet_direction.x, inlet_direction.y, inlet_direction.z])
+            tissue_points = self._filter_tissue_points_by_direction(
+                all_tissue_points,
+                inlet_position,
+                inlet_dir_arr,
+                cone_angle_deg=90.0,  # Hemisphere - only points in growth direction
+            )
             
             nodes_before = set(network.nodes.keys())
             
@@ -403,6 +415,15 @@ class SpaceColonizationBackend(GenerationBackend):
                                 node_pos = np.array([node.position.x, node.position.y, node.position.z])
                                 distances = np.linalg.norm(tissue_points - node_pos, axis=1)
                                 tissue_points = tissue_points[distances > config.kill_distance]
+                    
+                    # Also remove consumed points from the global pool so other inlets
+                    # don't try to grow towards already-perfused regions
+                    for node_id in new_node_ids:
+                        node = network.nodes.get(node_id)
+                        if node:
+                            node_pos = np.array([node.position.x, node.position.y, node.position.z])
+                            distances = np.linalg.norm(all_tissue_points - node_pos, axis=1)
+                            all_tissue_points = all_tissue_points[distances > config.kill_distance]
                 else:
                     break
             
@@ -772,6 +793,64 @@ class SpaceColonizationBackend(GenerationBackend):
             self._create_anastomoses(network, num_anastomoses)
         
         return network
+    
+    def _filter_tissue_points_by_direction(
+        self,
+        tissue_points: np.ndarray,
+        origin: np.ndarray,
+        direction: np.ndarray,
+        cone_angle_deg: float = 90.0,
+    ) -> np.ndarray:
+        """
+        Filter tissue points to only include those within a cone from the origin.
+        
+        This ensures each inlet's tree grows in its specified direction (typically
+        downward) rather than towards other inlets.
+        
+        Parameters
+        ----------
+        tissue_points : np.ndarray
+            Array of tissue points (N, 3)
+        origin : np.ndarray
+            Origin point (inlet position)
+        direction : np.ndarray
+            Growth direction (normalized)
+        cone_angle_deg : float
+            Half-angle of the cone in degrees (default 90 = hemisphere, only
+            points with positive dot product with direction are included)
+            
+        Returns
+        -------
+        np.ndarray
+            Filtered tissue points within the cone
+        """
+        if len(tissue_points) == 0:
+            return tissue_points
+        
+        # Normalize direction
+        direction = direction / np.linalg.norm(direction)
+        
+        # Vector from origin to each tissue point
+        to_points = tissue_points - origin
+        
+        # Normalize vectors
+        distances = np.linalg.norm(to_points, axis=1)
+        # Avoid division by zero
+        valid_mask = distances > 1e-10
+        to_points_normalized = np.zeros_like(to_points)
+        to_points_normalized[valid_mask] = to_points[valid_mask] / distances[valid_mask, np.newaxis]
+        
+        # Compute dot product with direction
+        dot_products = np.dot(to_points_normalized, direction)
+        
+        # Convert cone angle to cosine threshold
+        # cos(90°) = 0, so points with dot > 0 are within 90° cone (hemisphere)
+        cos_threshold = np.cos(np.radians(cone_angle_deg))
+        
+        # Filter points within the cone
+        in_cone = dot_products >= cos_threshold
+        
+        return tissue_points[in_cone]
     
     def _compute_initial_direction(self, inlet_point: Point3D, domain: DomainSpec) -> Direction3D:
         """Compute initial growth direction pointing toward domain center."""
