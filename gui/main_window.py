@@ -863,7 +863,7 @@ class MainWindow:
         """Show dialog for creating or opening a DesignSpec project."""
         dialog = tk.Toplevel(self.root)
         dialog.title("DesignSpec Project")
-        dialog.geometry("400x200")
+        dialog.geometry("450x300")
         dialog.transient(self.root)
         dialog.grab_set()
         
@@ -874,27 +874,60 @@ class MainWindow:
             main_frame,
             text="DesignSpec Project",
             font=("TkDefaultFont", 14, "bold"),
-        ).pack(pady=(0, 20))
+        ).pack(pady=(0, 10))
         
         ttk.Label(
             main_frame,
             text="Create a new project or open an existing one:",
         ).pack(pady=(0, 10))
         
+        agent_frame = ttk.LabelFrame(main_frame, text="Agent Mode", padding=10)
+        agent_frame.pack(fill="x", pady=(0, 10))
+        
+        use_llm_var = tk.BooleanVar(value=True)
+        
+        ttk.Radiobutton(
+            agent_frame,
+            text="LLM-First Agent (Recommended)",
+            variable=use_llm_var,
+            value=True,
+        ).pack(anchor="w")
+        ttk.Label(
+            agent_frame,
+            text="Uses LLM as primary interpreter for natural language understanding",
+            foreground="gray",
+            font=("TkDefaultFont", 9),
+        ).pack(anchor="w", padx=20)
+        
+        ttk.Radiobutton(
+            agent_frame,
+            text="Legacy Rule-Based Agent",
+            variable=use_llm_var,
+            value=False,
+        ).pack(anchor="w")
+        ttk.Label(
+            agent_frame,
+            text="Uses regex/heuristic parsing (fallback mode)",
+            foreground="gray",
+            font=("TkDefaultFont", 9),
+        ).pack(anchor="w", padx=20)
+        
         button_frame = ttk.Frame(main_frame)
         button_frame.pack(fill="x", pady=10)
         
         def on_new():
+            use_legacy = not use_llm_var.get()
             dialog.destroy()
-            self._create_designspec_project()
+            self._create_designspec_project_with_mode(use_legacy)
         
         def on_open():
+            use_legacy = not use_llm_var.get()
             dialog.destroy()
             project_dir = filedialog.askdirectory(
                 title="Select DesignSpec Project Directory",
             )
             if project_dir:
-                self._open_designspec_project(project_dir)
+                self._open_designspec_project(project_dir, use_legacy_agent=use_legacy)
         
         ttk.Button(
             button_frame,
@@ -923,7 +956,103 @@ class MainWindow:
         """Create a new DesignSpec project."""
         dialog = tk.Toplevel(self.root)
         dialog.title("New DesignSpec Project")
-        dialog.geometry("400x200")
+        dialog.geometry("450x280")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        main_frame = ttk.Frame(dialog, padding=20)
+        main_frame.pack(fill="both", expand=True)
+        
+        ttk.Label(main_frame, text="Project Name:").pack(anchor="w")
+        name_var = tk.StringVar(value="my_organ_project")
+        name_entry = ttk.Entry(main_frame, textvariable=name_var, width=40)
+        name_entry.pack(fill="x", pady=(0, 10))
+        
+        ttk.Label(main_frame, text="Location:").pack(anchor="w")
+        location_frame = ttk.Frame(main_frame)
+        location_frame.pack(fill="x", pady=(0, 10))
+        
+        location_var = tk.StringVar(value=os.path.expanduser("~/projects"))
+        location_entry = ttk.Entry(location_frame, textvariable=location_var)
+        location_entry.pack(side="left", fill="x", expand=True)
+        
+        def browse():
+            path = filedialog.askdirectory(title="Select Location")
+            if path:
+                location_var.set(path)
+        
+        ttk.Button(location_frame, text="Browse", command=browse).pack(side="left", padx=5)
+        
+        agent_frame = ttk.LabelFrame(main_frame, text="Agent Mode", padding=10)
+        agent_frame.pack(fill="x", pady=(5, 10))
+        
+        use_llm_var = tk.BooleanVar(value=True)
+        
+        ttk.Radiobutton(
+            agent_frame,
+            text="LLM-First Agent (Recommended)",
+            variable=use_llm_var,
+            value=True,
+        ).pack(anchor="w")
+        ttk.Label(
+            agent_frame,
+            text="Uses LLM as primary interpreter for natural language understanding",
+            foreground="gray",
+            font=("TkDefaultFont", 9),
+        ).pack(anchor="w", padx=20)
+        
+        ttk.Radiobutton(
+            agent_frame,
+            text="Legacy Rule-Based Agent",
+            variable=use_llm_var,
+            value=False,
+        ).pack(anchor="w")
+        ttk.Label(
+            agent_frame,
+            text="Uses regex/heuristic parsing (fallback mode)",
+            foreground="gray",
+            font=("TkDefaultFont", 9),
+        ).pack(anchor="w", padx=20)
+        
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill="x", pady=10)
+        
+        def on_create():
+            name = name_var.get().strip()
+            location = location_var.get().strip()
+            if not name:
+                messagebox.showwarning("Warning", "Please enter a project name")
+                return
+            if not location:
+                messagebox.showwarning("Warning", "Please select a location")
+                return
+            
+            use_legacy = not use_llm_var.get()
+            dialog.destroy()
+            self._init_designspec_workflow(location, name, use_legacy_agent=use_legacy)
+        
+        ttk.Button(button_frame, text="Create", command=on_create).pack(side="right", padx=5)
+        ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side="right", padx=5)
+        
+        dialog.update_idletasks()
+        x = self.root.winfo_x() + (self.root.winfo_width() - dialog.winfo_width()) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - dialog.winfo_height()) // 2
+        dialog.geometry(f"+{x}+{y}")
+    
+    def _create_designspec_project_with_mode(self, use_legacy_agent: bool = False):
+        """
+        Create a new DesignSpec project with specified agent mode.
+        
+        This is called from the project dialog when agent mode is already selected.
+        
+        Parameters
+        ----------
+        use_legacy_agent : bool
+            If True, use the legacy rule-based agent instead of the LLM-first agent.
+        """
+        dialog = tk.Toplevel(self.root)
+        dialog.title("New DesignSpec Project")
+        dialog.geometry("400x180")
         dialog.transient(self.root)
         dialog.grab_set()
         
@@ -964,7 +1093,7 @@ class MainWindow:
                 return
             
             dialog.destroy()
-            self._init_designspec_workflow(location, name)
+            self._init_designspec_workflow(location, name, use_legacy_agent=use_legacy_agent)
         
         ttk.Button(button_frame, text="Create", command=on_create).pack(side="right", padx=5)
         ttk.Button(button_frame, text="Cancel", command=dialog.destroy).pack(side="right", padx=5)
@@ -974,18 +1103,42 @@ class MainWindow:
         y = self.root.winfo_y() + (self.root.winfo_height() - dialog.winfo_height()) // 2
         dialog.geometry(f"+{x}+{y}")
     
-    def _open_designspec_project(self, project_dir: str):
-        """Open an existing DesignSpec project."""
-        self._init_designspec_workflow(project_dir=project_dir)
+    def _open_designspec_project(self, project_dir: str, use_legacy_agent: bool = False):
+        """
+        Open an existing DesignSpec project.
+        
+        Parameters
+        ----------
+        project_dir : str
+            Path to the project directory
+        use_legacy_agent : bool
+            If True, use the legacy rule-based agent instead of the LLM-first agent.
+        """
+        self._init_designspec_workflow(project_dir=project_dir, use_legacy_agent=use_legacy_agent)
     
     def _init_designspec_workflow(
         self,
         project_root: str = None,
         project_name: str = None,
         project_dir: str = None,
+        use_legacy_agent: bool = False,
     ):
-        """Initialize the DesignSpec workflow."""
-        if not hasattr(self, '_designspec_manager'):
+        """
+        Initialize the DesignSpec workflow.
+        
+        Parameters
+        ----------
+        project_root : str, optional
+            Parent directory for new project
+        project_name : str, optional
+            Name for new project
+        project_dir : str, optional
+            Path to existing project directory
+        use_legacy_agent : bool
+            If True, use the legacy rule-based agent instead of the LLM-first agent.
+            Default is False (use LLM-first agent, recommended).
+        """
+        if not hasattr(self, '_designspec_manager') or self._designspec_manager is None:
             self._designspec_manager = DesignSpecWorkflowManager(
                 message_callback=self._on_workflow_message,
                 status_callback=self._on_status_change,
@@ -993,7 +1146,10 @@ class MainWindow:
                 spec_callback=self._on_spec_update,
                 patch_callback=self._on_patch_proposal,
                 compile_callback=self._on_compile_status,
+                use_legacy_agent=use_legacy_agent,
             )
+        else:
+            self._designspec_manager._use_legacy_agent = use_legacy_agent
         
         if hasattr(self, '_agent_config') and self._agent_config:
             config = self._agent_config

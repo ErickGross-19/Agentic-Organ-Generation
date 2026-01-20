@@ -52,13 +52,36 @@ class DesignSpecWorkflowManager:
         spec_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
         patch_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
         compile_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        use_legacy_agent: bool = False,
     ):
+        """
+        Initialize the DesignSpec workflow manager.
+        
+        Parameters
+        ----------
+        message_callback : Callable, optional
+            Callback for sending messages to GUI
+        status_callback : Callable, optional
+            Callback for status updates
+        output_callback : Callable, optional
+            Callback for output/artifact updates
+        spec_callback : Callable, optional
+            Callback for spec updates
+        patch_callback : Callable, optional
+            Callback for patch proposals
+        compile_callback : Callable, optional
+            Callback for compile status updates
+        use_legacy_agent : bool
+            If True, use the legacy rule-based agent instead of the LLM-first agent.
+            Default is False (use LLM-first agent, recommended).
+        """
         self.message_callback = message_callback
         self.status_callback = status_callback
         self.output_callback = output_callback
         self.spec_callback = spec_callback
         self.patch_callback = patch_callback
         self.compile_callback = compile_callback
+        self._use_legacy_agent = use_legacy_agent
         
         self._status = WorkflowStatus.IDLE
         self._workflow = None
@@ -258,7 +281,11 @@ class DesignSpecWorkflowManager:
             self._workflow = DesignSpecWorkflow(
                 llm_client=self._llm_client,
                 event_callback=self._on_workflow_event,
+                use_legacy_agent=self._use_legacy_agent,
             )
+            
+            agent_mode = "legacy rule-based" if self._use_legacy_agent else "LLM-first"
+            self._send_message("system", f"Using {agent_mode} agent mode")
             
             success = self._workflow.on_start(
                 project_root=project_root,
@@ -308,7 +335,11 @@ class DesignSpecWorkflowManager:
             self._workflow = DesignSpecWorkflow(
                 llm_client=self._llm_client,
                 event_callback=self._on_workflow_event,
+                use_legacy_agent=self._use_legacy_agent,
             )
+            
+            agent_mode = "legacy rule-based" if self._use_legacy_agent else "LLM-first"
+            self._send_message("system", f"Using {agent_mode} agent mode")
             
             success = self._workflow.on_start(project_dir=project_dir)
             
