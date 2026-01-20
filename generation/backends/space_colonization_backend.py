@@ -338,6 +338,9 @@ class SpaceColonizationBackend(GenerationBackend):
             vessel_type=vessel_type,
         )
         
+        # Pre-compute all inlet positions for spatial partitioning
+        inlet_positions = np.array([inlet.get("position", [0, 0, 0]) for inlet in inlets])
+        
         # Generate trees for each inlet with per-inlet tissue point filtering
         for i, inlet in enumerate(inlets):
             inlet_position = np.array(inlet.get("position", [0, 0, 0]))
@@ -353,13 +356,20 @@ class SpaceColonizationBackend(GenerationBackend):
                     dir_arr = dir_arr / np.linalg.norm(dir_arr)
                     inlet_direction = Direction3D.from_array(dir_arr)
             
-            # Filter tissue points to only include those in the inlet's growth direction
-            # This ensures each tree grows downward (in its inlet direction) rather than
-            # towards other inlets. Using 90° cone (hemisphere) to enforce strictly
-            # downward growth - only points with positive dot product with direction.
+            # Filter tissue points using spatial partitioning (Voronoi-like regions)
+            # Each inlet only sees points that are closer to it than to any other inlet
+            # This prevents trees from growing towards each other
+            tissue_points = self._filter_tissue_points_by_nearest_inlet(
+                all_tissue_points,
+                inlet_position,
+                inlet_positions,
+                i,
+            )
+            
+            # Additionally filter by direction to ensure downward growth
             inlet_dir_arr = inlet_direction.to_array()
             tissue_points = self._filter_tissue_points_by_direction(
-                all_tissue_points,
+                tissue_points,
                 inlet_position,
                 inlet_dir_arr,
                 cone_angle_deg=90.0,  # Hemisphere - only points in growth direction
@@ -793,6 +803,58 @@ class SpaceColonizationBackend(GenerationBackend):
             self._create_anastomoses(network, num_anastomoses)
         
         return network
+    
+    def _filter_tissue_points_by_nearest_inlet(
+        self,
+        tissue_points: np.ndarray,
+        inlet_position: np.ndarray,
+        all_inlet_positions: np.ndarray,
+        inlet_index: int,
+    ) -> np.ndarray:
+        """
+        Filter tissue points to only include those closest to this inlet.
+        
+        This creates Voronoi-like spatial partitioning so each inlet's tree
+        only grows towards points in its own region, preventing trees from
+        growing towards each other.
+        
+        Parameters
+        ----------
+        tissue_points : np.ndarray
+            Array of tissue points (N, 3)
+        inlet_position : np.ndarray
+            Position of the current inlet
+        all_inlet_positions : np.ndarray
+            Positions of all inlets (M, 3)
+        inlet_index : int
+            Index of the current inlet
+            
+        Returns
+        -------
+        np.ndarray
+            Filtered tissue points closest to this inlet
+        """
+        if len(tissue_points) == 0 or len(all_inlet_positions) <= 1:
+            return tissue_points
+        
+        # Compute distance from each tissue point to each inlet (in XY plane only)
+        # Using XY distance ensures vertical partitioning - each inlet "owns" a column
+        tissue_xy = tissue_points[:, :2]  # Only X, Y coordinates
+        inlet_xy = all_inlet_positions[:, :2]  # Only X, Y coordinates
+        
+        # Compute distances from each tissue point to each inlet
+        # Shape: (num_tissue_points, num_inlets)
+        distances = np.zeros((len(tissue_points), len(all_inlet_positions)))
+        for j, inlet_pos in enumerate(inlet_xy):
+            distances[:, j] = np.linalg.norm(tissue_xy - inlet_pos, axis=1)
+        
+        # Find which inlet is closest for each tissue point
+        closest_inlet = np.argmin(distances, axis=1)
+        
+        # Keep only points where this inlet is the closest
+        mask = closest_inlet == inlet_index
+        
+        return tissue_points[mask]
     
     def _filter_tissue_points_by_direction(
         self,
