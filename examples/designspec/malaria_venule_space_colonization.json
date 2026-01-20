@@ -110,12 +110,14 @@
       "min_radius": 0.01,
       "step_size": 0.01,
       "backend_params": {
-        "influence_radius": 0.2,
-        "kill_radius": 0.05,
+        "influence_radius": 0.1,
+        "kill_radius": 0.02,
         "perception_angle": 90,
         "num_attraction_points": 5000,
         "multi_inlet_mode": "forest_with_merge",
         "collision_merge_distance": 0.05,
+        "directional_bias": 0.7,
+        "max_deviation_deg": 75.0,
         "space_colonization_policy": {
           "enabled": true,
           "trunk_steps": 15,
