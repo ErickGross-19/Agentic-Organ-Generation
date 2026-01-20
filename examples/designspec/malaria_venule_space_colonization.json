@@ -113,11 +113,22 @@
         "influence_radius": 0.1,
         "kill_radius": 0.02,
         "perception_angle": 90,
-        "num_attraction_points": 5000,
+        "num_attraction_points": 50000,
         "multi_inlet_mode": "forest_with_merge",
         "collision_merge_distance": 0.05,
-        "directional_bias": 0.7,
-        "max_deviation_deg": 75.0,
+        "directional_bias": 0.9,
+        "max_deviation_deg": 45.0,
+        "tissue_sampling": {
+          "enabled": true,
+          "n_points": 50000,
+          "strategy": "depth_biased",
+          "depth_reference": {"mode": "face", "face": "top"},
+          "depth_distribution": "power",
+          "depth_power": 3.0,
+          "depth_min": 0.1,
+          "depth_max": null,
+          "min_distance_to_ports": 0.05
+        },
         "space_colonization_policy": {
           "enabled": true,
           "trunk_steps": 15,
@@ -193,13 +204,20 @@
       "pattern": "explicit",
       "pattern_params": {},
       "projection_mode": "clamp_to_face",
-      "ridge_width": 0.1,
-      "ridge_clearance": 0.1,
+      "ridge_width": 0.3,
+      "ridge_clearance": 0.3,
       "port_margin": 0.05,
       "disk_constraint_enabled": true,
       "ridge_constraint_enabled": true,
       "placement_fraction": 0.95,
       "angular_offset": 0.0
+    },
+    "ridge": {
+      "height": 0.3,
+      "thickness": 0.3,
+      "inset": 0.0,
+      "overlap": 0.15,
+      "resolution": 64
     },
     "channels": {
       "enabled": false,
