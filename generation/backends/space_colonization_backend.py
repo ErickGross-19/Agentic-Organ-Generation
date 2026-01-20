@@ -357,7 +357,7 @@ class SpaceColonizationBackend(GenerationBackend):
             # This ensures each tree grows downward (in its inlet direction) rather than
             # towards other inlets. Using 90° cone (hemisphere) to enforce strictly
             # downward growth - only points with positive dot product with direction.
-            inlet_dir_arr = np.array([inlet_direction.x, inlet_direction.y, inlet_direction.z])
+            inlet_dir_arr = inlet_direction.to_array()
             tissue_points = self._filter_tissue_points_by_direction(
                 all_tissue_points,
                 inlet_position,
