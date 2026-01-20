@@ -28,12 +28,21 @@ class ValidationPolicy:
         "check_open_ports": bool,
         "check_bounds": bool,
         "check_void_inside_domain": bool,
+        "allow_boundary_intersections_at_ports": bool,
+        "surface_opening_tolerance": float (meters),
         "min_diameter_threshold": float (meters),
         "max_components": int
     }
     
     When check_open_ports is enabled, use OpenPortPolicy to configure
     the open-port validation behavior.
+    
+    Surface Opening Support:
+    When allow_boundary_intersections_at_ports is True, the void_inside_domain
+    check will allow void mesh points that are outside the domain but within
+    the "port neighborhood" region (defined by port position, radius, and direction).
+    This enables "true surface openings" where the void intentionally intersects
+    the domain boundary at declared ports.
     """
     check_watertight: bool = True
     check_components: bool = True
@@ -41,6 +50,8 @@ class ValidationPolicy:
     check_open_ports: bool = False
     check_bounds: bool = True
     check_void_inside_domain: bool = True  # Added for backward compatibility
+    allow_boundary_intersections_at_ports: bool = False  # Enable surface opening semantics
+    surface_opening_tolerance: float = 0.001  # 1mm tolerance for port neighborhood
     min_diameter_threshold: float = 0.0005  # 0.5mm
     max_components: int = 1
     

@@ -178,14 +178,87 @@ def check_void_components(
         )
 
 
+@dataclass
+class SurfaceOpeningPort:
+    """
+    Specification for a surface opening port.
+    
+    Used to define regions where the void is allowed to intersect
+    the domain boundary (true surface openings).
+    
+    Attributes
+    ----------
+    name : str
+        Port name for identification
+    position : np.ndarray
+        Port center position (3D point in meters)
+    direction : np.ndarray
+        Port direction (unit vector pointing into domain)
+    radius : float
+        Port radius (meters)
+    """
+    name: str
+    position: np.ndarray
+    direction: np.ndarray
+    radius: float
+    
+    def is_point_in_neighborhood(
+        self,
+        point: np.ndarray,
+        tolerance: float = 0.001,
+    ) -> bool:
+        """
+        Check if a point is within the port neighborhood region.
+        
+        The neighborhood is defined as a cylinder extending from the port
+        position along the negative direction (outside the domain) with
+        the port radius plus tolerance.
+        
+        Parameters
+        ----------
+        point : np.ndarray
+            3D point to check
+        tolerance : float
+            Additional tolerance around the port (meters)
+            
+        Returns
+        -------
+        bool
+            True if point is in the port neighborhood
+        """
+        # Vector from port position to point
+        to_point = point - self.position
+        
+        # Project onto port direction
+        along_dir = np.dot(to_point, self.direction)
+        
+        # Point should be on the "outside" side of the port (negative along direction)
+        # or very close to the port surface
+        if along_dir > tolerance:
+            return False
+        
+        # Check radial distance from port axis
+        perpendicular = to_point - along_dir * self.direction
+        radial_dist = np.linalg.norm(perpendicular)
+        
+        # Point is in neighborhood if within port radius + tolerance
+        return radial_dist <= self.radius + tolerance
+
+
 def check_void_inside_domain(
     void_mesh: "trimesh.Trimesh",
     domain: DomainSpec,
     tolerance: float = 1e-6,
     sample_count: int = 1000,
+    surface_opening_ports: Optional[List[SurfaceOpeningPort]] = None,
+    surface_opening_tolerance: float = 0.001,
 ) -> CheckResult:
     """
     Check that void mesh is contained within the domain.
+    
+    Supports surface opening semantics: when surface_opening_ports is provided,
+    points outside the domain but within the port neighborhood regions are
+    treated as acceptable (allowed boundary intersections).
     
     Parameters
     ----------
@@ -197,11 +270,17 @@ def check_void_inside_domain(
         Tolerance for boundary checks (meters)
     sample_count : int
         Number of sample points to check
+    surface_opening_ports : list of SurfaceOpeningPort, optional
+        Ports that are allowed to intersect the domain boundary.
+        If provided, points outside the domain but within these port
+        neighborhoods are not counted as violations.
+    surface_opening_tolerance : float
+        Additional tolerance around surface opening ports (meters)
         
     Returns
     -------
     CheckResult
-        Result of the check
+        Result of the check with detailed breakdown of outside points
     """
     try:
         # Sample points on void mesh surface
@@ -209,7 +288,10 @@ def check_void_inside_domain(
         
         # Check each point
         outside_count = 0
+        outside_in_opening_count = 0  # Outside but in allowed opening region
+        outside_not_in_opening_count = 0  # Outside and NOT in allowed opening
         max_outside_distance = 0.0
+        max_outside_not_in_opening_distance = 0.0
         
         for pt in points:
             point = Point3D.from_array(pt)
@@ -220,9 +302,85 @@ def check_void_inside_domain(
             if dist > tolerance:
                 outside_count += 1
                 max_outside_distance = max(max_outside_distance, dist)
+                
+                # Check if point is in any surface opening neighborhood
+                in_opening = False
+                if surface_opening_ports:
+                    for port in surface_opening_ports:
+                        if port.is_point_in_neighborhood(pt, surface_opening_tolerance):
+                            in_opening = True
+                            break
+                
+                if in_opening:
+                    outside_in_opening_count += 1
+                else:
+                    outside_not_in_opening_count += 1
+                    max_outside_not_in_opening_distance = max(
+                        max_outside_not_in_opening_distance, dist
+                    )
         
         outside_ratio = outside_count / sample_count
+        outside_not_in_opening_ratio = outside_not_in_opening_count / sample_count
+        outside_in_opening_ratio = outside_in_opening_count / sample_count
         
+        # Build detailed report
+        details = {
+            "outside_count": outside_count,
+            "outside_in_opening_count": outside_in_opening_count,
+            "outside_not_in_opening_count": outside_not_in_opening_count,
+            "sample_count": sample_count,
+            "max_outside_distance": max_outside_distance,
+            "max_outside_not_in_opening_distance": max_outside_not_in_opening_distance,
+            "surface_openings_enabled": surface_opening_ports is not None and len(surface_opening_ports) > 0,
+            "surface_opening_port_count": len(surface_opening_ports) if surface_opening_ports else 0,
+        }
+        
+        # When surface openings are enabled, only count points outside that are
+        # NOT in allowed opening regions as violations
+        if surface_opening_ports:
+            effective_outside_ratio = outside_not_in_opening_ratio
+            
+            if effective_outside_ratio > 0.05:  # More than 5% outside (excluding openings)
+                return CheckResult(
+                    name="void_inside_domain",
+                    status=CheckStatus.FAILED,
+                    message=(
+                        f"{outside_ratio:.1%} of void surface is outside domain "
+                        f"({outside_in_opening_ratio:.1%} in allowed openings, "
+                        f"{outside_not_in_opening_ratio:.1%} not in openings)"
+                    ),
+                    value=effective_outside_ratio,
+                    threshold=0.05,
+                    details=details,
+                )
+            elif effective_outside_ratio > 0.01:  # More than 1% outside (excluding openings)
+                return CheckResult(
+                    name="void_inside_domain",
+                    status=CheckStatus.WARNING,
+                    message=(
+                        f"{outside_ratio:.1%} of void surface is outside domain "
+                        f"({outside_in_opening_ratio:.1%} in allowed openings, "
+                        f"{outside_not_in_opening_ratio:.1%} not in openings)"
+                    ),
+                    value=effective_outside_ratio,
+                    threshold=0.05,
+                    details=details,
+                )
+            
+            # Pass with surface openings
+            return CheckResult(
+                name="void_inside_domain",
+                status=CheckStatus.PASSED,
+                message=(
+                    f"Void mesh is contained within domain with allowed surface openings "
+                    f"({outside_in_opening_ratio:.1%} in {len(surface_opening_ports)} opening(s))"
+                ),
+                value=effective_outside_ratio,
+                threshold=0.05,
+                details=details,
+            )
+        
+        # Original behavior when no surface openings
         if outside_ratio > 0.05:  # More than 5% outside
             return CheckResult(
                 name="void_inside_domain",
@@ -230,11 +388,7 @@ def check_void_inside_domain(
                 message=f"{outside_ratio:.1%} of void surface is outside domain",
                 value=outside_ratio,
                 threshold=0.05,
-                details={
-                    "outside_count": outside_count,
-                    "sample_count": sample_count,
-                    "max_outside_distance": max_outside_distance,
-                },
+                details=details,
             )
         elif outside_ratio > 0.01:  # More than 1% outside
             return CheckResult(
@@ -243,11 +397,7 @@ def check_void_inside_domain(
                 message=f"{outside_ratio:.1%} of void surface is outside domain",
                 value=outside_ratio,
                 threshold=0.05,
-                details={
-                    "outside_count": outside_count,
-                    "sample_count": sample_count,
-                    "max_outside_distance": max_outside_distance,
-                },
+                details=details,
             )
         
         return CheckResult(
@@ -256,10 +406,7 @@ def check_void_inside_domain(
             message="Void mesh is contained within domain",
             value=outside_ratio,
             threshold=0.05,
-            details={
-                "outside_count": outside_count,
-                "sample_count": sample_count,
-            },
+            details=details,
         )
         
     except Exception as e:
