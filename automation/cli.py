@@ -142,10 +142,10 @@ def main():
         help="Initial task to start with",
     )
     
-    # Workflow command (Single Agent Organ Generator V3)
+    # Workflow command (Single Agent Organ Generator V5)
     wf_parser = subparsers.add_parser(
         "workflow",
-        help="Run Single Agent Organ Generator V3 workflow"
+        help="Run Single Agent Organ Generator V5 workflow"
     )
     wf_parser.add_argument(
         "--output-dir", "-O",
@@ -167,8 +167,25 @@ def main():
         help="Timeout for script execution in seconds (default: 300)",
     )
     
+    # DesignSpec command (LLM-driven DesignSpec workflow)
+    ds_parser = subparsers.add_parser(
+        "designspec",
+        help="Run LLM-driven DesignSpec workflow for iterative spec editing"
+    )
+    ds_parser.add_argument(
+        "--project-dir", "-p",
+        type=str,
+        required=True,
+        help="Path to project directory (created if it doesn't exist)",
+    )
+    ds_parser.add_argument(
+        "--legacy-agent",
+        action="store_true",
+        help="Use legacy rule-based agent instead of LLM-first agent",
+    )
+    
     # Common arguments for all commands
-    for p in [gen_parser, val_parser, iter_parser, int_parser, wf_parser]:
+    for p in [gen_parser, val_parser, iter_parser, int_parser, wf_parser, ds_parser]:
         p.add_argument(
             "--provider",
             type=str,
@@ -239,6 +256,8 @@ def main():
         run_interactive(agent, args)
     elif args.command == "workflow":
         run_workflow(agent, args)
+    elif args.command == "designspec":
+        run_designspec(args)
 
 
 def run_generate(agent: AgentRunner, args):
@@ -342,6 +361,101 @@ def run_workflow(agent: AgentRunner, args):
         print(f"\nWorkflow paused - waiting for input. Run again to continue.")
     else:
         print(f"\nWorkflow failed.")
+
+
+def run_designspec(args):
+    """Run the LLM-driven DesignSpec workflow."""
+    from .workflows.designspec_workflow import DesignSpecWorkflow, WorkflowEventType
+    from .llm_client import LLMClient, LLMConfig
+    
+    print(f"Starting DesignSpec workflow for project: {args.project_dir}")
+    
+    if args.legacy_agent:
+        print("Using legacy rule-based agent")
+    else:
+        print("Using LLM-first agent")
+    
+    llm_client = None
+    if not args.legacy_agent:
+        try:
+            config = LLMConfig(
+                provider=args.provider,
+                api_key=args.api_key,
+                model=args.model,
+            )
+            llm_client = LLMClient(config)
+        except Exception as e:
+            print(f"Warning: Failed to create LLM client: {e}")
+            print("Falling back to legacy agent")
+            args.legacy_agent = True
+    
+    def event_handler(event):
+        if event.event_type == WorkflowEventType.MESSAGE:
+            print(f"\nAssistant: {event.message}")
+        elif event.event_type == WorkflowEventType.QUESTION:
+            print(f"\nAssistant: {event.message}")
+        elif event.event_type == WorkflowEventType.PATCH_PROPOSAL:
+            print(f"\nAssistant: {event.message}")
+            print(f"Patch ID: {event.data.get('patch_id')}")
+            print(f"Patches: {json.dumps(event.data.get('patches', []), indent=2)}")
+        elif event.event_type == WorkflowEventType.ERROR:
+            print(f"\nError: {event.message}")
+        elif event.event_type == WorkflowEventType.RUN_STARTED:
+            print(f"\nRunning pipeline...")
+        elif event.event_type == WorkflowEventType.RUN_COMPLETED:
+            success = event.data.get('result', {}).get('success', False)
+            print(f"\nRun {'completed successfully' if success else 'failed'}")
+    
+    workflow = DesignSpecWorkflow(
+        llm_client=llm_client,
+        event_callback=event_handler,
+        use_legacy_agent=args.legacy_agent,
+    )
+    
+    if not workflow.on_start(project_dir=args.project_dir):
+        print("Failed to start workflow")
+        sys.exit(1)
+    
+    print("\nDesignSpec workflow started. Type your messages below.")
+    print("Commands: 'quit' to exit, 'approve <patch_id>' to approve a patch, 'run' to run the pipeline")
+    print("-" * 60)
+    
+    while True:
+        try:
+            user_input = input("\nYou: ").strip()
+            
+            if not user_input:
+                continue
+            
+            if user_input.lower() == 'quit':
+                print("Exiting workflow.")
+                break
+            
+            if user_input.lower().startswith('approve '):
+                patch_id = user_input[8:].strip()
+                if workflow.approve_patch(patch_id):
+                    print(f"Patch {patch_id} approved and applied.")
+                else:
+                    print(f"Failed to approve patch {patch_id}")
+                continue
+            
+            if user_input.lower() == 'run':
+                workflow.run_full()
+                continue
+            
+            if user_input.lower().startswith('run until '):
+                stage = user_input[10:].strip()
+                workflow.run_until(stage)
+                continue
+            
+            workflow.on_user_message(user_input)
+            
+        except KeyboardInterrupt:
+            print("\n\nInterrupted. Exiting workflow.")
+            break
+        except EOFError:
+            print("\n\nEnd of input. Exiting workflow.")
+            break
 
 
 if __name__ == "__main__":
