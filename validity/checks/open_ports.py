@@ -385,6 +385,8 @@ def check_port_open(
     Check if a single port is open.
     
     G2 FIX: Supports resolution resolver integration for pitch selection.
+    PORT CONNECTIVITY FIX: Uses adaptive pitch based on port radius to ensure
+    sufficient voxel resolution and avoid false "port sealed" errors.
     
     Parameters
     ----------
@@ -403,7 +405,7 @@ def check_port_open(
     port_id : str
         Identifier for the port.
     port_type : str
-        Type of port ("inlet" or "outlet").
+        Type of port ("inlet", "outlet", "insert", etc.).
     resolution_policy : ResolutionPolicy, optional
         Resolution policy for pitch selection via resolver.
     
@@ -414,8 +416,18 @@ def check_port_open(
     """
     port_direction = port_direction / np.linalg.norm(port_direction)
     
+    warnings = []
+    errors = []
+    
+    if port_type == "unknown" and policy.require_port_type:
+        warnings.append(
+            f"Port {port_id} has type 'unknown'. Explicitly set port_type "
+            "(inlet/outlet/insert) for proper handling."
+        )
+    
     pitch = policy.validation_pitch
     pitch_was_relaxed = False
+    requested_pitch = None
     
     if pitch is None:
         if resolution_policy is not None:
@@ -428,9 +440,11 @@ def check_port_open(
                 port_position[2] - half_size, port_position[2] + half_size,
             )
             
+            requested_pitch = policy.compute_adaptive_pitch(port_radius)
+            
             result = resolve_pitch(
                 op_name="open_port_validation",
-                requested_pitch=port_radius / 4,
+                requested_pitch=requested_pitch,
                 bbox=bbox,
                 resolution_policy=resolution_policy,
                 max_voxels_override=policy.max_voxels_roi,
@@ -438,7 +452,12 @@ def check_port_open(
             pitch = result.effective_pitch
             pitch_was_relaxed = result.was_relaxed
         else:
-            pitch = port_radius / 4
+            pitch = policy.compute_adaptive_pitch(port_radius)
+            requested_pitch = pitch
+    else:
+        requested_pitch = pitch
+    
+    voxels_across_radius = port_radius / pitch if pitch > 0 else 0
     
     patch = LocalVoxelPatch(
         center=port_position,
@@ -447,6 +466,26 @@ def check_port_open(
         max_voxels=policy.max_voxels_roi,
         auto_relax_pitch=policy.auto_relax_pitch,
     )
+    
+    if patch.pitch_was_relaxed:
+        pitch_was_relaxed = True
+        voxels_across_radius = port_radius / patch.pitch if patch.pitch > 0 else 0
+    
+    if pitch_was_relaxed and policy.warn_on_pitch_relaxation:
+        warnings.append(
+            f"Port {port_id}: validation pitch was relaxed from {requested_pitch:.6f}m "
+            f"to {patch.pitch:.6f}m due to ROI voxel budget. "
+            f"Voxels across radius: {voxels_across_radius:.1f} "
+            f"(recommended >= {policy.min_voxels_across_radius}). "
+            "This may cause false 'port sealed' errors if connection is thin."
+        )
+    
+    if voxels_across_radius < policy.min_voxels_across_radius and not pitch_was_relaxed:
+        warnings.append(
+            f"Port {port_id}: only {voxels_across_radius:.1f} voxels across radius "
+            f"(recommended >= {policy.min_voxels_across_radius}). "
+            "Consider reducing validation_pitch for better accuracy."
+        )
     
     patch.classify_from_domain_with_void(
         domain_with_void_mesh=domain_with_void_mesh,
@@ -465,13 +504,18 @@ def check_port_open(
         connected_voxels >= policy.min_connected_volume_voxels
     )
     
-    warnings = []
-    errors = []
-    
     if not outside_seed_found:
         errors.append(f"Could not find outside seed point for port {port_id}")
     elif not void_reached:
-        errors.append(f"Port {port_id} does not connect to void space")
+        if pitch_was_relaxed:
+            errors.append(
+                f"Port {port_id} does not connect to void space. "
+                f"NOTE: Pitch was relaxed to {patch.pitch:.6f}m ({voxels_across_radius:.1f} voxels "
+                f"across radius). This may be a false negative - try increasing max_voxels_roi "
+                f"or reducing local_region_size."
+            )
+        else:
+            errors.append(f"Port {port_id} does not connect to void space")
     elif connected_voxels < policy.min_connected_volume_voxels:
         warnings.append(
             f"Port {port_id} has small connected volume ({connected_voxels} voxels, "
@@ -496,9 +540,15 @@ def check_port_open(
         outside_seed_found=outside_seed_found,
         void_reached=void_reached,
         diagnostics={
-            "pitch_used": pitch,
+            "pitch_used": patch.pitch,
+            "pitch_requested": requested_pitch,
+            "pitch_was_relaxed": pitch_was_relaxed,
+            "voxels_across_radius": voxels_across_radius,
+            "min_voxels_across_radius": policy.min_voxels_across_radius,
             "local_region_size": policy.local_region_size,
             "probe_length": policy.probe_length,
+            "max_voxels_roi": policy.max_voxels_roi,
+            "adaptive_pitch": policy.adaptive_pitch,
         },
         warnings=warnings,
         errors=errors,
