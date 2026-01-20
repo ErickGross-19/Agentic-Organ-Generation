@@ -1301,7 +1301,10 @@ class MainWindow:
         if features:
             ridges = features.get("ridges", [])
             if ridges:
-                faces = [r.get("face", "?") for r in ridges]
+                if isinstance(ridges, dict):
+                    faces = ridges.get("faces", [])
+                else:
+                    faces = [r.get("face", "?") for r in ridges]
                 summary_parts.append(f"Ridges on faces: {', '.join(faces)}")
         
         if summary_parts:

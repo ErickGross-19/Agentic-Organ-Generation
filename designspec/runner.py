@@ -741,7 +741,7 @@ class DesignSpecRunner:
                 metadata["node_count"] = len(network.nodes)
                 metadata["segment_count"] = len(network.segments)
                 
-            elif build_type == "primitive_channels":
+            elif build_type in ("primitive_channels", "channel"):
                 void_mesh, report = self._build_primitive_channels(
                     domain, ports, build, component_id, component
                 )
