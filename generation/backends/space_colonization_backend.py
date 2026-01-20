@@ -325,10 +325,17 @@ class SpaceColonizationBackend(GenerationBackend):
         # Track which nodes belong to which inlet tree
         inlet_node_sets: list = [set() for _ in range(n_inlets)]
         
-        sc_config = SCParams(
+        # Convert attractor_list to numpy array for space_colonization_step
+        if attractor_list:
+            tissue_points = np.array([[p.x, p.y, p.z] for p in attractor_list])
+        else:
+            tissue_points = np.zeros((0, 3))
+        
+        sc_params = SCParams(
             influence_radius=config.attraction_distance,
             kill_radius=config.kill_distance,
             step_size=config.step_size,
+            vessel_type=vessel_type,
         )
         
         # Generate trees for each inlet
@@ -363,33 +370,39 @@ class SpaceColonizationBackend(GenerationBackend):
             network.add_node(inlet_node)
             
             # Run space colonization for this inlet
-            active_nodes = [inlet_node.id]
+            seed_nodes = [inlet_node.id]
             iterations_per_inlet = config.max_iterations // n_inlets
             
             for iteration in range(iterations_per_inlet):
-                if not attractor_list or not active_nodes:
+                if len(tissue_points) == 0 or not seed_nodes:
                     break
                 
                 result = space_colonization_step(
                     network=network,
-                    attractors=attractor_list,
-                    active_node_ids=active_nodes,
-                    config=sc_config,
-                    base_radius=inlet_radius,
-                    vessel_type=vessel_type,
+                    tissue_points=tissue_points,
+                    params=sc_params,
+                    seed=int(rng.integers(0, 2**31)),
+                    seed_nodes=seed_nodes,
                 )
                 
                 if result.is_success():
                     new_node_ids = result.new_ids.get("nodes", [])
-                    consumed_attractors = result.metadata.get("consumed_attractors", [])
                     
                     if new_node_ids:
-                        active_nodes = new_node_ids
+                        seed_nodes = new_node_ids
                     
-                    attractor_list = [
-                        a for idx, a in enumerate(attractor_list)
-                        if idx not in consumed_attractors
-                    ]
+                    # Update tissue_points by removing consumed ones
+                    remaining_mask = result.metadata.get("remaining_tissue_mask")
+                    if remaining_mask is not None:
+                        tissue_points = tissue_points[remaining_mask]
+                    else:
+                        # Fallback: remove points within kill_radius of new nodes
+                        for node_id in new_node_ids:
+                            node = network.nodes.get(node_id)
+                            if node:
+                                node_pos = np.array([node.position.x, node.position.y, node.position.z])
+                                distances = np.linalg.norm(tissue_points - node_pos, axis=1)
+                                tissue_points = tissue_points[distances > config.kill_distance]
                 else:
                     break
             
