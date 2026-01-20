@@ -34,6 +34,70 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _validate_and_fix_inlet_direction(
+    inlet: Dict[str, Any],
+    domain: "RuntimeDomainSpec",
+) -> Dict[str, Any]:
+    """
+    Validate inlet direction and auto-flip if pointing outward from top face.
+    
+    This guard prevents a common misconfiguration where inlet directions point
+    outward (+Z) instead of inward (-Z) for top-face inlets, which causes
+    immediate growth termination.
+    
+    Parameters
+    ----------
+    inlet : dict
+        Inlet specification with position and direction
+    domain : RuntimeDomainSpec
+        Domain object to determine face positions
+        
+    Returns
+    -------
+    dict
+        Inlet spec with potentially corrected direction
+    """
+    position = inlet.get("position")
+    direction = inlet.get("direction") or inlet.get("growth_inward_direction")
+    
+    if position is None or direction is None:
+        return inlet
+    
+    # Get domain bounds to determine if inlet is on top face
+    bounds = domain.get_bounds()  # (x_min, x_max, y_min, y_max, z_min, z_max)
+    z_max = bounds[5]
+    z_min = bounds[4]
+    domain_height = z_max - z_min
+    
+    # Check if inlet is on top face (within 10% of domain height from top)
+    inlet_z = position[2] if len(position) > 2 else 0
+    is_on_top_face = abs(inlet_z - z_max) < 0.1 * domain_height
+    
+    # Check if direction points outward (+Z)
+    direction_z = direction[2] if len(direction) > 2 else 0
+    points_outward = direction_z > 0
+    
+    if is_on_top_face and points_outward:
+        # Auto-flip direction to point inward
+        corrected_direction = [-direction[0], -direction[1], -direction[2]]
+        inlet_name = inlet.get("name", "unnamed")
+        logger.warning(
+            f"Inlet '{inlet_name}' direction points out of domain (direction[2]={direction_z:.3f} > 0 "
+            f"for top-face inlet at z={inlet_z:.6f}). Auto-flipping to inward direction "
+            f"{corrected_direction} for robustness."
+        )
+        
+        # Return a copy with corrected direction
+        corrected_inlet = inlet.copy()
+        if "direction" in corrected_inlet:
+            corrected_inlet["direction"] = corrected_direction
+        if "growth_inward_direction" in corrected_inlet:
+            corrected_inlet["growth_inward_direction"] = corrected_direction
+        return corrected_inlet
+    
+    return inlet
+
+
 def _coerce_domain(domain: Union[Dict[str, Any], DomainSpec, "RuntimeDomainSpec"]) -> "RuntimeDomainSpec":
     """
     Coerce domain input to a runtime Domain object.
@@ -315,8 +379,11 @@ def _generate_space_colonization(
     backend_params = getattr(growth_policy, 'backend_params', None) or {}
     multi_inlet_mode = backend_params.get('multi_inlet_mode')
     
+    # Validate and fix inlet directions (auto-flip if pointing outward from top face)
+    validated_inlets = [_validate_and_fix_inlet_direction(inlet, domain) for inlet in inlets]
+    
     # Use SpaceColonizationBackend.generate_multi_inlet() for multiple inlets
-    if len(inlets) > 1 and multi_inlet_mode:
+    if len(validated_inlets) > 1 and multi_inlet_mode:
         from ..backends.space_colonization_backend import SpaceColonizationBackend, SpaceColonizationConfig
         
         config = SpaceColonizationConfig(
@@ -332,7 +399,7 @@ def _generate_space_colonization(
         )
         
         inlet_specs = []
-        for inlet in inlets:
+        for inlet in validated_inlets:
             spec = {
                 "position": inlet.get("position", (0, 0, 0)),
                 "radius": inlet.get("radius", 0.001),
@@ -342,7 +409,7 @@ def _generate_space_colonization(
                 spec["direction"] = direction
             inlet_specs.append(spec)
         
-        vessel_type = inlets[0].get("vessel_type", "arterial")
+        vessel_type = validated_inlets[0].get("vessel_type", "arterial")
         target = growth_policy.target_terminals or 128
         
         backend = SpaceColonizationBackend()
@@ -370,7 +437,7 @@ def _generate_space_colonization(
     # Single inlet or no multi_inlet_mode: use original space_colonization_step_v2 path
     network = create_network(domain=domain, seed=seed)
     
-    for inlet in inlets:
+    for inlet in validated_inlets:
         pos = inlet.get("position")
         if pos is None:
             raise ValueError("Inlet missing required 'position' field")
@@ -505,6 +572,9 @@ def _generate_kary_tree(
     if not inlets:
         raise ValueError("K-ary tree requires at least one inlet")
     
+    # Validate and fix inlet directions (auto-flip if pointing outward from top face)
+    validated_inlets = [_validate_and_fix_inlet_direction(inlet, domain) for inlet in inlets]
+    
     target = growth_policy.target_terminals or 128
     
     explicit_branch_length = None
@@ -555,9 +625,9 @@ def _generate_kary_tree(
     
     backend = KaryTreeBackend()
     
-    if len(inlets) > 1:
+    if len(validated_inlets) > 1:
         inlet_specs = []
-        for inlet in inlets:
+        for inlet in validated_inlets:
             spec = {
                 "position": inlet.get("position", (0, 0, 0)),
                 "radius": inlet.get("radius", 0.001),
@@ -568,7 +638,7 @@ def _generate_kary_tree(
                 spec["direction"] = direction
             inlet_specs.append(spec)
         
-        vessel_type = inlets[0].get("vessel_type", "arterial")
+        vessel_type = validated_inlets[0].get("vessel_type", "arterial")
         network = backend.generate_multi_inlet(
             domain=domain,
             num_outlets=target,
@@ -578,7 +648,7 @@ def _generate_kary_tree(
             rng_seed=seed,
         )
     else:
-        inlet = inlets[0]
+        inlet = validated_inlets[0]
         inlet_position = np.array(inlet.get("position", (0, 0, 0)))
         inlet_radius = inlet.get("radius", 0.001)
         vessel_type = inlet.get("vessel_type", "arterial")
@@ -608,7 +678,7 @@ def _generate_kary_tree(
         "inlet_count": inlet_count,
         "node_count": len(network.nodes),
         "segment_count": len(network.segments),
-        "multi_inlet_mode": multi_inlet_mode if len(inlets) > 1 else "single",
+        "multi_inlet_mode": multi_inlet_mode if len(validated_inlets) > 1 else "single",
     }
 
 

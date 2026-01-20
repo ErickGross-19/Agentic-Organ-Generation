@@ -22,17 +22,29 @@ from aog_policies import TissueSamplingPolicy
 
 @dataclass
 class SpaceColonizationConfig(BackendConfig):
-    """Configuration for space colonization backend."""
+    """Configuration for space colonization backend.
     
-    attraction_distance: float = 0.010  # meters
+    Multi-inlet modes:
+    - "blended": Soft, blended weighting of attractors across inlets (recommended for organic growth)
+    - "partitioned_xy": Hard XY Voronoi partitioning (legacy behavior, creates cross patterns)
+    - "forest": Separate trees per inlet with no merging
+    - "forest_with_merge": Separate trees that merge where they collide
+    """
+    
+    attraction_distance: float = 0.010  # meters (influence_radius)
     kill_distance: float = 0.002  # meters
     step_size: float = 0.002  # meters
     num_attractors: int = 1000
     max_iterations: int = 500
     branch_angle_deg: float = 30.0
-    multi_inlet_mode: str = "forest_with_merge"  # "forest" or "forest_with_merge"
+    multi_inlet_mode: str = "blended"  # "blended", "partitioned_xy", "forest", or "forest_with_merge"
     collision_merge_distance: float = 0.0003  # 0.3mm in meters
     max_inlets: int = 10
+    # Blended mode parameters
+    multi_inlet_blend_sigma: float = 0.0  # If 0, auto-computed as domain_radius/2
+    # Directional constraints for multi-inlet (less restrictive for blended mode)
+    directional_bias: float = 0.5  # 0.0 = no bias, 1.0 = strict directional growth
+    max_deviation_deg: float = 60.0  # Maximum angle from inlet direction
 
 
 class SpaceColonizationBackend(GenerationBackend):
@@ -216,8 +228,11 @@ class SpaceColonizationBackend(GenerationBackend):
         """
         Generate a vascular network with multiple inlets using space colonization.
         
-        Each inlet grows its own tree, and trees are merged where they collide
-        (forest_with_merge mode) or kept separate (forest mode).
+        Supports multiple modes:
+        - "blended": Soft, blended weighting of attractors across inlets (organic growth)
+        - "partitioned_xy": Hard XY Voronoi partitioning (legacy, creates cross patterns)
+        - "forest": Separate trees per inlet with no merging
+        - "forest_with_merge": Separate trees that merge where they collide
         
         Parameters
         ----------
@@ -244,6 +259,9 @@ class SpaceColonizationBackend(GenerationBackend):
         VascularNetwork
             Generated vascular network with multiple inlet trees
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        
         if config is None:
             config = SpaceColonizationConfig()
         
@@ -272,7 +290,6 @@ class SpaceColonizationBackend(GenerationBackend):
         network = VascularNetwork(domain=domain, seed=rng_seed)
         
         n_inlets = len(inlets)
-        outlets_per_inlet = num_outlets // n_inlets
         
         # Generate attractors for the entire domain
         num_attractors = max(config.num_attractors, num_outlets * 2)
@@ -322,19 +339,85 @@ class SpaceColonizationBackend(GenerationBackend):
             attractors = domain.sample_points(num_attractors, seed=int(rng.integers(0, 2**31)))
             attractor_list = [Point3D.from_array(a) for a in attractors]
         
-        # Track which nodes belong to which inlet tree
-        inlet_node_sets: list = [set() for _ in range(n_inlets)]
-        
-        # Convert attractor_list to numpy array for space_colonization_step
+        # Convert attractor_list to numpy array
         if attractor_list:
             all_tissue_points = np.array([[p.x, p.y, p.z] for p in attractor_list])
         else:
             all_tissue_points = np.zeros((0, 3))
         
-        # Pre-compute all inlet positions for spatial partitioning
+        # Pre-compute all inlet positions
         inlet_positions = np.array([inlet.get("position", [0, 0, 0]) for inlet in inlets])
         
-        # Generate trees for each inlet with per-inlet tissue point filtering
+        # Compute blend_sigma for blended mode
+        bounds = domain.get_bounds()
+        domain_radius = max(
+            (bounds[1] - bounds[0]) / 2,  # x extent / 2
+            (bounds[3] - bounds[2]) / 2,  # y extent / 2
+        )
+        blend_sigma = config.multi_inlet_blend_sigma if config.multi_inlet_blend_sigma > 0 else domain_radius / 2
+        
+        # Use blended mode for organic growth
+        if config.multi_inlet_mode == "blended":
+            return self._generate_multi_inlet_blended(
+                domain=domain,
+                network=network,
+                inlets=inlets,
+                inlet_positions=inlet_positions,
+                all_tissue_points=all_tissue_points,
+                vessel_type=vessel_type,
+                config=config,
+                blend_sigma=blend_sigma,
+                rng=rng,
+                logger=logger,
+            )
+        
+        # Legacy modes: partitioned_xy, forest, forest_with_merge
+        return self._generate_multi_inlet_partitioned(
+            domain=domain,
+            network=network,
+            inlets=inlets,
+            inlet_positions=inlet_positions,
+            all_tissue_points=all_tissue_points,
+            vessel_type=vessel_type,
+            config=config,
+            rng=rng,
+            logger=logger,
+        )
+    
+    def _generate_multi_inlet_blended(
+        self,
+        domain: DomainSpec,
+        network: VascularNetwork,
+        inlets: list,
+        inlet_positions: np.ndarray,
+        all_tissue_points: np.ndarray,
+        vessel_type: str,
+        config: SpaceColonizationConfig,
+        blend_sigma: float,
+        rng: np.random.Generator,
+        logger,
+    ) -> VascularNetwork:
+        """
+        Generate multi-inlet network using blended/shared attractor weighting.
+        
+        This mode uses soft Gaussian weighting instead of hard Voronoi partitioning,
+        allowing attractors to influence multiple inlets based on distance. This
+        produces organic, blended growth patterns instead of rigid cross patterns.
+        
+        Key features:
+        - Gaussian weights: w_i = exp(-d_i^2 / (2*sigma^2)) for each attractor-inlet pair
+        - Probabilistic assignment: attractors assigned to inlets based on weights
+        - Proper frontier management: maintains all active tips, not just newest nodes
+        - Global kill: attractors removed when within kill_radius of ANY new node
+        """
+        n_inlets = len(inlets)
+        
+        # Create inlet nodes and initialize per-inlet data structures
+        inlet_nodes = []
+        inlet_directions = []
+        active_tips_per_inlet: list = [set() for _ in range(n_inlets)]
+        inlet_node_sets: list = [set() for _ in range(n_inlets)]
+        
         for i, inlet in enumerate(inlets):
             inlet_position = np.array(inlet.get("position", [0, 0, 0]))
             inlet_radius = inlet.get("radius", 0.001)
@@ -342,7 +425,204 @@ class SpaceColonizationBackend(GenerationBackend):
             inlet_point = Point3D.from_array(inlet_position)
             inlet_direction = self._compute_initial_direction(inlet_point, domain)
             
-            # Override direction if provided
+            if "direction" in inlet:
+                dir_arr = np.array(inlet["direction"])
+                if np.linalg.norm(dir_arr) > 0:
+                    dir_arr = dir_arr / np.linalg.norm(dir_arr)
+                    inlet_direction = Direction3D.from_array(dir_arr)
+            
+            inlet_node = Node(
+                id=network.id_gen.next_id(),
+                position=inlet_point,
+                node_type="inlet",
+                vessel_type=vessel_type,
+                attributes={
+                    "radius": inlet_radius,
+                    "direction": inlet_direction.to_dict(),
+                    "branch_order": 0,
+                    "inlet_index": i,
+                },
+            )
+            network.add_node(inlet_node)
+            
+            inlet_nodes.append(inlet_node)
+            inlet_directions.append(inlet_direction.to_array())
+            active_tips_per_inlet[i].add(inlet_node.id)
+            inlet_node_sets[i].add(inlet_node.id)
+        
+        # Compute initial Gaussian weights for all attractors
+        # w_i = exp(-d_i^2 / (2*sigma^2)) where d_i is XY distance to inlet i
+        def compute_attractor_weights(tissue_points: np.ndarray) -> np.ndarray:
+            if len(tissue_points) == 0:
+                return np.zeros((0, n_inlets))
+            # Compute XY distances from each attractor to each inlet
+            xy_points = tissue_points[:, :2]  # (N, 2)
+            xy_inlets = inlet_positions[:, :2]  # (n_inlets, 2)
+            # Broadcast: (N, 1, 2) - (1, n_inlets, 2) -> (N, n_inlets, 2)
+            diffs = xy_points[:, np.newaxis, :] - xy_inlets[np.newaxis, :, :]
+            distances = np.linalg.norm(diffs, axis=2)  # (N, n_inlets)
+            # Gaussian weights
+            weights = np.exp(-distances**2 / (2 * blend_sigma**2))
+            # Normalize so each row sums to 1
+            row_sums = weights.sum(axis=1, keepdims=True)
+            row_sums = np.where(row_sums > 0, row_sums, 1.0)  # Avoid division by zero
+            weights = weights / row_sums
+            return weights
+        
+        # Main growth loop - all inlets grow simultaneously
+        tissue_points = all_tissue_points.copy()
+        
+        for iteration in range(config.max_iterations):
+            if len(tissue_points) == 0:
+                logger.info(f"Blended mode: stopping at iteration {iteration}, no attractors left")
+                break
+            
+            # Check if any inlet still has active tips
+            total_active = sum(len(tips) for tips in active_tips_per_inlet)
+            if total_active == 0:
+                logger.info(f"Blended mode: stopping at iteration {iteration}, no active tips")
+                break
+            
+            # Compute weights for current attractors
+            weights = compute_attractor_weights(tissue_points)
+            
+            # Assign each attractor to an inlet probabilistically based on weights
+            attractor_assignments = []
+            for j in range(len(tissue_points)):
+                w = weights[j]
+                if w.sum() > 0:
+                    inlet_idx = rng.choice(n_inlets, p=w)
+                else:
+                    inlet_idx = rng.integers(0, n_inlets)
+                attractor_assignments.append(inlet_idx)
+            attractor_assignments = np.array(attractor_assignments)
+            
+            # Process each inlet's growth step
+            all_new_nodes = []
+            nodes_to_kill_attractors = []
+            
+            for i in range(n_inlets):
+                if not active_tips_per_inlet[i]:
+                    continue
+                
+                # Get attractors assigned to this inlet
+                inlet_mask = attractor_assignments == i
+                inlet_tissue_points = tissue_points[inlet_mask]
+                
+                if len(inlet_tissue_points) == 0:
+                    continue
+                
+                # Create params with moderate directional bias (not absolute)
+                inlet_dir = inlet_directions[i]
+                sc_params = SCParams(
+                    influence_radius=config.attraction_distance,
+                    kill_radius=config.kill_distance,
+                    step_size=config.step_size,
+                    vessel_type=vessel_type,
+                    preferred_direction=tuple(inlet_dir),
+                    directional_bias=config.directional_bias,
+                    max_deviation_deg=config.max_deviation_deg,
+                )
+                
+                # Use all active tips for this inlet as seed nodes
+                seed_nodes = list(active_tips_per_inlet[i])
+                
+                result = space_colonization_step(
+                    network=network,
+                    tissue_points=inlet_tissue_points,
+                    params=sc_params,
+                    seed=int(rng.integers(0, 2**31)),
+                    seed_nodes=seed_nodes,
+                )
+                
+                if result.is_success():
+                    new_node_ids = result.new_ids.get("nodes", [])
+                    
+                    if new_node_ids:
+                        # Update active tips: add new nodes, keep old tips that are still terminal
+                        for node_id in new_node_ids:
+                            active_tips_per_inlet[i].add(node_id)
+                            inlet_node_sets[i].add(node_id)
+                            all_new_nodes.append(node_id)
+                        
+                        # Remove tips that are no longer terminal (have children now)
+                        tips_to_remove = set()
+                        for tip_id in active_tips_per_inlet[i]:
+                            node = network.nodes.get(tip_id)
+                            if node:
+                                # Check if this node has outgoing segments (children)
+                                has_children = any(
+                                    seg.source_id == tip_id 
+                                    for seg in network.segments.values()
+                                )
+                                if has_children and tip_id not in new_node_ids:
+                                    tips_to_remove.add(tip_id)
+                        active_tips_per_inlet[i] -= tips_to_remove
+                        
+                        nodes_to_kill_attractors.extend(new_node_ids)
+            
+            # Global kill: remove attractors within kill_radius of ANY new node
+            if nodes_to_kill_attractors:
+                for node_id in nodes_to_kill_attractors:
+                    node = network.nodes.get(node_id)
+                    if node:
+                        node_pos = np.array([node.position.x, node.position.y, node.position.z])
+                        distances = np.linalg.norm(tissue_points - node_pos, axis=1)
+                        tissue_points = tissue_points[distances > config.kill_distance]
+            
+            if not all_new_nodes:
+                # No growth this iteration - check if we should stop
+                stalled_inlets = sum(1 for tips in active_tips_per_inlet if len(tips) == 0)
+                if stalled_inlets == n_inlets:
+                    logger.info(f"Blended mode: all inlets stalled at iteration {iteration}")
+                    break
+        
+        self._mark_terminals(network)
+        
+        # Optionally merge trees if requested
+        if config.multi_inlet_mode == "blended":
+            # In blended mode, we can still merge nearby branches from different inlets
+            merges = self._merge_colliding_trees(
+                network=network,
+                inlet_node_sets=inlet_node_sets,
+                merge_distance=config.collision_merge_distance,
+                vessel_type=vessel_type,
+            )
+            logger.info(
+                f"Blended mode: generated {n_inlets} inlet trees, performed {merges} merges, "
+                f"total nodes: {len(network.nodes)}"
+            )
+        
+        return network
+    
+    def _generate_multi_inlet_partitioned(
+        self,
+        domain: DomainSpec,
+        network: VascularNetwork,
+        inlets: list,
+        inlet_positions: np.ndarray,
+        all_tissue_points: np.ndarray,
+        vessel_type: str,
+        config: SpaceColonizationConfig,
+        rng: np.random.Generator,
+        logger,
+    ) -> VascularNetwork:
+        """
+        Generate multi-inlet network using partitioned/cylinder filtering (legacy mode).
+        
+        This is the original implementation that uses strict cylinder filtering
+        and directional constraints. Kept for backward compatibility.
+        """
+        n_inlets = len(inlets)
+        inlet_node_sets: list = [set() for _ in range(n_inlets)]
+        
+        for i, inlet in enumerate(inlets):
+            inlet_position = np.array(inlet.get("position", [0, 0, 0]))
+            inlet_radius = inlet.get("radius", 0.001)
+            
+            inlet_point = Point3D.from_array(inlet_position)
+            inlet_direction = self._compute_initial_direction(inlet_point, domain)
+            
             if "direction" in inlet:
                 dir_arr = np.array(inlet["direction"])
                 if np.linalg.norm(dir_arr) > 0:
@@ -351,36 +631,28 @@ class SpaceColonizationBackend(GenerationBackend):
             
             inlet_dir_arr = inlet_direction.to_array()
             
-            # Create per-inlet params with ABSOLUTE directional constraints to enforce growth
-            # strictly in the inlet's direction (typically downward) rather than towards other inlets
-            # Using 1.0 bias and 30° max deviation to FORCE downward growth, preventing cross patterns
             sc_params = SCParams(
                 influence_radius=config.attraction_distance,
                 kill_radius=config.kill_distance,
                 step_size=config.step_size,
                 vessel_type=vessel_type,
                 preferred_direction=tuple(inlet_dir_arr),
-                directional_bias=1.0,  # ABSOLUTE bias - grow ONLY in inlet direction
-                max_deviation_deg=30.0,  # Very strict cone - prevents any horizontal growth
+                directional_bias=1.0,
+                max_deviation_deg=30.0,
             )
             
-            # Filter tissue points to a narrow CYLINDER below each inlet
-            # This replaces Voronoi partitioning which was creating cross patterns
-            # Each inlet only sees points within a narrow column directly below it
             tissue_points = self._filter_tissue_points_by_cylinder(
                 all_tissue_points,
                 inlet_position,
                 inlet_dir_arr,
-                cylinder_radius=1.0,  # 1mm radius cylinder around inlet's XY position
+                cylinder_radius=1.0,
             )
             
-            # Additionally filter by direction with a NARROW cone (30°) to ensure
-            # strictly downward growth - prevents any horizontal growth
             tissue_points = self._filter_tissue_points_by_direction(
                 tissue_points,
                 inlet_position,
                 inlet_dir_arr,
-                cone_angle_deg=30.0,  # Narrow cone - only points almost directly below
+                cone_angle_deg=30.0,
             )
             
             nodes_before = set(network.nodes.keys())
@@ -399,7 +671,6 @@ class SpaceColonizationBackend(GenerationBackend):
             )
             network.add_node(inlet_node)
             
-            # Run space colonization for this inlet
             seed_nodes = [inlet_node.id]
             iterations_per_inlet = config.max_iterations // n_inlets
             
@@ -421,12 +692,10 @@ class SpaceColonizationBackend(GenerationBackend):
                     if new_node_ids:
                         seed_nodes = new_node_ids
                     
-                    # Update tissue_points by removing consumed ones
                     remaining_mask = result.metadata.get("remaining_tissue_mask")
                     if remaining_mask is not None:
                         tissue_points = tissue_points[remaining_mask]
                     else:
-                        # Fallback: remove points within kill_radius of new nodes
                         for node_id in new_node_ids:
                             node = network.nodes.get(node_id)
                             if node:
@@ -434,8 +703,6 @@ class SpaceColonizationBackend(GenerationBackend):
                                 distances = np.linalg.norm(tissue_points - node_pos, axis=1)
                                 tissue_points = tissue_points[distances > config.kill_distance]
                     
-                    # Also remove consumed points from the global pool so other inlets
-                    # don't try to grow towards already-perfused regions
                     for node_id in new_node_ids:
                         node = network.nodes.get(node_id)
                         if node:
@@ -445,13 +712,11 @@ class SpaceColonizationBackend(GenerationBackend):
                 else:
                     break
             
-            # Track nodes belonging to this inlet tree
             nodes_after = set(network.nodes.keys())
             inlet_node_sets[i] = nodes_after - nodes_before
         
         self._mark_terminals(network)
         
-        # Merge trees if forest_with_merge mode
         if config.multi_inlet_mode == "forest_with_merge":
             merges = self._merge_colliding_trees(
                 network=network,
@@ -459,8 +724,7 @@ class SpaceColonizationBackend(GenerationBackend):
                 merge_distance=config.collision_merge_distance,
                 vessel_type=vessel_type,
             )
-            import logging
-            logging.getLogger(__name__).info(
+            logger.info(
                 f"Forest with merge mode: generated {n_inlets} trees, performed {merges} merges"
             )
         
