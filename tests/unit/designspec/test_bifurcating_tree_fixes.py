@@ -497,3 +497,373 @@ class TestBifurcatingTreeSpecIntegration:
             "Component should request network artifact to be saved"
         assert save_artifacts["network"] == "artifacts/bifurcating_tree_network.json", \
             f"Network artifact path should be 'artifacts/bifurcating_tree_network.json', got {save_artifacts['network']}"
+
+
+class TestSurfaceOpeningSemantics:
+    """Tests for surface opening semantics in validity checks."""
+    
+    def test_surface_opening_port_class(self):
+        """Test SurfaceOpeningPort class correctly identifies points in neighborhood."""
+        from generation.ops.validity.void_checks import SurfaceOpeningPort
+        
+        port = SurfaceOpeningPort(
+            position=np.array([0.0, 0.0, 0.001]),
+            direction=np.array([0.0, 0.0, -1.0]),
+            radius=0.0005,
+            tolerance=0.001,
+            port_id="test_port",
+        )
+        
+        # Point at port center should be in neighborhood
+        assert port.is_point_in_neighborhood(np.array([0.0, 0.0, 0.001])) is True
+        
+        # Point slightly inside port (along direction) should be in neighborhood
+        assert port.is_point_in_neighborhood(np.array([0.0, 0.0, 0.0005])) is True
+        
+        # Point far from port should not be in neighborhood
+        assert port.is_point_in_neighborhood(np.array([0.0, 0.0, -0.005])) is False
+        
+        # Point outside port radius should not be in neighborhood
+        assert port.is_point_in_neighborhood(np.array([0.005, 0.0, 0.001])) is False
+    
+    def test_validation_policy_surface_opening_fields(self):
+        """Test ValidationPolicy has surface opening fields."""
+        from aog_policies.validity import ValidationPolicy
+        
+        policy = ValidationPolicy()
+        
+        assert hasattr(policy, 'allow_boundary_intersections_at_ports')
+        assert hasattr(policy, 'surface_opening_tolerance')
+        assert policy.allow_boundary_intersections_at_ports is False  # Default
+        assert policy.surface_opening_tolerance == 0.001  # 1mm default
+    
+    def test_is_surface_opening_field_preserved_in_ports(self):
+        """Test that is_surface_opening field is preserved when collecting ports."""
+        from designspec.runner import DesignSpecRunner
+        from designspec.spec import DesignSpec
+        
+        spec_dict = {
+            "schema": {"name": "aog_designspec", "version": "1.0.0"},
+            "meta": {"name": "test", "input_units": "mm"},
+            "policies": {},
+            "domains": {
+                "main": {"type": "cylinder", "center": [0, 0, 0], "radius": 5.0, "height": 2.0}
+            },
+            "components": [{
+                "id": "comp1",
+                "domain_ref": "main",
+                "ports": {
+                    "inlets": [{
+                        "name": "inlet_1",
+                        "position": [0, 0, 1],
+                        "radius": 0.5,
+                        "is_surface_opening": True
+                    }],
+                    "outlets": [{"name": "outlet_1", "position": [0, 0, -1], "radius": 0.3}]
+                },
+                "build": {"type": "backend_network", "backend": "kary_tree"}
+            }]
+        }
+        
+        spec = DesignSpec.from_dict(spec_dict)
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runner = DesignSpecRunner(spec, output_dir=tmpdir)
+            runner._resolved_ports["comp1"] = {
+                "inlets": [{
+                    "name": "inlet_1",
+                    "position": [0, 0, 0.001],
+                    "radius": 0.0005,
+                    "is_surface_opening": True
+                }],
+                "outlets": [{"name": "outlet_1", "position": [0, 0, -0.001], "radius": 0.0003}]
+            }
+            
+            ports = runner._collect_all_ports()
+            
+            inlet_ports = [p for p in ports if p["type"] == "inlet"]
+            assert len(inlet_ports) == 1
+            assert inlet_ports[0].get("is_surface_opening") is True, \
+                "is_surface_opening field should be preserved"
+
+
+class TestUnionDetailPreservation:
+    """Tests for union detail preservation during merge operations."""
+    
+    def test_mesh_merge_policy_detail_fields(self):
+        """Test MeshMergePolicy has detail preservation fields."""
+        from aog_policies.generation import MeshMergePolicy
+        
+        policy = MeshMergePolicy()
+        
+        assert hasattr(policy, 'min_voxels_per_diameter')
+        assert hasattr(policy, 'min_channel_diameter')
+        assert hasattr(policy, 'detail_loss_threshold')
+        assert hasattr(policy, 'detail_loss_strictness')
+        
+        assert policy.min_voxels_per_diameter == 4  # Default
+        assert policy.detail_loss_threshold == 0.5  # 50% default
+        assert policy.detail_loss_strictness == "warn"  # Default
+    
+    def test_detect_detail_loss_no_loss(self):
+        """Test detect_detail_loss returns False when no significant loss."""
+        from generation.ops.mesh.merge import detect_detail_loss
+        from aog_policies.generation import MeshMergePolicy
+        
+        # Create mock meshes with similar properties
+        class MockMesh:
+            def __init__(self, faces, vertices, volume):
+                self.faces = np.zeros((faces, 3), dtype=int)
+                self.vertices = np.zeros((vertices, 3))
+                self._volume = volume
+            
+            @property
+            def volume(self):
+                return self._volume
+        
+        input_meshes = [
+            MockMesh(faces=1000, vertices=500, volume=1e-9),
+            MockMesh(faces=1000, vertices=500, volume=1e-9),
+        ]
+        output_mesh = MockMesh(faces=1800, vertices=900, volume=1.8e-9)
+        
+        policy = MeshMergePolicy(detail_loss_threshold=0.5)
+        
+        detail_lost, report = detect_detail_loss(input_meshes, output_mesh, policy)
+        
+        assert detail_lost is False, "Should not detect detail loss for similar meshes"
+        assert report["volume_ratio"] > 0.5, "Volume ratio should be > 0.5"
+    
+    def test_detect_detail_loss_significant_loss(self):
+        """Test detect_detail_loss returns True when significant loss detected."""
+        from generation.ops.mesh.merge import detect_detail_loss
+        from aog_policies.generation import MeshMergePolicy
+        
+        class MockMesh:
+            def __init__(self, faces, vertices, volume):
+                self.faces = np.zeros((faces, 3), dtype=int)
+                self.vertices = np.zeros((vertices, 3))
+                self._volume = volume
+            
+            @property
+            def volume(self):
+                return self._volume
+        
+        # Input has 100k faces, output has 1k faces (100x collapse)
+        input_meshes = [
+            MockMesh(faces=50000, vertices=25000, volume=1e-9),
+            MockMesh(faces=50000, vertices=25000, volume=1e-9),
+        ]
+        output_mesh = MockMesh(faces=1000, vertices=500, volume=0.2e-9)
+        
+        policy = MeshMergePolicy(detail_loss_threshold=0.5)
+        
+        detail_lost, report = detect_detail_loss(input_meshes, output_mesh, policy)
+        
+        assert detail_lost is True, "Should detect detail loss for collapsed mesh"
+        assert report["face_ratio"] < 0.1, "Face ratio should indicate collapse"
+    
+    def test_compute_pitch_from_diameter(self):
+        """Test pitch computation from minimum channel diameter."""
+        from generation.ops.mesh.merge import compute_pitch_from_diameter
+        
+        # 100um diameter with 4 voxels per diameter = 25um pitch
+        pitch = compute_pitch_from_diameter(
+            min_channel_diameter=100e-6,
+            min_voxels_per_diameter=4,
+        )
+        
+        assert pitch == pytest.approx(25e-6, abs=1e-9), \
+            f"Pitch should be 25um, got {pitch*1e6}um"
+
+
+class TestPreflightChecks:
+    """Tests for preflight validation checks."""
+    
+    def test_surface_opening_port_on_boundary_passes(self):
+        """Test that surface opening port on boundary passes preflight check."""
+        from validity.pre_embedding.preflight_checks import check_surface_opening_port_placement
+        
+        # Port at top of domain (z=0.001)
+        result = check_surface_opening_port_placement(
+            port_position=np.array([0.0, 0.0, 0.001]),
+            port_direction=np.array([0.0, 0.0, -1.0]),
+            port_radius=0.0005,
+            domain_bounds=(np.array([-0.005, -0.005, -0.001]), np.array([0.005, 0.005, 0.001])),
+            port_id="test_inlet",
+            tolerance=0.001,
+        )
+        
+        assert result.passed is True, f"Port on boundary should pass: {result.message}"
+    
+    def test_surface_opening_port_far_from_boundary_fails(self):
+        """Test that surface opening port far from boundary fails preflight check."""
+        from validity.pre_embedding.preflight_checks import check_surface_opening_port_placement
+        
+        # Port in center of domain (far from boundary)
+        result = check_surface_opening_port_placement(
+            port_position=np.array([0.0, 0.0, 0.0]),
+            port_direction=np.array([0.0, 0.0, -1.0]),
+            port_radius=0.0005,
+            domain_bounds=(np.array([-0.005, -0.005, -0.001]), np.array([0.005, 0.005, 0.001])),
+            port_id="test_inlet",
+            tolerance=0.0001,  # Tight tolerance
+        )
+        
+        assert result.passed is False, f"Port far from boundary should fail: {result.message}"
+        assert "test_inlet" in result.message, "Error message should include port ID"
+    
+    def test_union_pitch_too_coarse_warns(self):
+        """Test that union pitch too coarse for channel diameter triggers warning."""
+        from validity.pre_embedding.preflight_checks import check_union_pitch_sensibility
+        
+        # 50um pitch for 100um diameter = only 2 voxels (need 4)
+        result = check_union_pitch_sensibility(
+            voxel_pitch=50e-6,
+            min_channel_diameter=100e-6,
+            domain_size=np.array([0.01, 0.01, 0.002]),
+            min_voxels_per_diameter=4,
+        )
+        
+        assert result.passed is False, f"Coarse pitch should fail: {result.message}"
+        assert result.severity == "warning", "Should be a warning, not error"
+    
+    def test_union_pitch_sensible_passes(self):
+        """Test that sensible union pitch passes preflight check."""
+        from validity.pre_embedding.preflight_checks import check_union_pitch_sensibility
+        
+        # 25um pitch for 100um diameter = 4 voxels (meets requirement)
+        result = check_union_pitch_sensibility(
+            voxel_pitch=25e-6,
+            min_channel_diameter=100e-6,
+            domain_size=np.array([0.01, 0.01, 0.002]),
+            min_voxels_per_diameter=4,
+        )
+        
+        assert result.passed is True, f"Sensible pitch should pass: {result.message}"
+    
+    def test_port_radius_too_large_warns(self):
+        """Test that port radius too large relative to domain triggers warning."""
+        from validity.pre_embedding.preflight_checks import check_port_radius_compatibility
+        
+        # Port radius is 30% of smallest domain dimension
+        result = check_port_radius_compatibility(
+            port_radius=0.0003,
+            wall_thickness=None,
+            domain_size=np.array([0.01, 0.01, 0.001]),  # z is smallest at 1mm
+            port_id="large_port",
+        )
+        
+        assert result.passed is False, f"Large port should fail: {result.message}"
+        assert "large_port" in result.message, "Error message should include port ID"
+    
+    def test_network_bbox_coverage_low_warns(self):
+        """Test that low network bbox coverage triggers warning."""
+        from validity.pre_embedding.preflight_checks import check_network_bbox_coverage
+        
+        # Network is tiny compared to domain
+        result = check_network_bbox_coverage(
+            network_bbox=(np.array([0.0, 0.0, 0.0]), np.array([0.001, 0.001, 0.001])),
+            domain_bbox=(np.array([-0.005, -0.005, -0.001]), np.array([0.005, 0.005, 0.001])),
+            min_coverage_ratio=0.1,
+        )
+        
+        assert result.passed is False, f"Low coverage should fail: {result.message}"
+        assert result.severity == "warning", "Should be a warning"
+    
+    def test_run_preflight_checks_aggregates_results(self):
+        """Test that run_preflight_checks aggregates all check results."""
+        from validity.pre_embedding.preflight_checks import run_preflight_checks
+        
+        ports = [
+            {
+                "id": "inlet_1",
+                "position": [0.0, 0.0, 0.001],
+                "direction": [0.0, 0.0, -1.0],
+                "radius": 0.0005,
+                "is_surface_opening": True,
+            }
+        ]
+        
+        report = run_preflight_checks(
+            ports=ports,
+            domain_bounds=(np.array([-0.005, -0.005, -0.001]), np.array([0.005, 0.005, 0.001])),
+            voxel_pitch=25e-6,
+            min_channel_diameter=100e-6,
+        )
+        
+        assert len(report.results) > 0, "Report should have results"
+        assert report.passed is True, "All checks should pass for valid config"
+    
+    def test_preflight_report_to_dict(self):
+        """Test that PreflightReport.to_dict() returns correct structure."""
+        from validity.pre_embedding.preflight_checks import PreflightReport, PreflightResult
+        
+        report = PreflightReport()
+        report.add(PreflightResult(
+            check_name="test_check",
+            passed=True,
+            message="Test passed",
+            details={"key": "value"},
+            severity="info",
+        ))
+        
+        result_dict = report.to_dict()
+        
+        assert "passed" in result_dict
+        assert "has_warnings" in result_dict
+        assert "results" in result_dict
+        assert len(result_dict["results"]) == 1
+        assert result_dict["results"][0]["check_name"] == "test_check"
+
+
+class TestUnitNormalization:
+    """Tests for unit normalization of new fields."""
+    
+    def test_surface_opening_tolerance_normalized(self):
+        """Test that surface_opening_tolerance is normalized from mm to meters."""
+        from designspec.spec import DesignSpec
+        
+        spec_dict = {
+            "schema": {"name": "aog_designspec", "version": "1.0.0"},
+            "meta": {"name": "test", "input_units": "mm"},
+            "policies": {
+                "validity": {
+                    "surface_opening_tolerance": 1.0  # 1mm
+                }
+            },
+            "domains": {
+                "main": {"type": "cylinder", "center": [0, 0, 0], "radius": 5.0, "height": 2.0}
+            },
+            "components": []
+        }
+        
+        spec = DesignSpec.from_dict(spec_dict)
+        
+        validity_policy = spec.policies.get("validity", {})
+        assert validity_policy.get("surface_opening_tolerance") == pytest.approx(0.001, abs=1e-9), \
+            f"surface_opening_tolerance should be normalized to 0.001m, got {validity_policy.get('surface_opening_tolerance')}"
+    
+    def test_min_channel_diameter_normalized(self):
+        """Test that min_channel_diameter in mesh_merge is normalized from mm to meters."""
+        from designspec.spec import DesignSpec
+        
+        spec_dict = {
+            "schema": {"name": "aog_designspec", "version": "1.0.0"},
+            "meta": {"name": "test", "input_units": "mm"},
+            "policies": {
+                "mesh_merge": {
+                    "min_channel_diameter": 0.1  # 0.1mm = 100um
+                }
+            },
+            "domains": {
+                "main": {"type": "cylinder", "center": [0, 0, 0], "radius": 5.0, "height": 2.0}
+            },
+            "components": []
+        }
+        
+        spec = DesignSpec.from_dict(spec_dict)
+        
+        mesh_merge_policy = spec.policies.get("mesh_merge", {})
+        assert mesh_merge_policy.get("min_channel_diameter") == pytest.approx(0.0001, abs=1e-9), \
+            f"min_channel_diameter should be normalized to 0.0001m, got {mesh_merge_policy.get('min_channel_diameter')}"

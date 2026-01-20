@@ -1352,6 +1352,20 @@ class DesignSpecRunner:
         - "position": [x, y, z] coordinates
         - "direction": [dx, dy, dz] direction vector
         - "radius": port radius
+        - "is_surface_opening": bool (optional, for surface opening semantics)
+        
+        PORT DEFINITION PRECEDENCE (Task B documentation):
+        -------------------------------------------------
+        1. Raw spec ports: components[].ports.inlets/outlets define initial port specs
+        2. Port resolution (_stage_component_ports): Applies PortPlacementPolicy to:
+           - Project explicit positions to face if projection_mode == "clamp_to_face"
+           - Generate positions for ports without explicit position using place_ports_on_domain
+           - Apply ridge constraints if RidgePolicy is defined
+        3. Resolved ports stored in _resolved_ports[component_id]
+        4. This function (_collect_all_ports) uses resolved ports if available
+        5. Carving (port_recarve) and validation use the same collected ports
+        
+        This ensures the same final port pose is used by carving AND validation.
         """
         all_ports = []
         
@@ -1373,6 +1387,9 @@ class DesignSpecRunner:
                 port_dict["type"] = "inlet"
                 if "id" not in port_dict:
                     port_dict["id"] = inlet.get("name", f"inlet_{i}")
+                # Preserve is_surface_opening field for surface opening semantics
+                if "is_surface_opening" not in port_dict:
+                    port_dict["is_surface_opening"] = inlet.get("is_surface_opening", False)
                 all_ports.append(port_dict)
             
             for i, outlet in enumerate(outlets):
@@ -1381,6 +1398,9 @@ class DesignSpecRunner:
                 port_dict["type"] = "outlet"
                 if "id" not in port_dict:
                     port_dict["id"] = outlet.get("name", f"outlet_{i}")
+                # Preserve is_surface_opening field for surface opening semantics
+                if "is_surface_opening" not in port_dict:
+                    port_dict["is_surface_opening"] = outlet.get("is_surface_opening", False)
                 all_ports.append(port_dict)
         
         return all_ports

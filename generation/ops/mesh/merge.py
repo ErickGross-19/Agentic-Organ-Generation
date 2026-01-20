@@ -91,6 +91,19 @@ def merge_meshes(
     effective_pitch = policy.voxel_pitch
     resolution_result: Optional[ResolutionResult] = None
     
+    # PATCH 8: Compute pitch from minimum channel diameter if specified
+    if policy.min_channel_diameter is not None and policy.min_channel_diameter > 0:
+        diameter_based_pitch = compute_pitch_from_diameter(
+            policy.min_channel_diameter,
+            policy.min_voxels_per_diameter,
+        )
+        # Use the finer pitch (smaller value) to preserve detail
+        if effective_pitch is None or diameter_based_pitch < effective_pitch:
+            effective_pitch = diameter_based_pitch
+            metadata["pitch_from_diameter"] = True
+            metadata["min_channel_diameter"] = policy.min_channel_diameter
+            metadata["min_voxels_per_diameter"] = policy.min_voxels_per_diameter
+    
     if policy.use_resolution_policy and (policy.voxel_pitch is None or resolution_policy is not None):
         # Use resolution resolver to derive pitch
         if resolution_policy is None:
@@ -161,6 +174,24 @@ def merge_meshes(
     metadata["vertex_count"] = len(merged.vertices)
     metadata["face_count"] = len(merged.faces)
     metadata["is_watertight"] = merged.is_watertight
+    
+    # PATCH 8: Detect detail loss
+    detail_lost, detail_report = detect_detail_loss(meshes, merged, policy)
+    metadata["detail_loss_report"] = detail_report
+    
+    if detail_lost:
+        detail_msg = (
+            f"Significant detail loss detected during merge: "
+            f"volume ratio={detail_report['volume_ratio']:.2%}, "
+            f"face ratio={detail_report['face_ratio']:.2%} "
+            f"(input: {detail_report['input_faces']} faces, output: {detail_report['output_faces']} faces). "
+            f"Consider reducing voxel_pitch or increasing min_voxels_per_diameter."
+        )
+        
+        if policy.detail_loss_strictness == "fail":
+            raise ValueError(detail_msg)
+        else:
+            warnings.append(detail_msg)
     
     # Build effective policy
     effective_policy = policy.to_dict()
@@ -397,7 +428,113 @@ def _boolean_merge(meshes: List["trimesh.Trimesh"]) -> "trimesh.Trimesh":
     return merged
 
 
+def detect_detail_loss(
+    input_meshes: List["trimesh.Trimesh"],
+    output_mesh: "trimesh.Trimesh",
+    policy: MeshMergePolicy,
+) -> Tuple[bool, Dict[str, Any]]:
+    """
+    Detect if significant detail was lost during merge operation.
+    
+    Compares the union result volume and face count to the component mesh
+    aggregates. If volume loss exceeds the threshold, returns True.
+    
+    Parameters
+    ----------
+    input_meshes : List[trimesh.Trimesh]
+        Original input meshes before merge
+    output_mesh : trimesh.Trimesh
+        Merged output mesh
+    policy : MeshMergePolicy
+        Policy with detail loss settings
+        
+    Returns
+    -------
+    detail_lost : bool
+        True if significant detail was lost
+    report : dict
+        Detailed report with metrics
+    """
+    # Calculate aggregate input metrics
+    total_input_volume = 0.0
+    total_input_faces = 0
+    total_input_vertices = 0
+    
+    for mesh in input_meshes:
+        try:
+            total_input_volume += abs(mesh.volume)
+        except Exception:
+            pass
+        total_input_faces += len(mesh.faces)
+        total_input_vertices += len(mesh.vertices)
+    
+    # Calculate output metrics
+    try:
+        output_volume = abs(output_mesh.volume)
+    except Exception:
+        output_volume = 0.0
+    output_faces = len(output_mesh.faces)
+    output_vertices = len(output_mesh.vertices)
+    
+    # Calculate ratios
+    volume_ratio = output_volume / total_input_volume if total_input_volume > 0 else 1.0
+    face_ratio = output_faces / total_input_faces if total_input_faces > 0 else 1.0
+    
+    # Volume loss is 1 - ratio (e.g., 0.5 means 50% volume retained, 50% lost)
+    volume_loss = 1.0 - volume_ratio
+    face_loss = 1.0 - face_ratio
+    
+    # Determine if detail was lost
+    # Note: Some volume loss is expected due to overlap, but face count collapse
+    # by orders of magnitude indicates resolution issues
+    detail_lost = (
+        volume_loss > policy.detail_loss_threshold or
+        face_ratio < 0.01  # Face count collapsed by more than 100x
+    )
+    
+    report = {
+        "input_volume": total_input_volume,
+        "input_faces": total_input_faces,
+        "input_vertices": total_input_vertices,
+        "output_volume": output_volume,
+        "output_faces": output_faces,
+        "output_vertices": output_vertices,
+        "volume_ratio": volume_ratio,
+        "face_ratio": face_ratio,
+        "volume_loss": volume_loss,
+        "face_loss": face_loss,
+        "detail_lost": detail_lost,
+        "threshold": policy.detail_loss_threshold,
+    }
+    
+    return detail_lost, report
+
+
+def compute_pitch_from_diameter(
+    min_channel_diameter: float,
+    min_voxels_per_diameter: int,
+) -> float:
+    """
+    Compute voxel pitch to ensure minimum voxels across smallest channel.
+    
+    Parameters
+    ----------
+    min_channel_diameter : float
+        Smallest expected channel diameter in meters
+    min_voxels_per_diameter : int
+        Minimum number of voxels across the diameter
+        
+    Returns
+    -------
+    pitch : float
+        Recommended voxel pitch in meters
+    """
+    return min_channel_diameter / min_voxels_per_diameter
+
+
 __all__ = [
     "merge_meshes",
     "MeshMergePolicy",
+    "detect_detail_loss",
+    "compute_pitch_from_diameter",
 ]

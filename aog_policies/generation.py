@@ -456,6 +456,7 @@ class MeshMergePolicy:
     Policy for mesh merging operations.
 
     PATCH 7: Added resolution-aware pitch selection with budget-aware relaxation.
+    PATCH 8: Added detail loss detection and minimum voxels per diameter control.
 
     Controls how multiple meshes are combined, with voxel-first strategy.
 
@@ -472,7 +473,11 @@ class MeshMergePolicy:
         "min_component_volume": float (cubic meters),
         "fill_voxels": bool,
         "max_voxels": int,
-        "use_resolution_policy": bool
+        "use_resolution_policy": bool,
+        "min_voxels_per_diameter": int,
+        "min_channel_diameter": float (meters) | null,
+        "detail_loss_threshold": float,
+        "detail_loss_strictness": "warn" | "fail"
     }
 
     Resolution-aware pitch selection:
@@ -480,6 +485,11 @@ class MeshMergePolicy:
       from ResolutionPolicy.merge_pitch
     - If max_voxels would be exceeded, pitch is automatically relaxed with warning
     - effective_pitch is recorded in the operation report
+    
+    Detail loss detection:
+    - Compares union result volume/face count to component mesh aggregates
+    - If volume loss exceeds detail_loss_threshold, warns or fails based on strictness
+    - min_voxels_per_diameter ensures sufficient resolution for smallest channels
     """
     mode: Literal["auto", "voxel", "boolean"] = "auto"
     voxel_pitch: Optional[float] = 5e-5  # 50um, None = use resolution policy
@@ -493,6 +503,11 @@ class MeshMergePolicy:
     fill_voxels: bool = True
     max_voxels: int = 100_000_000  # 100M voxels budget
     use_resolution_policy: bool = False
+    # Detail preservation settings
+    min_voxels_per_diameter: int = 4  # Minimum voxels across smallest channel diameter
+    min_channel_diameter: Optional[float] = None  # Smallest expected channel diameter (meters)
+    detail_loss_threshold: float = 0.5  # Warn/fail if volume loss exceeds 50%
+    detail_loss_strictness: Literal["warn", "fail"] = "warn"  # How to handle detail loss
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

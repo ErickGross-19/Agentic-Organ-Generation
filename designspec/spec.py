@@ -90,6 +90,7 @@ POLICY_LENGTH_FIELDS: Dict[str, Set[str]] = {
     },
     "validity": {
         "min_diameter_threshold",
+        "surface_opening_tolerance",
     },
     "open_port": {
         "probe_length",
@@ -122,6 +123,7 @@ POLICY_LENGTH_FIELDS: Dict[str, Set[str]] = {
     },
     "mesh_merge": {
         "voxel_pitch",
+        "min_channel_diameter",
     },
     "network_cleanup": {
         "snap_tol",

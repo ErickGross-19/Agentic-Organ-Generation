@@ -30,6 +30,15 @@ from .flow_checks import (
     check_pressure_monotonicity,
     run_all_flow_checks,
 )
+from .preflight_checks import (
+    PreflightResult,
+    PreflightReport,
+    check_surface_opening_port_placement,
+    check_union_pitch_sensibility,
+    check_port_radius_compatibility,
+    check_network_bbox_coverage,
+    run_preflight_checks,
+)
 
 __all__ = [
     # Mesh checks
@@ -49,4 +58,12 @@ __all__ = [
     "check_reynolds_number",
     "check_pressure_monotonicity",
     "run_all_flow_checks",
+    # Preflight checks
+    "PreflightResult",
+    "PreflightReport",
+    "check_surface_opening_port_placement",
+    "check_union_pitch_sensibility",
+    "check_port_radius_compatibility",
+    "check_network_bbox_coverage",
+    "run_preflight_checks",
 ]

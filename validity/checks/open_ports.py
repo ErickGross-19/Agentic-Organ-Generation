@@ -505,6 +505,155 @@ def check_port_open(
     )
 
 
+def check_surface_opening_connectivity(
+    port_position: np.ndarray,
+    port_direction: np.ndarray,
+    port_radius: float,
+    domain_with_void_mesh: "trimesh.Trimesh",
+    original_domain_mesh: "trimesh.Trimesh",
+    policy: OpenPortPolicy,
+    port_id: str = "unknown",
+    port_type: str = "unknown",
+    resolution_policy: Optional["ResolutionPolicy"] = None,
+    max_repair_iterations: int = 3,
+    repair_extension_step: float = 0.0005,  # 0.5mm per iteration
+    repair_radius_factor: float = 1.1,  # 10% radius increase per iteration
+) -> PortCheckResult:
+    """
+    Check surface opening connectivity with bounded repair attempts.
+    
+    For surface opening ports (where the void intersects the domain boundary),
+    this function attempts to verify connectivity from outside the domain
+    through the port opening into the void. If connectivity fails, it attempts
+    bounded deterministic repairs by:
+    1. Extending the probe length along the port direction
+    2. Slightly inflating the effective port radius for checking
+    
+    Parameters
+    ----------
+    port_position : np.ndarray
+        Position of the port center.
+    port_direction : np.ndarray
+        Outward direction of the port.
+    port_radius : float
+        Radius of the port.
+    domain_with_void_mesh : trimesh.Trimesh
+        The domain mesh with void carved out.
+    original_domain_mesh : trimesh.Trimesh
+        The original domain mesh.
+    policy : OpenPortPolicy
+        Validation policy.
+    port_id : str
+        Identifier for the port.
+    port_type : str
+        Type of port ("inlet" or "outlet").
+    resolution_policy : ResolutionPolicy, optional
+        Resolution policy for pitch selection via resolver.
+    max_repair_iterations : int
+        Maximum number of repair attempts (default: 3).
+    repair_extension_step : float
+        Distance to extend probe per iteration in meters (default: 0.5mm).
+    repair_radius_factor : float
+        Factor to multiply effective radius per iteration (default: 1.1).
+    
+    Returns
+    -------
+    PortCheckResult
+        Result of the port check with repair attempt details.
+    """
+    port_direction = port_direction / np.linalg.norm(port_direction)
+    
+    # First attempt with standard parameters
+    result = check_port_open(
+        port_position=port_position,
+        port_direction=port_direction,
+        port_radius=port_radius,
+        domain_with_void_mesh=domain_with_void_mesh,
+        original_domain_mesh=original_domain_mesh,
+        policy=policy,
+        port_id=port_id,
+        port_type=port_type,
+        resolution_policy=resolution_policy,
+    )
+    
+    if result.is_open:
+        return result
+    
+    # Attempt bounded repairs for surface openings
+    repair_attempts = []
+    current_probe_length = policy.probe_length
+    current_radius_factor = 1.0
+    
+    for iteration in range(max_repair_iterations):
+        # Extend probe length and inflate radius
+        current_probe_length += repair_extension_step
+        current_radius_factor *= repair_radius_factor
+        effective_radius = port_radius * current_radius_factor
+        
+        # Create modified policy for this attempt
+        modified_policy = OpenPortPolicy(
+            enabled=policy.enabled,
+            validation_pitch=policy.validation_pitch,
+            probe_length=current_probe_length,
+            local_region_size=policy.local_region_size * current_radius_factor,
+            min_connected_volume_voxels=policy.min_connected_volume_voxels,
+            max_voxels_roi=policy.max_voxels_roi,
+            auto_relax_pitch=policy.auto_relax_pitch,
+        )
+        
+        repair_result = check_port_open(
+            port_position=port_position,
+            port_direction=port_direction,
+            port_radius=effective_radius,
+            domain_with_void_mesh=domain_with_void_mesh,
+            original_domain_mesh=original_domain_mesh,
+            policy=modified_policy,
+            port_id=port_id,
+            port_type=port_type,
+            resolution_policy=resolution_policy,
+        )
+        
+        repair_attempts.append({
+            "iteration": iteration + 1,
+            "probe_length": current_probe_length,
+            "effective_radius": effective_radius,
+            "is_open": repair_result.is_open,
+            "void_reached": repair_result.void_reached,
+            "outside_seed_found": repair_result.outside_seed_found,
+        })
+        
+        if repair_result.is_open:
+            # Repair succeeded
+            repair_result.warnings.append(
+                f"Surface opening connectivity established after {iteration + 1} repair attempt(s) "
+                f"(probe_length={current_probe_length:.4f}m, effective_radius={effective_radius:.6f}m)"
+            )
+            repair_result.diagnostics["repair_attempts"] = repair_attempts
+            repair_result.diagnostics["repair_succeeded"] = True
+            return repair_result
+    
+    # All repair attempts failed - provide actionable error message
+    result.errors.clear()
+    result.errors.append(
+        f"Surface opening port '{port_id}' failed connectivity check after {max_repair_iterations} repair attempts. "
+        f"Port position: ({port_position[0]:.6f}, {port_position[1]:.6f}, {port_position[2]:.6f})m, "
+        f"direction: ({port_direction[0]:.3f}, {port_direction[1]:.3f}, {port_direction[2]:.3f}), "
+        f"radius: {port_radius:.6f}m. "
+        f"Suggested fixes: (1) Ensure port is positioned on/near domain boundary, "
+        f"(2) Increase port radius, (3) Check that void mesh extends to port location, "
+        f"(4) Verify port direction points outward from domain."
+    )
+    result.diagnostics["repair_attempts"] = repair_attempts
+    result.diagnostics["repair_succeeded"] = False
+    result.diagnostics["suggested_spec_changes"] = {
+        "increase_port_radius": port_radius * 1.5,
+        "check_port_position_on_boundary": True,
+        "verify_void_extends_to_port": True,
+    }
+    
+    return result
+
+
 def check_open_ports(
     ports: List[Dict[str, Any]],
     domain_with_void_mesh: "trimesh.Trimesh",
@@ -563,18 +712,33 @@ def check_open_ports(
         position = np.array(port["position"])
         direction = np.array(port.get("direction", [0, 0, 1]))
         radius = port["radius"]
+        is_surface_opening = port.get("is_surface_opening", False)
         
-        result = check_port_open(
-            port_position=position,
-            port_direction=direction,
-            port_radius=radius,
-            domain_with_void_mesh=domain_with_void_mesh,
-            original_domain_mesh=original_domain_mesh,
-            policy=policy,
-            port_id=port_id,
-            port_type=port_type,
-            resolution_policy=resolution_policy,
-        )
+        # Use surface opening connectivity check for surface opening ports
+        if is_surface_opening:
+            result = check_surface_opening_connectivity(
+                port_position=position,
+                port_direction=direction,
+                port_radius=radius,
+                domain_with_void_mesh=domain_with_void_mesh,
+                original_domain_mesh=original_domain_mesh,
+                policy=policy,
+                port_id=port_id,
+                port_type=port_type,
+                resolution_policy=resolution_policy,
+            )
+        else:
+            result = check_port_open(
+                port_position=position,
+                port_direction=direction,
+                port_radius=radius,
+                domain_with_void_mesh=domain_with_void_mesh,
+                original_domain_mesh=original_domain_mesh,
+                policy=policy,
+                port_id=port_id,
+                port_type=port_type,
+                resolution_policy=resolution_policy,
+            )
         
         port_results.append(result)
         all_warnings.extend(result.warnings)
@@ -605,5 +769,6 @@ __all__ = [
     "OpenPortValidationResult",
     "LocalVoxelPatch",
     "check_port_open",
+    "check_surface_opening_connectivity",
     "check_open_ports",
 ]
