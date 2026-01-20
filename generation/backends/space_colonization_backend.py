@@ -351,35 +351,36 @@ class SpaceColonizationBackend(GenerationBackend):
             
             inlet_dir_arr = inlet_direction.to_array()
             
-            # Create per-inlet params with VERY strong directional constraints to enforce growth
+            # Create per-inlet params with ABSOLUTE directional constraints to enforce growth
             # strictly in the inlet's direction (typically downward) rather than towards other inlets
-            # Using 0.9 bias and 45° max deviation to prevent horizontal/cross-formation growth
+            # Using 1.0 bias and 30° max deviation to FORCE downward growth, preventing cross patterns
             sc_params = SCParams(
                 influence_radius=config.attraction_distance,
                 kill_radius=config.kill_distance,
                 step_size=config.step_size,
                 vessel_type=vessel_type,
                 preferred_direction=tuple(inlet_dir_arr),
-                directional_bias=0.9,  # Very strong bias towards inlet direction (90%)
-                max_deviation_deg=45.0,  # Strict cone - prevents horizontal growth
+                directional_bias=1.0,  # ABSOLUTE bias - grow ONLY in inlet direction
+                max_deviation_deg=30.0,  # Very strict cone - prevents any horizontal growth
             )
             
-            # Filter tissue points using spatial partitioning (Voronoi-like regions)
-            # Each inlet only sees points that are closer to it than to any other inlet
-            # This prevents trees from growing towards each other
-            tissue_points = self._filter_tissue_points_by_nearest_inlet(
+            # Filter tissue points to a narrow CYLINDER below each inlet
+            # This replaces Voronoi partitioning which was creating cross patterns
+            # Each inlet only sees points within a narrow column directly below it
+            tissue_points = self._filter_tissue_points_by_cylinder(
                 all_tissue_points,
                 inlet_position,
-                inlet_positions,
-                i,
+                inlet_dir_arr,
+                cylinder_radius=1.0,  # 1mm radius cylinder around inlet's XY position
             )
             
-            # Additionally filter by direction to ensure downward growth
+            # Additionally filter by direction with a NARROW cone (30°) to ensure
+            # strictly downward growth - prevents any horizontal growth
             tissue_points = self._filter_tissue_points_by_direction(
                 tissue_points,
                 inlet_position,
                 inlet_dir_arr,
-                cone_angle_deg=90.0,  # Hemisphere - only points in growth direction
+                cone_angle_deg=30.0,  # Narrow cone - only points almost directly below
             )
             
             nodes_before = set(network.nodes.keys())
@@ -810,6 +811,50 @@ class SpaceColonizationBackend(GenerationBackend):
             self._create_anastomoses(network, num_anastomoses)
         
         return network
+    
+    def _filter_tissue_points_by_cylinder(
+        self,
+        tissue_points: np.ndarray,
+        inlet_position: np.ndarray,
+        direction: np.ndarray,
+        cylinder_radius: float = 1.0,
+    ) -> np.ndarray:
+        """
+        Filter tissue points to only include those within a cylinder below the inlet.
+        
+        This creates a narrow column of tissue points directly below each inlet,
+        preventing trees from growing horizontally towards other inlets.
+        
+        Parameters
+        ----------
+        tissue_points : np.ndarray
+            Array of tissue points (N, 3)
+        inlet_position : np.ndarray
+            Position of the inlet
+        direction : np.ndarray
+            Growth direction (normalized, typically [0, 0, -1] for downward)
+        cylinder_radius : float
+            Radius of the cylinder in the XY plane (default 1.0mm)
+            
+        Returns
+        -------
+        np.ndarray
+            Filtered tissue points within the cylinder
+        """
+        if len(tissue_points) == 0:
+            return tissue_points
+        
+        # Compute XY distance from inlet to each tissue point
+        # This creates a vertical cylinder around the inlet's XY position
+        inlet_xy = inlet_position[:2]
+        tissue_xy = tissue_points[:, :2]
+        
+        xy_distances = np.linalg.norm(tissue_xy - inlet_xy, axis=1)
+        
+        # Keep only points within the cylinder radius
+        in_cylinder = xy_distances <= cylinder_radius
+        
+        return tissue_points[in_cylinder]
     
     def _filter_tissue_points_by_nearest_inlet(
         self,
