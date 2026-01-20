@@ -34,6 +34,10 @@ from ..designspec_agent import (
     Question,
     RunRequest,
 )
+from ..designspec_llm import (
+    DesignSpecLLMAgent,
+    create_llm_agent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +110,7 @@ class DesignSpecWorkflow:
         self,
         llm_client: Optional[Any] = None,
         event_callback: Optional[Callable[[WorkflowEvent], None]] = None,
+        use_legacy_agent: bool = False,
     ):
         """
         Initialize the workflow.
@@ -116,12 +121,17 @@ class DesignSpecWorkflow:
             LLM client for agent natural language understanding
         event_callback : callable, optional
             Callback function for workflow events
+        use_legacy_agent : bool
+            If True, use the legacy rule-based agent instead of the LLM-first agent.
+            Default is False (use LLM-first agent).
         """
         self.llm_client = llm_client
         self._event_callback = event_callback
+        self._use_legacy_agent = use_legacy_agent
         
         self._session: Optional[DesignSpecSession] = None
         self._agent: Optional[DesignSpecAgent] = None
+        self._llm_agent: Optional[DesignSpecLLMAgent] = None
         self._status = WorkflowStatus.IDLE
         
         self._pending_patches: Dict[str, PatchProposal] = {}
@@ -232,7 +242,16 @@ class DesignSpecWorkflow:
                     "Must provide either project_dir or (project_root + project_name)"
                 )
             
-            self._agent = DesignSpecAgent(llm_client=self.llm_client)
+            if self._use_legacy_agent:
+                self._agent = DesignSpecAgent(llm_client=self.llm_client)
+                self._llm_agent = None
+            else:
+                self._agent = DesignSpecAgent(llm_client=None)
+                self._llm_agent = create_llm_agent(
+                    session=self._session,
+                    llm_client=self.llm_client,
+                    use_legacy_fallback=True,
+                )
             
             validation = self._session.validate_spec()
             self._emit_event(WorkflowEvent(
@@ -275,10 +294,17 @@ class DesignSpecWorkflow:
         text : str
             The user's message
         """
-        if not self._session or not self._agent:
+        if not self._session:
             self._emit_event(WorkflowEvent(
                 event_type=WorkflowEventType.ERROR,
                 message="Workflow not started. Call on_start() first.",
+            ))
+            return
+        
+        if not self._agent and not self._llm_agent:
+            self._emit_event(WorkflowEvent(
+                event_type=WorkflowEventType.ERROR,
+                message="No agent available. Call on_start() first.",
             ))
             return
         
@@ -294,12 +320,19 @@ class DesignSpecWorkflow:
                 validation = self._session.validate_spec()
                 compile_report = self._session.get_last_compile_report()
                 
-                response = self._agent.process_message(
-                    user_message=text,
-                    spec=spec,
-                    validation_report=validation,
-                    compile_report=compile_report,
-                )
+                if self._llm_agent and not self._use_legacy_agent:
+                    response = self._llm_agent.process_message(
+                        user_message=text,
+                        validation_report=validation,
+                        compile_report=compile_report,
+                    )
+                else:
+                    response = self._agent.process_message(
+                        user_message=text,
+                        spec=spec,
+                        validation_report=validation,
+                        compile_report=compile_report,
+                    )
                 
                 self._handle_agent_response(response)
                 
@@ -862,6 +895,8 @@ class DesignSpecWorkflow:
     
     def get_conversation_history(self) -> List[Dict[str, str]]:
         """Get the conversation history."""
+        if self._llm_agent and not self._use_legacy_agent:
+            return self._llm_agent.get_conversation_history()
         if self._agent:
             return self._agent.get_conversation_history()
         return []
