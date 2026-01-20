@@ -126,6 +126,16 @@ class OpenPortPolicy:
     - Increase max_voxels_roi if pitch relaxation warnings appear
     - Reduce local_region_size for smaller ROI at finer pitch
     
+    PREFER FINE PITCH POLICY (Task E fix):
+    When validation_pitch is null and prefer_fine_pitch is True:
+    - Uses resolution.target_pitch or resolution.pathfinding_pitch_fine if available
+    - Falls back to adaptive pitch based on port radius
+    
+    ROI-FIRST REDUCTION (Task E fix):
+    When roi_first_reduction is True and voxel budget would be exceeded:
+    - First shrinks local_region_size before increasing pitch
+    - This preserves fine resolution for small features
+    
     JSON Schema:
     {
         "enabled": bool,
@@ -141,6 +151,9 @@ class OpenPortPolicy:
         "adaptive_pitch": bool,
         "warn_on_pitch_relaxation": bool,
         "require_port_type": bool,
+        "prefer_fine_pitch": bool,
+        "roi_first_reduction": bool,
+        "min_local_region_size": float (meters),
         "roi_size_factor": float (deprecated alias for probe_radius_factor),
         "roi_min_size": float (deprecated alias for local_region_size),
         "roi_max_size": float (deprecated, ignored)
@@ -160,6 +173,10 @@ class OpenPortPolicy:
     adaptive_pitch: bool = True  # Auto-compute pitch from port radius
     warn_on_pitch_relaxation: bool = True  # Warn when pitch is relaxed
     require_port_type: bool = False  # Warn if port_type is "unknown"
+    
+    prefer_fine_pitch: bool = True  # Use resolution.target_pitch when validation_pitch is null
+    roi_first_reduction: bool = True  # Shrink ROI before increasing pitch
+    min_local_region_size: float = 0.001  # 1mm minimum ROI size for roi_first_reduction
     
     # Alias fields for backward compatibility (not stored, just for constructor)
     roi_size_factor: Optional[float] = field(default=None, repr=False)
@@ -210,6 +227,107 @@ class OpenPortPolicy:
         
         return port_radius / 4
     
+    def compute_pitch_with_resolution_policy(
+        self, 
+        port_radius: float, 
+        resolution_policy: Optional[Any] = None,
+    ) -> float:
+        """
+        Compute validation pitch using the "prefer fine pitch" policy.
+        
+        When validation_pitch is null and prefer_fine_pitch is True:
+        1. Uses resolution.target_pitch or resolution.pathfinding_pitch_fine if available
+        2. Falls back to adaptive pitch based on port radius
+        
+        Parameters
+        ----------
+        port_radius : float
+            Port radius in meters
+        resolution_policy : ResolutionPolicy, optional
+            Resolution policy for pitch selection
+            
+        Returns
+        -------
+        float
+            Computed pitch in meters
+        """
+        if self.validation_pitch is not None:
+            return self.validation_pitch
+        
+        if self.prefer_fine_pitch and resolution_policy is not None:
+            try:
+                target_pitch = getattr(resolution_policy, 'target_pitch', None)
+                fine_pitch = getattr(resolution_policy, 'pathfinding_pitch_fine', None)
+                
+                if target_pitch is not None:
+                    return target_pitch
+                elif fine_pitch is not None:
+                    return fine_pitch
+            except Exception:
+                pass
+        
+        return self.compute_adaptive_pitch(port_radius)
+    
+    def compute_roi_with_budget(
+        self,
+        pitch: float,
+        max_voxels: Optional[int] = None,
+    ) -> tuple:
+        """
+        Compute ROI size with ROI-first reduction policy.
+        
+        When roi_first_reduction is True and voxel budget would be exceeded:
+        - First shrinks local_region_size before increasing pitch
+        - This preserves fine resolution for small features
+        
+        Parameters
+        ----------
+        pitch : float
+            Validation pitch in meters
+        max_voxels : int, optional
+            Maximum voxels budget. Uses self.max_voxels_roi if None.
+            
+        Returns
+        -------
+        tuple
+            (effective_roi_size, effective_pitch, roi_was_reduced, pitch_was_relaxed)
+        """
+        if max_voxels is None:
+            max_voxels = self.max_voxels_roi
+        
+        roi_size = self.local_region_size
+        current_pitch = pitch
+        roi_was_reduced = False
+        pitch_was_relaxed = False
+        
+        import math
+        
+        def compute_voxels(size: float, p: float) -> int:
+            n = max(1, int(math.ceil(size / p)))
+            return n * n * n
+        
+        total_voxels = compute_voxels(roi_size, current_pitch)
+        
+        if total_voxels <= max_voxels:
+            return (roi_size, current_pitch, roi_was_reduced, pitch_was_relaxed)
+        
+        if self.roi_first_reduction:
+            while total_voxels > max_voxels and roi_size > self.min_local_region_size:
+                roi_size *= 0.8
+                roi_was_reduced = True
+                total_voxels = compute_voxels(roi_size, current_pitch)
+            
+            roi_size = max(roi_size, self.min_local_region_size)
+            total_voxels = compute_voxels(roi_size, current_pitch)
+        
+        if total_voxels > max_voxels and self.auto_relax_pitch:
+            while total_voxels > max_voxels:
+                current_pitch *= 1.5
+                pitch_was_relaxed = True
+                total_voxels = compute_voxels(roi_size, current_pitch)
+        
+        return (roi_size, current_pitch, roi_was_reduced, pitch_was_relaxed)
+    
     def to_dict(self) -> Dict[str, Any]:
         return {
             "enabled": self.enabled,
@@ -225,6 +343,9 @@ class OpenPortPolicy:
             "adaptive_pitch": self.adaptive_pitch,
             "warn_on_pitch_relaxation": self.warn_on_pitch_relaxation,
             "require_port_type": self.require_port_type,
+            "prefer_fine_pitch": self.prefer_fine_pitch,
+            "roi_first_reduction": self.roi_first_reduction,
+            "min_local_region_size": self.min_local_region_size,
         }
     
     @classmethod

@@ -10,7 +10,7 @@ All geometric values are in METERS internally.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, Tuple, List
+from typing import Optional, Dict, Any, Tuple, List, Union
 import numpy as np
 import logging
 
@@ -56,6 +56,35 @@ class KaryTreeConfig(BackendConfig):
     use_domain_scaling : bool
         If True and branch_length is None, automatically compute branch_length
         from domain size using tree_extent_fraction. Default: True.
+    primary_axis : tuple or None
+        Primary growth direction as (x, y, z) unit vector. If None, defaults to
+        the inward direction from the inlet (typically -Z for top-face inlets).
+        This is the "growth_inward_direction" from port semantics.
+    max_deviation_deg : float
+        Maximum deviation angle from primary_axis in degrees. Child branches
+        will be constrained to stay within this cone. Default: 90.0 (no constraint).
+    upward_forbidden : bool
+        If True, forbid any growth direction with positive Z component (dot(dir, +Z) > 0).
+        This prevents tree from growing back toward the inlet face. Default: False.
+    azimuth_jitter_deg : float
+        Random jitter in azimuth angle (rotation around primary axis) in degrees.
+        Default: 180.0 (full rotation allowed).
+    elevation_jitter_deg : float
+        Random jitter in elevation angle (angle from primary axis) in degrees.
+        Default: same as angle_deg.
+    wall_margin : float
+        Minimum distance from domain boundary for internal nodes in meters.
+        Default: 0.0 (no margin).
+    multi_inlet_mode : str
+        Mode for handling multiple inlets: "forest" (separate trees per inlet)
+        or "merge_to_trunk" (connect inlets to common trunk). Default: "merge_to_trunk".
+    trunk_depth_fraction : float
+        Fraction of domain height for trunk junction point (merge_to_trunk mode).
+        Default: 0.2 (20% into domain from inlet face).
+    trunk_merge_radius : float or None
+        Radius at trunk junction point. If None, auto-computed from inlet radii.
+    max_inlets : int
+        Maximum number of inlets supported. Default: 10.
     """
     k: int = 2
     target_terminals: int = 128
@@ -68,6 +97,16 @@ class KaryTreeConfig(BackendConfig):
     min_radius: float = 0.0001  # 0.1mm
     tree_extent_fraction: float = 0.4
     use_domain_scaling: bool = True
+    primary_axis: Optional[Tuple[float, float, float]] = None
+    max_deviation_deg: float = 90.0
+    upward_forbidden: bool = False
+    azimuth_jitter_deg: float = 180.0
+    elevation_jitter_deg: Optional[float] = None
+    wall_margin: float = 0.0
+    multi_inlet_mode: str = "merge_to_trunk"
+    trunk_depth_fraction: float = 0.2
+    trunk_merge_radius: Optional[float] = None
+    max_inlets: int = 10
 
 
 class KaryTreeBackend(GenerationBackend):
@@ -193,11 +232,29 @@ class KaryTreeBackend(GenerationBackend):
             f"branch_length={branch_length*1000:.3f}mm"
         )
         
+        # Determine primary growth direction
+        if config.primary_axis is not None:
+            primary_direction = np.array(config.primary_axis)
+            norm = np.linalg.norm(primary_direction)
+            if norm > 0:
+                primary_direction = primary_direction / norm
+            else:
+                primary_direction = np.array([0.0, 0.0, -1.0])
+        else:
+            primary_direction = np.array([0.0, 0.0, -1.0])
+        
+        logger.info(
+            f"Primary growth direction: {primary_direction}, "
+            f"upward_forbidden={config.upward_forbidden}, "
+            f"max_deviation_deg={config.max_deviation_deg}"
+        )
+        
         # D FIX: Generate tree recursively with local RNG
         self._generate_subtree(
             network=network,
             parent_node=inlet_node,
-            parent_direction=np.array([0.0, 0.0, -1.0]),  # Default: grow downward
+            parent_direction=primary_direction,
+            primary_axis=primary_direction,
             current_depth=0,
             max_depth=depth,
             current_radius=inlet_radius,
@@ -218,6 +275,311 @@ class KaryTreeBackend(GenerationBackend):
                 f"Terminal count {terminal_count} outside tolerance "
                 f"({tolerance*100:.0f}%) of target {target}"
             )
+        
+        return network
+    
+    def generate_multi_inlet(
+        self,
+        domain: DomainSpec,
+        num_outlets: int,
+        inlets: List[Dict[str, Any]],
+        vessel_type: str = "arterial",
+        config: Optional[BackendConfig] = None,
+        rng_seed: Optional[int] = None,
+    ) -> VascularNetwork:
+        """
+        Generate a k-ary tree vascular network with multiple inlets.
+        
+        Parameters
+        ----------
+        domain : DomainSpec
+            Geometric domain for the network
+        num_outlets : int
+            Target number of terminal outlets (total across all inlets)
+        inlets : list of dict
+            List of inlet specifications, each with:
+            - position: [x, y, z] in meters
+            - radius: float in meters
+            - direction: [x, y, z] optional, growth direction (inward)
+            - is_surface_opening: bool optional
+        vessel_type : str
+            Type of vessels ("arterial" or "venous")
+        config : KaryTreeConfig, optional
+            Backend configuration
+        rng_seed : int, optional
+            Random seed for reproducibility
+            
+        Returns
+        -------
+        VascularNetwork
+            Generated vascular network with multiple inlet trees
+        """
+        if config is None:
+            config = KaryTreeConfig(target_terminals=num_outlets)
+        elif not isinstance(config, KaryTreeConfig):
+            config = KaryTreeConfig(
+                target_terminals=num_outlets,
+                seed=config.seed,
+                min_segment_length=config.min_segment_length,
+                max_segment_length=config.max_segment_length,
+                min_radius=config.min_radius,
+                check_collisions=config.check_collisions,
+                collision_clearance=config.collision_clearance,
+            )
+        
+        if len(inlets) > config.max_inlets:
+            logger.warning(
+                f"Number of inlets ({len(inlets)}) exceeds max_inlets ({config.max_inlets}), "
+                f"truncating to {config.max_inlets}"
+            )
+            inlets = inlets[:config.max_inlets]
+        
+        if len(inlets) == 0:
+            raise ValueError("At least one inlet is required")
+        
+        if len(inlets) == 1:
+            inlet = inlets[0]
+            inlet_position = np.array(inlet.get("position", [0, 0, 0]))
+            inlet_radius = inlet.get("radius", 0.001)
+            direction = inlet.get("direction", inlet.get("growth_inward_direction"))
+            if direction is not None:
+                config_dict = {k: getattr(config, k) for k in config.__dataclass_fields__}
+                config_dict["primary_axis"] = tuple(direction)
+                config = KaryTreeConfig(**config_dict)
+            return self.generate(
+                domain=domain,
+                num_outlets=num_outlets,
+                inlet_position=inlet_position,
+                inlet_radius=inlet_radius,
+                vessel_type=vessel_type,
+                config=config,
+                rng_seed=rng_seed,
+            )
+        
+        effective_seed = rng_seed if rng_seed is not None else config.seed
+        rng = np.random.default_rng(effective_seed)
+        
+        network = VascularNetwork(domain=domain)
+        
+        if config.multi_inlet_mode == "forest":
+            return self._generate_forest_mode(
+                network=network,
+                domain=domain,
+                num_outlets=num_outlets,
+                inlets=inlets,
+                vessel_type=vessel_type,
+                config=config,
+                rng=rng,
+            )
+        else:
+            return self._generate_merge_to_trunk_mode(
+                network=network,
+                domain=domain,
+                num_outlets=num_outlets,
+                inlets=inlets,
+                vessel_type=vessel_type,
+                config=config,
+                rng=rng,
+            )
+    
+    def _generate_forest_mode(
+        self,
+        network: VascularNetwork,
+        domain: DomainSpec,
+        num_outlets: int,
+        inlets: List[Dict[str, Any]],
+        vessel_type: str,
+        config: KaryTreeConfig,
+        rng: np.random.Generator,
+    ) -> VascularNetwork:
+        """Generate separate trees per inlet (forest mode)."""
+        n_inlets = len(inlets)
+        outlets_per_inlet = num_outlets // n_inlets
+        remainder = num_outlets % n_inlets
+        
+        for i, inlet in enumerate(inlets):
+            inlet_position = np.array(inlet.get("position", [0, 0, 0]))
+            inlet_radius = inlet.get("radius", 0.001)
+            direction = inlet.get("direction", inlet.get("growth_inward_direction"))
+            
+            if direction is not None:
+                primary_axis = np.array(direction)
+                norm = np.linalg.norm(primary_axis)
+                if norm > 0:
+                    primary_axis = primary_axis / norm
+                else:
+                    primary_axis = np.array([0.0, 0.0, -1.0])
+            else:
+                primary_axis = np.array([0.0, 0.0, -1.0])
+            
+            this_outlets = outlets_per_inlet + (1 if i < remainder else 0)
+            depth = self._calculate_depth(config.k, this_outlets)
+            
+            branch_length = config.branch_length
+            if branch_length is None and config.use_domain_scaling:
+                domain_size = self._get_domain_characteristic_size(domain)
+                decay = config.branch_length_decay
+                if decay < 1.0 and depth > 0:
+                    geometric_sum = (1 - decay**depth) / (1 - decay)
+                else:
+                    geometric_sum = depth if depth > 0 else 1
+                target_extent = domain_size * config.tree_extent_fraction
+                branch_length = target_extent / geometric_sum
+            elif branch_length is None:
+                branch_length = 0.001
+            
+            inlet_pos = Point3D(*inlet_position)
+            inlet_id = network.id_gen.next_id()
+            inlet_node = Node(
+                id=inlet_id,
+                position=inlet_pos,
+                node_type="inlet",
+                vessel_type=vessel_type,
+                attributes={"radius": inlet_radius, "inlet_index": i},
+            )
+            network.add_node(inlet_node)
+            
+            self._generate_subtree(
+                network=network,
+                parent_node=inlet_node,
+                parent_direction=primary_axis,
+                primary_axis=primary_axis,
+                current_depth=0,
+                max_depth=depth,
+                current_radius=inlet_radius,
+                current_length=branch_length,
+                config=config,
+                vessel_type=vessel_type,
+                domain=domain,
+                rng=rng,
+            )
+        
+        logger.info(
+            f"Forest mode: generated {n_inlets} separate trees with "
+            f"{sum(1 for n in network.nodes.values() if n.node_type == 'terminal')} total terminals"
+        )
+        
+        return network
+    
+    def _generate_merge_to_trunk_mode(
+        self,
+        network: VascularNetwork,
+        domain: DomainSpec,
+        num_outlets: int,
+        inlets: List[Dict[str, Any]],
+        vessel_type: str,
+        config: KaryTreeConfig,
+        rng: np.random.Generator,
+    ) -> VascularNetwork:
+        """Generate a single tree with inlets merging to a common trunk."""
+        n_inlets = len(inlets)
+        
+        inlet_positions = []
+        inlet_radii = []
+        inlet_directions = []
+        
+        for inlet in inlets:
+            pos = np.array(inlet.get("position", [0, 0, 0]))
+            inlet_positions.append(pos)
+            inlet_radii.append(inlet.get("radius", 0.001))
+            direction = inlet.get("direction", inlet.get("growth_inward_direction"))
+            if direction is not None:
+                d = np.array(direction)
+                norm = np.linalg.norm(d)
+                if norm > 0:
+                    d = d / norm
+                else:
+                    d = np.array([0.0, 0.0, -1.0])
+            else:
+                d = np.array([0.0, 0.0, -1.0])
+            inlet_directions.append(d)
+        
+        centroid = np.mean(inlet_positions, axis=0)
+        avg_direction = np.mean(inlet_directions, axis=0)
+        avg_direction = avg_direction / np.linalg.norm(avg_direction)
+        
+        domain_size = self._get_domain_characteristic_size(domain)
+        trunk_depth = domain_size * config.trunk_depth_fraction
+        trunk_position = centroid + avg_direction * trunk_depth
+        
+        if config.trunk_merge_radius is not None:
+            trunk_radius = config.trunk_merge_radius
+        else:
+            total_area = sum(r**2 for r in inlet_radii)
+            trunk_radius = np.sqrt(total_area) * config.taper_factor
+        
+        trunk_id = network.id_gen.next_id()
+        trunk_node = Node(
+            id=trunk_id,
+            position=Point3D(*trunk_position),
+            node_type="junction",
+            vessel_type=vessel_type,
+            attributes={"radius": trunk_radius, "is_trunk": True},
+        )
+        network.add_node(trunk_node)
+        
+        for i, (pos, radius, direction) in enumerate(zip(inlet_positions, inlet_radii, inlet_directions)):
+            inlet_pos = Point3D(*pos)
+            inlet_id = network.id_gen.next_id()
+            inlet_node = Node(
+                id=inlet_id,
+                position=inlet_pos,
+                node_type="inlet",
+                vessel_type=vessel_type,
+                attributes={"radius": radius, "inlet_index": i},
+            )
+            network.add_node(inlet_node)
+            
+            segment_id = network.id_gen.next_id()
+            geometry = TubeGeometry(
+                start=inlet_pos,
+                end=trunk_node.position,
+                radius_start=radius,
+                radius_end=trunk_radius,
+            )
+            segment = VesselSegment(
+                id=segment_id,
+                start_node_id=inlet_id,
+                end_node_id=trunk_id,
+                geometry=geometry,
+                vessel_type=vessel_type,
+            )
+            network.add_segment(segment)
+        
+        depth = self._calculate_depth(config.k, num_outlets)
+        
+        branch_length = config.branch_length
+        if branch_length is None and config.use_domain_scaling:
+            decay = config.branch_length_decay
+            if decay < 1.0 and depth > 0:
+                geometric_sum = (1 - decay**depth) / (1 - decay)
+            else:
+                geometric_sum = depth if depth > 0 else 1
+            target_extent = domain_size * config.tree_extent_fraction
+            branch_length = target_extent / geometric_sum
+        elif branch_length is None:
+            branch_length = 0.001
+        
+        self._generate_subtree(
+            network=network,
+            parent_node=trunk_node,
+            parent_direction=avg_direction,
+            primary_axis=avg_direction,
+            current_depth=0,
+            max_depth=depth,
+            current_radius=trunk_radius,
+            current_length=branch_length,
+            config=config,
+            vessel_type=vessel_type,
+            domain=domain,
+            rng=rng,
+        )
+        
+        terminal_count = sum(1 for n in network.nodes.values() if n.node_type == "terminal")
+        logger.info(
+            f"Merge-to-trunk mode: {n_inlets} inlets merged to trunk at depth "
+            f"{trunk_depth*1000:.2f}mm, generated {terminal_count} terminals"
+        )
         
         return network
     
@@ -272,6 +634,7 @@ class KaryTreeBackend(GenerationBackend):
         network: VascularNetwork,
         parent_node: Node,
         parent_direction: np.ndarray,
+        primary_axis: np.ndarray,
         current_depth: int,
         max_depth: int,
         current_radius: float,
@@ -281,52 +644,105 @@ class KaryTreeBackend(GenerationBackend):
         domain: DomainSpec,
         rng: np.random.Generator,
     ) -> None:
-        """Recursively generate subtree from parent node."""
+        """
+        Recursively generate subtree from parent node.
+        
+        Parameters
+        ----------
+        network : VascularNetwork
+            Network to add nodes/segments to
+        parent_node : Node
+            Parent node to branch from
+        parent_direction : np.ndarray
+            Direction of the parent segment (for bifurcation angle calculation)
+        primary_axis : np.ndarray
+            Primary growth direction (for constraint checking)
+        current_depth : int
+            Current depth in the tree
+        max_depth : int
+            Maximum depth to generate
+        current_radius : float
+            Current vessel radius
+        current_length : float
+            Current branch length
+        config : KaryTreeConfig
+            Configuration parameters
+        vessel_type : str
+            Type of vessels
+        domain : DomainSpec
+            Domain for containment checks
+        rng : np.random.Generator
+            Random number generator
+        """
         if current_depth >= max_depth:
-            # Mark as terminal
             parent_node.node_type = "terminal"
             return
         
         if current_radius < config.min_radius:
-            # Too small, mark as terminal
             parent_node.node_type = "terminal"
             return
         
-        # Generate k children
         k = config.k
         child_radius = current_radius * config.taper_factor
         child_length = current_length * config.branch_length_decay
         
-        # Calculate bifurcation angles
         base_angle = config.angle_deg
         angle_var = config.angle_variation_deg
         
+        elevation_jitter = config.elevation_jitter_deg if config.elevation_jitter_deg is not None else angle_var
+        azimuth_jitter = config.azimuth_jitter_deg
+        max_deviation_rad = np.radians(config.max_deviation_deg)
+        
         for i in range(k):
-            # D FIX: Calculate child direction with rotation using local RNG
             angle_offset = (i - (k - 1) / 2) * base_angle * 2 / max(k - 1, 1)
-            angle_offset += rng.uniform(-angle_var, angle_var)
+            angle_offset += rng.uniform(-elevation_jitter, elevation_jitter)
             
-            # D FIX: Rotate parent direction using local RNG for azimuth
+            azimuth = rng.uniform(-azimuth_jitter, azimuth_jitter)
+            
             child_direction = self._rotate_direction(
                 parent_direction, 
                 np.radians(angle_offset),
-                np.radians(rng.uniform(0, 360))  # Random azimuth
+                np.radians(azimuth)
             )
             
-            # Calculate child position
+            if config.max_deviation_deg < 90.0:
+                dot_with_primary = np.dot(child_direction, primary_axis)
+                angle_from_primary = np.arccos(np.clip(dot_with_primary, -1.0, 1.0))
+                
+                if angle_from_primary > max_deviation_rad:
+                    blend_factor = max_deviation_rad / angle_from_primary
+                    child_direction = child_direction * (1 - blend_factor) + primary_axis * blend_factor
+                    child_direction = child_direction / np.linalg.norm(child_direction)
+            
+            if config.upward_forbidden:
+                if child_direction[2] > 0:
+                    child_direction[2] = -abs(child_direction[2]) * 0.1
+                    child_direction = child_direction / np.linalg.norm(child_direction)
+            
             child_pos = np.array([
                 parent_node.position.x,
                 parent_node.position.y,
                 parent_node.position.z,
             ]) + child_direction * child_length
             
-            # Check if inside domain
+            if config.wall_margin > 0 and hasattr(domain, 'signed_distance'):
+                point_3d = Point3D(*child_pos)
+                sd = domain.signed_distance(point_3d)
+                if sd > -config.wall_margin:
+                    move_dist = config.wall_margin - (-sd) + 0.0001
+                    if hasattr(domain, 'center'):
+                        center = np.array([domain.center.x, domain.center.y, domain.center.z])
+                    else:
+                        center = np.array([0, 0, 0])
+                    to_center = center - child_pos
+                    if np.linalg.norm(to_center) > 0:
+                        to_center = to_center / np.linalg.norm(to_center)
+                        child_pos = child_pos + to_center * move_dist
+            
             if hasattr(domain, 'contains'):
                 if not domain.contains(Point3D(*child_pos)):
-                    # Project back inside
                     child_pos = self._project_inside(child_pos, domain)
             
-            # D FIX: Create child node using network.id_gen and network.add_node
             child_id = network.id_gen.next_id()
             child_node = Node(
                 id=child_id,
@@ -337,7 +753,6 @@ class KaryTreeBackend(GenerationBackend):
             )
             network.add_node(child_node)
             
-            # D FIX: Create segment using network.id_gen and network.add_segment
             segment_id = network.id_gen.next_id()
             geometry = TubeGeometry(
                 start=parent_node.position,
@@ -354,11 +769,11 @@ class KaryTreeBackend(GenerationBackend):
             )
             network.add_segment(segment)
             
-            # D FIX: Recurse with local RNG
             self._generate_subtree(
                 network=network,
                 parent_node=child_node,
                 parent_direction=child_direction,
+                primary_axis=primary_axis,
                 current_depth=current_depth + 1,
                 max_depth=max_depth,
                 current_radius=child_radius,

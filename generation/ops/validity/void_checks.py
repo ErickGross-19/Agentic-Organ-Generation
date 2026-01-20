@@ -701,6 +701,8 @@ def run_void_validity_checks(
     domain: Optional[DomainSpec] = None,
     min_diameter: Optional[float] = None,
     max_components: int = 1,
+    surface_opening_ports: Optional[List[SurfaceOpeningPort]] = None,
+    surface_opening_tolerance: float = 0.001,
 ) -> VoidValidityReport:
     """
     Run all void validity checks.
@@ -715,6 +717,12 @@ def run_void_validity_checks(
         Minimum diameter requirement (meters)
     max_components : int
         Maximum allowed components
+    surface_opening_ports : list of SurfaceOpeningPort, optional
+        Ports that are allowed to intersect the domain boundary.
+        If provided, points outside the domain but within these port
+        neighborhoods are not counted as violations.
+    surface_opening_tolerance : float
+        Additional tolerance around surface opening ports (meters)
         
     Returns
     -------
@@ -736,7 +744,12 @@ def run_void_validity_checks(
     
     # Domain containment check
     if domain is not None:
-        domain_result = check_void_inside_domain(void_mesh, domain)
+        domain_result = check_void_inside_domain(
+            void_mesh, 
+            domain,
+            surface_opening_ports=surface_opening_ports,
+            surface_opening_tolerance=surface_opening_tolerance,
+        )
         checks.append(domain_result)
         
         if domain_result.status == CheckStatus.WARNING:
@@ -796,4 +809,5 @@ __all__ = [
     "CheckResult",
     "VoidValidityReport",
     "DiameterReport",
+    "SurfaceOpeningPort",
 ]

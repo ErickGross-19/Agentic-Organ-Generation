@@ -16,6 +16,7 @@ from .void_checks import (
     CheckResult,
     VoidValidityReport,
     DiameterReport,
+    SurfaceOpeningPort,
 )
 
 __all__ = [
@@ -29,4 +30,5 @@ __all__ = [
     "CheckResult",
     "VoidValidityReport",
     "DiameterReport",
+    "SurfaceOpeningPort",
 ]

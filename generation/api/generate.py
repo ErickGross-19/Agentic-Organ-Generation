@@ -425,69 +425,128 @@ def _generate_kary_tree(
        using tree_extent_fraction (default 0.4 = tree fills ~40% of domain)
     
     This ensures the tree scales appropriately with the domain size.
+    
+    Multi-inlet support:
+    - If multiple inlets are defined, uses generate_multi_inlet method
+    - Supports "forest" mode (separate trees) and "merge_to_trunk" mode (default)
+    - Growth direction can be specified per-inlet via "direction" or "growth_inward_direction"
+    
+    Downward-biased growth:
+    - primary_axis: Primary growth direction (default: inferred from inlet direction or -Z)
+    - max_deviation_deg: Maximum angle from primary axis
+    - upward_forbidden: Forbid growth with positive Z component
+    - wall_margin: Minimum distance from domain boundary
     """
     from ..backends.kary_tree_backend import KaryTreeBackend, KaryTreeConfig
     
-    # Get first inlet for the backend
     inlets = ports.get("inlets", [])
     if not inlets:
         raise ValueError("K-ary tree requires at least one inlet")
     
-    inlet = inlets[0]
-    inlet_position = np.array(inlet.get("position", (0, 0, 0)))
-    inlet_radius = inlet.get("radius", 0.001)
-    vessel_type = inlet.get("vessel_type", "arterial")
-    
-    # Target terminals
     target = growth_policy.target_terminals or 128
     
-    # Determine branch_length: use explicit step_size if set, otherwise let
-    # KaryTreeBackend compute from domain size (branch_length=None triggers this)
     explicit_branch_length = None
     if growth_policy.step_size is not None and growth_policy.step_size > 0:
         explicit_branch_length = growth_policy.step_size
     
-    # Get tree_extent_fraction from growth_policy backend_params if available
     backend_params = getattr(growth_policy, 'backend_params', {}) or {}
     tree_extent_fraction = backend_params.get('tree_extent_fraction', 0.4)
     branch_length_decay = backend_params.get('branch_length_decay', 0.8)
     angle_deg = backend_params.get('angle_deg', 30.0)
     angle_variation_deg = backend_params.get('angle_variation_deg', 5.0)
     
-    # Create backend config from growth policy
+    primary_axis = backend_params.get('primary_axis')
+    max_deviation_deg = backend_params.get('max_deviation_deg', 90.0)
+    upward_forbidden = backend_params.get('upward_forbidden', False)
+    azimuth_jitter_deg = backend_params.get('azimuth_jitter_deg', 180.0)
+    elevation_jitter_deg = backend_params.get('elevation_jitter_deg')
+    wall_margin = backend_params.get('wall_margin', backend_params.get('wall_margin_m', 0.0))
+    
+    multi_inlet_mode = backend_params.get('multi_inlet_mode', 'merge_to_trunk')
+    trunk_depth_fraction = backend_params.get('trunk_depth_fraction', 0.2)
+    trunk_merge_radius = backend_params.get('trunk_merge_radius')
+    max_inlets = backend_params.get('max_inlets', 10)
+    
     config = KaryTreeConfig(
-        k=2,
+        k=backend_params.get('k', 2),
         target_terminals=target,
         terminal_tolerance=growth_policy.terminal_tolerance,
         branch_length=explicit_branch_length,
         branch_length_decay=branch_length_decay,
         angle_deg=angle_deg,
         angle_variation_deg=angle_variation_deg,
-        min_radius=growth_policy.min_segment_length / 10,  # Approximate
+        min_radius=growth_policy.min_segment_length / 10,
         tree_extent_fraction=tree_extent_fraction,
         use_domain_scaling=(explicit_branch_length is None),
+        primary_axis=tuple(primary_axis) if primary_axis else None,
+        max_deviation_deg=max_deviation_deg,
+        upward_forbidden=upward_forbidden,
+        azimuth_jitter_deg=azimuth_jitter_deg,
+        elevation_jitter_deg=elevation_jitter_deg,
+        wall_margin=wall_margin,
+        multi_inlet_mode=multi_inlet_mode,
+        trunk_depth_fraction=trunk_depth_fraction,
+        trunk_merge_radius=trunk_merge_radius,
+        max_inlets=max_inlets,
         seed=seed,
     )
     
-    # Use backend to generate network
     backend = KaryTreeBackend()
-    network = backend.generate(
-        domain=domain,
-        num_outlets=target,
-        inlet_position=inlet_position,
-        inlet_radius=inlet_radius,
-        vessel_type=vessel_type,
-        config=config,
-        rng_seed=seed,
-    )
     
-    # Count terminals using string node_type
+    if len(inlets) > 1:
+        inlet_specs = []
+        for inlet in inlets:
+            spec = {
+                "position": inlet.get("position", (0, 0, 0)),
+                "radius": inlet.get("radius", 0.001),
+                "is_surface_opening": inlet.get("is_surface_opening", False),
+            }
+            direction = inlet.get("direction") or inlet.get("growth_inward_direction")
+            if direction:
+                spec["direction"] = direction
+            inlet_specs.append(spec)
+        
+        vessel_type = inlets[0].get("vessel_type", "arterial")
+        network = backend.generate_multi_inlet(
+            domain=domain,
+            num_outlets=target,
+            inlets=inlet_specs,
+            vessel_type=vessel_type,
+            config=config,
+            rng_seed=seed,
+        )
+    else:
+        inlet = inlets[0]
+        inlet_position = np.array(inlet.get("position", (0, 0, 0)))
+        inlet_radius = inlet.get("radius", 0.001)
+        vessel_type = inlet.get("vessel_type", "arterial")
+        
+        inlet_direction = inlet.get("direction") or inlet.get("growth_inward_direction")
+        if inlet_direction and config.primary_axis is None:
+            config = KaryTreeConfig(
+                **{k: getattr(config, k) for k in config.__dataclass_fields__},
+                primary_axis=tuple(inlet_direction),
+            )
+        
+        network = backend.generate(
+            domain=domain,
+            num_outlets=target,
+            inlet_position=inlet_position,
+            inlet_radius=inlet_radius,
+            vessel_type=vessel_type,
+            config=config,
+            rng_seed=seed,
+        )
+    
     terminal_count = sum(1 for n in network.nodes.values() if n.node_type == "terminal")
+    inlet_count = sum(1 for n in network.nodes.values() if n.node_type == "inlet")
     
     return network, {
         "terminal_count": terminal_count,
+        "inlet_count": inlet_count,
         "node_count": len(network.nodes),
         "segment_count": len(network.segments),
+        "multi_inlet_mode": multi_inlet_mode if len(inlets) > 1 else "single",
     }
 
 
