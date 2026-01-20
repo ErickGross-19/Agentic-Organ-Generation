@@ -399,6 +399,17 @@ class DesignSpecWorkflow:
             self._handle_last_error_command()
             return True
         
+        # Handle "run" command - provides confirmation feedback
+        if text_lower == "run":
+            self._handle_run_command()
+            return True
+        
+        # Handle "cancel" / "stop" command - cancels running process
+        cancel_patterns = ["cancel", "stop", "abort"]
+        if text_lower in cancel_patterns:
+            self._handle_cancel_command()
+            return True
+        
         return False
     
     def _handle_show_spec_command(self) -> None:
@@ -514,6 +525,42 @@ class DesignSpecWorkflow:
                 "run_id": run_id,
             },
             message=message,
+        ))
+    
+    def _handle_run_command(self) -> None:
+        """Handle the 'run' command - starts full pipeline with confirmation."""
+        if self._status == WorkflowStatus.RUNNING:
+            self._emit_event(WorkflowEvent(
+                event_type=WorkflowEventType.MESSAGE,
+                message="A run is already in progress. Type 'cancel' to stop it.",
+            ))
+            return
+        
+        # Emit confirmation that run is starting
+        self._emit_event(WorkflowEvent(
+            event_type=WorkflowEventType.MESSAGE,
+            message="Starting full run... Type 'cancel' to stop.",
+        ))
+        
+        # Start the full run
+        self.run_full()
+    
+    def _handle_cancel_command(self) -> None:
+        """Handle the 'cancel' / 'stop' command - cancels running process."""
+        if self._status != WorkflowStatus.RUNNING:
+            self._emit_event(WorkflowEvent(
+                event_type=WorkflowEventType.MESSAGE,
+                message="No run is currently in progress.",
+            ))
+            return
+        
+        # Set status to cancelled
+        self._set_status(WorkflowStatus.CANCELLED)
+        
+        # Emit cancellation confirmation
+        self._emit_event(WorkflowEvent(
+            event_type=WorkflowEventType.MESSAGE,
+            message="Run cancelled. The current operation will stop at the next safe point.",
         ))
     
     def _handle_agent_response(self, response: AgentResponse) -> None:
