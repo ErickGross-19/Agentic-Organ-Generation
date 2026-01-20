@@ -2,14 +2,22 @@
   "schema": {
     "name": "aog_designspec",
     "version": "1.0.0",
-    "compatible_with": ["1.0.x"]
+    "compatible_with": [
+      "1.0.x"
+    ]
   },
   "meta": {
     "name": "14_budget_relaxation_showcase",
     "description": "Demonstrates budget relaxation with max_voxels constraints. Uses a larger domain with tight requested pitch to trigger pitch relaxation. This showcases max_voxels behavior, warnings, and effective pitch in the report.",
     "seed": 141414,
     "input_units": "mm",
-    "tags": ["budget", "relaxation", "max_voxels", "pitch", "warnings"]
+    "tags": [
+      "budget",
+      "relaxation",
+      "max_voxels",
+      "pitch",
+      "warnings"
+    ]
   },
   "policies": {
     "resolution": {
@@ -21,7 +29,7 @@
       "max_pitch": 1.0,
       "auto_relax_pitch": true,
       "pitch_step_factor": 1.3,
-      "rel_epsilon": 1e-6,
+      "rel_epsilon": 1e-06,
       "embed_pitch_factor": 1.0,
       "merge_pitch_factor": 1.0,
       "repair_pitch_factor": 1.0,
@@ -141,7 +149,11 @@
     "unified_collision": {
       "enabled": true,
       "min_clearance": 0.15,
-      "strategy_order": ["reroute", "shrink", "terminate"],
+      "strategy_order": [
+        "reroute",
+        "shrink",
+        "terminate"
+      ],
       "min_radius": 0.08,
       "check_segment_segment": true,
       "check_segment_mesh": true,
@@ -245,7 +257,11 @@
       "min_component_volume": 0.001,
       "fill_voxels": true,
       "max_voxels": 100000000,
-      "use_resolution_policy": false
+      "use_resolution_policy": false,
+      "min_voxels_per_diameter": 4,
+      "min_channel_diameter": 0.1,
+      "detail_loss_threshold": 0.5,
+      "detail_loss_strictness": "warn"
     },
     "composition": {
       "repair_enabled": true,
@@ -282,7 +298,11 @@
         "min_component_volume": 0.001,
         "fill_voxels": true,
         "max_voxels": 100000000,
-        "use_resolution_policy": false
+        "use_resolution_policy": false,
+        "min_voxels_per_diameter": 4,
+        "min_channel_diameter": 0.1,
+        "detail_loss_threshold": 0.5,
+        "detail_loss_strictness": "warn"
       },
       "repair_policy": {
         "voxel_repair_enabled": true,
@@ -323,6 +343,8 @@
       "check_open_ports": true,
       "check_bounds": true,
       "check_void_inside_domain": true,
+      "allow_boundary_intersections_at_ports": false,
+      "surface_opening_tolerance": 1.0,
       "min_diameter_threshold": 0.5,
       "max_components": 1
     },
@@ -381,8 +403,16 @@
         "inlets": [
           {
             "name": "inlet_top",
-            "position": [0, 0, 8],
-            "direction": [0, 0, -1],
+            "position": [
+              0,
+              0,
+              8
+            ],
+            "direction": [
+              0,
+              0,
+              -1
+            ],
             "radius": 0.35,
             "vessel_type": "arterial"
           }
@@ -390,8 +420,16 @@
         "outlets": [
           {
             "name": "outlet_bottom",
-            "position": [0, 0, -8],
-            "direction": [0, 0, 1],
+            "position": [
+              0,
+              0,
+              -8
+            ],
+            "direction": [
+              0,
+              0,
+              1
+            ],
             "radius": 0.3,
             "vessel_type": "venous"
           }

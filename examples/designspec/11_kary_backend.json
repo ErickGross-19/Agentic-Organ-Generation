@@ -2,14 +2,22 @@
   "schema": {
     "name": "aog_designspec",
     "version": "1.0.0",
-    "compatible_with": ["1.0.x"]
+    "compatible_with": [
+      "1.0.x"
+    ]
   },
   "meta": {
     "name": "11_kary_backend",
     "description": "Demonstrates the K-ary recursive tree backend with stable ID allocation. Creates a K-bifurcation tree structure with configurable branching factor, levels, and angle parameters.",
     "seed": 111111,
     "input_units": "mm",
-    "tags": ["kary_tree", "backend", "bifurcation", "recursive", "stable_id"]
+    "tags": [
+      "kary_tree",
+      "backend",
+      "bifurcation",
+      "recursive",
+      "stable_id"
+    ]
   },
   "policies": {
     "resolution": {
@@ -21,7 +29,7 @@
       "max_pitch": 1.0,
       "auto_relax_pitch": true,
       "pitch_step_factor": 1.5,
-      "rel_epsilon": 1e-6,
+      "rel_epsilon": 1e-06,
       "embed_pitch_factor": 1.0,
       "merge_pitch_factor": 1.0,
       "repair_pitch_factor": 1.0,
@@ -120,7 +128,11 @@
     "unified_collision": {
       "enabled": true,
       "min_clearance": 0.1,
-      "strategy_order": ["reroute", "shrink", "terminate"],
+      "strategy_order": [
+        "reroute",
+        "shrink",
+        "terminate"
+      ],
       "min_radius": 0.03,
       "check_segment_segment": true,
       "check_segment_mesh": true,
@@ -224,7 +236,11 @@
       "min_component_volume": 0.0001,
       "fill_voxels": true,
       "max_voxels": 100000000,
-      "use_resolution_policy": false
+      "use_resolution_policy": false,
+      "min_voxels_per_diameter": 4,
+      "min_channel_diameter": 0.1,
+      "detail_loss_threshold": 0.5,
+      "detail_loss_strictness": "warn"
     },
     "composition": {
       "repair_enabled": true,
@@ -261,7 +277,11 @@
         "min_component_volume": 0.0001,
         "fill_voxels": true,
         "max_voxels": 100000000,
-        "use_resolution_policy": false
+        "use_resolution_policy": false,
+        "min_voxels_per_diameter": 4,
+        "min_channel_diameter": 0.1,
+        "detail_loss_threshold": 0.5,
+        "detail_loss_strictness": "warn"
       },
       "repair_policy": {
         "voxel_repair_enabled": true,
@@ -302,6 +322,8 @@
       "check_open_ports": true,
       "check_bounds": true,
       "check_void_inside_domain": true,
+      "allow_boundary_intersections_at_ports": false,
+      "surface_opening_tolerance": 1.0,
       "min_diameter_threshold": 0.5,
       "max_components": 1
     },
@@ -344,7 +366,11 @@
   "domains": {
     "cylinder_domain": {
       "type": "cylinder",
-      "center": [0, 0, 0],
+      "center": [
+        0,
+        0,
+        0
+      ],
       "radius": 6,
       "height": 4
     }
@@ -357,8 +383,16 @@
         "inlets": [
           {
             "name": "inlet_center",
-            "position": [0, 0, 2],
-            "direction": [0, 0, -1],
+            "position": [
+              0,
+              0,
+              2
+            ],
+            "direction": [
+              0,
+              0,
+              -1
+            ],
             "radius": 0.4,
             "vessel_type": "arterial"
           }
