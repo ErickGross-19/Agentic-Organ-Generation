@@ -113,7 +113,9 @@
         "influence_radius": 0.2,
         "kill_radius": 0.05,
         "perception_angle": 90,
-        "num_attraction_points": 2000,
+        "num_attraction_points": 5000,
+        "multi_inlet_mode": "forest_with_merge",
+        "collision_merge_distance": 0.05,
         "space_colonization_policy": {
           "enabled": true,
           "trunk_steps": 15,
@@ -406,11 +408,11 @@
       "ports": {
         "inlets": [
           {
-            "name": "inlet_A",
+            "name": "inlet_center",
             "position": [
               0,
               0,
-              0.9
+              1.0
             ],
             "direction": [
               0,
@@ -418,26 +420,75 @@
               -1
             ],
             "radius": 0.3,
-            "vessel_type": "arterial"
-          }
-        ],
-        "outlets": [
+            "vessel_type": "arterial",
+            "is_surface_opening": true
+          },
           {
-            "name": "outlet_V",
+            "name": "inlet_ring_1",
             "position": [
+              3.0,
               0,
-              0,
-              -0.9
+              1.0
             ],
             "direction": [
               0,
               0,
-              1
+              -1
             ],
             "radius": 0.25,
-            "vessel_type": "venous"
+            "vessel_type": "arterial",
+            "is_surface_opening": true
+          },
+          {
+            "name": "inlet_ring_2",
+            "position": [
+              0,
+              3.0,
+              1.0
+            ],
+            "direction": [
+              0,
+              0,
+              -1
+            ],
+            "radius": 0.25,
+            "vessel_type": "arterial",
+            "is_surface_opening": true
+          },
+          {
+            "name": "inlet_ring_3",
+            "position": [
+              -3.0,
+              0,
+              1.0
+            ],
+            "direction": [
+              0,
+              0,
+              -1
+            ],
+            "radius": 0.25,
+            "vessel_type": "arterial",
+            "is_surface_opening": true
+          },
+          {
+            "name": "inlet_ring_4",
+            "position": [
+              0,
+              -3.0,
+              1.0
+            ],
+            "direction": [
+              0,
+              0,
+              -1
+            ],
+            "radius": 0.25,
+            "vessel_type": "arterial",
+            "is_surface_opening": true
           }
-        ]
+        ],
+        "outlets": []
       },
       "build": {
         "type": "backend_network",
@@ -446,7 +497,9 @@
           "influence_radius": 0.2,
           "kill_radius": 0.05,
           "perception_angle": 90,
-          "num_attraction_points": 2000
+          "num_attraction_points": 5000,
+          "multi_inlet_mode": "forest_with_merge",
+          "collision_merge_distance": 0.05
         }
       },
       "save_artifacts": {

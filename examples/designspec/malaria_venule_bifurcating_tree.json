@@ -125,7 +125,7 @@
       "step_size": 0.0001,
       "backend_params": {
         "tree_extent_fraction": 0.95,
-        "branch_length_decay": 0.5,
+        "branch_length_decay": 0.75,
         "angle_deg": 45.0,
         "angle_variation_deg": 5.0,
         "primary_axis": [0, 0, -1],
