@@ -21,9 +21,9 @@
   "policies": {
     "resolution": {
       "input_units": "mm",
-      "min_channel_diameter": 0.1,
-      "min_voxels_across_feature": 8,
-      "max_voxels": 10000000,
+      "min_channel_diameter": 0.02,
+      "min_voxels_across_feature": 12,
+      "max_voxels": 50000000,
       "min_pitch": 0.001,
       "max_pitch": 1.0,
       "auto_relax_pitch": true,
@@ -34,12 +34,12 @@
       "repair_pitch_factor": 1.0,
       "pathfinding_coarse_factor": 20.0,
       "pathfinding_fine_factor": 1.0,
-      "max_voxels_embed": 5000000,
-      "max_voxels_merge": 5000000,
-      "max_voxels_repair": 5000000,
-      "max_voxels_pathfinding_coarse": 3000000,
-      "max_voxels_pathfinding_fine": 3000000,
-      "max_voxels_open_port_roi": 2000000
+      "max_voxels_embed": 20000000,
+      "max_voxels_merge": 20000000,
+      "max_voxels_repair": 20000000,
+      "max_voxels_pathfinding_coarse": 10000000,
+      "max_voxels_pathfinding_fine": 10000000,
+      "max_voxels_open_port_roi": 10000000
     },
     "domain_meshing": {
       "cache_meshes": true,
@@ -57,14 +57,14 @@
       "mesh_policy": {
         "validate_watertight": true,
         "repair_if_needed": true,
-        "repair_voxel_pitch": 0.05,
+        "repair_voxel_pitch": 0.005,
         "max_faces": 500000,
         "simplify_if_over_max": true,
         "simplify_target_ratio": 0.5
       },
       "implicit_policy": {
-        "voxel_pitch": 0.05,
-        "max_voxels": 50000000,
+        "voxel_pitch": 0.005,
+        "max_voxels": 100000000,
         "auto_relax_pitch": true,
         "pitch_step_factor": 1.5,
         "iso_level": 0.0,
@@ -77,13 +77,13 @@
       "corridor_radius_factor": 2.0,
       "pitch_coarse": 0.1,
       "pitch_fine": 0.005,
-      "corridor_radius_buffer": 0.2,
-      "max_voxels_coarse": 2000000,
-      "max_voxels_fine": 2000000,
+      "corridor_radius_buffer": 0.02,
+      "max_voxels_coarse": 10000000,
+      "max_voxels_fine": 10000000,
       "auto_relax_fine_pitch": true,
       "pitch_step_factor": 1.5,
-      "clearance": 0.2,
-      "local_radius": 0.2,
+      "clearance": 0.02,
+      "local_radius": 0.02,
       "inflation_mode": "clearance_plus_local_radius",
       "max_nodes_coarse": 100000,
       "max_nodes_fine": 500000,
@@ -105,26 +105,26 @@
       "terminal_tolerance": 0.1,
       "max_iterations": 100,
       "seed": null,
-      "min_segment_length": 0.2,
-      "max_segment_length": 2.0,
-      "min_radius": 0.1,
-      "step_size": 0.3,
+      "min_segment_length": 0.01,
+      "max_segment_length": 0.2,
+      "min_radius": 0.01,
+      "step_size": 0.01,
       "backend_params": {}
     },
     "collision": {
       "enabled": false,
       "check_collisions": false,
-      "collision_clearance": 0.1
+      "collision_clearance": 0.02
     },
     "unified_collision": {
       "enabled": false,
-      "min_clearance": 0.2,
+      "min_clearance": 0.02,
       "strategy_order": [
         "reroute",
         "shrink",
         "terminate"
       ],
-      "min_radius": 0.1,
+      "min_radius": 0.01,
       "check_segment_segment": true,
       "check_segment_mesh": true,
       "check_segment_boundary": true,
@@ -139,7 +139,7 @@
       "mode": "murray",
       "murray_exponent": 3.0,
       "taper_factor": 0.8,
-      "min_radius": 0.1,
+      "min_radius": 0.01,
       "max_radius": 5.0
     },
     "retry": {
@@ -160,12 +160,12 @@
       "pattern": "explicit",
       "pattern_params": {},
       "projection_mode": "clamp_to_face",
-      "ridge_width": 0.3,
-      "ridge_clearance": 0.3,
-      "port_margin": 0.5,
+      "ridge_width": 0.1,
+      "ridge_clearance": 0.1,
+      "port_margin": 0.05,
       "disk_constraint_enabled": true,
       "ridge_constraint_enabled": true,
-      "placement_fraction": 0.7,
+      "placement_fraction": 0.95,
       "angular_offset": 0.0
     },
     "channels": {
@@ -193,11 +193,11 @@
     },
     "network_cleanup": {
       "enable_snap": true,
-      "snap_tol": 0.1,
+      "snap_tol": 0.01,
       "enable_prune": true,
-      "min_segment_length": 0.1,
+      "min_segment_length": 0.01,
       "enable_merge": true,
-      "merge_tol": 0.1
+      "merge_tol": 0.01
     },
     "mesh_synthesis": {
       "add_node_spheres": true,
@@ -205,7 +205,7 @@
       "radius_clamp_min": null,
       "radius_clamp_max": null,
       "voxel_repair_synthesis": false,
-      "voxel_repair_pitch": 0.1,
+      "voxel_repair_pitch": 0.01,
       "voxel_repair_auto_adjust": true,
       "voxel_repair_max_steps": 4,
       "voxel_repair_step_factor": 1.5,
@@ -217,7 +217,7 @@
     },
     "mesh_merge": {
       "mode": "auto",
-      "voxel_pitch": 0.05,
+      "voxel_pitch": 0.005,
       "auto_adjust_pitch": true,
       "max_pitch_steps": 4,
       "pitch_step_factor": 1.5,
@@ -229,7 +229,7 @@
       "max_voxels": 100000000,
       "use_resolution_policy": false,
       "min_voxels_per_diameter": 4,
-      "min_channel_diameter": 0.1,
+      "min_channel_diameter": 0.02,
       "detail_loss_threshold": 0.5,
       "detail_loss_strictness": "warn"
     },
@@ -246,7 +246,7 @@
         "radius_clamp_min": null,
         "radius_clamp_max": null,
         "voxel_repair_synthesis": false,
-        "voxel_repair_pitch": 0.1,
+        "voxel_repair_pitch": 0.01,
         "voxel_repair_auto_adjust": true,
         "voxel_repair_max_steps": 4,
         "voxel_repair_step_factor": 1.5,
@@ -258,7 +258,7 @@
       },
       "merge_policy": {
         "mode": "auto",
-        "voxel_pitch": 0.05,
+        "voxel_pitch": 0.005,
         "auto_adjust_pitch": true,
         "max_pitch_steps": 4,
         "pitch_step_factor": 1.5,
@@ -270,7 +270,7 @@
         "max_voxels": 100000000,
         "use_resolution_policy": false,
         "min_voxels_per_diameter": 4,
-        "min_channel_diameter": 0.1,
+        "min_channel_diameter": 0.02,
         "detail_loss_threshold": 0.5,
         "detail_loss_strictness": "warn"
       },
@@ -291,7 +291,7 @@
     },
     "embedding": {
       "voxel_pitch": null,
-      "shell_thickness": 0.5,
+      "shell_thickness": 0.05,
       "use_resolution_policy": true,
       "auto_adjust_pitch": true,
       "max_pitch_steps": 4,
@@ -314,7 +314,7 @@
       "check_bounds": true,
       "check_void_inside_domain": true,
       "allow_boundary_intersections_at_ports": false,
-      "surface_opening_tolerance": 1.0,
+      "surface_opening_tolerance": 0.5,
       "min_diameter_threshold": 0.5,
       "max_components": 1
     },
@@ -324,7 +324,7 @@
       "probe_length": 2.0,
       "min_connected_volume_voxels": 10,
       "mode": "voxel_connectivity",
-      "validation_pitch": 0.025,
+      "validation_pitch": 0.005,
       "local_region_size": 2.0,
       "max_voxels_roi": 2000000,
       "auto_relax_pitch": true,
