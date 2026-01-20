@@ -205,8 +205,50 @@ class HashInfo:
 
 
 @dataclass
+class ValidityCheckResult:
+    """Result of a single validity check for error reporting."""
+    check_name: str
+    passed: bool
+    message: str = ""
+    value: Optional[float] = None
+    threshold: Optional[float] = None
+    suggested_fix: Optional[str] = None
+    spec_field: Optional[str] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "check_name": self.check_name,
+            "passed": self.passed,
+            "message": self.message,
+            "value": self.value,
+            "threshold": self.threshold,
+            "suggested_fix": self.suggested_fix,
+            "spec_field": self.spec_field,
+        }
+    
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "ValidityCheckResult":
+        return cls(
+            check_name=d.get("check_name", ""),
+            passed=d.get("passed", False),
+            message=d.get("message", ""),
+            value=d.get("value"),
+            threshold=d.get("threshold"),
+            suggested_fix=d.get("suggested_fix"),
+            spec_field=d.get("spec_field"),
+        )
+
+
+@dataclass
 class StageReportEntry:
-    """Entry for a single stage in the run report."""
+    """Entry for a single stage in the run report.
+    
+    Enhanced for Task F: Improved error reporting with:
+    - validity_checks: List of individual validity check results
+    - failure_type: "validity" | "crash" | "timeout" | None
+    - exception_summary: Brief summary of any exception that occurred
+    - actionable_message: User-friendly message with suggested fixes
+    """
     stage: str
     success: bool
     duration_s: float = 0.0
@@ -215,6 +257,10 @@ class StageReportEntry:
     warnings: List[str] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
     metrics: Dict[str, Any] = field(default_factory=dict)
+    validity_checks: List[ValidityCheckResult] = field(default_factory=list)
+    failure_type: Optional[str] = None
+    exception_summary: Optional[str] = None
+    actionable_message: Optional[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -226,6 +272,10 @@ class StageReportEntry:
             "warnings": self.warnings,
             "errors": self.errors,
             "metrics": self.metrics,
+            "validity_checks": [v.to_dict() for v in self.validity_checks],
+            "failure_type": self.failure_type,
+            "exception_summary": self.exception_summary,
+            "actionable_message": self.actionable_message,
         }
     
     @classmethod
@@ -239,7 +289,29 @@ class StageReportEntry:
             warnings=d.get("warnings", []),
             errors=d.get("errors", []),
             metrics=d.get("metrics", {}),
+            validity_checks=[
+                ValidityCheckResult.from_dict(v) 
+                for v in d.get("validity_checks", [])
+            ],
+            failure_type=d.get("failure_type"),
+            exception_summary=d.get("exception_summary"),
+            actionable_message=d.get("actionable_message"),
         )
+    
+    @property
+    def failed_validity_checks(self) -> List[ValidityCheckResult]:
+        """Get list of failed validity checks."""
+        return [v for v in self.validity_checks if not v.passed]
+    
+    @property
+    def is_validity_failure(self) -> bool:
+        """Check if failure was due to validity checks."""
+        return self.failure_type == "validity"
+    
+    @property
+    def is_crash(self) -> bool:
+        """Check if failure was due to an exception/crash."""
+        return self.failure_type == "crash"
 
 
 @dataclass
@@ -422,6 +494,7 @@ __all__ = [
     "MetaInfo",
     "EnvInfo",
     "HashInfo",
+    "ValidityCheckResult",
     "StageReportEntry",
     "ArtifactEntry",
 ]
