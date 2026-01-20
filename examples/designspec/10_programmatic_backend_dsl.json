@@ -2,14 +2,21 @@
   "schema": {
     "name": "aog_designspec",
     "version": "1.0.0",
-    "compatible_with": ["1.0.x"]
+    "compatible_with": [
+      "1.0.x"
+    ]
   },
   "meta": {
     "name": "10_programmatic_backend_dsl",
     "description": "Demonstrates the programmatic backend with DSL configuration passed entirely through GrowthPolicy.backend_params. This showcases no special casing and programmatic backend parity with other backends.",
     "seed": 101010,
     "input_units": "mm",
-    "tags": ["programmatic", "backend", "dsl", "backend_params"]
+    "tags": [
+      "programmatic",
+      "backend",
+      "dsl",
+      "backend_params"
+    ]
   },
   "policies": {
     "resolution": {
@@ -21,7 +28,7 @@
       "max_pitch": 1.0,
       "auto_relax_pitch": true,
       "pitch_step_factor": 1.5,
-      "rel_epsilon": 1e-6,
+      "rel_epsilon": 1e-06,
       "embed_pitch_factor": 1.0,
       "merge_pitch_factor": 1.0,
       "repair_pitch_factor": 1.0,
@@ -117,43 +124,71 @@
           {
             "op": "add_node",
             "id": "root",
-            "position": [0, 0, 3],
+            "position": [
+              0,
+              0,
+              3
+            ],
             "radius": 0.3
           },
           {
             "op": "add_node",
             "id": "branch_1",
-            "position": [3, 0, 0],
+            "position": [
+              3,
+              0,
+              0
+            ],
             "radius": 0.25
           },
           {
             "op": "add_node",
             "id": "branch_2",
-            "position": [-3, 0, 0],
+            "position": [
+              -3,
+              0,
+              0
+            ],
             "radius": 0.25
           },
           {
             "op": "add_node",
             "id": "terminal_1",
-            "position": [3, 3, -2],
+            "position": [
+              3,
+              3,
+              -2
+            ],
             "radius": 0.2
           },
           {
             "op": "add_node",
             "id": "terminal_2",
-            "position": [3, -3, -2],
+            "position": [
+              3,
+              -3,
+              -2
+            ],
             "radius": 0.2
           },
           {
             "op": "add_node",
             "id": "terminal_3",
-            "position": [-3, 3, -2],
+            "position": [
+              -3,
+              3,
+              -2
+            ],
             "radius": 0.2
           },
           {
             "op": "add_node",
             "id": "terminal_4",
-            "position": [-3, -3, -2],
+            "position": [
+              -3,
+              -3,
+              -2
+            ],
             "radius": 0.2
           },
           {
@@ -197,7 +232,11 @@
     "unified_collision": {
       "enabled": true,
       "min_clearance": 0.2,
-      "strategy_order": ["reroute", "shrink", "terminate"],
+      "strategy_order": [
+        "reroute",
+        "shrink",
+        "terminate"
+      ],
       "min_radius": 0.1,
       "check_segment_segment": true,
       "check_segment_mesh": true,
@@ -301,7 +340,11 @@
       "min_component_volume": 0.001,
       "fill_voxels": true,
       "max_voxels": 100000000,
-      "use_resolution_policy": false
+      "use_resolution_policy": false,
+      "min_voxels_per_diameter": 4,
+      "min_channel_diameter": 0.1,
+      "detail_loss_threshold": 0.5,
+      "detail_loss_strictness": "warn"
     },
     "composition": {
       "repair_enabled": true,
@@ -338,7 +381,11 @@
         "min_component_volume": 0.001,
         "fill_voxels": true,
         "max_voxels": 100000000,
-        "use_resolution_policy": false
+        "use_resolution_policy": false,
+        "min_voxels_per_diameter": 4,
+        "min_channel_diameter": 0.1,
+        "detail_loss_threshold": 0.5,
+        "detail_loss_strictness": "warn"
       },
       "repair_policy": {
         "voxel_repair_enabled": true,
@@ -379,6 +426,8 @@
       "check_open_ports": true,
       "check_bounds": true,
       "check_void_inside_domain": true,
+      "allow_boundary_intersections_at_ports": false,
+      "surface_opening_tolerance": 1.0,
       "min_diameter_threshold": 0.5,
       "max_components": 1
     },
@@ -437,8 +486,16 @@
         "inlets": [
           {
             "name": "inlet_top",
-            "position": [0, 0, 4],
-            "direction": [0, 0, -1],
+            "position": [
+              0,
+              0,
+              4
+            ],
+            "direction": [
+              0,
+              0,
+              -1
+            ],
             "radius": 0.3,
             "vessel_type": "arterial"
           }
@@ -455,43 +512,71 @@
             {
               "op": "add_node",
               "id": "root",
-              "position": [0, 0, 3],
+              "position": [
+                0,
+                0,
+                3
+              ],
               "radius": 0.3
             },
             {
               "op": "add_node",
               "id": "branch_1",
-              "position": [3, 0, 0],
+              "position": [
+                3,
+                0,
+                0
+              ],
               "radius": 0.25
             },
             {
               "op": "add_node",
               "id": "branch_2",
-              "position": [-3, 0, 0],
+              "position": [
+                -3,
+                0,
+                0
+              ],
               "radius": 0.25
             },
             {
               "op": "add_node",
               "id": "terminal_1",
-              "position": [3, 3, -2],
+              "position": [
+                3,
+                3,
+                -2
+              ],
               "radius": 0.2
             },
             {
               "op": "add_node",
               "id": "terminal_2",
-              "position": [3, -3, -2],
+              "position": [
+                3,
+                -3,
+                -2
+              ],
               "radius": 0.2
             },
             {
               "op": "add_node",
               "id": "terminal_3",
-              "position": [-3, 3, -2],
+              "position": [
+                -3,
+                3,
+                -2
+              ],
               "radius": 0.2
             },
             {
               "op": "add_node",
               "id": "terminal_4",
-              "position": [-3, -3, -2],
+              "position": [
+                -3,
+                -3,
+                -2
+              ],
               "radius": 0.2
             },
             {

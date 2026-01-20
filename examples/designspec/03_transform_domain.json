@@ -2,14 +2,22 @@
   "schema": {
     "name": "aog_designspec",
     "version": "1.0.0",
-    "compatible_with": ["1.0.x"]
+    "compatible_with": [
+      "1.0.x"
+    ]
   },
   "meta": {
     "name": "03_transform_domain",
     "description": "Demonstrates TransformDomain: a cylinder domain wrapped with a 4x4 row-major transformation matrix that applies rotation and translation. The network is generated in the transformed coordinate system.",
     "seed": 33333,
     "input_units": "mm",
-    "tags": ["transform", "rotation", "translation", "matrix", "cylinder"]
+    "tags": [
+      "transform",
+      "rotation",
+      "translation",
+      "matrix",
+      "cylinder"
+    ]
   },
   "policies": {
     "resolution": {
@@ -21,7 +29,7 @@
       "max_pitch": 1.0,
       "auto_relax_pitch": true,
       "pitch_step_factor": 1.5,
-      "rel_epsilon": 1e-6,
+      "rel_epsilon": 1e-06,
       "embed_pitch_factor": 1.0,
       "merge_pitch_factor": 1.0,
       "repair_pitch_factor": 1.0,
@@ -141,7 +149,11 @@
     "unified_collision": {
       "enabled": true,
       "min_clearance": 0.2,
-      "strategy_order": ["reroute", "shrink", "terminate"],
+      "strategy_order": [
+        "reroute",
+        "shrink",
+        "terminate"
+      ],
       "min_radius": 0.1,
       "check_segment_segment": true,
       "check_segment_mesh": true,
@@ -245,7 +257,11 @@
       "min_component_volume": 0.001,
       "fill_voxels": true,
       "max_voxels": 100000000,
-      "use_resolution_policy": false
+      "use_resolution_policy": false,
+      "min_voxels_per_diameter": 4,
+      "min_channel_diameter": 0.1,
+      "detail_loss_threshold": 0.5,
+      "detail_loss_strictness": "warn"
     },
     "composition": {
       "repair_enabled": true,
@@ -282,7 +298,11 @@
         "min_component_volume": 0.001,
         "fill_voxels": true,
         "max_voxels": 100000000,
-        "use_resolution_policy": false
+        "use_resolution_policy": false,
+        "min_voxels_per_diameter": 4,
+        "min_channel_diameter": 0.1,
+        "detail_loss_threshold": 0.5,
+        "detail_loss_strictness": "warn"
       },
       "repair_policy": {
         "voxel_repair_enabled": true,
@@ -323,6 +343,8 @@
       "check_open_ports": true,
       "check_bounds": true,
       "check_void_inside_domain": true,
+      "allow_boundary_intersections_at_ports": false,
+      "surface_opening_tolerance": 1.0,
       "min_diameter_threshold": 0.5,
       "max_components": 1
     },
@@ -367,15 +389,39 @@
       "type": "transform",
       "base_domain": {
         "type": "cylinder",
-        "center": [0, 0, 0],
+        "center": [
+          0,
+          0,
+          0
+        ],
         "radius": 5,
         "height": 4
       },
       "matrix": [
-        [0.866, -0.5, 0, 5],
-        [0.5, 0.866, 0, 3],
-        [0, 0, 1, 0],
-        [0, 0, 0, 1]
+        [
+          0.866,
+          -0.5,
+          0,
+          5
+        ],
+        [
+          0.5,
+          0.866,
+          0,
+          3
+        ],
+        [
+          0,
+          0,
+          1,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          1
+        ]
       ]
     }
   },
@@ -387,8 +433,16 @@
         "inlets": [
           {
             "name": "inlet_top",
-            "position": [5, 3, 2],
-            "direction": [-0.5, -0.866, 0],
+            "position": [
+              5,
+              3,
+              2
+            ],
+            "direction": [
+              -0.5,
+              -0.866,
+              0
+            ],
             "radius": 0.3,
             "vessel_type": "arterial"
           }
@@ -396,8 +450,16 @@
         "outlets": [
           {
             "name": "outlet_bottom",
-            "position": [5, 3, -2],
-            "direction": [0.5, 0.866, 0],
+            "position": [
+              5,
+              3,
+              -2
+            ],
+            "direction": [
+              0.5,
+              0.866,
+              0
+            ],
             "radius": 0.25,
             "vessel_type": "venous"
           }
