@@ -234,6 +234,92 @@ Test coverage includes:
 - Context building (spec summaries, run summaries, artifact selection)
 - Workflow integration (user request → patch → approval → spec update)
 
+## Run Approval Gating
+
+The workflow implements explicit approval gating to prevent unintended pipeline executions. When the LLM requests a run with `requires_approval=true`, the workflow:
+
+1. Stores the pending run request in `_pending_run_request`
+2. Transitions to `WAITING_RUN_APPROVAL` state
+3. Emits a `RUN_APPROVAL_REQUIRED` event with run details
+4. Waits for user action before proceeding
+
+The GUI displays "Approve Run" and "Reject Run" buttons when in this state. Users can:
+- **Approve**: Calls `approve_pending_run()` which executes the stored run request
+- **Reject**: Calls `reject_pending_run()` which clears the pending request and returns to IDLE
+
+Workflow states:
+- `IDLE`: Ready for user input
+- `PROCESSING`: Agent is processing a message
+- `WAITING_PATCH_APPROVAL`: Patches proposed, awaiting user approval
+- `WAITING_RUN_APPROVAL`: Run requested, awaiting user approval
+- `RUNNING`: Pipeline is executing
+- `ERROR`: An error occurred
+
+## Context Request Fulfillment
+
+When the LLM needs more information to make a decision, it can request additional context via `context_requests`. The agent automatically fulfills these requests with a second LLM call:
+
+1. First LLM call with compact context
+2. If directive contains `context_requests` (e.g., `need_full_spec=true`), agent builds expanded context
+3. Second LLM call with expanded context pack
+4. Only the second directive is returned to the workflow
+
+This "one internal hop" approach allows the LLM to request more information without user intervention, while preventing infinite loops by limiting to a single expansion.
+
+Supported context requests:
+- `need_full_spec`: Include complete spec JSON instead of summary
+- `need_validity_report`: Include detailed validity check results
+- `need_last_run_report`: Include full last run report
+- `need_network_artifact`: Include network graph data
+- `need_specific_files`: Request specific artifact files
+- `need_more_history`: Include extended run history
+
+## Compact Context Auto-Escalation
+
+The context builder automatically escalates to "debug compact" mode when issues are detected:
+
+- If last run failed OR validity has failed checks:
+  - Includes detailed validation summary with failure names and reasons
+  - Includes mesh statistics (component void, union void, domain with void)
+  - Includes network statistics (node count, edge count, bbox, radius stats)
+
+This provides the LLM with sufficient debugging information without requiring explicit context requests.
+
+## GUI Panels
+
+The DesignSpec workflow integrates with the GUI through a tabbed notebook interface:
+
+### Conversation / Log Tab
+Displays the conversation history and agent responses.
+
+### Spec Tab (SpecPanel)
+Shows the current spec summary and allows viewing/editing the full spec JSON.
+
+### Patches Tab (PatchPanel)
+Displays proposed patches with "Approve" and "Reject" buttons for each patch.
+
+### Run Tab (RunPanel)
+- Shows current workflow state and pending run details
+- "Approve Run" button (enabled only in WAITING_RUN_APPROVAL state)
+- "Reject Run" button (enabled only in WAITING_RUN_APPROVAL state)
+- Stage selector for manual run requests
+- Displays run_until, reason, and expected_signal for pending runs
+
+### Artifacts Tab (ArtifactsPanel)
+Lists generated artifacts with ability to open STL files in the viewer.
+
+### Reports Tab (CompilePanel)
+Shows compilation and validity reports.
+
+### Panel Callbacks
+
+Panels receive updates from `DesignSpecWorkflowManager` via callbacks:
+- `on_spec_update`: Spec content changed
+- `on_pending_patches`: New patches proposed
+- `on_pending_run_request`: Run approval requested
+- `on_state_change`: Workflow state transition
+- `on_artifact_update`: New artifacts generated
+
 ## Design Principles
 
 1. **LLM-first**: The LLM is the primary interpreter; regex/heuristics only as fallback
@@ -243,3 +329,4 @@ Test coverage includes:
 5. **Traceability**: All decisions logged to `agent_turns.jsonl`
 6. **No hardcoding**: No malaria-specific or filename-specific exceptions
 7. **Clean separation**: Context building ≠ prompts ≠ parsing ≠ execution
+8. **No silent runs**: Any patch or run must be explicitly approved by user action

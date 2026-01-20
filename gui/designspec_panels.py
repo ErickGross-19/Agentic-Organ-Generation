@@ -477,13 +477,15 @@ class CompilePanel(ttk.LabelFrame):
 
 class RunPanel(ttk.LabelFrame):
     """
-    Panel for run controls with stage selection.
+    Panel for run controls with stage selection and approval buttons.
     
     Features:
     - Stage selector dropdown
     - Run Until button
     - Full Run button
+    - Approve Run / Reject Run buttons for pending run approvals
     - Progress indicator
+    - Pending run request display
     """
     
     def __init__(
@@ -491,13 +493,19 @@ class RunPanel(ttk.LabelFrame):
         parent: tk.Widget,
         on_run_until: Optional[Callable[[str], None]] = None,
         on_run_full: Optional[Callable[[], None]] = None,
+        on_approve_run: Optional[Callable[[], None]] = None,
+        on_reject_run: Optional[Callable[[str], None]] = None,
         **kwargs,
     ):
         super().__init__(parent, text="Run", **kwargs)
         
         self.on_run_until = on_run_until
         self.on_run_full = on_run_full
+        self.on_approve_run = on_approve_run
+        self.on_reject_run = on_reject_run
         self._is_running = False
+        self._waiting_approval = False
+        self._pending_run_request: Optional[Dict[str, Any]] = None
         
         self._setup_ui()
     
@@ -505,6 +513,7 @@ class RunPanel(ttk.LabelFrame):
         """Set up the panel UI."""
         self.columnconfigure(0, weight=1)
         
+        # Stage selector frame
         stage_frame = ttk.Frame(self)
         stage_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
         
@@ -526,6 +535,7 @@ class RunPanel(ttk.LabelFrame):
         self.stage_selector.set("union_voids")
         self.stage_selector.pack(side="left", padx=5)
         
+        # Manual run buttons frame
         button_frame = ttk.Frame(self)
         button_frame.grid(row=1, column=0, sticky="ew", padx=5, pady=5)
         
@@ -543,19 +553,78 @@ class RunPanel(ttk.LabelFrame):
         )
         self.run_full_btn.pack(side="left", padx=5)
         
+        # Separator
+        ttk.Separator(self, orient="horizontal").grid(
+            row=2, column=0, sticky="ew", padx=5, pady=5
+        )
+        
+        # Pending run approval section
+        approval_label_frame = ttk.LabelFrame(self, text="Pending Run Approval")
+        approval_label_frame.grid(row=3, column=0, sticky="ew", padx=5, pady=5)
+        approval_label_frame.columnconfigure(0, weight=1)
+        
+        # Pending run info display
+        self.pending_info_frame = ttk.Frame(approval_label_frame)
+        self.pending_info_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
+        
+        self.pending_stage_label = ttk.Label(
+            self.pending_info_frame,
+            text="Stage: -",
+            foreground="gray",
+        )
+        self.pending_stage_label.pack(anchor="w")
+        
+        self.pending_reason_label = ttk.Label(
+            self.pending_info_frame,
+            text="Reason: -",
+            foreground="gray",
+            wraplength=300,
+        )
+        self.pending_reason_label.pack(anchor="w")
+        
+        self.pending_signal_label = ttk.Label(
+            self.pending_info_frame,
+            text="Expected: -",
+            foreground="gray",
+            wraplength=300,
+        )
+        self.pending_signal_label.pack(anchor="w")
+        
+        # Approve/Reject buttons frame
+        approval_button_frame = ttk.Frame(approval_label_frame)
+        approval_button_frame.grid(row=1, column=0, sticky="ew", padx=5, pady=5)
+        
+        self.approve_run_btn = ttk.Button(
+            approval_button_frame,
+            text="Approve Run",
+            command=self._on_approve_run_click,
+            state="disabled",
+        )
+        self.approve_run_btn.pack(side="left", padx=5)
+        
+        self.reject_run_btn = ttk.Button(
+            approval_button_frame,
+            text="Reject Run",
+            command=self._on_reject_run_click,
+            state="disabled",
+        )
+        self.reject_run_btn.pack(side="left", padx=5)
+        
+        # Progress indicator
         self.progress = ttk.Progressbar(
             self,
             mode="indeterminate",
             length=200,
         )
-        self.progress.grid(row=2, column=0, sticky="ew", padx=5, pady=5)
+        self.progress.grid(row=4, column=0, sticky="ew", padx=5, pady=5)
         
+        # Status label
         self.status_label = ttk.Label(
             self,
             text="Ready",
             foreground="gray",
         )
-        self.status_label.grid(row=3, column=0, sticky="w", padx=5, pady=5)
+        self.status_label.grid(row=5, column=0, sticky="w", padx=5, pady=5)
     
     def _on_run_until_click(self):
         """Handle run until button click."""
@@ -568,6 +637,16 @@ class RunPanel(ttk.LabelFrame):
         if self.on_run_full:
             self.on_run_full()
     
+    def _on_approve_run_click(self):
+        """Handle approve run button click."""
+        if self.on_approve_run:
+            self.on_approve_run()
+    
+    def _on_reject_run_click(self):
+        """Handle reject run button click."""
+        if self.on_reject_run:
+            self.on_reject_run("")
+    
     def set_running(self, is_running: bool, message: str = ""):
         """Set the running state."""
         self._is_running = is_running
@@ -575,13 +654,77 @@ class RunPanel(ttk.LabelFrame):
         if is_running:
             self.run_until_btn.config(state="disabled")
             self.run_full_btn.config(state="disabled")
+            self.approve_run_btn.config(state="disabled")
+            self.reject_run_btn.config(state="disabled")
             self.progress.start()
             self.status_label.config(text=message or "Running...", foreground="blue")
         else:
             self.run_until_btn.config(state="normal")
             self.run_full_btn.config(state="normal")
+            # Only enable approval buttons if waiting for approval
+            if self._waiting_approval:
+                self.approve_run_btn.config(state="normal")
+                self.reject_run_btn.config(state="normal")
             self.progress.stop()
             self.status_label.config(text=message or "Ready", foreground="gray")
+    
+    def set_waiting_approval(
+        self,
+        waiting: bool,
+        run_request: Optional[Dict[str, Any]] = None,
+    ):
+        """
+        Set the waiting for approval state.
+        
+        Parameters
+        ----------
+        waiting : bool
+            Whether waiting for run approval
+        run_request : dict, optional
+            The pending run request data
+        """
+        self._waiting_approval = waiting
+        self._pending_run_request = run_request
+        
+        if waiting and run_request:
+            # Enable approval buttons
+            self.approve_run_btn.config(state="normal")
+            self.reject_run_btn.config(state="normal")
+            
+            # Update pending run info display
+            run_until = run_request.get("run_until", "full")
+            reason = run_request.get("reason", "")
+            expected_signal = run_request.get("expected_signal", "")
+            
+            self.pending_stage_label.config(
+                text=f"Stage: {run_until or 'full'}",
+                foreground="blue",
+            )
+            self.pending_reason_label.config(
+                text=f"Reason: {reason or 'Not specified'}",
+                foreground="blue",
+            )
+            self.pending_signal_label.config(
+                text=f"Expected: {expected_signal or 'Not specified'}",
+                foreground="blue",
+            )
+            
+            self.status_label.config(
+                text="Waiting for run approval",
+                foreground="orange",
+            )
+        else:
+            # Disable approval buttons
+            self.approve_run_btn.config(state="disabled")
+            self.reject_run_btn.config(state="disabled")
+            
+            # Clear pending run info display
+            self.pending_stage_label.config(text="Stage: -", foreground="gray")
+            self.pending_reason_label.config(text="Reason: -", foreground="gray")
+            self.pending_signal_label.config(text="Expected: -", foreground="gray")
+            
+            if not self._is_running:
+                self.status_label.config(text="Ready", foreground="gray")
     
     def update_status(self, message: str, is_error: bool = False):
         """Update the status message."""

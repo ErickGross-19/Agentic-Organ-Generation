@@ -143,14 +143,24 @@ class ValidationSummary:
     warnings: List[str] = field(default_factory=list)
     spec_hash: str = ""
     
+    # Enhanced validity info for compact context
+    failed_checks: int = 0
+    failure_names: List[str] = field(default_factory=list)
+    failure_reasons: List[str] = field(default_factory=list)
+    key_metrics: Dict[str, Any] = field(default_factory=dict)
+    
     def to_dict(self) -> Dict[str, Any]:
         return {
             "valid": self.valid,
             "error_count": self.error_count,
             "warning_count": self.warning_count,
-            "errors": self.errors[:5],  # Limit to first 5
-            "warnings": self.warnings[:3],  # Limit to first 3
+            "errors": self.errors[:5],
+            "warnings": self.warnings[:3],
             "spec_hash": self.spec_hash,
+            "failed_checks": self.failed_checks,
+            "failure_names": self.failure_names[:5],
+            "failure_reasons": self.failure_reasons[:5],
+            "key_metrics": self.key_metrics,
         }
 
 
@@ -170,6 +180,38 @@ class PatchHistoryEntry:
             "author": self.author,
             "operation_count": self.operation_count,
             "paths_modified": self.paths_modified[:5],  # Limit paths
+        }
+
+
+@dataclass
+class MeshStats:
+    """Summary of mesh statistics for compact context."""
+    component_void_mesh: Optional[Dict[str, Any]] = None
+    union_void_mesh: Optional[Dict[str, Any]] = None
+    domain_with_void_mesh: Optional[Dict[str, Any]] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "component_void": self.component_void_mesh,
+            "union_void": self.union_void_mesh,
+            "domain_with_void": self.domain_with_void_mesh,
+        }
+
+
+@dataclass
+class NetworkStats:
+    """Summary of network statistics for compact context."""
+    node_count: int = 0
+    edge_count: int = 0
+    bbox: Optional[Dict[str, float]] = None
+    radius_stats: Optional[Dict[str, float]] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "node_count": self.node_count,
+            "edge_count": self.edge_count,
+            "bbox": self.bbox,
+            "radius_stats": self.radius_stats,
         }
 
 
@@ -202,8 +244,13 @@ class ContextPack:
     # Additional artifacts
     artifact_index: Optional[Dict[str, Any]] = None
     
+    # Mesh and network stats for compact context
+    mesh_stats: Optional[MeshStats] = None
+    network_stats: Optional[NetworkStats] = None
+    
     # Context mode
     is_compact: bool = True
+    is_debug_compact: bool = False
     
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -212,7 +259,14 @@ class ContextPack:
             "last_run": self.last_run.to_dict() if self.last_run else None,
             "compile_success": self.compile_success,
             "is_compact": self.is_compact,
+            "is_debug_compact": self.is_debug_compact,
         }
+        
+        # Include mesh and network stats in compact context
+        if self.mesh_stats:
+            result["mesh_stats"] = self.mesh_stats.to_dict()
+        if self.network_stats:
+            result["network_stats"] = self.network_stats.to_dict()
         
         if not self.is_compact:
             result["full_spec"] = self.full_spec
@@ -621,23 +675,176 @@ class ContextBuilder:
         """
         Build a compact context pack (token-efficient).
         
+        Includes auto-escalation to "debug compact" mode if:
+        - Last run failed
+        - Validation has failed checks
+        
         Returns
         -------
         ContextPack
             Compact context pack
         """
         spec = self.session.get_spec()
-        
         compile_success, compile_errors = self.get_compile_state()
+        validation_summary = self.build_validation_summary()
+        last_run = self.get_last_run_summary()
+        
+        # Check if we need to auto-escalate to debug compact mode
+        needs_debug = False
+        if last_run and not last_run.success:
+            needs_debug = True
+        if validation_summary and not validation_summary.valid:
+            needs_debug = True
+        
+        # Build mesh and network stats for compact context
+        mesh_stats = self._build_mesh_stats()
+        network_stats = self._build_network_stats()
         
         return ContextPack(
             spec_summary=self.build_spec_summary(spec),
-            validation_summary=self.build_validation_summary(),
-            last_run=self.get_last_run_summary(),
+            validation_summary=validation_summary,
+            last_run=last_run,
             compile_success=compile_success,
             compile_errors=compile_errors,
+            mesh_stats=mesh_stats,
+            network_stats=network_stats,
             is_compact=True,
+            is_debug_compact=needs_debug,
         )
+    
+    def _build_mesh_stats(self) -> Optional[MeshStats]:
+        """
+        Build mesh statistics from the last run.
+        
+        Returns
+        -------
+        MeshStats or None
+            Mesh statistics if available
+        """
+        last_run = self.session.get_last_runner_result()
+        if not last_run or not last_run.get("output_dir"):
+            return None
+        
+        output_dir = Path(last_run["output_dir"])
+        mesh_stats = MeshStats()
+        
+        # Try to get component void mesh stats
+        component_void_file = output_dir / "component_void.stl"
+        if component_void_file.exists():
+            mesh_stats.component_void_mesh = self._get_stl_stats(component_void_file)
+        
+        # Try to get union void mesh stats
+        union_void_file = output_dir / "union_void.stl"
+        if union_void_file.exists():
+            mesh_stats.union_void_mesh = self._get_stl_stats(union_void_file)
+        
+        # Try to get domain_with_void mesh stats
+        domain_with_void_file = output_dir / "domain_with_void.stl"
+        if domain_with_void_file.exists():
+            mesh_stats.domain_with_void_mesh = self._get_stl_stats(domain_with_void_file)
+        
+        return mesh_stats
+    
+    def _get_stl_stats(self, stl_path: Path) -> Dict[str, Any]:
+        """
+        Get basic statistics from an STL file.
+        
+        Parameters
+        ----------
+        stl_path : Path
+            Path to STL file
+            
+        Returns
+        -------
+        dict
+            Statistics including face count and file size
+        """
+        try:
+            stats = {
+                "path": str(stl_path),
+                "size_bytes": stl_path.stat().st_size,
+            }
+            
+            # Try to load with trimesh for more detailed stats
+            try:
+                import trimesh
+                mesh = trimesh.load(stl_path)
+                stats["faces"] = len(mesh.faces)
+                stats["vertices"] = len(mesh.vertices)
+                stats["watertight"] = mesh.is_watertight
+                stats["volume"] = float(mesh.volume) if mesh.is_watertight else None
+            except ImportError:
+                pass
+            except Exception as e:
+                logger.debug(f"Could not load mesh for stats: {e}")
+            
+            return stats
+        except Exception as e:
+            logger.warning(f"Failed to get STL stats for {stl_path}: {e}")
+            return {"path": str(stl_path), "error": str(e)}
+    
+    def _build_network_stats(self) -> Optional[NetworkStats]:
+        """
+        Build network statistics from the last run.
+        
+        Returns
+        -------
+        NetworkStats or None
+            Network statistics if available
+        """
+        last_run = self.session.get_last_runner_result()
+        if not last_run or not last_run.get("output_dir"):
+            return None
+        
+        output_dir = Path(last_run["output_dir"])
+        network_file = output_dir / "network.json"
+        
+        if not network_file.exists():
+            return None
+        
+        try:
+            with open(network_file) as f:
+                network_data = json.load(f)
+            
+            nodes = network_data.get("nodes", [])
+            segments = network_data.get("segments", [])
+            
+            # Calculate bbox from nodes
+            bbox = None
+            if nodes:
+                positions = [n.get("position", [0, 0, 0]) for n in nodes]
+                if positions:
+                    xs = [p[0] for p in positions]
+                    ys = [p[1] for p in positions]
+                    zs = [p[2] for p in positions]
+                    bbox = {
+                        "min_x": min(xs),
+                        "max_x": max(xs),
+                        "min_y": min(ys),
+                        "max_y": max(ys),
+                        "min_z": min(zs),
+                        "max_z": max(zs),
+                    }
+            
+            # Calculate radius stats from segments
+            radius_stats = None
+            radii = [s.get("radius", 0) for s in segments if s.get("radius")]
+            if radii:
+                radius_stats = {
+                    "min": min(radii),
+                    "max": max(radii),
+                    "mean": sum(radii) / len(radii),
+                }
+            
+            return NetworkStats(
+                node_count=len(nodes),
+                edge_count=len(segments),
+                bbox=bbox,
+                radius_stats=radius_stats,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to build network stats: {e}")
+            return None
     
     def build_full(self) -> ContextPack:
         """
@@ -682,3 +889,191 @@ class ContextBuilder:
         if full:
             return self.build_full()
         return self.build_compact()
+    
+    def add_validation_details(
+        self,
+        context_pack: ContextPack,
+        validation_report: Any,
+    ) -> ContextPack:
+        """
+        Add detailed validation information to a context pack.
+        
+        Parameters
+        ----------
+        context_pack : ContextPack
+            The base context pack
+        validation_report : ValidationReport
+            The validation report to add
+            
+        Returns
+        -------
+        ContextPack
+            Updated context pack with validation details
+        """
+        if validation_report is None:
+            return context_pack
+        
+        # Build detailed validation summary
+        validation_summary = self.build_validation_summary()
+        
+        # Add more detailed failure information if available
+        if hasattr(validation_report, 'failures') and validation_report.failures:
+            validation_summary.failed_checks = len(validation_report.failures)
+            validation_summary.failure_names = [
+                f.name if hasattr(f, 'name') else str(f)
+                for f in validation_report.failures[:10]
+            ]
+        
+        context_pack.validation_summary = validation_summary
+        return context_pack
+    
+    def add_run_details(self, context_pack: ContextPack) -> ContextPack:
+        """
+        Add detailed run information to a context pack.
+        
+        Parameters
+        ----------
+        context_pack : ContextPack
+            The base context pack
+            
+        Returns
+        -------
+        ContextPack
+            Updated context pack with run details
+        """
+        # Add recent runs
+        context_pack.recent_runs = self.get_recent_runs(limit=5)
+        context_pack.last_successful_run = self.get_last_successful_run()
+        
+        return context_pack
+    
+    def add_network_artifact(self, context_pack: ContextPack) -> ContextPack:
+        """
+        Add network artifact information to a context pack.
+        
+        Parameters
+        ----------
+        context_pack : ContextPack
+            The base context pack
+            
+        Returns
+        -------
+        ContextPack
+            Updated context pack with network artifact
+        """
+        # Try to load network artifact from last run
+        last_run = self.session.get_last_runner_result()
+        if last_run and last_run.get("output_dir"):
+            output_dir = Path(last_run["output_dir"])
+            network_file = output_dir / "network.json"
+            
+            if network_file.exists():
+                try:
+                    with open(network_file) as f:
+                        network_data = json.load(f)
+                    
+                    # Add network summary to artifact index
+                    if context_pack.artifact_index is None:
+                        context_pack.artifact_index = {}
+                    
+                    context_pack.artifact_index["network"] = {
+                        "path": str(network_file),
+                        "node_count": len(network_data.get("nodes", [])),
+                        "segment_count": len(network_data.get("segments", [])),
+                    }
+                except Exception as e:
+                    logger.warning(f"Failed to load network artifact: {e}")
+        
+        return context_pack
+    
+    def add_specific_files(
+        self,
+        context_pack: ContextPack,
+        file_paths: List[str],
+    ) -> ContextPack:
+        """
+        Add specific file contents to a context pack.
+        
+        Parameters
+        ----------
+        context_pack : ContextPack
+            The base context pack
+        file_paths : list of str
+            Paths to files to include
+            
+        Returns
+        -------
+        ContextPack
+            Updated context pack with file contents
+        """
+        if context_pack.artifact_index is None:
+            context_pack.artifact_index = {}
+        
+        for file_path in file_paths:
+            # Try to resolve relative to project dir
+            full_path = self.session.project_dir / file_path
+            if not full_path.exists():
+                # Try as absolute path
+                full_path = Path(file_path)
+            
+            if full_path.exists():
+                try:
+                    # Only include text files
+                    if full_path.suffix in [".json", ".txt", ".log", ".yaml", ".yml"]:
+                        with open(full_path) as f:
+                            content = f.read()
+                        
+                        # Truncate large files
+                        if len(content) > 10000:
+                            content = content[:10000] + "\n... (truncated)"
+                        
+                        context_pack.artifact_index[str(file_path)] = {
+                            "path": str(full_path),
+                            "content": content,
+                        }
+                    else:
+                        context_pack.artifact_index[str(file_path)] = {
+                            "path": str(full_path),
+                            "exists": True,
+                            "size": full_path.stat().st_size,
+                        }
+                except Exception as e:
+                    logger.warning(f"Failed to load file {file_path}: {e}")
+            else:
+                logger.warning(f"Requested file not found: {file_path}")
+        
+        return context_pack
+    
+    def add_extended_history(
+        self,
+        context_pack: ContextPack,
+        conversation_history: List[Dict[str, str]],
+    ) -> ContextPack:
+        """
+        Add extended conversation history to a context pack.
+        
+        Parameters
+        ----------
+        context_pack : ContextPack
+            The base context pack
+        conversation_history : list of dict
+            Full conversation history
+            
+        Returns
+        -------
+        ContextPack
+            Updated context pack with extended history
+        """
+        # Add more patch history
+        context_pack.recent_patches = self.get_recent_patches(limit=10)
+        
+        # Store conversation history in artifact index for reference
+        if context_pack.artifact_index is None:
+            context_pack.artifact_index = {}
+        
+        context_pack.artifact_index["conversation_history"] = {
+            "turn_count": len(conversation_history),
+            "recent_turns": conversation_history[-10:] if len(conversation_history) > 10 else conversation_history,
+        }
+        
+        return context_pack
