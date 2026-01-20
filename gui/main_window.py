@@ -1185,7 +1185,7 @@ class MainWindow:
             Default is False (use LLM-first agent, recommended).
         """
         from tkinter import messagebox
-        from automation.agent_config import AgentConfiguration
+        # Note: AgentConfiguration is already imported at module level from .agent_config
         
         if not hasattr(self, '_designspec_manager') or self._designspec_manager is None:
             self._designspec_manager = DesignSpecWorkflowManager(
