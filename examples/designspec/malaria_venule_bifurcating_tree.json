@@ -91,13 +91,13 @@
       "corridor_radius_factor": 2.0,
       "pitch_coarse": 0.0001,
       "pitch_fine": 5e-06,
-      "corridor_radius_buffer": 0.0002,
+      "corridor_radius_buffer": 0.0001,
       "max_voxels_coarse": 2000000,
       "max_voxels_fine": 2000000,
       "auto_relax_fine_pitch": true,
       "pitch_step_factor": 1.5,
-      "clearance": 0.0002,
-      "local_radius": 0.0002,
+      "clearance": 0.0001,
+      "local_radius": 0.0001,
       "inflation_mode": "clearance_plus_local_radius",
       "max_nodes_coarse": 100000,
       "max_nodes_fine": 500000,
@@ -124,7 +124,7 @@
       "min_radius": 0.00005,
       "step_size": 0.0008,
       "backend_params": {
-        "tree_extent_fraction": 0.7,
+        "tree_extent_fraction": 0.9,
         "branch_length_decay": 0.7,
         "angle_deg": 45.0,
         "angle_variation_deg": 5.0,
@@ -142,7 +142,7 @@
     },
     "unified_collision": {
       "enabled": true,
-      "min_clearance": 0.0002,
+      "min_clearance": 0.0001,
       "strategy_order": [
         "reroute",
         "shrink",
@@ -186,10 +186,10 @@
       "projection_mode": "clamp_to_face",
       "ridge_width": 0.0003,
       "ridge_clearance": 0.0003,
-      "port_margin": 0.0005,
+      "port_margin": 0.0002,
       "disk_constraint_enabled": true,
       "ridge_constraint_enabled": true,
-      "placement_fraction": 0.7,
+      "placement_fraction": 0.9,
       "angular_offset": 0.0
     },
     "channels": {
@@ -315,7 +315,7 @@
     },
     "embedding": {
       "voxel_pitch": null,
-      "shell_thickness": 0.0005,
+      "shell_thickness": 0.0002,
       "use_resolution_policy": true,
       "auto_adjust_pitch": true,
       "max_pitch_steps": 4,
@@ -340,7 +340,7 @@
       "min_diameter_threshold": 0.0005,
       "max_components": 1,
       "allow_boundary_intersections_at_ports": true,
-      "surface_opening_tolerance": 0.001
+      "surface_opening_tolerance": 0.0005
     },
     "open_port": {
       "enabled": true,
