@@ -76,8 +76,12 @@ class KaryTreeConfig(BackendConfig):
         Minimum distance from domain boundary for internal nodes in meters.
         Default: 0.0 (no margin).
     multi_inlet_mode : str
-        Mode for handling multiple inlets: "forest" (separate trees per inlet)
-        or "merge_to_trunk" (connect inlets to common trunk). Default: "merge_to_trunk".
+        Mode for handling multiple inlets: "forest" (separate trees per inlet),
+        "merge_to_trunk" (connect inlets to common trunk), or "forest_with_merge"
+        (grow separate trees then merge where they collide). Default: "merge_to_trunk".
+    collision_merge_distance : float
+        Distance threshold for merging trees in forest_with_merge mode.
+        Trees closer than this distance will be connected. Default: 0.0003 (0.3mm).
     trunk_depth_fraction : float
         Fraction of domain height for trunk junction point (merge_to_trunk mode).
         Default: 0.2 (20% into domain from inlet face).
@@ -104,6 +108,7 @@ class KaryTreeConfig(BackendConfig):
     elevation_jitter_deg: Optional[float] = None
     wall_margin: float = 0.0
     multi_inlet_mode: str = "merge_to_trunk"
+    collision_merge_distance: float = 0.0003  # 0.3mm
     trunk_depth_fraction: float = 0.2
     trunk_merge_radius: Optional[float] = None
     max_inlets: int = 10
@@ -371,6 +376,16 @@ class KaryTreeBackend(GenerationBackend):
                 config=config,
                 rng=rng,
             )
+        elif config.multi_inlet_mode == "forest_with_merge":
+            return self._generate_forest_with_merge_mode(
+                network=network,
+                domain=domain,
+                num_outlets=num_outlets,
+                inlets=inlets,
+                vessel_type=vessel_type,
+                config=config,
+                rng=rng,
+            )
         else:
             return self._generate_merge_to_trunk_mode(
                 network=network,
@@ -460,6 +475,227 @@ class KaryTreeBackend(GenerationBackend):
         )
         
         return network
+    
+    def _generate_forest_with_merge_mode(
+        self,
+        network: VascularNetwork,
+        domain: DomainSpec,
+        num_outlets: int,
+        inlets: List[Dict[str, Any]],
+        vessel_type: str,
+        config: KaryTreeConfig,
+        rng: np.random.Generator,
+    ) -> VascularNetwork:
+        """
+        Generate separate trees per inlet, then merge where they collide.
+        
+        This mode first generates independent trees from each inlet (like forest mode),
+        then detects where segments from different trees come close to each other
+        and creates junction nodes to merge them into a connected network.
+        """
+        n_inlets = len(inlets)
+        outlets_per_inlet = num_outlets // n_inlets
+        remainder = num_outlets % n_inlets
+        
+        # Track which nodes belong to which inlet tree
+        inlet_node_sets: List[set] = [set() for _ in range(n_inlets)]
+        inlet_root_ids: List[int] = []
+        
+        # Generate separate trees for each inlet (same as forest mode)
+        for i, inlet in enumerate(inlets):
+            inlet_position = np.array(inlet.get("position", [0, 0, 0]))
+            inlet_radius = inlet.get("radius", 0.001)
+            direction = inlet.get("direction", inlet.get("growth_inward_direction"))
+            
+            if direction is not None:
+                primary_axis = np.array(direction)
+                norm = np.linalg.norm(primary_axis)
+                if norm > 0:
+                    primary_axis = primary_axis / norm
+                else:
+                    primary_axis = np.array([0.0, 0.0, -1.0])
+            elif config.primary_axis is not None:
+                primary_axis = np.array(config.primary_axis)
+            else:
+                primary_axis = np.array([0.0, 0.0, -1.0])
+            
+            this_inlet_outlets = outlets_per_inlet + (1 if i < remainder else 0)
+            depth = self._calculate_depth(this_inlet_outlets, config.k)
+            
+            branch_length = config.branch_length
+            if branch_length is None and config.use_domain_scaling:
+                domain_size = self._get_domain_characteristic_size(domain)
+                decay = config.branch_length_decay
+                if decay < 1.0 and depth > 0:
+                    geometric_sum = (1 - decay**depth) / (1 - decay)
+                else:
+                    geometric_sum = depth if depth > 0 else 1
+                target_extent = domain_size * config.tree_extent_fraction
+                branch_length = target_extent / geometric_sum
+            elif branch_length is None:
+                branch_length = 0.001
+            
+            # Track nodes before adding this tree
+            nodes_before = set(network.nodes.keys())
+            
+            inlet_pos = Point3D(*inlet_position)
+            inlet_id = network.id_gen.next_id()
+            inlet_node = Node(
+                id=inlet_id,
+                position=inlet_pos,
+                node_type="inlet",
+                vessel_type=vessel_type,
+                attributes={"radius": inlet_radius, "inlet_index": i},
+            )
+            network.add_node(inlet_node)
+            inlet_root_ids.append(inlet_id)
+            
+            self._generate_subtree(
+                network=network,
+                parent_node=inlet_node,
+                parent_direction=primary_axis,
+                primary_axis=primary_axis,
+                current_depth=0,
+                max_depth=depth,
+                current_radius=inlet_radius,
+                current_length=branch_length,
+                config=config,
+                vessel_type=vessel_type,
+                domain=domain,
+                rng=rng,
+            )
+            
+            # Track nodes belonging to this inlet tree
+            nodes_after = set(network.nodes.keys())
+            inlet_node_sets[i] = nodes_after - nodes_before
+        
+        # Detect collisions between trees and merge them
+        merge_distance = config.collision_merge_distance
+        merges_performed = self._merge_colliding_trees(
+            network=network,
+            inlet_node_sets=inlet_node_sets,
+            merge_distance=merge_distance,
+            vessel_type=vessel_type,
+        )
+        
+        logger.info(
+            f"Forest with merge mode: generated {n_inlets} trees, performed {merges_performed} merges, "
+            f"{sum(1 for n in network.nodes.values() if n.node_type == 'terminal')} total terminals"
+        )
+        
+        return network
+    
+    def _merge_colliding_trees(
+        self,
+        network: VascularNetwork,
+        inlet_node_sets: List[set],
+        merge_distance: float,
+        vessel_type: str,
+    ) -> int:
+        """
+        Find and merge segments from different trees that are close to each other.
+        
+        Returns the number of merges performed.
+        """
+        merges_performed = 0
+        n_trees = len(inlet_node_sets)
+        
+        # Build a list of (node_id, tree_index, position) for efficient lookup
+        node_tree_map: Dict[int, int] = {}
+        for tree_idx, node_set in enumerate(inlet_node_sets):
+            for node_id in node_set:
+                node_tree_map[node_id] = tree_idx
+        
+        # Find pairs of nodes from different trees that are close
+        merge_candidates: List[Tuple[int, int, float]] = []
+        
+        for tree_i in range(n_trees):
+            for tree_j in range(tree_i + 1, n_trees):
+                for node_id_i in inlet_node_sets[tree_i]:
+                    node_i = network.nodes.get(node_id_i)
+                    if node_i is None:
+                        continue
+                    pos_i = np.array([node_i.position.x, node_i.position.y, node_i.position.z])
+                    
+                    for node_id_j in inlet_node_sets[tree_j]:
+                        node_j = network.nodes.get(node_id_j)
+                        if node_j is None:
+                            continue
+                        pos_j = np.array([node_j.position.x, node_j.position.y, node_j.position.z])
+                        
+                        dist = float(np.linalg.norm(pos_i - pos_j))
+                        if dist <= merge_distance:
+                            merge_candidates.append((node_id_i, node_id_j, dist))
+        
+        # Sort by distance (closest first) and merge
+        merge_candidates.sort(key=lambda x: x[2])
+        
+        # Track which trees have been merged (using union-find logic)
+        merged_trees: Dict[int, int] = {i: i for i in range(n_trees)}
+        
+        def find_root(tree_idx: int) -> int:
+            while merged_trees[tree_idx] != tree_idx:
+                tree_idx = merged_trees[tree_idx]
+            return tree_idx
+        
+        for node_id_i, node_id_j, dist in merge_candidates:
+            tree_i = node_tree_map.get(node_id_i)
+            tree_j = node_tree_map.get(node_id_j)
+            
+            if tree_i is None or tree_j is None:
+                continue
+            
+            root_i = find_root(tree_i)
+            root_j = find_root(tree_j)
+            
+            # Skip if already in the same merged tree
+            if root_i == root_j:
+                continue
+            
+            # Create a connecting segment between the two nodes
+            node_i = network.nodes.get(node_id_i)
+            node_j = network.nodes.get(node_id_j)
+            
+            if node_i is None or node_j is None:
+                continue
+            
+            # Get radii from node attributes
+            radius_i = node_i.attributes.get("radius", 0.0001)
+            radius_j = node_j.attributes.get("radius", 0.0001)
+            
+            # Create connecting segment
+            segment_id = network.id_gen.next_id()
+            geometry = TubeGeometry(
+                start=node_i.position,
+                end=node_j.position,
+                radius_start=radius_i,
+                radius_end=radius_j,
+            )
+            segment = VesselSegment(
+                id=segment_id,
+                start_node_id=node_id_i,
+                end_node_id=node_id_j,
+                geometry=geometry,
+                vessel_type=vessel_type,
+            )
+            network.add_segment(segment)
+            
+            # Update node types if they were terminals
+            if node_i.node_type == "terminal":
+                node_i.node_type = "junction"
+            if node_j.node_type == "terminal":
+                node_j.node_type = "junction"
+            
+            # Merge the trees
+            merged_trees[root_j] = root_i
+            merges_performed += 1
+            
+            logger.debug(
+                f"Merged trees {tree_i} and {tree_j} at distance {dist:.6f}m "
+                f"(nodes {node_id_i} and {node_id_j})"
+            )
+        
+        return merges_performed
     
     def _generate_merge_to_trunk_mode(
         self,
