@@ -372,7 +372,7 @@ class MainWindow:
         # Tab 2: Spec panel
         self.spec_panel = SpecPanel(
             self.panels_notebook,
-            on_refresh=self._on_spec_refresh,
+            on_edit_request=self._on_spec_refresh,
         )
         self.panels_notebook.add(self.spec_panel, text="Spec")
         
