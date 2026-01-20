@@ -121,7 +121,7 @@
           "trunk_steps": 15,
           "trunk_direction_mode": "inlet_direction",
           "max_root_children": 1,
-          "branch_enable_after_steps": 8,
+          "branch_enable_after_steps": 15,
           "branch_enable_after_distance": 0.001,
           "apical_dominance_alpha": 1.5,
           "active_tip_fraction": 0.5,
