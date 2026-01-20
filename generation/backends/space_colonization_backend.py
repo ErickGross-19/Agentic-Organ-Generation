@@ -355,13 +355,14 @@ class SpaceColonizationBackend(GenerationBackend):
             
             # Filter tissue points to only include those in the inlet's growth direction
             # This ensures each tree grows downward (in its inlet direction) rather than
-            # towards other inlets
+            # towards other inlets. Using 90° cone (hemisphere) to enforce strictly
+            # downward growth - only points with positive dot product with direction.
             inlet_dir_arr = np.array([inlet_direction.x, inlet_direction.y, inlet_direction.z])
             tissue_points = self._filter_tissue_points_by_direction(
                 all_tissue_points,
                 inlet_position,
                 inlet_dir_arr,
-                cone_angle_deg=120.0,  # Wide cone to allow some spread
+                cone_angle_deg=90.0,  # Hemisphere - only points in growth direction
             )
             
             nodes_before = set(network.nodes.keys())
@@ -798,7 +799,7 @@ class SpaceColonizationBackend(GenerationBackend):
         tissue_points: np.ndarray,
         origin: np.ndarray,
         direction: np.ndarray,
-        cone_angle_deg: float = 120.0,
+        cone_angle_deg: float = 90.0,
     ) -> np.ndarray:
         """
         Filter tissue points to only include those within a cone from the origin.
@@ -815,7 +816,8 @@ class SpaceColonizationBackend(GenerationBackend):
         direction : np.ndarray
             Growth direction (normalized)
         cone_angle_deg : float
-            Half-angle of the cone in degrees (default 120 = wide cone)
+            Half-angle of the cone in degrees (default 90 = hemisphere, only
+            points with positive dot product with direction are included)
             
         Returns
         -------
@@ -842,7 +844,7 @@ class SpaceColonizationBackend(GenerationBackend):
         dot_products = np.dot(to_points_normalized, direction)
         
         # Convert cone angle to cosine threshold
-        # cos(120°) = -0.5, so points with dot > -0.5 are within 120° cone
+        # cos(90°) = 0, so points with dot > 0 are within 90° cone (hemisphere)
         cos_threshold = np.cos(np.radians(cone_angle_deg))
         
         # Filter points within the cone
