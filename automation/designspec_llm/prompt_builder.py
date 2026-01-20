@@ -290,18 +290,29 @@ Each port (inlet or outlet) MUST have ALL of these fields:
 }
 ```
 
-**Example 2: Simple Channel (primitive_channels)**
+**Example 2: Tapered Channels (primitive_channels) - REQUIRES channels policy**
+
+When using `primitive_channels` build type, you MUST configure the `channels` policy in the `policies` section.
+
+Component:
 ```json
 {
-  "id": "center_channel",
+  "id": "tapered_channels",
   "domain_ref": "cylinder_domain",
   "ports": {
     "inlets": [
       {
-        "name": "channel_inlet",
+        "name": "channel_center",
         "position": [0, 0, 1.0],
         "direction": [0, 0, -1],
-        "radius": 0.3,
+        "radius": 0.5,
+        "vessel_type": "arterial"
+      },
+      {
+        "name": "channel_ring_1",
+        "position": [2.5, 0, 1.0],
+        "direction": [0, 0, -1],
+        "radius": 0.5,
         "vessel_type": "arterial"
       }
     ],
@@ -312,6 +323,53 @@ Each port (inlet or outlet) MUST have ALL of these fields:
   }
 }
 ```
+
+**REQUIRED: channels policy in policies section:**
+```json
+{
+  "policies": {
+    "channels": {
+      "enabled": true,
+      "profile": "taper",
+      "length_mode": "to_depth",
+      "length": 1.3,
+      "taper_factor": 0.8,
+      "stop_before_boundary": 0.2
+    }
+  }
+}
+```
+
+### Channels Policy Schema (CRITICAL for primitive_channels)
+
+When using `build.type: "primitive_channels"`, you MUST include a `channels` policy:
+
+```json
+{
+  "policies": {
+    "channels": {
+      "enabled": true,
+      "profile": "cylinder" | "taper" | "fang_hook",
+      "length_mode": "explicit" | "to_center_fraction" | "to_depth",
+      "length": <number in mm>,
+      "taper_factor": <0-1>,
+      "stop_before_boundary": <number in mm>
+    }
+  }
+}
+```
+
+**Key fields:**
+- `profile`: Channel shape - "cylinder" (straight), "taper" (tapered/conical), "fang_hook" (curved)
+- `length_mode`: How to determine channel length
+  - `"explicit"`: Use the `length` value directly (REQUIRES `length` to be set!)
+  - `"to_depth"`: Channel extends to specified depth from surface
+  - `"to_center_fraction"`: Channel extends a fraction toward domain center
+- `length`: Channel length in mm (REQUIRED when length_mode="explicit" or "to_depth")
+- `taper_factor`: End radius as fraction of start radius (0.8 = 80% of original, i.e., 20% taper)
+- `stop_before_boundary`: Distance to stop before domain boundary (mm)
+
+**Common error:** `"length_mode='explicit' requires length to be set"` - This means you forgot to set `length` in the channels policy!
 
 **Example 3: CCO Hybrid Network**
 ```json
@@ -435,65 +493,73 @@ Valid face values: "+x", "-x", "+y", "-y", "+z", "-z", "top" (alias for +z), "bo
 }
 ```
 
-**EXAMPLE B: Box Domain with Network and Channel**
+**EXAMPLE B: Cylinder with Tapered Channels (primitive_channels with required policy)**
 ```json
 {
   "schema": {"name": "aog_designspec", "version": "1.0.0"},
   "meta": {
-    "name": "box_with_network_and_channel",
-    "description": "Box domain with both a vascular network and a simple channel",
-    "seed": 1234,
+    "name": "cylinder_with_tapered_channels",
+    "description": "Cylinder with 5 tapered channels on top face",
+    "seed": 42,
     "input_units": "mm"
   },
-  "policies": {},
+  "policies": {
+    "channels": {
+      "enabled": true,
+      "profile": "taper",
+      "length_mode": "to_depth",
+      "length": 1.3,
+      "taper_factor": 0.8,
+      "stop_before_boundary": 0.2
+    }
+  },
   "domains": {
-    "main_domain": {
-      "type": "box",
-      "x_min": -15, "x_max": 15,
-      "y_min": -15, "y_max": 15,
-      "z_min": -10, "z_max": 10
+    "cylinder_domain": {
+      "type": "cylinder",
+      "center": [0, 0, 0],
+      "radius": 4.875,
+      "height": 2.0
     }
   },
   "components": [
     {
-      "id": "vascular_network",
-      "domain_ref": "main_domain",
+      "id": "top_face_channels",
+      "domain_ref": "cylinder_domain",
       "ports": {
         "inlets": [
           {
-            "name": "inlet_A",
-            "position": [0, 0, 10],
+            "name": "center_inlet",
+            "position": [0, 0, 1.0],
             "direction": [0, 0, -1],
-            "radius": 0.3,
+            "radius": 0.5,
             "vessel_type": "arterial"
-          }
-        ],
-        "outlets": [
+          },
           {
-            "name": "outlet_V",
-            "position": [0, 0, -10],
-            "direction": [0, 0, 1],
-            "radius": 0.25,
-            "vessel_type": "venous"
-          }
-        ]
-      },
-      "build": {
-        "type": "backend_network",
-        "backend": "space_colonization",
-        "backend_params": {}
-      }
-    },
-    {
-      "id": "simple_channel",
-      "domain_ref": "main_domain",
-      "ports": {
-        "inlets": [
-          {
-            "name": "channel_inlet",
-            "position": [5, 5, 10],
+            "name": "ring_inlet_1",
+            "position": [2.5, 0, 1.0],
             "direction": [0, 0, -1],
-            "radius": 0.3,
+            "radius": 0.5,
+            "vessel_type": "arterial"
+          },
+          {
+            "name": "ring_inlet_2",
+            "position": [0, 2.5, 1.0],
+            "direction": [0, 0, -1],
+            "radius": 0.5,
+            "vessel_type": "arterial"
+          },
+          {
+            "name": "ring_inlet_3",
+            "position": [-2.5, 0, 1.0],
+            "direction": [0, 0, -1],
+            "radius": 0.5,
+            "vessel_type": "arterial"
+          },
+          {
+            "name": "ring_inlet_4",
+            "position": [0, -2.5, 1.0],
+            "direction": [0, 0, -1],
+            "radius": 0.5,
             "vessel_type": "arterial"
           }
         ],
@@ -573,6 +639,7 @@ Valid face values: "+x", "-x", "+y", "-y", "+z", "-z", "top" (alias for +z), "bo
 8. **Invalid vessel_type** - Only use: "arterial" or "venous"
 9. **Wrong direction vector** - For inlets on top face (+z), direction should be [0, 0, -1] (pointing down into domain)
 10. **Position outside domain** - Port positions must be on or near the domain boundary
+11. **Missing channels policy for primitive_channels** - When using `build.type: "primitive_channels"`, you MUST include a `channels` policy in the `policies` section with `length_mode` and `length` (if length_mode="explicit" or "to_depth"). Error: `"length_mode='explicit' requires length to be set"`
 
 ---
 
