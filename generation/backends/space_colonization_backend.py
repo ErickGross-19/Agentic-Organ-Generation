@@ -398,25 +398,25 @@ class SpaceColonizationBackend(GenerationBackend):
         logger,
     ) -> VascularNetwork:
         """
-        Generate multi-inlet network using unified growth with shared attractors.
+        Generate multi-inlet network using overlapping attractor selection.
         
-        This mode runs a SINGLE space colonization with all inlets as seed nodes
-        and ALL attractors visible to ALL tips. The algorithm naturally determines
-        which tip grows towards which attractor based on proximity, producing
+        This mode uses Gaussian-weighted sampling where each inlet samples its own
+        subset of attractors, but subsets can OVERLAP (attractors are shared, not
+        exclusively assigned). This removes Voronoi-like boundaries and produces
         organic, intertwined growth patterns.
         
         Key features:
-        - Unified growth: all inlets share all attractors (no partitioning)
-        - Natural competition: nearest tip to each attractor grows towards it
-        - Proper frontier management: maintains all active tips across all inlets
+        - Overlapping selection: each inlet samples weighted subset, subsets overlap
+        - Gaussian weights: w_i = exp(-d_i^2 / (2*sigma^2)) for each attractor-inlet pair
+        - Shared attractors: same attractor can influence multiple inlets simultaneously
         - Global kill: attractors removed when within kill_radius of ANY new node
         - Minimal directional constraints: allows organic branching in all directions
         """
         n_inlets = len(inlets)
         
-        # Create inlet nodes and collect all active tips
         inlet_nodes = []
-        all_active_tips = set()
+        inlet_directions = []
+        active_tips_per_inlet: list = [set() for _ in range(n_inlets)]
         inlet_node_sets: list = [set() for _ in range(n_inlets)]
         
         for i, inlet in enumerate(inlets):
@@ -447,23 +447,20 @@ class SpaceColonizationBackend(GenerationBackend):
             network.add_node(inlet_node)
             
             inlet_nodes.append(inlet_node)
-            all_active_tips.add(inlet_node.id)
+            inlet_directions.append(inlet_direction.to_array())
+            active_tips_per_inlet[i].add(inlet_node.id)
             inlet_node_sets[i].add(inlet_node.id)
         
-        # Create params with MINIMAL directional constraints to allow organic growth
-        # The key insight: we want branches to grow towards attractors naturally,
-        # not be constrained to grow only downward
-        sc_params = SCParams(
-            influence_radius=config.attraction_distance,
-            kill_radius=config.kill_distance,
-            step_size=config.step_size,
-            vessel_type=vessel_type,
-            preferred_direction=None,  # No preferred direction - grow towards attractors
-            directional_bias=0.0,  # No directional bias - pure attractor-driven growth
-            max_deviation_deg=180.0,  # Allow growth in any direction
-        )
+        def compute_attractor_weights(tissue_points: np.ndarray) -> np.ndarray:
+            if len(tissue_points) == 0:
+                return np.zeros((0, n_inlets))
+            xy_points = tissue_points[:, :2]
+            xy_inlets = inlet_positions[:, :2]
+            diffs = xy_points[:, np.newaxis, :] - xy_inlets[np.newaxis, :, :]
+            distances = np.linalg.norm(diffs, axis=2)
+            weights = np.exp(-distances**2 / (2 * blend_sigma**2))
+            return weights
         
-        # Main growth loop - unified growth with all tips seeing all attractors
         tissue_points = all_tissue_points.copy()
         
         for iteration in range(config.max_iterations):
@@ -471,75 +468,88 @@ class SpaceColonizationBackend(GenerationBackend):
                 logger.info(f"Blended mode: stopping at iteration {iteration}, no attractors left")
                 break
             
-            if len(all_active_tips) == 0:
+            total_active = sum(len(tips) for tips in active_tips_per_inlet)
+            if total_active == 0:
                 logger.info(f"Blended mode: stopping at iteration {iteration}, no active tips")
                 break
             
-            # Run space colonization with ALL active tips and ALL attractors
-            # This is the key change: no partitioning, all tips compete for all attractors
-            seed_nodes = list(all_active_tips)
+            weights = compute_attractor_weights(tissue_points)
             
-            result = space_colonization_step(
-                network=network,
-                tissue_points=tissue_points,
-                params=sc_params,
-                seed=int(rng.integers(0, 2**31)),
-                seed_nodes=seed_nodes,
-            )
+            all_new_nodes = []
             
-            if result.is_success():
-                new_node_ids = result.new_ids.get("nodes", [])
+            for i in range(n_inlets):
+                if not active_tips_per_inlet[i]:
+                    continue
                 
-                if new_node_ids:
-                    # Add new nodes to active tips
-                    for node_id in new_node_ids:
-                        all_active_tips.add(node_id)
-                        # Track which inlet tree this node belongs to
-                        # by finding which inlet's tree the parent belongs to
-                        node = network.nodes.get(node_id)
-                        if node:
-                            parent_seg = next(
-                                (seg for seg in network.segments.values() if seg.target_id == node_id),
-                                None
+                inlet_weights = weights[:, i]
+                
+                if inlet_weights.sum() == 0:
+                    continue
+                
+                sample_probs = inlet_weights / inlet_weights.sum()
+                n_samples = min(len(tissue_points), max(100, len(tissue_points) // n_inlets))
+                sampled_indices = rng.choice(
+                    len(tissue_points),
+                    size=n_samples,
+                    replace=False,
+                    p=sample_probs,
+                )
+                inlet_tissue_points = tissue_points[sampled_indices]
+                
+                sc_params = SCParams(
+                    influence_radius=config.attraction_distance,
+                    kill_radius=config.kill_distance,
+                    step_size=config.step_size,
+                    vessel_type=vessel_type,
+                    preferred_direction=None,
+                    directional_bias=config.directional_bias,
+                    max_deviation_deg=config.max_deviation_deg,
+                )
+                
+                seed_nodes = list(active_tips_per_inlet[i])
+                
+                result = space_colonization_step(
+                    network=network,
+                    tissue_points=inlet_tissue_points,
+                    params=sc_params,
+                    seed=int(rng.integers(0, 2**31)),
+                    seed_nodes=seed_nodes,
+                )
+                
+                if result.is_success():
+                    new_node_ids = result.new_ids.get("nodes", [])
+                    
+                    if new_node_ids:
+                        for node_id in new_node_ids:
+                            active_tips_per_inlet[i].add(node_id)
+                            inlet_node_sets[i].add(node_id)
+                            all_new_nodes.append(node_id)
+                        
+                        tips_to_remove = set()
+                        for tip_id in active_tips_per_inlet[i]:
+                            if tip_id in new_node_ids:
+                                continue
+                            has_children = any(
+                                seg.source_id == tip_id 
+                                for seg in network.segments.values()
                             )
-                            if parent_seg:
-                                parent_id = parent_seg.source_id
-                                for i, node_set in enumerate(inlet_node_sets):
-                                    if parent_id in node_set:
-                                        inlet_node_sets[i].add(node_id)
-                                        break
-                    
-                    # Remove tips that are no longer terminal (have children now)
-                    tips_to_remove = set()
-                    for tip_id in all_active_tips:
-                        if tip_id in new_node_ids:
-                            continue
-                        has_children = any(
-                            seg.source_id == tip_id 
-                            for seg in network.segments.values()
-                        )
-                        if has_children:
-                            tips_to_remove.add(tip_id)
-                    all_active_tips -= tips_to_remove
-                    
-                    # Remove attractors within kill_radius of new nodes
-                    for node_id in new_node_ids:
-                        node = network.nodes.get(node_id)
-                        if node:
-                            node_pos = np.array([node.position.x, node.position.y, node.position.z])
-                            distances = np.linalg.norm(tissue_points - node_pos, axis=1)
-                            tissue_points = tissue_points[distances > config.kill_distance]
-                else:
-                    # No new nodes created - growth may be stalled
-                    logger.info(f"Blended mode: no growth at iteration {iteration}")
-                    break
+                            if has_children:
+                                tips_to_remove.add(tip_id)
+                        active_tips_per_inlet[i] -= tips_to_remove
+            
+            if all_new_nodes:
+                for node_id in all_new_nodes:
+                    node = network.nodes.get(node_id)
+                    if node:
+                        node_pos = np.array([node.position.x, node.position.y, node.position.z])
+                        distances = np.linalg.norm(tissue_points - node_pos, axis=1)
+                        tissue_points = tissue_points[distances > config.kill_distance]
             else:
-                logger.info(f"Blended mode: growth failed at iteration {iteration}")
+                logger.info(f"Blended mode: no growth at iteration {iteration}")
                 break
         
         self._mark_terminals(network)
         
-        # Merge nearby branches from different inlet trees
         merges = self._merge_colliding_trees(
             network=network,
             inlet_node_sets=inlet_node_sets,
@@ -547,7 +557,7 @@ class SpaceColonizationBackend(GenerationBackend):
             vessel_type=vessel_type,
         )
         logger.info(
-            f"Blended mode: unified growth with {n_inlets} inlets, performed {merges} merges, "
+            f"Blended mode: overlapping selection with {n_inlets} inlets, performed {merges} merges, "
             f"total nodes: {len(network.nodes)}"
         )
         
