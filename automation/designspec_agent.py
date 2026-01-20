@@ -468,8 +468,12 @@ class DesignSpecAgent:
         features = spec.get("features", {})
         ridges = features.get("ridges", [])
         if ridges:
-            faces = [r.get("face", "?") for r in ridges]
-            lines.append(f"[x] features.ridges - {len(ridges)} ridge(s) on {', '.join(faces)}")
+            if isinstance(ridges, dict):
+                faces = ridges.get("faces", [])
+                lines.append(f"[x] features.ridges - ridges on {', '.join(faces)}")
+            else:
+                faces = [r.get("face", "?") for r in ridges]
+                lines.append(f"[x] features.ridges - {len(ridges)} ridge(s) on {', '.join(faces)}")
         
         return "\n".join(lines)
     
@@ -1014,7 +1018,11 @@ class DesignSpecAgent:
         features = spec.get("features", {})
         ridges = features.get("ridges", [])
         
-        new_ridges = list(ridges)
+        if isinstance(ridges, dict):
+            existing_faces = ridges.get("faces", [])
+            new_ridges = [{"face": f, "height": ridges.get("height", height), "thickness": ridges.get("width", thickness)} for f in existing_faces]
+        else:
+            new_ridges = list(ridges)
         for face_code in ridge_faces:
             existing = any(r.get("face") == face_code for r in new_ridges)
             if not existing:
@@ -1092,7 +1100,10 @@ Be conversational and helpful. Don't be overly formal."""
                 value = patch.get("value", {})
                 ridges = value.get("ridges", [])
                 if ridges:
-                    faces = [r.get("face", "") for r in ridges]
+                    if isinstance(ridges, dict):
+                        faces = ridges.get("faces", [])
+                    else:
+                        faces = [r.get("face", "") for r in ridges]
                     patch_descriptions.append(f"add ridges on {', '.join(faces)} faces")
             elif "/meta" in path:
                 if "seed" in path:
