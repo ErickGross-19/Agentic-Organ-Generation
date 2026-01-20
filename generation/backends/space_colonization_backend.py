@@ -351,16 +351,17 @@ class SpaceColonizationBackend(GenerationBackend):
             
             inlet_dir_arr = inlet_direction.to_array()
             
-            # Create per-inlet params with directional constraints to enforce growth
-            # in the inlet's direction (typically downward) rather than towards other inlets
+            # Create per-inlet params with VERY strong directional constraints to enforce growth
+            # strictly in the inlet's direction (typically downward) rather than towards other inlets
+            # Using 0.9 bias and 45° max deviation to prevent horizontal/cross-formation growth
             sc_params = SCParams(
                 influence_radius=config.attraction_distance,
                 kill_radius=config.kill_distance,
                 step_size=config.step_size,
                 vessel_type=vessel_type,
                 preferred_direction=tuple(inlet_dir_arr),
-                directional_bias=0.7,  # Strong bias towards inlet direction
-                max_deviation_deg=75.0,  # Limit deviation from inlet direction
+                directional_bias=0.9,  # Very strong bias towards inlet direction (90%)
+                max_deviation_deg=45.0,  # Strict cone - prevents horizontal growth
             )
             
             # Filter tissue points using spatial partitioning (Voronoi-like regions)
