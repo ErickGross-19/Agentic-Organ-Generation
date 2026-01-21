@@ -249,6 +249,11 @@ class DesignSpecRunner:
         stages_completed = []
         stages_skipped = []
         
+        logger.info(
+            f"[Pipeline] Starting execution - spec_hash={self.spec.spec_hash[:8]}, "
+            f"components={len(self.spec.components)}, stages={len(stages_to_run)}"
+        )
+        
         try:
             for stage in stages_to_run:
                 if not self.plan.should_run(stage):
@@ -258,14 +263,17 @@ class DesignSpecRunner:
                 stage_start = time.time()
                 
                 try:
+                    logger.info(f"[{stage}] Starting...")
                     report = self._execute_stage(stage)
                     report.duration_s = time.time() - stage_start
                     self._stage_reports.append(report)
                     
                     if report.success:
                         stages_completed.append(stage)
+                        logger.info(f"[{stage}] Completed in {report.duration_s:.2f}s")
                     else:
                         self._errors.extend(report.errors)
+                        logger.error(f"[{stage}] Failed in {report.duration_s:.2f}s: {report.errors}")
                         break
                     
                     self._warnings.extend(report.warnings)
@@ -290,6 +298,17 @@ class DesignSpecRunner:
             stages_completed = []
         
         total_duration = time.time() - start_time
+        
+        if success:
+            logger.info(
+                f"[Pipeline] Completed successfully in {total_duration:.2f}s - "
+                f"stages_completed={len(stages_completed)}, stages_skipped={len(stages_skipped)}"
+            )
+        else:
+            logger.error(
+                f"[Pipeline] Failed after {total_duration:.2f}s - "
+                f"stages_completed={len(stages_completed)}, errors={len(self._errors)}"
+            )
         
         return RunnerResult(
             success=success,
@@ -359,6 +378,9 @@ class DesignSpecRunner:
         warnings = []
         metadata = {}
         
+        policy_names = list(self.spec.policies.keys())
+        logger.info(f"  Compiling {len(policy_names)} policies: {', '.join(policy_names)}")
+        
         policy_classes = {
             "resolution": ResolutionPolicy,
             "growth": GrowthPolicy,
@@ -422,6 +444,9 @@ class DesignSpecRunner:
         warnings = []
         errors = []
         metadata = {}
+        
+        domain_names = list(self.spec.domains.keys())
+        logger.info(f"  Compiling {len(domain_names)} domains: {', '.join(domain_names)}")
         
         for domain_name, domain_dict in self.spec.domains.items():
             try:
@@ -511,6 +536,8 @@ class DesignSpecRunner:
         ports = component.get("ports", {})
         inlets = ports.get("inlets", [])
         outlets = ports.get("outlets", [])
+        
+        logger.info(f"  Component '{component_id}': resolving {len(inlets)} inlets, {len(outlets)} outlets on domain '{domain_ref}'")
         
         # Get effective port placement policy for this component
         effective_ports_dict = self._get_effective_policy_dict(component, "ports")
@@ -728,6 +755,8 @@ class DesignSpecRunner:
         warnings = []
         metadata = {"build_type": build_type, "domain_ref": domain_ref}
         
+        logger.info(f"  Component '{component_id}': build_type='{build_type}', domain='{domain_ref}'")
+        
         # Get effective policy dicts for this component (with overrides applied)
         effective_growth_dict = self._get_effective_policy_dict(component, "growth")
         effective_collision_dict = self._get_effective_policy_dict(component, "collision")
@@ -809,6 +838,8 @@ class DesignSpecRunner:
             )
         
         component = self._get_component(component_id)
+        
+        logger.info(f"  Component '{component_id}': synthesizing mesh from network with {len(network.nodes)} nodes, {len(network.segments)} segments")
         
         try:
             from generation.ops.mesh.synthesis import synthesize_mesh
@@ -894,6 +925,9 @@ class DesignSpecRunner:
                 errors=["No component voids to union"],
             )
         
+        component_ids = list(self._component_voids.keys())
+        logger.info(f"  Merging {len(component_ids)} component voids: {', '.join(component_ids)}")
+        
         try:
             from generation.ops.compose import compose_components, ComponentSpec
             from aog_policies import ComposePolicy
@@ -968,6 +1002,8 @@ class DesignSpecRunner:
                 success=False,
                 errors=[f"Domain '{domain_name}' is not compiled - cannot generate mesh"],
             )
+        
+        logger.info(f"  Generating mesh for domain '{domain_name}'")
         
         try:
             # Use canonical domain_to_mesh with policy objects
@@ -1045,6 +1081,8 @@ class DesignSpecRunner:
                 success=False,
                 errors=[f"Domain '{domain_name}' is not compiled - cannot embed void"],
             )
+        
+        logger.info(f"  Embedding void mesh ({len(self._union_void.vertices)} vertices) into domain '{domain_name}'")
         
         try:
             from generation.api.embed import embed_void
@@ -1130,11 +1168,14 @@ class DesignSpecRunner:
         # Check if validity is disabled via spec.validity.enable
         validity_spec = self.spec.normalized.get("validity", {})
         if not validity_spec.get("enable", True):
+            logger.info("  Validity checks disabled by spec.validity.enable")
             return StageReport(
                 stage=Stage.VALIDITY.value,
                 success=True,
                 metadata={"skipped": "disabled by spec.validity.enable"},
             )
+        
+        logger.info("  Running validity checks...")
         
         try:
             from validity.runner import run_validity_checks
@@ -1212,6 +1253,8 @@ class DesignSpecRunner:
         """Export outputs to files."""
         warnings = []
         metadata = {"exported": []}
+        
+        logger.info(f"  Exporting outputs to '{self.output_dir}'")
         
         try:
             self.output_dir.mkdir(parents=True, exist_ok=True)
