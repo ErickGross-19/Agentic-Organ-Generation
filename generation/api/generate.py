@@ -883,6 +883,7 @@ def generate_void_mesh(
     channel_policy: Optional["ChannelPolicy"] = None,
     growth_policy: Optional[GrowthPolicy] = None,
     synthesis_policy: Optional["MeshSynthesisPolicy"] = None,
+    merge_policy: Optional["MeshMergePolicy"] = None,
 ) -> Tuple["trimesh.Trimesh", OperationReport]:
     """
     Generate a void mesh for embedding into a domain.
@@ -903,6 +904,10 @@ def generate_void_mesh(
         Policy for network growth (if kind="network_synthesis")
     synthesis_policy : MeshSynthesisPolicy, optional
         Policy for mesh synthesis
+    merge_policy : MeshMergePolicy, optional
+        Policy for merging channel meshes. If provided, controls how disconnected
+        channel meshes are merged. Set keep_largest_component=False to preserve
+        all disconnected tubes.
         
     Returns
     -------
@@ -981,20 +986,28 @@ def generate_void_mesh(
                 from ..ops.mesh.merge import merge_meshes
                 from ..policies import MeshMergePolicy
                 try:
-                    # Use a reasonable default pitch for voxel merge
-                    # 5e-5 (50 microns) is suitable for fine vascular structures
-                    merge_policy = MeshMergePolicy(
-                        mode="voxel",
-                        voxel_pitch=5e-5,
-                        auto_adjust_pitch=True,
-                    )
-                    merged_mesh, merge_report = merge_meshes(channel_meshes, merge_policy)
+                    # Use provided merge_policy if available, otherwise create safe default
+                    # that does NOT drop disconnected components
+                    effective_merge_policy = merge_policy
+                    if effective_merge_policy is None:
+                        # Safe default if caller didn't provide one
+                        # keep_largest_component=False ensures all disconnected tubes are preserved
+                        effective_merge_policy = MeshMergePolicy(
+                            mode="voxel",
+                            voxel_pitch=5e-5,
+                            auto_adjust_pitch=True,
+                            keep_largest_component=False,
+                            fill_voxels=False,
+                        )
+                    merged_mesh, merge_report = merge_meshes(channel_meshes, effective_merge_policy)
                     if merged_mesh is None or len(merged_mesh.vertices) == 0:
                         # E1 FIX: Try coarser voxel merge before falling back to concatenation
                         coarse_policy = MeshMergePolicy(
                             mode="voxel",
                             voxel_pitch=1e-4,  # 100 microns - coarser
                             auto_adjust_pitch=True,
+                            keep_largest_component=False,
+                            fill_voxels=False,
                         )
                         merged_mesh, merge_report = merge_meshes(channel_meshes, coarse_policy)
                         if merged_mesh is not None and len(merged_mesh.vertices) > 0:
@@ -1017,6 +1030,8 @@ def generate_void_mesh(
                             mode="voxel",
                             voxel_pitch=1e-4,  # 100 microns - coarser
                             auto_adjust_pitch=True,
+                            keep_largest_component=False,
+                            fill_voxels=False,
                         )
                         merged_mesh, merge_report = merge_meshes(channel_meshes, coarse_policy)
                         if merged_mesh is not None and len(merged_mesh.vertices) > 0:
