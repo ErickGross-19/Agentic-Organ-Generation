@@ -530,7 +530,7 @@ class SpaceColonizationBackend(GenerationBackend):
                             if tip_id in new_node_ids:
                                 continue
                             has_children = any(
-                                seg.source_id == tip_id 
+                                seg.start_node_id == tip_id 
                                 for seg in network.segments.values()
                             )
                             if has_children:
