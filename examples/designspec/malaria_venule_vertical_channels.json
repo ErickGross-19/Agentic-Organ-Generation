@@ -96,7 +96,7 @@
     },
 
     "embedding": {
-      "voxel_pitch": null,
+      "voxel_pitch": 1e-6,
       "shell_thickness": 0.0,
       "use_resolution_policy": true,
       "auto_adjust_pitch": true,
@@ -107,7 +107,7 @@
       "preserve_ports_enabled": true,
       "preserve_mode": "recarve",
       "carve_radius_factor": 1.2,
-      "carve_depth": 0.0005,
+      "carve_depth": 0.001,
       "output_domain_with_void": true,
       "output_void_mesh": true,
       "output_shell": false
