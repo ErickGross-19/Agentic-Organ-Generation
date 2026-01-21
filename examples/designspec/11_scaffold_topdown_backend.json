@@ -134,13 +134,6 @@
           "reduction_factors": [0.6, 0.35],
           "max_attempts_per_child": 18,
           "on_fail": "terminate_branch"
-        },
-        "collision_postpass": {
-          "enabled": true,
-          "min_clearance_m": 0.02,
-          "strategy_order": ["shrink", "terminate"],
-          "shrink_factor": 0.9,
-          "shrink_max_iterations": 6
         }
       }
     },
@@ -148,25 +141,6 @@
       "enabled": true,
       "check_collisions": true,
       "collision_clearance": 0.05
-    },
-    "unified_collision": {
-      "enabled": true,
-      "min_clearance": 0.1,
-      "strategy_order": [
-        "reroute",
-        "shrink",
-        "terminate"
-      ],
-      "min_radius": 0.03,
-      "check_segment_segment": true,
-      "check_segment_mesh": true,
-      "check_segment_boundary": true,
-      "check_node_boundary": true,
-      "reroute_max_attempts": 3,
-      "shrink_factor": 0.9,
-      "shrink_max_iterations": 5,
-      "inflate_by_radius": true,
-      "check_after_each_step": true
     },
     "radius": {
       "mode": "murray",

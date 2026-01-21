@@ -18,8 +18,22 @@ class DomainSpec(ABC):
         pass
 
     @abstractmethod
-    def project_inside(self, point: Point3D) -> Point3D:
-        """Project a point to the nearest point inside the domain."""
+    def project_inside(self, point: Point3D, margin: Optional[float] = None) -> Point3D:
+        """
+        Project a point to the nearest point inside the domain.
+        
+        Parameters
+        ----------
+        point : Point3D
+            Point to project
+        margin : float, optional
+            Margin from boundary. If None, uses a default proportional margin.
+            
+        Returns
+        -------
+        Point3D
+            Point projected inside the domain with the specified margin
+        """
         pass
 
     @abstractmethod

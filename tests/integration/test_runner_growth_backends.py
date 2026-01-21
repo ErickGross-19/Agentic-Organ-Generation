@@ -232,6 +232,121 @@ def make_scaffold_topdown_spec(tmp_path, seed=42):
     }
 
 
+def make_scaffold_topdown_cylinder_spec(tmp_path, seed=42):
+    """
+    Create a minimal spec with scaffold_topdown backend using a CYLINDER domain.
+    
+    This is a regression test for Issue 1: CylinderDomain crash due to
+    _clamp_to_domain using domain.bounds which doesn't exist on CylinderDomain.
+    """
+    return {
+        "schema": {"name": "aog_designspec", "version": "1.0.0"},
+        "meta": {"name": "scaffold_topdown_cylinder_test", "seed": seed, "input_units": "mm"},
+        "policies": {
+            "resolution": {
+                "input_units": "mm",
+                "min_channel_diameter": 0.1,
+                "min_voxels_across_feature": 4,
+                "max_voxels": 1000000,
+            },
+            "growth": {
+                "enabled": True,
+                "backend": "scaffold_topdown",
+                "max_iterations": 20,
+                "step_size": 0.5,
+                "min_radius": 0.05,
+                "backend_params": {
+                    "primary_axis": [0, 0, -1],
+                    "splits": 2,
+                    "levels": 3,
+                    "ratio": 0.78,
+                    "step_length": 1.5,
+                    "step_decay": 0.9,
+                    "spread": 1.0,
+                    "spread_decay": 0.9,
+                    "cone_angle_deg": 60,
+                    "jitter_deg": 10,
+                    "curvature": 0.3,
+                    "curve_samples": 5,
+                    "wall_margin_m": 0.1,
+                    "min_radius": 0.05,
+                    "collision_online": {
+                        "enabled": True,
+                        "buffer_abs_m": 0.02,
+                        "buffer_rel": 0.05,
+                        "cell_size_m": 0.5,
+                        "rotation_attempts": 8,
+                        "reduction_factors": [0.6, 0.35],
+                        "max_attempts_per_child": 12,
+                        "on_fail": "terminate_branch"
+                    },
+                    "collision_postpass": {
+                        "enabled": False
+                    }
+                },
+            },
+        },
+        "domains": {
+            "main": {
+                "type": "cylinder",
+                "radius": 5.0,
+                "height": 6.0,
+                "center": [0, 0, 0],
+            }
+        },
+        "components": [
+            {
+                "id": "net_1",
+                "domain_ref": "main",
+                "ports": {
+                    "inlets": [{
+                        "name": "inlet",
+                        "position": [0, 0, 3],
+                        "direction": [0, 0, -1],
+                        "radius": 0.5,
+                        "vessel_type": "arterial",
+                    }],
+                    "outlets": [],
+                },
+                "build": {
+                    "type": "backend_network",
+                    "backend": "scaffold_topdown",
+                    "backend_params": {
+                        "primary_axis": [0, 0, -1],
+                        "splits": 2,
+                        "levels": 3,
+                        "ratio": 0.78,
+                        "step_length": 1.5,
+                        "step_decay": 0.9,
+                        "spread": 1.0,
+                        "spread_decay": 0.9,
+                        "cone_angle_deg": 60,
+                        "jitter_deg": 10,
+                        "curvature": 0.3,
+                        "curve_samples": 5,
+                        "wall_margin_m": 0.1,
+                        "min_radius": 0.05,
+                        "collision_online": {
+                            "enabled": True,
+                            "buffer_abs_m": 0.02,
+                            "buffer_rel": 0.05,
+                            "cell_size_m": 0.5,
+                            "rotation_attempts": 8,
+                            "reduction_factors": [0.6, 0.35],
+                            "max_attempts_per_child": 12,
+                            "on_fail": "terminate_branch"
+                        },
+                        "collision_postpass": {
+                            "enabled": False
+                        }
+                    }
+                },
+            }
+        ],
+        "outputs": {"artifacts_dir": str(tmp_path / "artifacts")},
+    }
+
+
 class TestRunnerGrowthBackends:
     """Test runner with different growth backends."""
     
@@ -339,6 +454,31 @@ class TestRunnerGrowthBackends:
             if net1 is not None and net2 is not None:
                 assert len(net1.segments) == len(net2.segments), "Same seed should produce same segment count"
                 assert len(net1.nodes) == len(net2.nodes), "Same seed should produce same node count"
+    
+    def test_scaffold_topdown_cylinder_domain(self, tmp_path):
+        """
+        Test that scaffold_topdown backend works with CYLINDER domain.
+        
+        This is a regression test for Issue 1: CylinderDomain crash due to
+        _clamp_to_domain using domain.bounds which doesn't exist on CylinderDomain.
+        The fix uses DomainSpec.project_inside() API which works for all domain types.
+        """
+        spec_dict = make_scaffold_topdown_cylinder_spec(tmp_path)
+        spec = DesignSpec.from_dict(spec_dict)
+        
+        plan = ExecutionPlan(run_until="component_build:net_1")
+        runner = DesignSpecRunner(spec, plan=plan, output_dir=tmp_path)
+        result = runner.run()
+        
+        # The test passes if generation succeeds without AttributeError
+        assert isinstance(result, RunnerResult)
+        assert result.success, f"Cylinder domain generation should succeed: {result.error}"
+        
+        # Verify network was created with segments
+        network = runner._component_networks.get("net_1")
+        assert network is not None, "Network should be created"
+        assert len(network.segments) > 0, "Network should have segments"
+        assert len(network.nodes) > 0, "Network should have nodes"
 
 
 class TestGrowthBackendMetrics:

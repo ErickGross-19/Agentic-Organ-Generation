@@ -410,7 +410,9 @@ def _detect_segment_segment_collisions_indexed(
         return collisions
     
     max_radius = max(seg.geometry.mean_radius() for seg in segments)
-    cell_size = max(max_radius * 4, min_clearance * 10, 0.001)
+    # Use scale-aware cell size floor instead of hard-coded 0.001
+    # This ensures proper performance for very small vessels (50µm-1mm)
+    cell_size = max(max_radius * 4, min_clearance * 10, max_radius * 2)
     
     spatial_index = DynamicSpatialIndex(cell_size=cell_size)
     

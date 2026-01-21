@@ -588,6 +588,7 @@ class DynamicSpatialIndex:
         buffer: float = 0.0,
         exclude_adjacent_to: Optional[np.ndarray] = None,
         adjacent_tolerance: float = 1e-6,
+        exclude_segment_ids: Optional[set] = None,
     ) -> bool:
         """
         Check if a proposed capsule collides with any indexed segments.
@@ -607,6 +608,10 @@ class DynamicSpatialIndex:
             (to avoid false positives with parent segment)
         adjacent_tolerance : float
             Distance tolerance for adjacency check
+        exclude_segment_ids : set of int, optional
+            If provided, exclude these segment IDs from collision checks.
+            This is the preferred method for excluding known adjacent segments
+            by their explicit IDs rather than coordinate comparison.
             
         Returns
         -------
@@ -622,11 +627,16 @@ class DynamicSpatialIndex:
             return False
         
         for seg_id in candidates:
+            # Exclude by segment ID (preferred method)
+            if exclude_segment_ids is not None and seg_id in exclude_segment_ids:
+                continue
+            
             seg_start = self._segment_starts[seg_id]
             seg_end = self._segment_ends[seg_id]
             seg_radius = self._segment_radii[seg_id]
             centerline = self._segment_centerlines.get(seg_id)
             
+            # Exclude by point adjacency (legacy method, kept for compatibility)
             if exclude_adjacent_to is not None:
                 if np.linalg.norm(seg_start - exclude_adjacent_to) < adjacent_tolerance:
                     continue
@@ -639,6 +649,63 @@ class DynamicSpatialIndex:
             
             min_allowed = radius + seg_radius + buffer
             if dist < min_allowed:
+                return True
+        
+        return False
+    
+    def check_polyline_collision(
+        self,
+        points: List[np.ndarray],
+        radius: float,
+        buffer: float = 0.0,
+        exclude_adjacent_to: Optional[np.ndarray] = None,
+        adjacent_tolerance: float = 1e-6,
+        exclude_segment_ids: Optional[set] = None,
+    ) -> bool:
+        """
+        Check if a proposed polyline (curved branch) collides with any indexed segments.
+        
+        This method validates the entire polyline by checking each micro-segment
+        for collisions. This is essential for curved branches where the straight-line
+        endpoint check might pass but the actual curve collides.
+        
+        Parameters
+        ----------
+        points : list of np.ndarray
+            List of points defining the polyline (at least 2 points)
+        radius : float
+            Radius of the polyline capsule
+        buffer : float
+            Additional clearance buffer
+        exclude_adjacent_to : np.ndarray, optional
+            If provided, exclude segments that share this endpoint
+        adjacent_tolerance : float
+            Distance tolerance for adjacency check
+        exclude_segment_ids : set of int, optional
+            If provided, exclude these segment IDs from collision checks
+            
+        Returns
+        -------
+        bool
+            True if any segment of the polyline collides, False otherwise
+        """
+        if len(points) < 2:
+            return False
+        
+        # Check each micro-segment of the polyline
+        for i in range(len(points) - 1):
+            seg_start = np.asarray(points[i], dtype=np.float64)
+            seg_end = np.asarray(points[i + 1], dtype=np.float64)
+            
+            if self.check_capsule_collision(
+                start=seg_start,
+                end=seg_end,
+                radius=radius,
+                buffer=buffer,
+                exclude_adjacent_to=exclude_adjacent_to,
+                adjacent_tolerance=adjacent_tolerance,
+                exclude_segment_ids=exclude_segment_ids,
+            ):
                 return True
         
         return False
