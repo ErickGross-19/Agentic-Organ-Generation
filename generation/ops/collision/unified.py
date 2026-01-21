@@ -344,21 +344,30 @@ def resolve_collisions(
 def _detect_segment_segment_collisions(
     network: VascularNetwork,
     min_clearance: float,
+    use_spatial_index: bool = True,
 ) -> List[Collision]:
-    """Detect collisions between network segments."""
+    """Detect collisions between network segments.
+    
+    Uses spatial indexing for O(N log N) performance instead of O(N²)
+    when use_spatial_index is True (default).
+    """
     collisions = []
     segments = list(network.segments.values())
     
+    if not segments:
+        return collisions
+    
+    if use_spatial_index and len(segments) > 50:
+        return _detect_segment_segment_collisions_indexed(network, min_clearance)
+    
     for i, seg_a in enumerate(segments):
         for seg_b in segments[i + 1:]:
-            # Skip adjacent segments (they share a node)
             if (seg_a.start_node_id == seg_b.start_node_id or
                 seg_a.start_node_id == seg_b.end_node_id or
                 seg_a.end_node_id == seg_b.start_node_id or
                 seg_a.end_node_id == seg_b.end_node_id):
                 continue
             
-            # Compute capsule-capsule distance
             dist = _capsule_distance(
                 seg_a.geometry.start.to_array(),
                 seg_a.geometry.end.to_array(),
@@ -366,7 +375,6 @@ def _detect_segment_segment_collisions(
                 seg_b.geometry.end.to_array(),
             )
             
-            # Required clearance includes both radii
             radius_a = seg_a.geometry.mean_radius()
             radius_b = seg_b.geometry.mean_radius()
             required = radius_a + radius_b + min_clearance
@@ -376,6 +384,97 @@ def _detect_segment_segment_collisions(
                     type=CollisionType.SEGMENT_SEGMENT,
                     segment_id_a=seg_a.id,
                     segment_id_b=seg_b.id,
+                    distance=dist,
+                    required_clearance=required,
+                    overlap=required - dist,
+                    metadata={
+                        "radius_a": radius_a,
+                        "radius_b": radius_b,
+                    },
+                ))
+    
+    return collisions
+
+
+def _detect_segment_segment_collisions_indexed(
+    network: VascularNetwork,
+    min_clearance: float,
+) -> List[Collision]:
+    """Detect segment-segment collisions using spatial indexing for O(N log N) performance."""
+    from ...spatial.grid_index import DynamicSpatialIndex
+    
+    collisions = []
+    segments = list(network.segments.values())
+    
+    if not segments:
+        return collisions
+    
+    max_radius = max(seg.geometry.mean_radius() for seg in segments)
+    cell_size = max(max_radius * 4, min_clearance * 10, 0.001)
+    
+    spatial_index = DynamicSpatialIndex(cell_size=cell_size)
+    
+    segment_data = {}
+    for seg in segments:
+        start = seg.geometry.start.to_array()
+        end = seg.geometry.end.to_array()
+        radius = seg.geometry.mean_radius()
+        
+        centerline = None
+        if hasattr(seg.geometry, 'centerline_points') and seg.geometry.centerline_points:
+            centerline = [np.array(pt) for pt in seg.geometry.centerline_points]
+        
+        spatial_index.insert_segment(seg.id, start, end, radius, centerline)
+        segment_data[seg.id] = {
+            "start": start,
+            "end": end,
+            "radius": radius,
+            "start_node_id": seg.start_node_id,
+            "end_node_id": seg.end_node_id,
+        }
+    
+    checked_pairs = set()
+    
+    for seg in segments:
+        seg_id = seg.id
+        data_a = segment_data[seg_id]
+        radius_a = data_a["radius"]
+        
+        query_radius = radius_a + max_radius + min_clearance
+        candidates = spatial_index.query_candidate_segments_for_capsule(
+            data_a["start"], data_a["end"], query_radius
+        )
+        
+        for candidate_id in candidates:
+            if candidate_id == seg_id:
+                continue
+            
+            pair_key = (min(seg_id, candidate_id), max(seg_id, candidate_id))
+            if pair_key in checked_pairs:
+                continue
+            checked_pairs.add(pair_key)
+            
+            data_b = segment_data[candidate_id]
+            
+            if (data_a["start_node_id"] == data_b["start_node_id"] or
+                data_a["start_node_id"] == data_b["end_node_id"] or
+                data_a["end_node_id"] == data_b["start_node_id"] or
+                data_a["end_node_id"] == data_b["end_node_id"]):
+                continue
+            
+            dist = _capsule_distance(
+                data_a["start"], data_a["end"],
+                data_b["start"], data_b["end"],
+            )
+            
+            radius_b = data_b["radius"]
+            required = radius_a + radius_b + min_clearance
+            
+            if dist < required:
+                collisions.append(Collision(
+                    type=CollisionType.SEGMENT_SEGMENT,
+                    segment_id_a=seg_id,
+                    segment_id_b=candidate_id,
                     distance=dist,
                     required_clearance=required,
                     overlap=required - dist,

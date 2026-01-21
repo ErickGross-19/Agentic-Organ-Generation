@@ -316,7 +316,7 @@ class GrowthPolicy:
     }
     """
     enabled: bool = True
-    backend: Literal["space_colonization", "kary_tree", "cco_hybrid", "programmatic"] = "space_colonization"
+    backend: Literal["space_colonization", "kary_tree", "cco_hybrid", "programmatic", "scaffold_topdown"] = "space_colonization"
     target_terminals: Optional[int] = None
     terminal_tolerance: float = 0.1  # 10% tolerance
     max_iterations: int = 500

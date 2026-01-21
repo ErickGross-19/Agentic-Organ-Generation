@@ -367,150 +367,324 @@ class SpatialIndex:
             min_dist = min(min_dist, dist)
         
         return min_dist
+
+
+class DynamicSpatialIndex:
+    """
+    Dynamic spatial index for incremental segment insertion during network growth.
     
-    def get_collisions(
-        self,
-        min_clearance: float,
-        exclude_connected: bool = True,
-    ) -> List[Tuple[int, int, float]]:
+    Unlike SpatialIndex which builds from an existing network, this class supports
+    incremental insertion of segments as they are created during generation.
+    This is essential for online collision avoidance in backends like scaffold_topdown.
+    
+    The index uses a uniform 3D grid with configurable cell size. Segments are
+    indexed by the cells they intersect, enabling fast candidate lookup for
+    collision queries.
+    """
+    
+    def __init__(self, cell_size: float = 0.001):
         """
-        Find all segment pairs that are too close.
+        Initialize dynamic spatial index.
         
         Parameters
         ----------
-        min_clearance : float
-            Minimum required clearance between segment surfaces
-        exclude_connected : bool
-            If True, exclude segments that share a node
+        cell_size : float
+            Size of grid cells in meters. Should be roughly 2-3x the average
+            segment radius for optimal performance. Default: 1mm.
+        """
+        self.cell_size = cell_size
+        self.inv_cell_size = 1.0 / cell_size
+        self.grid: Dict[Tuple[int, int, int], Set[int]] = defaultdict(set)
+        
+        self._segment_starts: Dict[int, np.ndarray] = {}
+        self._segment_ends: Dict[int, np.ndarray] = {}
+        self._segment_radii: Dict[int, float] = {}
+        self._segment_centerlines: Dict[int, Optional[List[np.ndarray]]] = {}
+        self._segment_cells: Dict[int, Set[Tuple[int, int, int]]] = {}
+        
+        self._next_id = 0
+    
+    def clear(self) -> None:
+        """Clear all indexed segments."""
+        self.grid.clear()
+        self._segment_starts.clear()
+        self._segment_ends.clear()
+        self._segment_radii.clear()
+        self._segment_centerlines.clear()
+        self._segment_cells.clear()
+        self._next_id = 0
+    
+    def _get_cell_coords(self, point: np.ndarray) -> Tuple[int, int, int]:
+        """Convert world coordinates to grid cell coordinates."""
+        return (
+            int(np.floor(point[0] * self.inv_cell_size)),
+            int(np.floor(point[1] * self.inv_cell_size)),
+            int(np.floor(point[2] * self.inv_cell_size)),
+        )
+    
+    def _get_cells_for_segment(
+        self,
+        start: np.ndarray,
+        end: np.ndarray,
+        radius: float,
+        centerline: Optional[List[np.ndarray]] = None,
+    ) -> Set[Tuple[int, int, int]]:
+        """
+        Get all grid cells that a segment (capsule) intersects.
+        
+        Parameters
+        ----------
+        start : np.ndarray
+            Start point of segment
+        end : np.ndarray
+            End point of segment
+        radius : float
+            Radius of the segment (capsule)
+        centerline : list of np.ndarray, optional
+            If provided, use these waypoints instead of straight line
+            
+        Returns
+        -------
+        Set[Tuple[int, int, int]]
+            Set of cell coordinates
+        """
+        cells: Set[Tuple[int, int, int]] = set()
+        
+        if centerline and len(centerline) > 0:
+            points = [start] + centerline + [end]
+        else:
+            points = [start, end]
+        
+        r_cells = int(np.ceil(radius * self.inv_cell_size)) + 1
+        
+        for i in range(len(points) - 1):
+            p1 = points[i]
+            p2 = points[i + 1]
+            
+            cell1 = self._get_cell_coords(p1)
+            cell2 = self._get_cell_coords(p2)
+            
+            for ci in range(min(cell1[0], cell2[0]) - r_cells, max(cell1[0], cell2[0]) + r_cells + 1):
+                for cj in range(min(cell1[1], cell2[1]) - r_cells, max(cell1[1], cell2[1]) + r_cells + 1):
+                    for ck in range(min(cell1[2], cell2[2]) - r_cells, max(cell1[2], cell2[2]) + r_cells + 1):
+                        cells.add((ci, cj, ck))
+        
+        return cells
+    
+    def insert_segment(
+        self,
+        segment_id: int,
+        start: np.ndarray,
+        end: np.ndarray,
+        radius: float,
+        centerline: Optional[List[np.ndarray]] = None,
+    ) -> None:
+        """
+        Insert a segment into the spatial index.
+        
+        Parameters
+        ----------
+        segment_id : int
+            Unique identifier for the segment
+        start : np.ndarray
+            Start point of segment (x, y, z)
+        end : np.ndarray
+            End point of segment (x, y, z)
+        radius : float
+            Radius of the segment
+        centerline : list of np.ndarray, optional
+            Waypoints for polyline representation
+        """
+        start = np.asarray(start, dtype=np.float64)
+        end = np.asarray(end, dtype=np.float64)
+        
+        self._segment_starts[segment_id] = start
+        self._segment_ends[segment_id] = end
+        self._segment_radii[segment_id] = radius
+        self._segment_centerlines[segment_id] = centerline
+        
+        cells = self._get_cells_for_segment(start, end, radius, centerline)
+        self._segment_cells[segment_id] = cells
+        
+        for cell in cells:
+            self.grid[cell].add(segment_id)
+        
+        self._next_id = max(self._next_id, segment_id + 1)
+    
+    def add_segment(
+        self,
+        start: np.ndarray,
+        end: np.ndarray,
+        radius: float,
+        centerline: Optional[List[np.ndarray]] = None,
+    ) -> int:
+        """
+        Add a segment and return its auto-generated ID.
+        
+        Parameters
+        ----------
+        start : np.ndarray
+            Start point of segment
+        end : np.ndarray
+            End point of segment
+        radius : float
+            Radius of the segment
+        centerline : list of np.ndarray, optional
+            Waypoints for polyline representation
+            
+        Returns
+        -------
+        int
+            The assigned segment ID
+        """
+        segment_id = self._next_id
+        self.insert_segment(segment_id, start, end, radius, centerline)
+        return segment_id
+    
+    def query_candidate_segments_for_capsule(
+        self,
+        start: np.ndarray,
+        end: np.ndarray,
+        radius: float,
+    ) -> Set[int]:
+        """
+        Query candidate segment IDs that might collide with a proposed capsule.
+        
+        This is the broad-phase collision query. Returns segment IDs that
+        are in cells overlapping with the query capsule. Actual collision
+        detection (narrow phase) should be done separately.
+        
+        Parameters
+        ----------
+        start : np.ndarray
+            Start point of query capsule
+        end : np.ndarray
+            End point of query capsule
+        radius : float
+            Radius of query capsule
+            
+        Returns
+        -------
+        Set[int]
+            Set of candidate segment IDs
+        """
+        start = np.asarray(start, dtype=np.float64)
+        end = np.asarray(end, dtype=np.float64)
+        
+        query_cells = self._get_cells_for_segment(start, end, radius, None)
+        
+        candidates: Set[int] = set()
+        for cell in query_cells:
+            if cell in self.grid:
+                candidates.update(self.grid[cell])
+        
+        return candidates
+    
+    def check_capsule_collision(
+        self,
+        start: np.ndarray,
+        end: np.ndarray,
+        radius: float,
+        buffer: float = 0.0,
+        exclude_adjacent_to: Optional[np.ndarray] = None,
+        adjacent_tolerance: float = 1e-6,
+    ) -> bool:
+        """
+        Check if a proposed capsule collides with any indexed segments.
+        
+        Parameters
+        ----------
+        start : np.ndarray
+            Start point of query capsule
+        end : np.ndarray
+            End point of query capsule
+        radius : float
+            Radius of query capsule
+        buffer : float
+            Additional clearance buffer
+        exclude_adjacent_to : np.ndarray, optional
+            If provided, exclude segments that share this endpoint
+            (to avoid false positives with parent segment)
+        adjacent_tolerance : float
+            Distance tolerance for adjacency check
+            
+        Returns
+        -------
+        bool
+            True if collision detected, False otherwise
+        """
+        start = np.asarray(start, dtype=np.float64)
+        end = np.asarray(end, dtype=np.float64)
+        
+        candidates = self.query_candidate_segments_for_capsule(start, end, radius + buffer)
+        
+        if not candidates:
+            return False
+        
+        for seg_id in candidates:
+            seg_start = self._segment_starts[seg_id]
+            seg_end = self._segment_ends[seg_id]
+            seg_radius = self._segment_radii[seg_id]
+            centerline = self._segment_centerlines.get(seg_id)
+            
+            if exclude_adjacent_to is not None:
+                if np.linalg.norm(seg_start - exclude_adjacent_to) < adjacent_tolerance:
+                    continue
+                if np.linalg.norm(seg_end - exclude_adjacent_to) < adjacent_tolerance:
+                    continue
+            
+            dist = self._segment_to_segment_distance(
+                start, end, seg_start, seg_end, centerline
+            )
+            
+            min_allowed = radius + seg_radius + buffer
+            if dist < min_allowed:
+                return True
+        
+        return False
+    
+    def _segment_to_segment_distance(
+        self,
+        p1: np.ndarray,
+        p2: np.ndarray,
+        q1: np.ndarray,
+        q2: np.ndarray,
+        q_centerline: Optional[List[np.ndarray]] = None,
+    ) -> float:
+        """
+        Compute minimum distance between two segments.
+        
+        If q_centerline is provided, computes distance to the polyline.
+        """
+        if q_centerline and len(q_centerline) > 0:
+            q_points = [q1] + q_centerline + [q2]
+            min_dist = float('inf')
+            for i in range(len(q_points) - 1):
+                dist = segment_segment_distance_exact(p1, p2, q_points[i], q_points[i + 1])
+                min_dist = min(min_dist, dist)
+            return min_dist
+        else:
+            return segment_segment_distance_exact(p1, p2, q1, q2)
+    
+    @property
+    def segment_count(self) -> int:
+        """Return the number of indexed segments."""
+        return len(self._segment_starts)
+    
+    def get_segment_data(self, segment_id: int) -> Optional[Dict[str, np.ndarray]]:
+        """
+        Get data for a specific segment.
         
         Returns
         -------
-        collisions : List[Tuple[int, int, float]]
-            List of (segment_id1, segment_id2, clearance) tuples where
-            clearance = centerline_distance - r1 - r2. Negative clearance
-            indicates overlapping vessels.
+        dict or None
+            Segment data with keys: start, end, radius, centerline
         """
-        collisions = []
-        checked_pairs = set()
-        segment_ids = list(self.network.segments.keys())
-        
-        # P2-NEW-1: Compute r_max once before iterating (was O(N²) when inside loop)
-        if not self.network.segments:
-            return collisions
-        r_max = max(seg.geometry.mean_radius() for seg in self.network.segments.values())
-        
-        for seg_id1 in segment_ids:
-            seg1 = self.network.get_segment(seg_id1)
-            if seg1 is None:
-                continue
-            
-            # P0-2: Query at start, mid, and end points to catch mid-segment collisions
-            start_node1 = self.network.get_node(seg1.start_node_id)
-            end_node1 = self.network.get_node(seg1.end_node_id)
-            if start_node1 is None or end_node1 is None:
-                continue
-            
-            r1 = seg1.geometry.mean_radius()
-            
-            # Compute midpoint
-            mid_pos = Point3D(
-                (start_node1.position.x + end_node1.position.x) / 2,
-                (start_node1.position.y + end_node1.position.y) / 2,
-                (start_node1.position.z + end_node1.position.z) / 2,
-            )
-            
-            # Search radius uses pre-computed r_max
-            search_radius = r1 + r_max + min_clearance + 0.001  # margin
-            
-            # Query at start, mid, and end points
-            query_points = [start_node1.position, mid_pos, end_node1.position]
-            candidate_segments = set()
-            for qp in query_points:
-                nearby = self.query_nearby_segments(qp, search_radius)
-                for seg in nearby:
-                    candidate_segments.add(seg.id)
-            
-            for seg2_id in candidate_segments:
-                if seg2_id == seg_id1:
-                    continue
-                
-                # Avoid checking same pair twice
-                pair_key = (min(seg_id1, seg2_id), max(seg_id1, seg2_id))
-                if pair_key in checked_pairs:
-                    continue
-                checked_pairs.add(pair_key)
-                
-                seg2 = self.network.get_segment(seg2_id)
-                if seg2 is None:
-                    continue
-                
-                if exclude_connected:
-                    if (seg1.start_node_id == seg2.start_node_id or
-                        seg1.start_node_id == seg2.end_node_id or
-                        seg1.end_node_id == seg2.start_node_id or
-                        seg1.end_node_id == seg2.end_node_id):
-                        continue
-                
-                centerline_dist = self._segment_to_segment_distance(seg1, seg2)
-                
-                r2 = seg2.geometry.mean_radius()
-                
-                # P0-1: Return clearance (surface-to-surface distance), not centerline distance
-                clearance = centerline_dist - r1 - r2
-                
-                if clearance < min_clearance:
-                    collisions.append((seg_id1, seg2_id, clearance))
-        
-        return collisions
-    
-    def _segment_to_segment_distance(self, seg1: VesselSegment, seg2: VesselSegment) -> float:
-        """
-        Compute exact minimum distance between two segment centerlines.
-        
-        P0-3: If either segment is a polyline (has centerline_points), compute
-        min distance across all subsegment pairs for correct collision detection
-        of curved routes.
-        
-        Uses analytic formula for true minimum distance between 3D line segments,
-        handling all cases including parallel and skew segments.
-        """
-        start1 = self.network.get_node(seg1.start_node_id)
-        end1 = self.network.get_node(seg1.end_node_id)
-        start2 = self.network.get_node(seg2.start_node_id)
-        end2 = self.network.get_node(seg2.end_node_id)
-        
-        if None in (start1, end1, start2, end2):
-            return float('inf')
-        
-        # Build polyline for seg1
-        if seg1.geometry.centerline_points:
-            polyline1 = [start1.position.to_array()]
-            polyline1.extend([p.to_array() for p in seg1.geometry.centerline_points])
-            polyline1.append(end1.position.to_array())
-        else:
-            polyline1 = [start1.position.to_array(), end1.position.to_array()]
-        
-        # Build polyline for seg2
-        if seg2.geometry.centerline_points:
-            polyline2 = [start2.position.to_array()]
-            polyline2.extend([p.to_array() for p in seg2.geometry.centerline_points])
-            polyline2.append(end2.position.to_array())
-        else:
-            polyline2 = [start2.position.to_array(), end2.position.to_array()]
-        
-        # If both are simple segments (no centerline_points), use fast path
-        if len(polyline1) == 2 and len(polyline2) == 2:
-            return segment_segment_distance_exact(polyline1[0], polyline1[1], polyline2[0], polyline2[1])
-        
-        # P0-3: Compute min distance across all subsegment pairs
-        min_dist = float('inf')
-        for i in range(len(polyline1) - 1):
-            p1_start = polyline1[i]
-            p1_end = polyline1[i + 1]
-            for j in range(len(polyline2) - 1):
-                p2_start = polyline2[j]
-                p2_end = polyline2[j + 1]
-                dist = segment_segment_distance_exact(p1_start, p1_end, p2_start, p2_end)
-                min_dist = min(min_dist, dist)
-        
-        return min_dist
+        if segment_id not in self._segment_starts:
+            return None
+        return {
+            "start": self._segment_starts[segment_id],
+            "end": self._segment_ends[segment_id],
+            "radius": self._segment_radii[segment_id],
+            "centerline": self._segment_centerlines.get(segment_id),
+        }

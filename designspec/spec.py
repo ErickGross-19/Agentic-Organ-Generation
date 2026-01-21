@@ -322,6 +322,8 @@ def _normalize_backend_params(
     - collision_merge_distance, multi_inlet_blend_sigma
     - Nested tissue_sampling dict
     - Nested space_colonization_policy dict
+    - Scaffold top-down specific fields (step_length, spread, etc.)
+    - Nested collision_online and collision_postpass dicts
     """
     result = dict(backend_params)
     
@@ -334,6 +336,7 @@ def _normalize_backend_params(
         "collision_clearance", "min_terminal_separation",  # CCO specific
         "collision_merge_distance",  # Multi-inlet merge distance
         "multi_inlet_blend_sigma",  # Multi-inlet blend sigma
+        "step_length", "spread",  # Scaffold top-down specific
     }
     
     for field_name in backend_length_fields:
@@ -349,6 +352,24 @@ def _normalize_backend_params(
         result["space_colonization_policy"] = _normalize_space_colonization_policy(
             result["space_colonization_policy"], scale
         )
+    
+    # Normalize nested collision_online dict (scaffold_topdown)
+    if "collision_online" in result and isinstance(result["collision_online"], dict):
+        collision_online = dict(result["collision_online"])
+        collision_online_length_fields = {"buffer_abs_m", "cell_size_m"}
+        for field_name in collision_online_length_fields:
+            if field_name in collision_online and collision_online[field_name] is not None:
+                collision_online[field_name] = _convert_value(collision_online[field_name], scale)
+        result["collision_online"] = collision_online
+    
+    # Normalize nested collision_postpass dict (scaffold_topdown)
+    if "collision_postpass" in result and isinstance(result["collision_postpass"], dict):
+        collision_postpass = dict(result["collision_postpass"])
+        collision_postpass_length_fields = {"min_clearance_m", "min_radius_m"}
+        for field_name in collision_postpass_length_fields:
+            if field_name in collision_postpass and collision_postpass[field_name] is not None:
+                collision_postpass[field_name] = _convert_value(collision_postpass[field_name], scale)
+        result["collision_postpass"] = collision_postpass
     
     return result
 

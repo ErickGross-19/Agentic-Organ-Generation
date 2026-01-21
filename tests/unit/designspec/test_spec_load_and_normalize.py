@@ -323,6 +323,106 @@ class TestBackendParamsNormalization:
         assert backend_params["terminal_radius"] == pytest.approx(0.0001)
         # num_levels should remain unchanged (not a length field)
         assert backend_params["num_levels"] == 7
+    
+    def test_scaffold_topdown_backend_params_normalized(self):
+        """scaffold_topdown backend_params length fields should be converted from mm to m."""
+        spec_dict = {
+            "schema": {"name": "aog_designspec", "version": "1.0.0"},
+            "meta": {"seed": 42, "input_units": "mm"},
+            "policies": {
+                "growth": {
+                    "backend": "scaffold_topdown",
+                    "backend_params": {
+                        "step_length": 2.0,  # 2.0mm
+                        "spread": 1.5,  # 1.5mm
+                        "wall_margin_m": 0.1,  # 0.1mm
+                        "splits": 3,  # Not a length field
+                        "levels": 5,  # Not a length field
+                        "ratio": 0.78,  # Not a length field
+                    }
+                }
+            },
+            "domains": {"main": {"type": "box", "x_min": -5, "x_max": 5, "y_min": -5, "y_max": 5, "z_min": -3, "z_max": 3}},
+            "components": [],
+        }
+        spec = DesignSpec.from_dict(spec_dict)
+        
+        backend_params = spec.policies["growth"]["backend_params"]
+        # step_length should be converted from 2.0mm to 0.002m
+        assert backend_params["step_length"] == pytest.approx(0.002)
+        # spread should be converted from 1.5mm to 0.0015m
+        assert backend_params["spread"] == pytest.approx(0.0015)
+        # wall_margin_m should be converted from 0.1mm to 0.0001m
+        assert backend_params["wall_margin_m"] == pytest.approx(0.0001)
+        # Non-length fields should remain unchanged
+        assert backend_params["splits"] == 3
+        assert backend_params["levels"] == 5
+        assert backend_params["ratio"] == 0.78
+    
+    def test_scaffold_topdown_collision_online_params_normalized(self):
+        """scaffold_topdown collision_online nested dict length fields should be converted."""
+        spec_dict = {
+            "schema": {"name": "aog_designspec", "version": "1.0.0"},
+            "meta": {"seed": 42, "input_units": "mm"},
+            "policies": {
+                "growth": {
+                    "backend": "scaffold_topdown",
+                    "backend_params": {
+                        "collision_online": {
+                            "enabled": True,
+                            "buffer_abs_m": 0.02,  # 0.02mm
+                            "cell_size_m": 0.5,  # 0.5mm
+                            "buffer_rel": 0.05,  # Not a length field (relative)
+                            "rotation_attempts": 14,  # Not a length field
+                        }
+                    }
+                }
+            },
+            "domains": {"main": {"type": "box", "x_min": -5, "x_max": 5, "y_min": -5, "y_max": 5, "z_min": -3, "z_max": 3}},
+            "components": [],
+        }
+        spec = DesignSpec.from_dict(spec_dict)
+        
+        collision_online = spec.policies["growth"]["backend_params"]["collision_online"]
+        # buffer_abs_m should be converted from 0.02mm to 0.00002m
+        assert collision_online["buffer_abs_m"] == pytest.approx(0.00002)
+        # cell_size_m should be converted from 0.5mm to 0.0005m
+        assert collision_online["cell_size_m"] == pytest.approx(0.0005)
+        # Non-length fields should remain unchanged
+        assert collision_online["enabled"] is True
+        assert collision_online["buffer_rel"] == 0.05
+        assert collision_online["rotation_attempts"] == 14
+    
+    def test_scaffold_topdown_collision_postpass_params_normalized(self):
+        """scaffold_topdown collision_postpass nested dict length fields should be converted."""
+        spec_dict = {
+            "schema": {"name": "aog_designspec", "version": "1.0.0"},
+            "meta": {"seed": 42, "input_units": "mm"},
+            "policies": {
+                "growth": {
+                    "backend": "scaffold_topdown",
+                    "backend_params": {
+                        "collision_postpass": {
+                            "enabled": True,
+                            "min_clearance_m": 0.02,  # 0.02mm
+                            "shrink_factor": 0.9,  # Not a length field
+                            "shrink_max_iterations": 6,  # Not a length field
+                        }
+                    }
+                }
+            },
+            "domains": {"main": {"type": "box", "x_min": -5, "x_max": 5, "y_min": -5, "y_max": 5, "z_min": -3, "z_max": 3}},
+            "components": [],
+        }
+        spec = DesignSpec.from_dict(spec_dict)
+        
+        collision_postpass = spec.policies["growth"]["backend_params"]["collision_postpass"]
+        # min_clearance_m should be converted from 0.02mm to 0.00002m
+        assert collision_postpass["min_clearance_m"] == pytest.approx(0.00002)
+        # Non-length fields should remain unchanged
+        assert collision_postpass["enabled"] is True
+        assert collision_postpass["shrink_factor"] == 0.9
+        assert collision_postpass["shrink_max_iterations"] == 6
 
 
 class TestNestedPolicyNormalization:
