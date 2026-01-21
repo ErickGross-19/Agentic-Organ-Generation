@@ -10,7 +10,7 @@ All geometric values are in METERS internally.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, Tuple, List
+from typing import Optional, Dict, Any, Tuple, List, Set
 import numpy as np
 import logging
 
@@ -356,6 +356,7 @@ class ScaffoldTopDownBackend(GenerationBackend):
         vessel_type: str,
         domain: DomainSpec,
         rng: np.random.Generator,
+        parent_seg_id: Optional[int] = None,
     ) -> None:
         """
         Recursively create branches with collision avoidance.
@@ -415,6 +416,7 @@ class ScaffoldTopDownBackend(GenerationBackend):
                 domain=domain,
                 rng=rng,
                 parent_direction=parent_direction,
+                parent_seg_id=parent_seg_id,
             )
             
             if not collision_resolved:
@@ -506,6 +508,7 @@ class ScaffoldTopDownBackend(GenerationBackend):
                     vessel_type=vessel_type,
                     domain=domain,
                     rng=rng,
+                    parent_seg_id=segment_id,
                 )
     
     def _get_perpendicular_axes(
@@ -565,6 +568,7 @@ class ScaffoldTopDownBackend(GenerationBackend):
         domain: DomainSpec,
         rng: np.random.Generator,
         parent_direction: np.ndarray,
+        parent_seg_id: Optional[int] = None,
     ) -> Tuple[np.ndarray, bool]:
         """
         Find a collision-free position for the branch endpoint.
@@ -588,6 +592,9 @@ class ScaffoldTopDownBackend(GenerationBackend):
             config.collision_online.buffer_rel * avg_radius,
         )
         
+        # Build exclude_segment_ids set from parent_seg_id
+        exclude_segment_ids = {parent_seg_id} if parent_seg_id is not None else None
+        
         # Check collision on the actual curved polyline, not just straight line
         if self._check_candidate_polyline_collision(
             parent_pos=parent_pos,
@@ -598,6 +605,7 @@ class ScaffoldTopDownBackend(GenerationBackend):
             buffer=buffer,
             spatial_index=spatial_index,
             config=config,
+            exclude_segment_ids=exclude_segment_ids,
         ):
             # Collision detected, try alternatives
             self._stats["collisions_detected"] += 1
@@ -639,6 +647,7 @@ class ScaffoldTopDownBackend(GenerationBackend):
                 buffer=buffer,
                 spatial_index=spatial_index,
                 config=config,
+                exclude_segment_ids=exclude_segment_ids,
             ):
                 self._stats["rotations_successful"] += 1
                 return new_target, True
@@ -675,6 +684,7 @@ class ScaffoldTopDownBackend(GenerationBackend):
                     buffer=buffer,
                     spatial_index=spatial_index,
                     config=config,
+                    exclude_segment_ids=exclude_segment_ids,
                 ):
                     self._stats["rotations_successful"] += 1
                     return new_target, True
@@ -691,11 +701,19 @@ class ScaffoldTopDownBackend(GenerationBackend):
         buffer: float,
         spatial_index: DynamicSpatialIndex,
         config: ScaffoldTopDownConfig,
+        exclude_segment_ids: Optional[Set[int]] = None,
     ) -> bool:
         """
         Check if a candidate curved polyline collides with existing segments.
         
         Computes the curved path first, then validates the entire polyline.
+        
+        Parameters
+        ----------
+        exclude_segment_ids : Optional[Set[int]]
+            Segment IDs to exclude from collision checks (e.g., parent segment).
+            This is the deterministic ID-based approach instead of coordinate-based
+            adjacency exclusion.
         
         Returns
         -------
@@ -717,12 +735,12 @@ class ScaffoldTopDownBackend(GenerationBackend):
         polyline_points.extend(centerline)
         polyline_points.append(target_pos)
         
-        # Check collision on the entire polyline
+        # Check collision on the entire polyline using segment ID-based exclusion
         return spatial_index.check_polyline_collision(
             points=polyline_points,
             radius=avg_radius,
             buffer=buffer,
-            exclude_adjacent_to=parent_pos,
+            exclude_segment_ids=exclude_segment_ids,
         )
     
     def _compute_curved_path(
