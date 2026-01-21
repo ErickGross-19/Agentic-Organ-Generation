@@ -118,8 +118,8 @@
     },
 
     "validity": {
-      "check_watertight": false,
-      "check_components": false,
+      "check_watertight": true,
+      "check_components": true,
       "check_min_diameter": false,
       "check_open_ports": false,
       "check_bounds": true,
