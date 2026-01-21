@@ -1,0 +1,38 @@
+name: agentic-scaffolding
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  # Python version
+  - python>=3.9,<3.12
+
+  # Core scientific computing
+  - numpy>=1.21
+
+  # 3D visualization
+  - pyvista>=0.42
+
+  # Web framework (Trame ecosystem)
+  - pip
+
+  # Optional: Performance optimization
+  - numba>=0.57  # JIT compilation for collision detection
+
+  # pip-only packages
+  - pip:
+    # 3D geometry library (boolean operations)
+    - manifold3d>=2.3
+
+    # Trame web framework
+    - trame>=3.0
+    - trame-vuetify>=2.4
+    - trame-vtk>=2.6
+
+    # LLM integration (optional but recommended)
+    - anthropic>=0.18
+
+    # GPU acceleration (optional, requires CUDA)
+    # Uncomment if you have NVIDIA GPU with CUDA installed:
+    # - cupy-cuda12x>=12.0  # For CUDA 12.x
+    # - cupy-cuda11x>=12.0  # For CUDA 11.x

@@ -1,0 +1,22 @@
+# Agentic Scaffolding - Python Dependencies
+# Install with: pip install -r requirements.txt
+
+# Core dependencies
+numpy>=1.21
+pyvista>=0.42
+manifold3d>=2.3
+
+# Trame web framework
+trame>=3.0
+trame-vuetify>=2.4
+trame-vtk>=2.6
+
+# LLM integration (optional but recommended for scaffold_agent.py)
+anthropic>=0.18
+
+# Performance optimization (optional)
+numba>=0.57  # JIT compilation - significantly speeds up collision detection
+
+# GPU acceleration (optional - uncomment if you have NVIDIA GPU + CUDA)
+# cupy-cuda12x>=12.0  # For CUDA 12.x
+# cupy-cuda11x>=12.0  # For CUDA 11.x

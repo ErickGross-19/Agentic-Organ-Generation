@@ -266,19 +266,127 @@ output/
 
 ## Installation
 
+### Option 1: Conda (Recommended)
+
+The `environment.yml` file provides a complete, reproducible environment:
+
+```bash
+# Create and activate the environment
+conda env create -f environment.yml
+conda activate agentic-scaffolding
+
+# Verify installation
+python -c "import numpy, pyvista, manifold3d, trame; print('All dependencies installed!')"
+```
+
+### Option 2: pip
+
+Use `requirements.txt` for pip-based installation:
+
+```bash
+# Create a virtual environment (recommended)
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+### Option 3: Manual Installation
+
 ```bash
 # Core dependencies
-pip install numpy manifold3d pyvista
+pip install numpy>=1.21 manifold3d>=2.3 pyvista>=0.42
 
-# Web interface
-pip install trame trame-vuetify trame-vtk
+# Web interface (Trame ecosystem)
+pip install trame>=3.0 trame-vuetify>=2.4 trame-vtk>=2.6
 
-# LLM features (optional)
-pip install anthropic
+# LLM features (optional but enables natural language commands)
+pip install anthropic>=0.18
 
 # Performance optimizations (optional but recommended)
-pip install numba        # 10-100x speedup on collision detection
-pip install cupy-cuda12x # GPU acceleration (requires CUDA)
+pip install numba>=0.57   # 10-100x speedup on collision detection
+```
+
+### GPU Acceleration (Optional)
+
+For NVIDIA GPUs with CUDA, CuPy provides additional acceleration:
+
+```bash
+# For CUDA 12.x
+pip install cupy-cuda12x>=12.0
+
+# For CUDA 11.x
+pip install cupy-cuda11x>=12.0
+```
+
+### Verifying Installation
+
+```bash
+# Check all dependencies
+python -c "
+import numpy as np
+import pyvista as pv
+import manifold3d as m3d
+from trame.app import get_server
+print('Core dependencies: OK')
+
+try:
+    from numba import jit
+    print('Numba JIT: OK')
+except ImportError:
+    print('Numba JIT: Not installed (optional)')
+
+try:
+    import cupy as cp
+    print('CuPy GPU: OK')
+except ImportError:
+    print('CuPy GPU: Not installed (optional)')
+
+try:
+    import anthropic
+    print('Anthropic: OK')
+except ImportError:
+    print('Anthropic: Not installed (optional)')
+"
+```
+
+### Dependency Matrix
+
+| Package | Required | Purpose | Performance Impact |
+|---------|----------|---------|-------------------|
+| `numpy` | Yes | Core numerical computing | - |
+| `pyvista` | Yes | 3D visualization | - |
+| `manifold3d` | Yes | Boolean geometry operations | - |
+| `trame` | Yes | Web framework | - |
+| `trame-vuetify` | Yes | UI components | - |
+| `trame-vtk` | Yes | 3D rendering | - |
+| `anthropic` | No | LLM natural language | Enables AI commands |
+| `numba` | No | JIT compilation | 10-100x on collision detection |
+| `cupy` | No | GPU acceleration | 2-5x on large scaffolds |
+
+### Troubleshooting
+
+**manifold3d installation fails:**
+```bash
+# Try building from source
+pip install manifold3d --no-binary manifold3d
+```
+
+**Trame won't start:**
+```bash
+# Ensure port is free
+lsof -i :8080  # Check what's using the port
+# Or use a different port
+python scaffold_web_collision.py --port 8888
+```
+
+**No GPU acceleration detected:**
+```bash
+# Check CUDA installation
+nvidia-smi
+# Ensure cupy matches your CUDA version
+pip install cupy-cuda12x  # or cupy-cuda11x
 ```
 
 ## Parameter Reference
