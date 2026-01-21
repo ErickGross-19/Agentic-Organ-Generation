@@ -374,6 +374,7 @@ class DesignSpecRunner:
             OutputPolicy,
             DomainMeshingPolicy,
             RidgePolicy,
+            NetworkCleanupPolicy,
         )
         
         warnings = []
@@ -399,6 +400,7 @@ class DesignSpecRunner:
             "output": OutputPolicy,
             "domain_meshing": DomainMeshingPolicy,
             "ridge": RidgePolicy,
+            "network_cleanup": NetworkCleanupPolicy,
         }
         
         for policy_name, policy_dict in self.spec.policies.items():
@@ -1056,6 +1058,10 @@ class DesignSpecRunner:
             
             self.artifacts.register("domain_mesh", Stage.MESH_DOMAIN.value, domain_mesh)
             
+            # Persist domain mesh if requested (so ridge can be inspected)
+            if self.artifacts.is_requested("domain_mesh"):
+                self.artifacts.persist("domain_mesh", domain_mesh)
+            
             return StageReport(
                 stage=Stage.MESH_DOMAIN.value,
                 success=True,
@@ -1556,6 +1562,16 @@ class DesignSpecRunner:
             seed=self.spec.seed,
         )
         
+        # Apply network cleanup (merge-on-collision, snap/prune) if enabled via JSON policy
+        cleanup_policy = self._compiled_policies.get("network_cleanup")
+        if cleanup_policy is not None:
+            from generation.ops.network.cleanup import cleanup_network
+            network, cleanup_report = cleanup_network(network, cleanup_policy)
+            # Fold cleanup metadata into the report for visibility
+            if report.metadata is None:
+                report.metadata = {}
+            report.metadata["network_cleanup"] = cleanup_report.metadata
+        
         artifact_name = f"{component_id}_network"
         self.artifacts.register(
             artifact_name,
@@ -1581,6 +1597,8 @@ class DesignSpecRunner:
         Build primitive channels (e.g., fang hooks).
         
         Uses component-level policy overrides if component is provided.
+        Uses merge policy from composition (JSON-controlled) so we don't discard
+        disconnected channels.
         """
         from generation.api.generate import generate_void_mesh
         from aog_policies import ChannelPolicy
@@ -1596,11 +1614,16 @@ class DesignSpecRunner:
                 channel_policy_dict = self.spec.policies.get("channels", {})
                 channel_policy = ChannelPolicy.from_dict(channel_policy_dict)
         
+        # Use merge policy from composition (JSON-controlled) so we don't discard disconnected channels
+        composition_policy = self._compiled_policies.get("composition")
+        merge_policy = getattr(composition_policy, "merge_policy", None) if composition_policy else None
+        
         void_mesh, report = generate_void_mesh(
             kind="primitive_channels",
             domain=domain,
             ports=ports,
             channel_policy=channel_policy,
+            merge_policy=merge_policy,
         )
         
         artifact_name = f"{component_id}_void_mesh"

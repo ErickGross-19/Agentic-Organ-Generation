@@ -579,20 +579,26 @@ def add_ridge(
     warnings = []
     
     # If domain_spec is provided, use RidgeFeature to create ridge
+    merge_method = None
     if domain_spec is not None:
         feature = RidgeFeature(spec)
         result = feature.create(domain_spec, face_id)
         
         if result.success and result.mesh is not None:
-            # Union ridge with domain mesh
+            # Union ridge with domain mesh (boolean if available; fallback if not)
+            merge_method = "boolean"
             try:
                 combined = domain_mesh.union(result.mesh)
                 if combined is not None and len(combined.vertices) > 0:
                     domain_mesh = combined
                 else:
-                    warnings.append("Ridge union failed, returning original mesh")
+                    raise RuntimeError("Boolean union returned empty mesh")
             except Exception as e:
-                warnings.append(f"Ridge union failed: {e}")
+                # Fallback: concatenate meshes so ridge is still real geometry.
+                # This is robust even when no boolean backend exists.
+                merge_method = "concat_fallback"
+                warnings.append(f"Ridge boolean union failed ({type(e).__name__}: {e}); using concatenation fallback")
+                domain_mesh = trimesh.util.concatenate([domain_mesh, result.mesh])
         
         constraints = result.constraints or FeatureConstraints()
         warnings.extend(result.warnings)
@@ -652,6 +658,7 @@ def add_ridge(
             "face": face,
             "face_id": face_id.value,
             "effective_radius": constraints.effective_radius,
+            "ridge_merge_method": merge_method,
             "face_center": constraints.face_center.tolist() if constraints.face_center is not None else None,
             "face_normal": constraints.face_normal.tolist() if constraints.face_normal is not None else None,
         },
