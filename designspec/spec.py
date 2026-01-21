@@ -224,6 +224,129 @@ def _convert_value(value: Any, scale: float) -> Any:
     return value
 
 
+def _normalize_tissue_sampling(
+    tissue_sampling: Dict[str, Any],
+    scale: float,
+) -> Dict[str, Any]:
+    """
+    Normalize length fields in tissue_sampling dict.
+    
+    Length fields:
+    - depth_min, depth_max
+    - min_distance_to_ports
+    - r_min, r_max
+    - ring_r0, ring_sigma
+    - shell_thickness
+    - gaussian_mean, gaussian_sigma (lists of lengths)
+    - mixture_components (recursive)
+    """
+    result = dict(tissue_sampling)
+    
+    length_fields = {
+        "depth_min", "depth_max",
+        "min_distance_to_ports",
+        "r_min", "r_max",
+        "ring_r0", "ring_sigma",
+        "shell_thickness",
+    }
+    
+    for field_name in length_fields:
+        if field_name in result and result[field_name] is not None:
+            result[field_name] = _convert_value(result[field_name], scale)
+    
+    # gaussian_mean and gaussian_sigma are lists of lengths
+    if "gaussian_mean" in result and result["gaussian_mean"] is not None:
+        result["gaussian_mean"] = _convert_value(result["gaussian_mean"], scale)
+    if "gaussian_sigma" in result and result["gaussian_sigma"] is not None:
+        result["gaussian_sigma"] = _convert_value(result["gaussian_sigma"], scale)
+    
+    # mixture_components may contain nested policy objects with length fields
+    if "mixture_components" in result and isinstance(result["mixture_components"], list):
+        normalized_components = []
+        for comp in result["mixture_components"]:
+            if isinstance(comp, dict):
+                normalized_comp = dict(comp)
+                # Each component may have its own policy subobject
+                if "policy" in normalized_comp and isinstance(normalized_comp["policy"], dict):
+                    normalized_comp["policy"] = _normalize_tissue_sampling(
+                        normalized_comp["policy"], scale
+                    )
+                normalized_components.append(normalized_comp)
+            else:
+                normalized_components.append(comp)
+        result["mixture_components"] = normalized_components
+    
+    return result
+
+
+def _normalize_space_colonization_policy(
+    sc_policy: Dict[str, Any],
+    scale: float,
+) -> Dict[str, Any]:
+    """
+    Normalize length fields in space_colonization_policy dict.
+    
+    Length fields:
+    - branch_enable_after_distance
+    - min_branch_segment_length
+    """
+    result = dict(sc_policy)
+    
+    length_fields = {
+        "branch_enable_after_distance",
+        "min_branch_segment_length",
+    }
+    
+    for field_name in length_fields:
+        if field_name in result and result[field_name] is not None:
+            result[field_name] = _convert_value(result[field_name], scale)
+    
+    return result
+
+
+def _normalize_backend_params(
+    backend_params: Dict[str, Any],
+    scale: float,
+) -> Dict[str, Any]:
+    """
+    Normalize length fields in backend_params dict.
+    
+    Handles:
+    - Top-level length fields (influence_radius, kill_radius, etc.)
+    - collision_merge_distance, multi_inlet_blend_sigma
+    - Nested tissue_sampling dict
+    - Nested space_colonization_policy dict
+    """
+    result = dict(backend_params)
+    
+    # Known length fields in backend_params
+    backend_length_fields = {
+        "step_size", "min_segment_length", "max_segment_length",
+        "influence_radius", "kill_radius", "perception_radius",
+        "clearance", "min_radius", "max_radius",
+        "wall_margin_m", "terminal_radius",  # K-ary tree specific
+        "collision_clearance", "min_terminal_separation",  # CCO specific
+        "collision_merge_distance",  # Multi-inlet merge distance
+        "multi_inlet_blend_sigma",  # Multi-inlet blend sigma
+    }
+    
+    for field_name in backend_length_fields:
+        if field_name in result and result[field_name] is not None:
+            result[field_name] = _convert_value(result[field_name], scale)
+    
+    # Normalize nested tissue_sampling dict
+    if "tissue_sampling" in result and isinstance(result["tissue_sampling"], dict):
+        result["tissue_sampling"] = _normalize_tissue_sampling(result["tissue_sampling"], scale)
+    
+    # Normalize nested space_colonization_policy dict
+    if "space_colonization_policy" in result and isinstance(result["space_colonization_policy"], dict):
+        result["space_colonization_policy"] = _normalize_space_colonization_policy(
+            result["space_colonization_policy"], scale
+        )
+    
+    return result
+
+
 def _normalize_policy_to_meters(
     policy_name: str,
     policy_dict: Dict[str, Any],
@@ -269,18 +392,7 @@ def _normalize_policy_to_meters(
     if policy_name == "growth" and "backend_params" in result:
         backend_params = result["backend_params"]
         if isinstance(backend_params, dict):
-            # Known length fields in backend_params
-            backend_length_fields = {
-                "step_size", "min_segment_length", "max_segment_length",
-                "influence_radius", "kill_radius", "perception_radius",
-                "clearance", "min_radius", "max_radius",
-                "wall_margin_m", "terminal_radius",  # K-ary tree specific
-                "collision_clearance", "min_terminal_separation",  # CCO specific
-            }
-            for field_name in backend_length_fields:
-                if field_name in backend_params and backend_params[field_name] is not None:
-                    backend_params[field_name] = _convert_value(backend_params[field_name], scale)
-            result["backend_params"] = backend_params
+            result["backend_params"] = _normalize_backend_params(backend_params, scale)
     
     # Handle domain_meshing sub-policies
     if policy_name == "domain_meshing":
@@ -369,17 +481,7 @@ def _normalize_component_to_meters(
     if "build" in result and isinstance(result["build"], dict):
         backend_params = result["build"].get("backend_params", {})
         if isinstance(backend_params, dict):
-            # Known length fields in backend_params
-            backend_length_fields = {
-                "step_size", "min_segment_length", "max_segment_length",
-                "influence_radius", "kill_radius", "perception_radius",
-                "clearance", "min_radius", "max_radius",
-                "wall_margin_m", "terminal_radius",  # K-ary tree specific
-            }
-            for field_name in backend_length_fields:
-                if field_name in backend_params and backend_params[field_name] is not None:
-                    backend_params[field_name] = _convert_value(backend_params[field_name], scale)
-            result["build"]["backend_params"] = backend_params
+            result["build"]["backend_params"] = _normalize_backend_params(backend_params, scale)
     
     return result
 
