@@ -22,13 +22,17 @@ class RidgePolicy:
     Policy for ridge features on domain faces.
     
     A ridge is a raised ring (for cylinders) or frame (for boxes) around
-    the perimeter of a face. Ridge constraints inform:
+    the perimeter of a face. When enabled, the ridge mesh is created and
+    unioned with the domain mesh during the mesh_domain stage. Ridge
+    constraints also inform:
     - Port placement clamp (effective radius)
     - Fang-hook enforcement (max depth)
     - Channel routing constraints (exclusion zones)
     
     JSON Schema:
     {
+        "enabled": bool,
+        "face": str (canonical face string: "top", "bottom", "+x", "-x", "+y", "-y"),
         "height": float (meters),
         "thickness": float (meters),
         "inset": float (meters),
@@ -36,6 +40,8 @@ class RidgePolicy:
         "resolution": int
     }
     """
+    enabled: bool = False  # Default False for backward compatibility
+    face: str = "top"  # Canonical face string for ridge placement
     height: float = 0.001  # 1mm
     thickness: float = 0.001  # 1mm
     inset: float = 0.0
@@ -48,6 +54,8 @@ class RidgePolicy:
     
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "enabled": self.enabled,
+            "face": self.face,
             "height": self.height,
             "thickness": self.thickness,
             "inset": self.inset,
