@@ -110,9 +110,9 @@ class EllipsoidDomain(DomainSpec):
 
     def project_inside(self, point: Point3D, margin: Optional[float] = None) -> Point3D:
         """
-        Project point to nearest point inside ellipsoid.
+        Project point to nearest point inside ellipsoid with margin from boundary.
         
-        H1 FIX: Uses margin parameter instead of hardcoded 0.99 factor.
+        Enforces margin even when point is already inside but too close to boundary.
         
         Parameters
         ----------
@@ -121,37 +121,54 @@ class EllipsoidDomain(DomainSpec):
         margin : float, optional
             Margin from boundary. If None, uses 0.1% of smallest semi-axis.
         """
+        if margin is None:
+            # Use 0.1% of smallest axis as default margin (proportional, not fixed)
+            smallest_axis = min(self.semi_axis_a, self.semi_axis_b, self.semi_axis_c)
+            margin = smallest_axis * 1e-3  # 0.1% proportional margin
+        
+        # Check if point is inside AND has sufficient margin from boundary
         if self.contains(point):
-            return point
-
+            dist_to_boundary = self.distance_to_boundary(point)
+            if dist_to_boundary >= margin:
+                return point
+            # Point is inside but too close to boundary - need to move it inward
+        
         dx = point.x - self.center.x
         dy = point.y - self.center.y
         dz = point.z - self.center.z
 
         r = np.sqrt(dx**2 + dy**2 + dz**2)
         if r < 1e-10:
+            # Point is at center, already has maximum margin
             return self.center
 
         direction = np.array([dx / r, dy / r, dz / r])
 
-        t = 1.0 / np.sqrt(
+        # Compute distance to surface along this direction
+        t_surface = 1.0 / np.sqrt(
             (direction[0] / self.semi_axis_a) ** 2 +
             (direction[1] / self.semi_axis_b) ** 2 +
             (direction[2] / self.semi_axis_c) ** 2
         )
 
-        if margin is None:
-            # Use 0.1% of smallest axis as default margin (proportional, not fixed)
-            smallest_axis = min(self.semi_axis_a, self.semi_axis_b, self.semi_axis_c)
-            margin = smallest_axis * 1e-3  # 0.1% proportional margin
+        # Compute the effective inner ellipsoid that respects margin
+        # Scale factor to move point inside by margin
+        smallest_axis = min(self.semi_axis_a, self.semi_axis_b, self.semi_axis_c)
+        margin_factor = 1.0 - (margin / smallest_axis)
+        margin_factor = max(0.1, margin_factor)  # Ensure we don't go negative
         
-        margin_factor = 1.0 - (margin / min(self.semi_axis_a, self.semi_axis_b, self.semi_axis_c))
-        t *= max(0.9, margin_factor)
-
+        # Target distance is the surface distance scaled by margin factor
+        t_target = t_surface * margin_factor
+        
+        # If point is already closer to center than target, keep it
+        if r <= t_target:
+            return point
+        
+        # Move point to target distance along the direction from center
         return Point3D(
-            self.center.x + t * direction[0],
-            self.center.y + t * direction[1],
-            self.center.z + t * direction[2],
+            self.center.x + t_target * direction[0],
+            self.center.y + t_target * direction[1],
+            self.center.z + t_target * direction[2],
         )
 
     def distance_to_boundary(self, point: Point3D) -> float:
@@ -264,7 +281,9 @@ class BoxDomain(DomainSpec):
 
     def project_inside(self, point: Point3D, margin: Optional[float] = None) -> Point3D:
         """
-        Project point to nearest point inside box.
+        Project point to nearest point inside box with margin from boundary.
+        
+        Enforces margin even when point is already inside but too close to boundary.
         
         Parameters
         ----------
@@ -273,9 +292,6 @@ class BoxDomain(DomainSpec):
         margin : float, optional
             Margin from boundary. If None, uses 0.1% of smallest dimension.
         """
-        if self.contains(point):
-            return point
-
         if margin is None:
             # Use 0.1% of smallest dimension (proportional, not fixed)
             smallest_dim = min(
@@ -285,9 +301,22 @@ class BoxDomain(DomainSpec):
             )
             margin = smallest_dim * 1e-3  # 0.1% proportional margin
         
-        x = np.clip(point.x, self.x_min + margin, self.x_max - margin)
-        y = np.clip(point.y, self.y_min + margin, self.y_max - margin)
-        z = np.clip(point.z, self.z_min + margin, self.z_max - margin)
+        # Check if point is inside AND has sufficient margin from boundary
+        if self.contains(point):
+            dist_to_boundary = self.distance_to_boundary(point)
+            if dist_to_boundary >= margin:
+                return point
+            # Point is inside but too close to boundary - need to clamp it
+        
+        # Clamp to [min+margin, max-margin] per axis
+        # Ensure margin doesn't exceed half the dimension
+        x_margin = min(margin, (self.x_max - self.x_min) / 2 - 1e-10)
+        y_margin = min(margin, (self.y_max - self.y_min) / 2 - 1e-10)
+        z_margin = min(margin, (self.z_max - self.z_min) / 2 - 1e-10)
+        
+        x = np.clip(point.x, self.x_min + x_margin, self.x_max - x_margin)
+        y = np.clip(point.y, self.y_min + y_margin, self.y_max - y_margin)
+        z = np.clip(point.z, self.z_min + z_margin, self.z_max - z_margin)
 
         return Point3D(x, y, z)
 
@@ -407,7 +436,9 @@ class CylinderDomain(DomainSpec):
 
     def project_inside(self, point: Point3D, margin: Optional[float] = None) -> Point3D:
         """
-        Project point to nearest point inside cylinder.
+        Project point to nearest point inside cylinder with margin from boundary.
+        
+        Enforces margin even when point is already inside but too close to boundary.
         
         Parameters
         ----------
@@ -416,8 +447,17 @@ class CylinderDomain(DomainSpec):
         margin : float, optional
             Margin from boundary. If None, uses 0.1% of smallest dimension.
         """
+        if margin is None:
+            # Use 0.1% of smallest dimension (proportional, not fixed)
+            smallest_dim = min(self.radius, self.height)
+            margin = smallest_dim * 1e-3  # 0.1% proportional margin
+        
+        # Check if point is inside AND has sufficient margin from boundary
         if self.contains(point):
-            return point
+            dist_to_boundary = self.distance_to_boundary(point)
+            if dist_to_boundary >= margin:
+                return point
+            # Point is inside but too close to boundary - need to move it inward
 
         dx = point.x - self.center.x
         dy = point.y - self.center.y
@@ -425,18 +465,20 @@ class CylinderDomain(DomainSpec):
 
         r_xy = np.sqrt(dx**2 + dy**2)
         half_height = self.height / 2
+        
+        # Ensure margin doesn't exceed the available space
+        radial_margin = min(margin, self.radius - 1e-10)
+        axial_margin = min(margin, half_height - 1e-10)
 
-        if margin is None:
-            # Use 0.1% of smallest dimension (proportional, not fixed)
-            smallest_dim = min(self.radius, self.height)
-            margin = smallest_dim * 1e-3  # 0.1% proportional margin
-
-        if r_xy > self.radius:
-            scale = (self.radius - margin) / r_xy
+        # Enforce radial constraint: r_xy <= radius - margin
+        max_radial = self.radius - radial_margin
+        if r_xy > max_radial and r_xy > 1e-10:
+            scale = max_radial / r_xy
             dx *= scale
             dy *= scale
 
-        dz = np.clip(dz, -half_height + margin, half_height - margin)
+        # Enforce axial constraint: z within [z_min + margin, z_max - margin]
+        dz = np.clip(dz, -half_height + axial_margin, half_height - axial_margin)
 
         return Point3D(
             self.center.x + dx,
@@ -585,9 +627,9 @@ class MeshDomain(DomainSpec):
 
     def project_inside(self, point: Point3D, margin: Optional[float] = None) -> Point3D:
         """
-        Project point to nearest point inside mesh.
+        Project point to nearest point inside mesh with margin from boundary.
         
-        H1 FIX: Uses margin parameter instead of hardcoded 0.001.
+        Enforces margin even when point is already inside but too close to boundary.
         
         Parameters
         ----------
@@ -596,14 +638,6 @@ class MeshDomain(DomainSpec):
         margin : float, optional
             Margin from boundary. If None, uses 0.1% of smallest bounding box dimension.
         """
-        if self.contains(point):
-            return point
-
-        point_arr = point.to_array().reshape(1, 3)
-        closest, distance, triangle_id = self._mesh.nearest.on_surface(point_arr)
-
-        normal = self._mesh.face_normals[triangle_id[0]]
-
         if margin is None:
             bounds = self._mesh.bounds
             smallest_dim = min(
@@ -613,10 +647,53 @@ class MeshDomain(DomainSpec):
             )
             margin = smallest_dim * 0.001
         
+        # Check if point is inside AND has sufficient margin from boundary
+        if self.contains(point):
+            dist_to_boundary = self.distance_to_boundary(point)
+            if dist_to_boundary >= margin:
+                return point
+            # Point is inside but too close to boundary - need to move it inward
+
+        point_arr = point.to_array().reshape(1, 3)
+        closest, distance, triangle_id = self._mesh.nearest.on_surface(point_arr)
+
+        normal = self._mesh.face_normals[triangle_id[0]]
+        
+        # Move point inward along the inward normal (opposite of face normal)
+        # The face normal points outward, so we move in the opposite direction
         offset = -margin * normal
         inside_point = closest[0] + offset
-
-        return Point3D.from_array(inside_point)
+        
+        # Verify the projected point is inside; if not, try iterative refinement
+        candidate = Point3D.from_array(inside_point)
+        max_iterations = 5
+        for _ in range(max_iterations):
+            if self.contains(candidate):
+                # Check if we have sufficient margin now
+                new_dist = self.distance_to_boundary(candidate)
+                if new_dist >= margin - 1e-9:
+                    return candidate
+                # Still too close, move further inward
+                candidate_arr = candidate.to_array().reshape(1, 3)
+                closest2, _, tri_id2 = self._mesh.nearest.on_surface(candidate_arr)
+                normal2 = self._mesh.face_normals[tri_id2[0]]
+                step = (margin - new_dist + 1e-9) * (-normal2)
+                inside_point = candidate.to_array() + step
+                candidate = Point3D.from_array(inside_point)
+            else:
+                # Point ended up outside, move it back toward center
+                center = np.mean(self._mesh.bounds, axis=0)
+                direction = center - inside_point
+                norm = np.linalg.norm(direction)
+                if norm > 1e-10:
+                    direction = direction / norm
+                    inside_point = inside_point + margin * direction
+                    candidate = Point3D.from_array(inside_point)
+                else:
+                    break
+        
+        # Final fallback: return the best candidate we have
+        return candidate
 
     def distance_to_boundary(self, point: Point3D) -> float:
         """Compute distance to mesh boundary."""
