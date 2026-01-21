@@ -414,6 +414,7 @@ class ScaffoldTopDownBackend(GenerationBackend):
                 config=config,
                 domain=domain,
                 rng=rng,
+                parent_direction=parent_direction,
             )
             
             if not collision_resolved:
@@ -531,20 +532,24 @@ class ScaffoldTopDownBackend(GenerationBackend):
         domain: DomainSpec,
         margin: float,
     ) -> np.ndarray:
-        """Clamp position to stay within domain boundary with margin."""
+        """
+        Clamp position to stay within domain boundary with margin.
+        
+        Uses the DomainSpec.project_inside() API which works correctly for
+        all domain types (box, cylinder, ellipsoid, mesh, etc.).
+        """
         point = Point3D(*pos)
+        
+        # Check if point is already safely inside with sufficient margin
         if domain.contains(point):
             dist = domain.distance_to_boundary(point)
             if dist >= margin:
                 return pos
         
-        bounds = domain.bounds
-        clamped = np.array([
-            np.clip(pos[0], bounds[0][0] + margin, bounds[1][0] - margin),
-            np.clip(pos[1], bounds[0][1] + margin, bounds[1][1] - margin),
-            np.clip(pos[2], bounds[0][2] + margin, bounds[1][2] - margin),
-        ])
-        return clamped
+        # Use the domain's project_inside method with margin
+        # This works correctly for all domain types (box, cylinder, ellipsoid, etc.)
+        projected = domain.project_inside(point, margin=margin)
+        return np.array([projected.x, projected.y, projected.z])
     
     def _find_safe_position(
         self,
@@ -559,9 +564,14 @@ class ScaffoldTopDownBackend(GenerationBackend):
         config: ScaffoldTopDownConfig,
         domain: DomainSpec,
         rng: np.random.Generator,
+        parent_direction: np.ndarray,
     ) -> Tuple[np.ndarray, bool]:
         """
         Find a collision-free position for the branch endpoint.
+        
+        Validates the ENTIRE curved polyline for collisions, not just the
+        straight-line segment. This prevents false negatives where the endpoint
+        is collision-free but the actual curved path collides.
         
         Tries rotation attempts around the primary axis, then reduces spread
         if still colliding.
@@ -578,16 +588,22 @@ class ScaffoldTopDownBackend(GenerationBackend):
             config.collision_online.buffer_rel * avg_radius,
         )
         
-        if not spatial_index.check_capsule_collision(
-            start=parent_pos,
-            end=target_pos,
-            radius=avg_radius,
+        # Check collision on the actual curved polyline, not just straight line
+        if self._check_candidate_polyline_collision(
+            parent_pos=parent_pos,
+            target_pos=target_pos,
+            parent_direction=parent_direction,
+            primary_axis=primary_axis,
+            avg_radius=avg_radius,
             buffer=buffer,
-            exclude_adjacent_to=parent_pos,
+            spatial_index=spatial_index,
+            config=config,
         ):
+            # Collision detected, try alternatives
+            self._stats["collisions_detected"] += 1
+        else:
+            # No collision on curved path
             return target_pos, True
-        
-        self._stats["collisions_detected"] += 1
         
         displacement = target_pos - parent_pos
         axial_component = np.dot(displacement, primary_axis) * primary_axis
@@ -613,12 +629,16 @@ class ScaffoldTopDownBackend(GenerationBackend):
             new_target = parent_pos + axial_component + new_lateral
             new_target = self._clamp_to_domain(new_target, domain, config.wall_margin_m)
             
-            if not spatial_index.check_capsule_collision(
-                start=parent_pos,
-                end=new_target,
-                radius=avg_radius,
+            # Check collision on the actual curved polyline
+            if not self._check_candidate_polyline_collision(
+                parent_pos=parent_pos,
+                target_pos=new_target,
+                parent_direction=parent_direction,
+                primary_axis=primary_axis,
+                avg_radius=avg_radius,
                 buffer=buffer,
-                exclude_adjacent_to=parent_pos,
+                spatial_index=spatial_index,
+                config=config,
             ):
                 self._stats["rotations_successful"] += 1
                 return new_target, True
@@ -645,17 +665,65 @@ class ScaffoldTopDownBackend(GenerationBackend):
                 new_target = parent_pos + axial_component + new_lateral
                 new_target = self._clamp_to_domain(new_target, domain, config.wall_margin_m)
                 
-                if not spatial_index.check_capsule_collision(
-                    start=parent_pos,
-                    end=new_target,
-                    radius=avg_radius,
+                # Check collision on the actual curved polyline
+                if not self._check_candidate_polyline_collision(
+                    parent_pos=parent_pos,
+                    target_pos=new_target,
+                    parent_direction=parent_direction,
+                    primary_axis=primary_axis,
+                    avg_radius=avg_radius,
                     buffer=buffer,
-                    exclude_adjacent_to=parent_pos,
+                    spatial_index=spatial_index,
+                    config=config,
                 ):
                     self._stats["rotations_successful"] += 1
                     return new_target, True
         
         return target_pos, False
+    
+    def _check_candidate_polyline_collision(
+        self,
+        parent_pos: np.ndarray,
+        target_pos: np.ndarray,
+        parent_direction: np.ndarray,
+        primary_axis: np.ndarray,
+        avg_radius: float,
+        buffer: float,
+        spatial_index: DynamicSpatialIndex,
+        config: ScaffoldTopDownConfig,
+    ) -> bool:
+        """
+        Check if a candidate curved polyline collides with existing segments.
+        
+        Computes the curved path first, then validates the entire polyline.
+        
+        Returns
+        -------
+        bool
+            True if collision detected, False otherwise
+        """
+        # Compute the candidate curved path
+        centerline, _ = self._compute_curved_path(
+            start=parent_pos,
+            end=target_pos,
+            start_dir=parent_direction,
+            primary_axis=primary_axis,
+            curvature=config.curvature,
+            n_samples=config.curve_samples,
+        )
+        
+        # Build the full polyline: start -> centerline points -> end
+        polyline_points = [parent_pos]
+        polyline_points.extend(centerline)
+        polyline_points.append(target_pos)
+        
+        # Check collision on the entire polyline
+        return spatial_index.check_polyline_collision(
+            points=polyline_points,
+            radius=avg_radius,
+            buffer=buffer,
+            exclude_adjacent_to=parent_pos,
+        )
     
     def _compute_curved_path(
         self,

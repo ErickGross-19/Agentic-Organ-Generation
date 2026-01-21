@@ -22,6 +22,7 @@ from aog_policies import (
     TissueSamplingPolicy,
     OperationReport,
 )
+from aog_policies.collision import UnifiedCollisionPolicy
 from ..specs.design_spec import DesignSpec, DomainSpec
 from ..specs.compile import compile_domain
 from ..core.network import VascularNetwork
@@ -32,6 +33,44 @@ if TYPE_CHECKING:
     import trimesh
 
 logger = logging.getLogger(__name__)
+
+
+def _postpass_dict_to_unified_policy(postpass_dict: Dict[str, Any]) -> UnifiedCollisionPolicy:
+    """
+    Convert collision_postpass dict from backend_params to UnifiedCollisionPolicy.
+    
+    This adapter maps the JSON keys (with _m suffix for meters) to the
+    UnifiedCollisionPolicy field names.
+    
+    Parameters
+    ----------
+    postpass_dict : dict
+        Dictionary from backend_params["collision_postpass"] with keys like:
+        - enabled: bool
+        - min_clearance_m: float (meters)
+        - min_radius_m: float (meters)
+        - strategy_order: list of str
+        - shrink_factor: float
+        - shrink_max_iterations: int
+        
+    Returns
+    -------
+    UnifiedCollisionPolicy
+        Policy object for use with detect_collisions/resolve_collisions
+    """
+    return UnifiedCollisionPolicy(
+        enabled=postpass_dict.get("enabled", False),
+        min_clearance=postpass_dict.get("min_clearance_m", postpass_dict.get("min_clearance", 0.00002)),
+        min_radius=postpass_dict.get("min_radius_m", postpass_dict.get("min_radius", 0.00005)),
+        strategy_order=postpass_dict.get("strategy_order", ["shrink", "terminate"]),
+        shrink_factor=postpass_dict.get("shrink_factor", 0.9),
+        shrink_max_iterations=postpass_dict.get("shrink_max_iterations", 6),
+        # Enable segment-segment checks for postpass
+        check_segment_segment=True,
+        check_segment_mesh=False,
+        check_segment_boundary=True,
+        check_node_boundary=True,
+    )
 
 
 def _validate_and_fix_inlet_direction(
@@ -339,6 +378,64 @@ def generate_network(
         
     else:
         raise ValueError(f"Unknown generator_kind: {generator_kind}")
+    
+    # Run collision postpass if enabled in backend_params
+    # This is backend-agnostic and works for any generator
+    postpass_config = growth_policy.backend_params.get("collision_postpass", {})
+    if postpass_config.get("enabled", False):
+        from ..ops.collision.unified import detect_collisions, resolve_collisions
+        
+        postpass_policy = _postpass_dict_to_unified_policy(postpass_config)
+        
+        # Get runtime domain for boundary checks
+        runtime_domain = None
+        if hasattr(compiled_domain, 'spec') and compiled_domain.spec is not None:
+            runtime_domain = domain_from_dict(compiled_domain.spec)
+        
+        # Detect collisions
+        collision_result = detect_collisions(
+            network=network,
+            domain=runtime_domain,
+            policy=postpass_policy,
+        )
+        
+        postpass_stats = {
+            "postpass_enabled": True,
+            "collisions_detected": collision_result.collision_count,
+            "collision_types": {},
+        }
+        
+        # Count collisions by type
+        for collision in collision_result.collisions:
+            ctype = collision.type.value
+            postpass_stats["collision_types"][ctype] = postpass_stats["collision_types"].get(ctype, 0) + 1
+        
+        # Resolve collisions if any found
+        if collision_result.has_collisions:
+            resolution_result = resolve_collisions(
+                network=network,
+                collision_result=collision_result,
+                domain=runtime_domain,
+                policy=postpass_policy,
+            )
+            
+            postpass_stats["collisions_resolved"] = resolution_result.resolved_count
+            postpass_stats["collisions_unresolved"] = resolution_result.unresolved_count
+            postpass_stats["resolution_strategies_used"] = list(set(
+                attempt.strategy for attempt in resolution_result.attempts if attempt.success
+            ))
+            
+            if resolution_result.unresolved_count > 0:
+                warnings.append(
+                    f"Collision postpass: {resolution_result.unresolved_count} collisions "
+                    f"could not be resolved"
+                )
+        
+        metadata["collision_postpass"] = postpass_stats
+        logger.info(
+            f"Collision postpass: detected {collision_result.collision_count}, "
+            f"resolved {postpass_stats.get('collisions_resolved', 0)}"
+        )
     
     report = OperationReport(
         operation="generate_network",
