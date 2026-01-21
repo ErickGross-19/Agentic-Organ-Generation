@@ -330,6 +330,12 @@ def generate_network(
             compiled_domain, ports, growth_policy, collision_policy, seed
         )
         metadata.update(gen_meta)
+    
+    elif generator_kind == "scaffold_topdown":
+        network, gen_meta = _generate_scaffold_topdown(
+            compiled_domain, ports, growth_policy, collision_policy, seed
+        )
+        metadata.update(gen_meta)
         
     else:
         raise ValueError(f"Unknown generator_kind: {generator_kind}")
@@ -691,6 +697,154 @@ def _generate_kary_tree(
         "node_count": len(network.nodes),
         "segment_count": len(network.segments),
         "multi_inlet_mode": multi_inlet_mode if len(validated_inlets) > 1 else "single",
+    }
+
+
+def _generate_scaffold_topdown(
+    domain: "Domain",
+    ports: Dict[str, Any],
+    growth_policy: GrowthPolicy,
+    collision_policy: CollisionPolicy,
+    seed: Optional[int],
+) -> Tuple[VascularNetwork, Dict[str, Any]]:
+    """Generate network using scaffold top-down recursive branching with collision avoidance.
+    
+    This backend creates tree structures by recursively splitting branches with
+    configurable branching factor (splits), depth (levels), and online collision
+    avoidance. The algorithm is inspired by scaffold_web_collision.py but operates
+    entirely in meters and produces VascularNetwork output.
+    
+    Key features:
+    - Recursive branching with configurable splits and levels
+    - Tapering radius via ratio parameter
+    - Lateral spread in plane orthogonal to primary axis
+    - Curved branches represented as polylines for collision detection
+    - Online collision avoidance with rotation attempts and spread reduction
+    - Optional post-pass collision cleanup
+    
+    Multi-inlet support:
+    - If multiple inlets are defined, each inlet grows its own tree
+    - Trees share a common spatial index for inter-tree collision avoidance
+    """
+    from ..backends.scaffold_topdown_backend import (
+        ScaffoldTopDownBackend,
+        ScaffoldTopDownConfig,
+        CollisionOnlineConfig,
+        CollisionPostpassConfig,
+    )
+    
+    inlets = ports.get("inlets", [])
+    if not inlets:
+        raise ValueError("Scaffold top-down requires at least one inlet")
+    
+    validated_inlets = [_validate_and_fix_inlet_direction(inlet, domain) for inlet in inlets]
+    
+    backend_params = getattr(growth_policy, 'backend_params', {}) or {}
+    
+    collision_online_params = backend_params.get('collision_online', {})
+    collision_online = CollisionOnlineConfig(
+        enabled=collision_online_params.get('enabled', True),
+        buffer_abs_m=collision_online_params.get('buffer_abs_m', 0.00002),
+        buffer_rel=collision_online_params.get('buffer_rel', 0.05),
+        cell_size_m=collision_online_params.get('cell_size_m', 0.0005),
+        rotation_attempts=collision_online_params.get('rotation_attempts', 14),
+        reduction_factors=collision_online_params.get('reduction_factors', [0.6, 0.35]),
+        max_attempts_per_child=collision_online_params.get('max_attempts_per_child', 18),
+        on_fail=collision_online_params.get('on_fail', 'terminate_branch'),
+    )
+    
+    collision_postpass_params = backend_params.get('collision_postpass', {})
+    collision_postpass = CollisionPostpassConfig(
+        enabled=collision_postpass_params.get('enabled', True),
+        min_clearance_m=collision_postpass_params.get('min_clearance_m', 0.00002),
+        strategy_order=collision_postpass_params.get('strategy_order', ['shrink', 'terminate']),
+        shrink_factor=collision_postpass_params.get('shrink_factor', 0.9),
+        shrink_max_iterations=collision_postpass_params.get('shrink_max_iterations', 6),
+    )
+    
+    primary_axis = backend_params.get('primary_axis', (0.0, 0.0, -1.0))
+    if isinstance(primary_axis, list):
+        primary_axis = tuple(primary_axis)
+    
+    config = ScaffoldTopDownConfig(
+        primary_axis=primary_axis,
+        splits=backend_params.get('splits', 3),
+        levels=backend_params.get('levels', 6),
+        ratio=backend_params.get('ratio', 0.78),
+        step_length=backend_params.get('step_length', 0.002),
+        step_decay=backend_params.get('step_decay', 0.92),
+        spread=backend_params.get('spread', 0.0015),
+        spread_decay=backend_params.get('spread_decay', 0.90),
+        cone_angle_deg=backend_params.get('cone_angle_deg', 70.0),
+        jitter_deg=backend_params.get('jitter_deg', 12.0),
+        curvature=backend_params.get('curvature', 0.35),
+        curve_samples=backend_params.get('curve_samples', 7),
+        wall_margin_m=backend_params.get('wall_margin_m', 0.0001),
+        min_radius=backend_params.get('min_radius', growth_policy.min_radius or 0.00005),
+        min_segment_length=growth_policy.min_segment_length,
+        max_segment_length=growth_policy.max_segment_length,
+        seed=seed,
+        collision_online=collision_online,
+        collision_postpass=collision_postpass,
+    )
+    
+    backend = ScaffoldTopDownBackend()
+    
+    if len(validated_inlets) > 1:
+        inlet_specs = []
+        for inlet in validated_inlets:
+            spec = {
+                "position": inlet.get("position", (0, 0, 0)),
+                "radius": inlet.get("radius", 0.001),
+            }
+            inlet_specs.append(spec)
+        
+        vessel_type = validated_inlets[0].get("vessel_type", "arterial")
+        network = backend.generate_multi_inlet(
+            domain=domain,
+            num_outlets=growth_policy.target_terminals or 128,
+            inlets=inlet_specs,
+            vessel_type=vessel_type,
+            config=config,
+            rng_seed=seed,
+        )
+    else:
+        inlet = validated_inlets[0]
+        inlet_position = np.array(inlet.get("position", (0, 0, 0)))
+        inlet_radius = inlet.get("radius", 0.001)
+        vessel_type = inlet.get("vessel_type", "arterial")
+        
+        network = backend.generate(
+            domain=domain,
+            num_outlets=growth_policy.target_terminals or 128,
+            inlet_position=inlet_position,
+            inlet_radius=inlet_radius,
+            vessel_type=vessel_type,
+            config=config,
+            rng_seed=seed,
+        )
+    
+    terminal_count = sum(1 for n in network.nodes.values() if n.node_type == "terminal")
+    inlet_count = sum(1 for n in network.nodes.values() if n.node_type == "inlet")
+    
+    generation_stats = backend.get_generation_stats()
+    
+    return network, {
+        "backend": "scaffold_topdown",
+        "terminal_count": terminal_count,
+        "inlet_count": inlet_count,
+        "node_count": len(network.nodes),
+        "segment_count": len(network.segments),
+        "levels": config.levels,
+        "splits": config.splits,
+        "collision_online_stats": {
+            "segments_proposed": generation_stats.get("segments_proposed", 0),
+            "segments_created": generation_stats.get("segments_created", 0),
+            "collisions_detected": generation_stats.get("collisions_detected", 0),
+            "rotations_successful": generation_stats.get("rotations_successful", 0),
+            "branches_terminated": generation_stats.get("branches_terminated", 0),
+            "branches_skipped": generation_stats.get("branches_skipped", 0),
+        },
     }
 
 

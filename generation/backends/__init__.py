@@ -39,6 +39,19 @@ except Exception as e:
     SpaceColonizationBackend = None
     SpaceColonizationConfig = None
 
+try:
+    from .scaffold_topdown_backend import ScaffoldTopDownBackend, ScaffoldTopDownConfig
+    _BACKEND_REGISTRY["scaffold_topdown"] = ScaffoldTopDownBackend
+    _CONFIG_REGISTRY["scaffold_topdown"] = ScaffoldTopDownConfig
+except ImportError as e:
+    _BACKEND_LOAD_ERRORS["scaffold_topdown"] = f"Import failed: {e}"
+    ScaffoldTopDownBackend = None
+    ScaffoldTopDownConfig = None
+except Exception as e:
+    _BACKEND_LOAD_ERRORS["scaffold_topdown"] = f"Unexpected error: {e}"
+    ScaffoldTopDownBackend = None
+    ScaffoldTopDownConfig = None
+
 
 def get_available_backends() -> List[str]:
     """
@@ -135,6 +148,8 @@ __all__ = [
     "CCOConfig",
     "SpaceColonizationBackend",
     "SpaceColonizationConfig",
+    "ScaffoldTopDownBackend",
+    "ScaffoldTopDownConfig",
     "get_available_backends",
     "get_backend",
     "get_backend_config",
