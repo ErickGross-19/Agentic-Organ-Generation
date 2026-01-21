@@ -1138,6 +1138,7 @@ class DesignSpecRunner:
                 embedding_policy=embedding_policy,
                 ports=all_ports,
                 resolution_policy=resolution_policy,
+                domain_mesh=self._domain_mesh,
             )
             
             self._embedded_solid = solid

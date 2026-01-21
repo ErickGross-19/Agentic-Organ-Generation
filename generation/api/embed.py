@@ -77,6 +77,7 @@ def embed_void(
     embedding_policy: Optional[EmbeddingPolicy] = None,
     ports: Optional[List[Dict[str, Any]]] = None,
     resolution_policy: Optional[ResolutionPolicy] = None,
+    domain_mesh: Optional["trimesh.Trimesh"] = None,
 ) -> Tuple["trimesh.Trimesh", "trimesh.Trimesh", "trimesh.Trimesh", OperationReport]:
     """
     Embed a void mesh into a domain as negative space.
@@ -104,6 +105,9 @@ def embed_void(
         - radius: float
     resolution_policy : ResolutionPolicy, optional
         Resolution policy for pitch derivation when use_resolution_policy=True.
+    domain_mesh : trimesh.Trimesh, optional
+        Pre-built domain mesh to use instead of generating from domain spec.
+        Use this to preserve ridge-augmented or other modified domain meshes.
         
     Returns
     -------
@@ -149,6 +153,7 @@ def embed_void(
             embedding_policy,
             pitch_adjustments,
             resolution_policy,
+            domain_mesh=domain_mesh,
         )
         
         if pitch_adjustments:
@@ -224,6 +229,7 @@ def _embed_with_retry(
     policy: EmbeddingPolicy,
     pitch_adjustments: list,
     resolution_policy: Optional[ResolutionPolicy] = None,
+    domain_mesh: Optional["trimesh.Trimesh"] = None,
 ) -> Tuple["trimesh.Trimesh", "trimesh.Trimesh", "trimesh.Trimesh", Dict[str, Any]]:
     """
     B2/B3 FIX: Perform embedding using canonical mesh-based embedding directly.
@@ -234,6 +240,9 @@ def _embed_with_retry(
     Supports resolution policy for unified pitch selection:
     - If use_resolution_policy=True, uses the resolution resolver for pitch derivation
     - Respects max_voxels budget with deterministic pitch relaxation
+    
+    If domain_mesh is provided, uses it directly instead of generating from domain spec.
+    This preserves ridge-augmented or other modified domain meshes.
     """
     from ..ops.embedding.enhanced_embedding import embed_void_mesh_as_negative_space as enhanced_embed
     import trimesh
@@ -254,6 +263,7 @@ def _embed_with_retry(
             max_voxels=policy.max_voxels,
             resolution_policy=resolution_policy,
             use_resolution_policy=policy.use_resolution_policy,
+            domain_mesh=domain_mesh,
         )
         
         # Track pitch adjustments from metadata

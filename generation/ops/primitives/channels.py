@@ -352,11 +352,13 @@ def create_fang_hook(
     effective_radius: Optional[float] = None,
     face_center: Optional[Tuple[float, float, float]] = None,
     policy: Optional[ChannelPolicy] = None,
+    end_radius: Optional[float] = None,
 ) -> Tuple["trimesh.Trimesh", Dict[str, Any]]:
     """
-    Create a curved fang hook channel.
+    Create a curved fang hook channel with optional tapering.
     
     PATCH 2: Now implements constraint_strategy and bend_shape from policy.
+    TAPER FIX: Now supports radius tapering along the centerline.
     
     The fang hook is a curved channel that bends inward from the surface,
     useful for creating channels that don't go straight through.
@@ -368,7 +370,7 @@ def create_fang_hook(
     end : tuple
         End position (x, y, z) in meters (inside domain)
     radius : float
-        Channel radius in meters
+        Channel radius in meters (start radius if tapering)
     hook_depth : float, optional
         Depth of the hook curve in meters (defaults to policy.hook_depth)
     hook_angle_deg : float, optional
@@ -386,6 +388,12 @@ def create_fang_hook(
         Key policy fields:
         - constraint_strategy: "reduce_depth", "rotate", or "both"
         - bend_shape: "quadratic", "cubic", or "sinusoid"
+        - taper_factor: Factor to multiply radius for end (if end_radius not set)
+        - radius_end: Explicit end radius in meters
+    end_radius : float, optional
+        End radius in meters for tapering. If not provided, uses
+        policy.radius_end or radius * policy.taper_factor.
+        Clamped to minimum 1e-6 m to avoid zero-area triangles.
         
     Returns
     -------
@@ -407,6 +415,14 @@ def create_fang_hook(
     if segments_per_curve is None:
         segments_per_curve = policy.segments_per_curve
     
+    # TAPER FIX: Derive end_radius from policy if not provided
+    if end_radius is None:
+        if policy.radius_end is not None:
+            end_radius = policy.radius_end
+        elif policy.taper_factor != 1.0:
+            end_radius = radius * policy.taper_factor
+        # else: end_radius remains None (no tapering)
+    
     start = np.array(start)
     end = np.array(end)
     
@@ -425,6 +441,9 @@ def create_fang_hook(
         "face_center_used": face_center is not None,
         "rotation_applied": False,
         "rotation_angle_deg": 0.0,
+        "taper_enabled": end_radius is not None,
+        "start_radius": radius,
+        "end_radius": end_radius,
     }
     
     # Initialize hook_perp to None, will be set based on constraint strategy
@@ -607,8 +626,10 @@ def create_fang_hook(
     
     centerline_points = np.array(centerline_points)
     
-    # Create tube mesh along centerline
-    mesh = _create_tube_along_centerline(centerline_points, radius, segments_per_curve)
+    # Create tube mesh along centerline with optional tapering
+    mesh = _create_tube_along_centerline(
+        centerline_points, radius, segments_per_curve, end_radius=end_radius
+    )
     
     return mesh, meta
 
@@ -617,13 +638,39 @@ def _create_tube_along_centerline(
     centerline: np.ndarray,
     radius: float,
     segments: int = 16,
+    end_radius: Optional[float] = None,
 ) -> "trimesh.Trimesh":
-    """Create a tube mesh along a centerline."""
+    """
+    Create a tube mesh along a centerline with optional tapering.
+    
+    Parameters
+    ----------
+    centerline : np.ndarray
+        Array of (N, 3) centerline points
+    radius : float
+        Start radius in meters
+    segments : int
+        Number of radial segments (default: 16)
+    end_radius : float, optional
+        End radius in meters. If provided, linearly interpolates radius
+        along the centerline from radius to end_radius.
+        Clamped to minimum 1e-6 m to avoid zero-area triangles.
+    
+    Returns
+    -------
+    mesh : trimesh.Trimesh
+        Tube mesh along centerline
+    """
     import trimesh
     
     n_points = len(centerline)
     if n_points < 2:
         raise ValueError("Centerline must have at least 2 points")
+    
+    # Handle tapering: if end_radius is provided, interpolate radius along centerline
+    if end_radius is not None:
+        # Clamp end_radius to minimum epsilon to avoid zero-area triangles
+        end_radius = max(end_radius, 1e-6)
     
     vertices = []
     faces = []
@@ -647,10 +694,17 @@ def _create_tube_along_centerline(
         perp1 = perp1 / np.linalg.norm(perp1)
         perp2 = np.cross(tangent, perp1)
         
+        # Calculate radius at this point (linear interpolation if tapering)
+        if end_radius is not None:
+            t = i / (n_points - 1) if n_points > 1 else 0
+            current_radius = radius + t * (end_radius - radius)
+        else:
+            current_radius = radius
+        
         # Create ring of vertices
         for j in range(segments):
             angle = 2 * np.pi * j / segments
-            offset = radius * (np.cos(angle) * perp1 + np.sin(angle) * perp2)
+            offset = current_radius * (np.cos(angle) * perp1 + np.sin(angle) * perp2)
             vertices.append(centerline[i] + offset)
     
     vertices = np.array(vertices)
@@ -894,6 +948,10 @@ def create_channel_from_policy(
             policy.radial_sections, policy.path_samples
         )
     elif policy.profile == "fang_hook":
+        # TAPER FIX: Derive end_radius for fang_hook tapering
+        fang_end_radius = policy.radius_end if policy.radius_end is not None else (
+            radius * policy.taper_factor if policy.taper_factor != 1.0 else None
+        )
         mesh, hook_meta = create_fang_hook(
             tuple(actual_start), tuple(end), radius,
             hook_depth=policy.hook_depth,
@@ -902,6 +960,7 @@ def create_channel_from_policy(
             effective_radius=effective_radius,
             face_center=face_center,
             policy=policy,
+            end_radius=fang_end_radius,
         )
         meta.update(hook_meta)
         if hook_meta.get("constraint_warning"):
