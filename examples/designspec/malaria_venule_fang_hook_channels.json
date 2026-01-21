@@ -1,30 +1,25 @@
 {
-  "schema": {
-    "name": "aog_designspec",
-    "version": "1.0.0",
-    "compatible_with": ["1.0.x"]
-  },
+  "schema": { "name": "aog_designspec", "version": "1.0.0", "compatible_with": ["1.0.x"] },
   "meta": {
-    "name": "malaria_venule_fang_hook_channels_v2",
-    "description": "5mm radius x 2mm height cylinder with real top ridge; 9 fang-hook channels with radial-out bend; all inputs in meters.",
+    "name": "malaria_venule_fang_hook_channels_overhaul",
+    "description": "Same domain/ridge as vertical channels. 9 radial-out fang-hook channels. Ports carved. Inputs in meters.",
     "seed": 42,
     "input_units": "m",
-    "tags": ["malaria", "venule", "fang_hook", "channels", "ridge", "meters"]
+    "tags": ["malaria", "venule", "fang_hook", "meters"]
   },
   "policies": {
     "resolution": {
       "input_units": "m",
-      "min_channel_diameter": 0.001,
+      "min_channel_diameter": 0.00002,
       "min_voxels_across_feature": 24,
       "max_voxels": 50000000,
-      "min_pitch": 1e-6,
-      "max_pitch": 5e-4,
+      "min_pitch": 1e-06,
+      "max_pitch": 5e-05,
       "auto_relax_pitch": true,
       "pitch_step_factor": 1.5,
-      "rel_epsilon": 1e-6,
-      "embed_pitch_factor": 1.0,
-      "merge_pitch_factor": 1.0,
-      "repair_pitch_factor": 1.0
+      "max_voxels_embed": 8000000,
+      "max_voxels_merge": 8000000,
+      "max_voxels_repair": 8000000
     },
 
     "domain_meshing": {
@@ -32,27 +27,14 @@
       "emit_warnings": true,
       "target_face_count": 120000,
       "voxel_pitch": null,
-      "primitive_policy": {
-        "sections_radial": 128,
-        "sections_axial": 64,
-        "sections_angular": 128,
-        "subdivisions": 2
-      },
+      "primitive_policy": { "sections_radial": 128, "sections_axial": 64, "sections_angular": 128, "subdivisions": 2 },
       "mesh_policy": {
         "validate_watertight": true,
         "repair_if_needed": true,
-        "repair_voxel_pitch": 5e-5,
+        "repair_voxel_pitch": 5e-05,
         "max_faces": 800000,
         "simplify_if_over_max": true,
         "simplify_target_ratio": 0.6
-      },
-      "implicit_policy": {
-        "voxel_pitch": 5e-5,
-        "max_voxels": 20000000,
-        "auto_relax_pitch": true,
-        "pitch_step_factor": 1.5,
-        "iso_level": 0.0,
-        "smooth_iterations": 2
       }
     },
 
@@ -70,24 +52,22 @@
       "enabled": true,
       "profile": "fang_hook",
       "length_mode": "to_depth",
-      "length": null,
-      "length_fraction": 1.0,
       "start_offset": 0.0,
       "stop_before_boundary": 0.001,
 
       "taper_factor": 0.2,
-      "radius_end": null,
+      "radius_end": 1e-06,
 
       "bend_mode": "radial_out",
-      "hook_depth": 0.0005,
-      "hook_strength": 0.6,
+      "hook_depth": 0.0007,
+      "hook_strength": 0.7,
       "hook_angle_deg": 90.0,
 
-      "straight_fraction": 0.6,
-      "curve_fraction": 0.4,
+      "straight_fraction": 0.55,
+      "curve_fraction": 0.45,
       "bend_shape": "quadratic",
 
-      "segments_per_curve": 24,
+      "segments_per_curve": 32,
       "radial_sections": 32,
       "path_samples": 48,
 
@@ -95,52 +75,11 @@
       "constraint_strategy": "reduce_depth"
     },
 
-    "composition": {
-      "repair_enabled": false,
-      "union_before_embed": true,
-      "keep_largest_component": false,
-
-      "synthesis_policy": {
-        "add_node_spheres": false,
-        "cap_ends": true,
-        "voxel_repair_synthesis": false,
-        "voxel_repair_pitch": 3e-5,
-        "voxel_repair_auto_adjust": true,
-        "voxel_repair_max_steps": 4,
-        "voxel_repair_step_factor": 1.5,
-        "voxel_repair_max_voxels": 8000000,
-        "segments_per_circle": 24,
-        "mutate_network_in_place": false,
-        "use_resolution_policy": true
-      },
-
-      "merge_policy": {
-        "mode": "auto",
-        "voxel_pitch": null,
-        "auto_adjust_pitch": true,
-        "max_pitch_steps": 4,
-        "pitch_step_factor": 1.5,
-        "fallback_boolean": true,
-        "keep_largest_component": false,
-        "min_component_faces": 100,
-        "min_component_volume": 1e-10,
-        "fill_voxels": false,
-        "max_voxels": 8000000,
-        "use_resolution_policy": true,
-        "min_voxels_per_diameter": 6,
-        "min_channel_diameter": 0.001,
-        "detail_loss_threshold": 0.5,
-        "detail_loss_strictness": "warn"
-      },
-
-      "repair_policy": {
-        "voxel_repair_enabled": false,
-        "fill_voxels": false
-      }
-    },
+    "composition": { "repair_enabled": false, "union_before_embed": true, "keep_largest_component": false },
+    "repair": { "voxel_repair_enabled": false, "fill_voxels": false },
 
     "embedding": {
-      "voxel_pitch": 1e-6,
+      "voxel_pitch": 5e-05,
       "shell_thickness": 0.0,
       "use_resolution_policy": true,
       "auto_adjust_pitch": true,
@@ -148,57 +87,40 @@
       "pitch_step_factor": 1.5,
       "max_voxels": 8000000,
       "fallback": "auto",
-
       "preserve_ports_enabled": true,
       "preserve_mode": "recarve",
-      "carve_radius_factor": 1.2,
+      "carve_radius_factor": 1.5,
       "carve_depth": 0.001
     },
 
+    "open_port": { "enabled": false },
     "validity": {
-      "check_watertight": true,
+      "check_watertight": false,
       "check_components": false,
       "check_min_diameter": false,
       "check_open_ports": false,
       "check_bounds": true,
-      "check_void_inside_domain": true,
-      "allow_boundary_intersections_at_ports": false
-    },
-
-    "open_port": {
-      "enabled": false
-    },
-
-    "repair": {
-      "voxel_repair_enabled": false,
-      "fill_voxels": false
+      "check_void_inside_domain": true
     },
 
     "output": {
-      "output_dir": "./out/malaria_venule_fang_hook_channels_v2",
+      "output_dir": "./out/malaria_venule_fang_hook_channels_overhaul",
       "output_units": "m",
-      "naming_convention": "default",
       "save_intermediates": true,
       "save_reports": true,
       "output_stl": true,
-      "output_json": true,
-      "output_shell": false
+      "output_json": true
     }
   },
 
   "domains": {
-    "cylinder_domain": {
-      "type": "cylinder",
-      "center": [0.0, 0.0, 0.0],
-      "radius": 0.005,
-      "height": 0.002
-    }
+    "main_domain": { "type": "cylinder", "center": [0.0, 0.0, 0.0], "radius": 0.005, "height": 0.002 }
   },
 
   "components": [
     {
       "id": "fang_hook_channels_9x",
-      "domain_ref": "cylinder_domain",
+      "domain_ref": "main_domain",
       "ports": {
         "inlets": [
           { "name": "inlet_center", "position": [0.0, 0.0, 0.001], "direction": [0.0, 0.0, -1.0], "radius": 0.0005 },
@@ -215,18 +137,10 @@
         ],
         "outlets": []
       },
-      "build": {
-        "type": "primitive_channels"
-      },
-      "save_artifacts": {
-        "void_mesh": "artifacts/fang_hook_channels_9x_void.stl"
-      }
+      "build": { "type": "primitive_channels" },
+      "save_artifacts": { "void_mesh": "artifacts/fang_hook_channels_9x_void.stl" }
     }
   ],
-
-  "composition": {
-    "save_union": "artifacts/union_void.stl"
-  },
 
   "embedding": {
     "enable": true,
@@ -236,14 +150,12 @@
     }
   },
 
-  "validity": {
-    "enable": false,
-    "save_report": "validity_report.json"
-  },
+  "validity": { "enable": false, "save_report": "validity_report.json" },
 
   "outputs": {
     "artifacts_dir": "artifacts",
     "named": {
+      "domain_mesh": "artifacts/domain_mesh_with_ridge.stl",
       "run_report": "run_report.json"
     }
   }
