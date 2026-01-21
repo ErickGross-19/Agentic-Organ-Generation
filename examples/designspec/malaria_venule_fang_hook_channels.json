@@ -149,10 +149,10 @@
       "max_voxels": 8000000,
       "fallback": "auto",
 
-      "preserve_ports_enabled": false,
+      "preserve_ports_enabled": true,
       "preserve_mode": "recarve",
       "carve_radius_factor": 1.2,
-      "carve_depth": 0.0005
+      "carve_depth": 0.001
     },
 
     "validity": {
