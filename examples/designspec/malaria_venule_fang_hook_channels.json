@@ -140,7 +140,7 @@
     },
 
     "embedding": {
-      "voxel_pitch": null,
+      "voxel_pitch": 1e-6,
       "shell_thickness": 0.0,
       "use_resolution_policy": true,
       "auto_adjust_pitch": true,
@@ -149,7 +149,7 @@
       "max_voxels": 8000000,
       "fallback": "auto",
 
-      "preserve_ports_enabled": true,
+      "preserve_ports_enabled": false,
       "preserve_mode": "recarve",
       "carve_radius_factor": 1.2,
       "carve_depth": 0.0005
