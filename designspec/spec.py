@@ -138,6 +138,12 @@ POLICY_LENGTH_FIELDS: Dict[str, Set[str]] = {
     },
     "output": {
     },
+    "ridge": {
+        "height",
+        "thickness",
+        "inset",
+        "overlap",
+    },
 }
 
 # Volume fields need scale³ conversion (cubic units)

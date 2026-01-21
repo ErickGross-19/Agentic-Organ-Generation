@@ -373,6 +373,7 @@ class DesignSpecRunner:
             ChannelPolicy,
             OutputPolicy,
             DomainMeshingPolicy,
+            RidgePolicy,
         )
         
         warnings = []
@@ -397,6 +398,7 @@ class DesignSpecRunner:
             "channels": ChannelPolicy,
             "output": OutputPolicy,
             "domain_meshing": DomainMeshingPolicy,
+            "ridge": RidgePolicy,
         }
         
         for policy_name, policy_dict in self.spec.policies.items():
@@ -983,6 +985,8 @@ class DesignSpecRunner:
         3. Else error with clear message
         
         Uses the canonical domain_to_mesh() function with DomainMeshingPolicy.
+        
+        If ridge policy is enabled, creates and unions ridge mesh with domain.
         """
         from generation.ops.domain_meshing import domain_to_mesh
         
@@ -1015,6 +1019,39 @@ class DesignSpecRunner:
                 meshing_policy=meshing_policy,
                 resolution_policy=resolution_policy,
             )
+            
+            warnings = list(mesh_report.warnings) if mesh_report.warnings else []
+            metadata = {
+                "vertex_count": len(domain_mesh.vertices),
+                "face_count": len(domain_mesh.faces),
+                "domain_name": domain_name,
+                "is_watertight": mesh_report.metadata.get("is_watertight"),
+            }
+            
+            # Add ridge if ridge policy is enabled
+            ridge_policy = self._compiled_policies.get("ridge")
+            if ridge_policy is not None and getattr(ridge_policy, "enabled", False):
+                from generation.ops.features.face_feature import add_ridge
+                
+                ridge_face = getattr(ridge_policy, "face", "top")
+                logger.info(f"  Adding ridge to face '{ridge_face}'")
+                
+                domain_mesh, ridge_constraints, ridge_report = add_ridge(
+                    domain_mesh=domain_mesh,
+                    face=ridge_face,
+                    ridge_policy=ridge_policy,
+                    domain_spec=domain,
+                )
+                
+                if ridge_report.warnings:
+                    warnings.extend(ridge_report.warnings)
+                
+                metadata["ridge_added"] = True
+                metadata["ridge_face"] = ridge_face
+                metadata["ridge_effective_radius"] = ridge_constraints.effective_radius
+                if ridge_report.metadata:
+                    metadata["ridge_metadata"] = ridge_report.metadata
+            
             self._domain_mesh = domain_mesh
             
             self.artifacts.register("domain_mesh", Stage.MESH_DOMAIN.value, domain_mesh)
@@ -1022,13 +1059,8 @@ class DesignSpecRunner:
             return StageReport(
                 stage=Stage.MESH_DOMAIN.value,
                 success=True,
-                warnings=mesh_report.warnings,
-                metadata={
-                    "vertex_count": len(domain_mesh.vertices),
-                    "face_count": len(domain_mesh.faces),
-                    "domain_name": domain_name,
-                    "is_watertight": mesh_report.metadata.get("is_watertight"),
-                },
+                warnings=warnings,
+                metadata=metadata,
             )
             
         except Exception as e:
