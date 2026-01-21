@@ -307,3 +307,150 @@ class TestInletDirectionValidation:
             f"Expected multi_inlet_mode='blended' in space colonization example, "
             f"got '{multi_inlet_mode}'"
         )
+
+
+class TestUnitNormalization:
+    """Tests for unit normalization of backend_params length fields."""
+    
+    def test_backend_params_normalized_to_meters(self):
+        """Test that backend_params length fields are normalized from mm to meters.
+        
+        The malaria_venule_space_colonization.json uses input_units="mm".
+        After normalization, all length fields should be converted to meters.
+        """
+        from designspec.spec import DesignSpec
+        
+        with open(SPACE_COLONIZATION_JSON, "r") as f:
+            data = json.load(f)
+        
+        spec = DesignSpec.from_dict(data)
+        
+        growth_policy = spec.normalized.get("policies", {}).get("growth", {})
+        backend_params = growth_policy.get("backend_params", {})
+        
+        collision_merge_distance = backend_params.get("collision_merge_distance")
+        assert collision_merge_distance is not None, "collision_merge_distance not found"
+        assert abs(collision_merge_distance - 0.05e-3) < 1e-9, (
+            f"collision_merge_distance should be 0.05e-3 (0.05mm in meters), "
+            f"got {collision_merge_distance}"
+        )
+        
+        multi_inlet_blend_sigma = backend_params.get("multi_inlet_blend_sigma")
+        assert multi_inlet_blend_sigma is not None, "multi_inlet_blend_sigma not found"
+        assert abs(multi_inlet_blend_sigma - 2.5e-3) < 1e-9, (
+            f"multi_inlet_blend_sigma should be 2.5e-3 (2.5mm in meters), "
+            f"got {multi_inlet_blend_sigma}"
+        )
+    
+    def test_tissue_sampling_normalized_to_meters(self):
+        """Test that tissue_sampling length fields are normalized from mm to meters."""
+        from designspec.spec import DesignSpec
+        
+        with open(SPACE_COLONIZATION_JSON, "r") as f:
+            data = json.load(f)
+        
+        spec = DesignSpec.from_dict(data)
+        
+        growth_policy = spec.normalized.get("policies", {}).get("growth", {})
+        backend_params = growth_policy.get("backend_params", {})
+        tissue_sampling = backend_params.get("tissue_sampling", {})
+        
+        min_distance_to_ports = tissue_sampling.get("min_distance_to_ports")
+        assert min_distance_to_ports is not None, "min_distance_to_ports not found"
+        assert abs(min_distance_to_ports - 0.05e-3) < 1e-9, (
+            f"min_distance_to_ports should be 0.05e-3 (0.05mm in meters), "
+            f"got {min_distance_to_ports}"
+        )
+        
+        depth_min = tissue_sampling.get("depth_min")
+        assert depth_min is not None, "depth_min not found"
+        assert abs(depth_min - 0.1e-3) < 1e-9, (
+            f"depth_min should be 0.1e-3 (0.1mm in meters), "
+            f"got {depth_min}"
+        )
+    
+    def test_space_colonization_policy_normalized_to_meters(self):
+        """Test that space_colonization_policy length fields are normalized from mm to meters."""
+        from designspec.spec import DesignSpec
+        
+        with open(SPACE_COLONIZATION_JSON, "r") as f:
+            data = json.load(f)
+        
+        spec = DesignSpec.from_dict(data)
+        
+        growth_policy = spec.normalized.get("policies", {}).get("growth", {})
+        backend_params = growth_policy.get("backend_params", {})
+        sc_policy = backend_params.get("space_colonization_policy", {})
+        
+        branch_enable_after_distance = sc_policy.get("branch_enable_after_distance")
+        assert branch_enable_after_distance is not None, "branch_enable_after_distance not found"
+        assert abs(branch_enable_after_distance - 0.001e-3) < 1e-12, (
+            f"branch_enable_after_distance should be 0.001e-3 (0.001mm in meters), "
+            f"got {branch_enable_after_distance}"
+        )
+        
+        min_branch_segment_length = sc_policy.get("min_branch_segment_length")
+        assert min_branch_segment_length is not None, "min_branch_segment_length not found"
+        assert abs(min_branch_segment_length - 0.01e-3) < 1e-9, (
+            f"min_branch_segment_length should be 0.01e-3 (0.01mm in meters), "
+            f"got {min_branch_segment_length}"
+        )
+
+
+class TestEnableFlags:
+    """Tests for validity and embedding enable flags."""
+    
+    def test_validity_enable_flag_respected(self):
+        """Test that validity.enable=false skips validity stage."""
+        from designspec.runner import DesignSpecRunner
+        from designspec.spec import DesignSpec
+        
+        test_spec = {
+            "schema": {"name": "aog_designspec", "version": "1.0.0"},
+            "meta": {"name": "test_enable_flags", "input_units": "mm"},
+            "policies": {},
+            "domains": {
+                "test_domain": {
+                    "type": "cylinder",
+                    "center": [0, 0, 0],
+                    "radius": 1.0,
+                    "height": 1.0
+                }
+            },
+            "components": [],
+            "validity": {"enable": False}
+        }
+        
+        spec = DesignSpec.from_dict(test_spec)
+        
+        validity_spec = spec.normalized.get("validity", {})
+        assert validity_spec.get("enable") == False, (
+            "validity.enable should be False in normalized spec"
+        )
+    
+    def test_embedding_enable_flag_respected(self):
+        """Test that embedding.enable=false skips embedding stage."""
+        from designspec.spec import DesignSpec
+        
+        test_spec = {
+            "schema": {"name": "aog_designspec", "version": "1.0.0"},
+            "meta": {"name": "test_enable_flags", "input_units": "mm"},
+            "policies": {},
+            "domains": {
+                "test_domain": {
+                    "type": "cylinder",
+                    "center": [0, 0, 0],
+                    "radius": 1.0,
+                    "height": 1.0
+                }
+            },
+            "components": [],
+            "embedding": {"enable": False}
+        }
+        
+        spec = DesignSpec.from_dict(test_spec)
+        
+        embedding_spec = spec.normalized.get("embedding", {})
+        assert embedding_spec.get("enable") == False, (
+            "embedding.enable should be False in normalized spec"
+        )

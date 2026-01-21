@@ -385,6 +385,15 @@ def _generate_space_colonization(
     # Use SpaceColonizationBackend.generate_multi_inlet() for multiple inlets
     if len(validated_inlets) > 1 and multi_inlet_mode:
         from ..backends.space_colonization_backend import SpaceColonizationBackend, SpaceColonizationConfig
+        from aog_policies import TissueSamplingPolicy
+        
+        # If tissue_sampling_policy is None, check backend_params for tissue_sampling config
+        effective_tissue_sampling_policy = tissue_sampling_policy
+        if effective_tissue_sampling_policy is None:
+            tissue_sampling_config = backend_params.get("tissue_sampling")
+            if tissue_sampling_config and isinstance(tissue_sampling_config, dict):
+                if tissue_sampling_config.get("enabled", True):
+                    effective_tissue_sampling_policy = TissueSamplingPolicy.from_dict(tissue_sampling_config)
         
         config = SpaceColonizationConfig(
             attraction_distance=backend_params.get('influence_radius', 0.010),
@@ -423,7 +432,7 @@ def _generate_space_colonization(
             vessel_type=vessel_type,
             config=config,
             rng_seed=seed,
-            tissue_sampling_policy=tissue_sampling_policy,
+            tissue_sampling_policy=effective_tissue_sampling_policy,
         )
         
         terminal_count = sum(1 for n in network.nodes.values() if n.node_type == "terminal")

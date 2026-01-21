@@ -91,7 +91,13 @@ Port fields `position` and `radius` are normalized.
 
 ### Backend Params
 
-Length fields in `growth.backend_params` and `component.build.backend_params` are normalized: `step_size`, `min_segment_length`, `max_segment_length`, `influence_radius`, `kill_radius`, `perception_radius`, `clearance`, `min_radius`, `max_radius`, `wall_margin_m`, `terminal_radius`, `collision_clearance`, `min_terminal_separation`
+Length fields in `growth.backend_params` and `component.build.backend_params` are normalized:
+
+**Top-level length fields**: `step_size`, `min_segment_length`, `max_segment_length`, `influence_radius`, `kill_radius`, `perception_radius`, `clearance`, `min_radius`, `max_radius`, `wall_margin_m`, `terminal_radius`, `collision_clearance`, `min_terminal_separation`, `collision_merge_distance`, `multi_inlet_blend_sigma`
+
+**Nested `tissue_sampling` dict**: `depth_min`, `depth_max`, `min_distance_to_ports`, `r_min`, `r_max`, `ring_r0`, `ring_sigma`, `shell_thickness`, `gaussian_mean`, `gaussian_sigma` (lists of lengths), and recursively in `mixture_components`
+
+**Nested `space_colonization_policy` dict**: `branch_enable_after_distance`, `min_branch_segment_length`
 
 ## Default Policy Filling
 

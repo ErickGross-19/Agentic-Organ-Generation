@@ -1013,6 +1013,15 @@ class DesignSpecRunner:
         2. Else if single domain, use it
         3. Else error with clear message
         """
+        # Check if embedding is disabled via spec.embedding.enable
+        embedding_spec = self.spec.normalized.get("embedding", {})
+        if not embedding_spec.get("enable", True):
+            return StageReport(
+                stage=Stage.EMBED.value,
+                success=True,
+                metadata={"skipped": "disabled by spec.embedding.enable"},
+            )
+        
         if self._union_void is None:
             return StageReport(
                 stage=Stage.EMBED.value,
@@ -1118,6 +1127,15 @@ class DesignSpecRunner:
     
     def _stage_validity(self) -> StageReport:
         """Run validity checks."""
+        # Check if validity is disabled via spec.validity.enable
+        validity_spec = self.spec.normalized.get("validity", {})
+        if not validity_spec.get("enable", True):
+            return StageReport(
+                stage=Stage.VALIDITY.value,
+                success=True,
+                metadata={"skipped": "disabled by spec.validity.enable"},
+            )
+        
         try:
             from validity.runner import run_validity_checks
             from aog_policies import ValidationPolicy, OpenPortPolicy, RepairPolicy, ResolutionPolicy
