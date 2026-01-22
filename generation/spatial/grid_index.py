@@ -607,7 +607,8 @@ class DynamicSpatialIndex:
             If provided, exclude segments that share this endpoint
             (to avoid false positives with parent segment)
         adjacent_tolerance : float
-            Distance tolerance for adjacency check
+            Distance tolerance for adjacency check. Also used for shared-endpoint
+            exclusion to skip sibling segments sharing the query start point.
         exclude_segment_ids : set of int, optional
             If provided, exclude these segment IDs from collision checks.
             This is the preferred method for excluding known adjacent segments
@@ -635,6 +636,20 @@ class DynamicSpatialIndex:
             seg_end = self._segment_ends[seg_id]
             seg_radius = self._segment_radii[seg_id]
             centerline = self._segment_centerlines.get(seg_id)
+            
+            # Shared-endpoint exclusion: skip segments that share the query start point.
+            # This prevents false collisions between sibling branches that originate
+            # from the same parent node. This is geometric adjacency, not identity exclusion.
+            if np.linalg.norm(seg_start - start) < adjacent_tolerance:
+                continue
+            if np.linalg.norm(seg_end - start) < adjacent_tolerance:
+                continue
+            
+            # Also skip segments sharing the query end point (optional but symmetric)
+            if np.linalg.norm(seg_start - end) < adjacent_tolerance:
+                continue
+            if np.linalg.norm(seg_end - end) < adjacent_tolerance:
+                continue
             
             # Exclude by point adjacency (legacy method, kept for compatibility)
             if exclude_adjacent_to is not None:

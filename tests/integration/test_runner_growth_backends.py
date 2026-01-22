@@ -481,6 +481,278 @@ class TestRunnerGrowthBackends:
         assert len(network.nodes) > 0, "Network should have nodes"
 
 
+class TestScaffoldTopdownBifurcation:
+    """
+    Regression tests for scaffold_topdown bifurcation with splits=2.
+    
+    These tests verify that the shared-endpoint exclusion fix allows sibling
+    branches to be created without false collision detection at the shared
+    parent node.
+    """
+    
+    def test_scaffold_topdown_bifurcation_produces_outdegree_2(self, tmp_path):
+        """
+        Test that scaffold_topdown with splits=2 produces nodes with outdegree=2.
+        
+        This is a regression test for the issue where sibling branches sharing
+        the same parent node were incorrectly detected as colliding at the
+        shared endpoint, preventing bifurcation.
+        """
+        spec_dict = {
+            "schema": {"name": "aog_designspec", "version": "1.0.0"},
+            "meta": {"name": "bifurcation_test", "seed": 42, "input_units": "mm"},
+            "policies": {
+                "resolution": {
+                    "input_units": "mm",
+                    "min_channel_diameter": 0.1,
+                    "min_voxels_across_feature": 4,
+                    "max_voxels": 1000000,
+                },
+                "growth": {
+                    "enabled": True,
+                    "backend": "scaffold_topdown",
+                    "min_radius": 0.05,
+                    "backend_params": {
+                        "primary_axis": [0, 0, -1],
+                        "splits": 2,
+                        "levels": 4,
+                        "ratio": 0.78,
+                        "step_length": 1.5,
+                        "step_decay": 0.85,
+                        "spread": 1.2,
+                        "spread_decay": 0.88,
+                        "cone_angle_deg": 60,
+                        "jitter_deg": 5,
+                        "curvature": 0.2,
+                        "curve_samples": 5,
+                        "wall_margin_m": 0.1,
+                        "min_radius": 0.05,
+                        "collision_online": {
+                            "enabled": True,
+                            "buffer_abs_m": 0.02,
+                            "buffer_rel": 0.05,
+                            "cell_size_m": 0.5,
+                            "rotation_attempts": 12,
+                            "reduction_factors": [0.6, 0.35],
+                            "max_attempts_per_child": 16,
+                            "on_fail": "terminate_branch"
+                        },
+                        "collision_postpass": {"enabled": False}
+                    },
+                },
+            },
+            "domains": {
+                "main": {
+                    "type": "box",
+                    "x_min": -10, "x_max": 10,
+                    "y_min": -10, "y_max": 10,
+                    "z_min": -8, "z_max": 4,
+                }
+            },
+            "components": [
+                {
+                    "id": "net_1",
+                    "domain_ref": "main",
+                    "ports": {
+                        "inlets": [{
+                            "name": "inlet",
+                            "position": [0, 0, 3],
+                            "direction": [0, 0, -1],
+                            "radius": 0.5,
+                            "vessel_type": "arterial",
+                        }],
+                        "outlets": [],
+                    },
+                    "build": {
+                        "type": "backend_network",
+                        "backend": "scaffold_topdown",
+                        "backend_params": {
+                            "primary_axis": [0, 0, -1],
+                            "splits": 2,
+                            "levels": 4,
+                            "ratio": 0.78,
+                            "step_length": 1.5,
+                            "step_decay": 0.85,
+                            "spread": 1.2,
+                            "spread_decay": 0.88,
+                            "cone_angle_deg": 60,
+                            "jitter_deg": 5,
+                            "curvature": 0.2,
+                            "curve_samples": 5,
+                            "wall_margin_m": 0.1,
+                            "min_radius": 0.05,
+                            "collision_online": {
+                                "enabled": True,
+                                "buffer_abs_m": 0.02,
+                                "buffer_rel": 0.05,
+                                "cell_size_m": 0.5,
+                                "rotation_attempts": 12,
+                                "reduction_factors": [0.6, 0.35],
+                                "max_attempts_per_child": 16,
+                                "on_fail": "terminate_branch"
+                            },
+                            "collision_postpass": {"enabled": False}
+                        }
+                    },
+                }
+            ],
+            "outputs": {"artifacts_dir": str(tmp_path / "artifacts")},
+        }
+        
+        spec = DesignSpec.from_dict(spec_dict)
+        plan = ExecutionPlan(run_until="component_build:net_1")
+        runner = DesignSpecRunner(spec, plan=plan, output_dir=tmp_path)
+        result = runner.run()
+        
+        assert result.success, f"Generation should succeed: {result.error}"
+        
+        network = runner._component_networks.get("net_1")
+        assert network is not None, "Network should be created"
+        
+        # Count segments and verify non-trivial count
+        segment_count = len(network.segments)
+        assert segment_count > 20, f"Expected > 20 segments for bifurcating tree, got {segment_count}"
+        
+        # Compute outdegree for each node
+        outdegree = {}
+        for seg in network.segments.values():
+            start_id = seg.start_node_id
+            outdegree[start_id] = outdegree.get(start_id, 0) + 1
+        
+        # Check that at least one node has outdegree == 2 (bifurcation)
+        max_outdegree = max(outdegree.values()) if outdegree else 0
+        nodes_with_outdegree_2 = sum(1 for od in outdegree.values() if od == 2)
+        
+        assert max_outdegree >= 2, f"Expected at least one node with outdegree >= 2, max was {max_outdegree}"
+        assert nodes_with_outdegree_2 > 0, "Expected at least one bifurcation point (outdegree=2)"
+    
+    def test_scaffold_topdown_bifurcation_deterministic(self, tmp_path):
+        """
+        Test that scaffold_topdown bifurcation is deterministic with fixed seed.
+        """
+        spec_dict = {
+            "schema": {"name": "aog_designspec", "version": "1.0.0"},
+            "meta": {"name": "bifurcation_deterministic", "seed": 12345, "input_units": "mm"},
+            "policies": {
+                "resolution": {
+                    "input_units": "mm",
+                    "min_channel_diameter": 0.1,
+                    "min_voxels_across_feature": 4,
+                    "max_voxels": 1000000,
+                },
+                "growth": {
+                    "enabled": True,
+                    "backend": "scaffold_topdown",
+                    "min_radius": 0.05,
+                    "backend_params": {
+                        "primary_axis": [0, 0, -1],
+                        "splits": 2,
+                        "levels": 3,
+                        "ratio": 0.78,
+                        "step_length": 1.5,
+                        "step_decay": 0.85,
+                        "spread": 1.2,
+                        "spread_decay": 0.88,
+                        "cone_angle_deg": 60,
+                        "jitter_deg": 5,
+                        "curvature": 0.2,
+                        "curve_samples": 5,
+                        "wall_margin_m": 0.1,
+                        "min_radius": 0.05,
+                        "collision_online": {
+                            "enabled": True,
+                            "buffer_abs_m": 0.02,
+                            "buffer_rel": 0.05,
+                            "cell_size_m": 0.5,
+                            "rotation_attempts": 12,
+                            "reduction_factors": [0.6, 0.35],
+                            "max_attempts_per_child": 16,
+                            "on_fail": "terminate_branch"
+                        },
+                        "collision_postpass": {"enabled": False}
+                    },
+                },
+            },
+            "domains": {
+                "main": {
+                    "type": "box",
+                    "x_min": -10, "x_max": 10,
+                    "y_min": -10, "y_max": 10,
+                    "z_min": -8, "z_max": 4,
+                }
+            },
+            "components": [
+                {
+                    "id": "net_1",
+                    "domain_ref": "main",
+                    "ports": {
+                        "inlets": [{
+                            "name": "inlet",
+                            "position": [0, 0, 3],
+                            "direction": [0, 0, -1],
+                            "radius": 0.5,
+                            "vessel_type": "arterial",
+                        }],
+                        "outlets": [],
+                    },
+                    "build": {
+                        "type": "backend_network",
+                        "backend": "scaffold_topdown",
+                        "backend_params": {
+                            "primary_axis": [0, 0, -1],
+                            "splits": 2,
+                            "levels": 3,
+                            "ratio": 0.78,
+                            "step_length": 1.5,
+                            "step_decay": 0.85,
+                            "spread": 1.2,
+                            "spread_decay": 0.88,
+                            "cone_angle_deg": 60,
+                            "jitter_deg": 5,
+                            "curvature": 0.2,
+                            "curve_samples": 5,
+                            "wall_margin_m": 0.1,
+                            "min_radius": 0.05,
+                            "collision_online": {
+                                "enabled": True,
+                                "buffer_abs_m": 0.02,
+                                "buffer_rel": 0.05,
+                                "cell_size_m": 0.5,
+                                "rotation_attempts": 12,
+                                "reduction_factors": [0.6, 0.35],
+                                "max_attempts_per_child": 16,
+                                "on_fail": "terminate_branch"
+                            },
+                            "collision_postpass": {"enabled": False}
+                        }
+                    },
+                }
+            ],
+            "outputs": {"artifacts_dir": str(tmp_path / "artifacts")},
+        }
+        
+        # Run twice with same seed
+        spec1 = DesignSpec.from_dict(spec_dict)
+        spec2 = DesignSpec.from_dict(spec_dict)
+        
+        plan = ExecutionPlan(run_until="component_build:net_1")
+        
+        runner1 = DesignSpecRunner(spec1, plan=plan, output_dir=tmp_path / "run1")
+        result1 = runner1.run()
+        
+        runner2 = DesignSpecRunner(spec2, plan=plan, output_dir=tmp_path / "run2")
+        result2 = runner2.run()
+        
+        assert result1.success and result2.success, "Both runs should succeed"
+        
+        net1 = runner1._component_networks.get("net_1")
+        net2 = runner2._component_networks.get("net_1")
+        
+        assert net1 is not None and net2 is not None
+        assert len(net1.segments) == len(net2.segments), "Same seed should produce same segment count"
+        assert len(net1.nodes) == len(net2.nodes), "Same seed should produce same node count"
+
+
 class TestGrowthBackendMetrics:
     """Test growth backend metrics in reports."""
     
