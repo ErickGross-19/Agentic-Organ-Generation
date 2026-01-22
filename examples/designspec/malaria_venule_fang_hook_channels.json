@@ -55,8 +55,8 @@
       "start_offset": 0.0,
       "stop_before_boundary": 0.001,
 
-      "taper_factor": 0.2,
-      "radius_end": 1e-06,
+            "taper_factor": 0.2,
+            "radius_end": 5e-05,
 
       "bend_mode": "radial_out",
       "hook_depth": 0.0007,

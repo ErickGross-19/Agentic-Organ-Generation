@@ -237,7 +237,7 @@
       "max_pitch_steps": 4,
       "pitch_step_factor": 1.5,
       "fallback_boolean": true,
-      "keep_largest_component": true,
+      "keep_largest_component": false,
       "min_component_faces": 100,
       "min_component_volume": 0.001,
       "fill_voxels": true,
@@ -253,7 +253,7 @@
       "union_before_embed": true,
       "repair_fill_holes": true,
       "repair_voxel_pitch": 0.05,
-      "keep_largest_component": true,
+      "keep_largest_component": false,
       "min_component_volume": 0.001,
       "synthesis_policy": {
         "add_node_spheres": false,
@@ -278,7 +278,7 @@
         "max_pitch_steps": 4,
         "pitch_step_factor": 1.5,
         "fallback_boolean": true,
-        "keep_largest_component": true,
+        "keep_largest_component": false,
         "min_component_faces": 100,
         "min_component_volume": 0.001,
         "fill_voxels": true,
@@ -289,7 +289,7 @@
         "detail_loss_threshold": 0.5,
         "detail_loss_strictness": "warn"
       },
-      "repair_policy": {
+      "repair_policy":{
         "voxel_repair_enabled": true,
         "voxel_pitch": 0.1,
         "auto_adjust_pitch": true,

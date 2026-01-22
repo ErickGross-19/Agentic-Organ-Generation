@@ -1,11 +1,11 @@
 {
   "schema": { "name": "aog_designspec", "version": "1.0.0", "compatible_with": ["1.0.x"] },
   "meta": {
-    "name": "malaria_venule_bifurcating_tree_overhaul",
-    "description": "Cylinder R=5mm H=2mm with ridge. 5 inlets (center + 4 @ r=3mm). K-ary bifurcating tree with collision merge. Inputs in meters.",
+    "name": "malaria_venule_bifurcating_tree",
+    "description": "Cylinder R=5mm H=2mm with ridge. 5 inlets (center + 4 @ r=3mm). Scaffold top-down bifurcating tree with collision avoidance. Inputs in meters.",
     "seed": 42,
     "input_units": "m",
-    "tags": ["malaria", "venule", "bifurcating", "kary_tree", "meters"]
+    "tags": ["malaria", "venule", "bifurcating", "scaffold_topdown", "meters"]
   },
   "policies": {
     "resolution": {
@@ -57,24 +57,46 @@
 
     "growth": {
       "enabled": true,
-      "backend": "kary_tree",
-      "target_terminals": 256,
+      "backend": "scaffold_topdown",
+      "target_terminals": null,
       "terminal_tolerance": 0.15,
       "max_iterations": 800,
       "min_segment_length": 2e-05,
       "max_segment_length": 2e-04,
-      "min_radius": 1e-04,
+      "min_radius": 5e-05,
       "step_size": 8e-05,
       "backend_params": {
-        "tree_extent_fraction": 0.95,
-        "branch_length_decay": 0.78,
-        "angle_deg": 45.0,
-        "angle_variation_deg": 10.0,
         "primary_axis": [0, 0, -1],
-        "upward_forbidden": true,
-        "max_deviation_deg": 70.0,
-        "multi_inlet_mode": "forest_with_merge",
-        "collision_merge_distance": 5e-05
+        "splits": 2,
+        "levels": 6,
+        "ratio": 0.78,
+        "step_length": 3e-04,
+        "step_decay": 0.85,
+        "spread": 2e-04,
+        "spread_decay": 0.88,
+        "cone_angle_deg": 60,
+        "jitter_deg": 10,
+        "curvature": 0.3,
+        "curve_samples": 5,
+        "wall_margin_m": 1e-04,
+        "min_radius": 5e-05,
+        "collision_online": {
+          "enabled": true,
+          "buffer_abs_m": 2e-05,
+          "buffer_rel": 0.05,
+          "cell_size_m": 5e-04,
+          "rotation_attempts": 12,
+          "reduction_factors": [0.6, 0.35],
+          "max_attempts_per_child": 16,
+          "on_fail": "terminate_branch"
+        },
+        "collision_postpass": {
+          "enabled": true,
+          "min_clearance_m": 2e-05,
+          "strategy_order": ["shrink", "terminate"],
+          "shrink_factor": 0.9,
+          "shrink_max_iterations": 5
+        }
       }
     },
 
@@ -82,7 +104,7 @@
       "mode": "murray",
       "murray_exponent": 3.0,
       "taper_factor": 0.8,
-      "min_radius": 1e-04,
+      "min_radius": 5e-05,
       "max_radius": 5e-04
     },
 
@@ -117,7 +139,7 @@
     },
 
     "output": {
-      "output_dir": "./out/malaria_venule_bifurcating_tree_overhaul",
+      "output_dir": "./out/malaria_venule_bifurcating_tree",
       "output_units": "m",
       "save_intermediates": true,
       "save_reports": true,
@@ -144,7 +166,43 @@
         ],
         "outlets": []
       },
-      "build": { "type": "backend_network" },
+      "build": {
+        "type": "backend_network",
+        "backend": "scaffold_topdown",
+        "backend_params": {
+          "primary_axis": [0, 0, -1],
+          "splits": 2,
+          "levels": 6,
+          "ratio": 0.78,
+          "step_length": 3e-04,
+          "step_decay": 0.85,
+          "spread": 2e-04,
+          "spread_decay": 0.88,
+          "cone_angle_deg": 60,
+          "jitter_deg": 10,
+          "curvature": 0.3,
+          "curve_samples": 5,
+          "wall_margin_m": 1e-04,
+          "min_radius": 5e-05,
+          "collision_online": {
+            "enabled": true,
+            "buffer_abs_m": 2e-05,
+            "buffer_rel": 0.05,
+            "cell_size_m": 5e-04,
+            "rotation_attempts": 12,
+            "reduction_factors": [0.6, 0.35],
+            "max_attempts_per_child": 16,
+            "on_fail": "terminate_branch"
+          },
+          "collision_postpass": {
+            "enabled": true,
+            "min_clearance_m": 2e-05,
+            "strategy_order": ["shrink", "terminate"],
+            "shrink_factor": 0.9,
+            "shrink_max_iterations": 5
+          }
+        }
+      },
       "save_artifacts": {
         "network": "artifacts/bifurcating_tree_network.json",
         "void_mesh": "artifacts/bifurcating_tree_void.stl"
