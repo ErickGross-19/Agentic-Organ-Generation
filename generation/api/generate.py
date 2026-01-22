@@ -429,9 +429,9 @@ def generate_network(
                 attempt.strategy for attempt in resolution_result.attempts if attempt.success
             ))
             
-            if resolution_result.unresolved_count > 0:
+            if resolution_result.remaining_collisions > 0:
                 warnings.append(
-                    f"Collision postpass: {resolution_result.unresolved_count} collisions "
+                    f"Collision postpass: {resolution_result.remaining_collisions} collisions "
                     f"could not be resolved"
                 )
         
