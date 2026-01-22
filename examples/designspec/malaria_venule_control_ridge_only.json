@@ -1,0 +1,152 @@
+{
+  "schema": {
+    "name": "aog_designspec",
+    "version": "1.0.0",
+    "compatible_with": ["1.0.x"]
+  },
+  "meta": {
+    "name": "malaria_venule_control_ridge_only",
+    "description": "Control spec: Cylinder R=5mm H=2mm with ridge on top face. No network generation, no void carving. Outputs ridged domain mesh only. Inputs in meters.",
+    "seed": 42,
+    "input_units": "m",
+    "tags": ["malaria", "venule", "control", "ridge_only", "no_network", "meters"]
+  },
+  "policies": {
+    "resolution": {
+      "input_units": "m",
+      "min_channel_diameter": 0.00002,
+      "min_voxels_across_feature": 18,
+      "max_voxels": 50000000,
+      "min_pitch": 1e-06,
+      "max_pitch": 5e-05,
+      "auto_relax_pitch": true,
+      "pitch_step_factor": 1.5,
+      "max_voxels_embed": 12000000,
+      "max_voxels_merge": 12000000,
+      "max_voxels_repair": 12000000
+    },
+    "domain_meshing": {
+      "cache_meshes": true,
+      "emit_warnings": true,
+      "target_face_count": 120000,
+      "voxel_pitch": null,
+      "primitive_policy": {
+        "sections_radial": 128,
+        "sections_axial": 64,
+        "sections_angular": 128,
+        "subdivisions": 2
+      },
+      "mesh_policy": {
+        "validate_watertight": true,
+        "repair_if_needed": true,
+        "repair_voxel_pitch": 5e-05,
+        "max_faces": 800000,
+        "simplify_if_over_max": true,
+        "simplify_target_ratio": 0.6
+      }
+    },
+    "ridge": {
+      "enabled": true,
+      "face": "top",
+      "height": 0.0005,
+      "thickness": 0.0005,
+      "inset": 0.0,
+      "overlap": 0.00025,
+      "resolution": 128
+    },
+    "ports": {
+      "enabled": false,
+      "projection_mode": "clamp_to_face",
+      "ridge_constraint_enabled": false,
+      "disk_constraint_enabled": false
+    },
+    "growth": {
+      "enabled": false,
+      "backend": "scaffold_topdown",
+      "target_terminals": null,
+      "terminal_tolerance": 0.15,
+      "max_iterations": 0,
+      "min_segment_length": 2e-05,
+      "max_segment_length": 8e-04,
+      "min_radius": 5e-05,
+      "step_size": 8e-05
+    },
+    "collision": {
+      "enabled": false,
+      "check_collisions": false,
+      "collision_clearance": 2e-05
+    },
+    "composition": {
+      "repair_enabled": false,
+      "union_before_embed": false,
+      "keep_largest_component": false,
+      "merge_policy": {
+        "keep_largest_component": false
+      }
+    },
+    "repair": {
+      "voxel_repair_enabled": false,
+      "fill_voxels": false
+    },
+    "embedding": {
+      "voxel_pitch": 5e-05,
+      "shell_thickness": 0.0,
+      "use_resolution_policy": true,
+      "auto_adjust_pitch": true,
+      "max_pitch_steps": 4,
+      "pitch_step_factor": 1.5,
+      "max_voxels": 12000000,
+      "fallback": "auto",
+      "preserve_ports_enabled": false,
+      "preserve_mode": "none",
+      "carve_radius_factor": 1.0,
+      "carve_depth": 0.0
+    },
+    "open_port": {
+      "enabled": false
+    },
+    "validity": {
+      "check_watertight": false,
+      "check_components": false,
+      "check_min_diameter": false,
+      "check_open_ports": false,
+      "check_bounds": true,
+      "check_void_inside_domain": false
+    },
+    "output": {
+      "output_dir": "./out/malaria_venule_control_ridge_only",
+      "output_units": "m",
+      "save_intermediates": true,
+      "save_reports": true,
+      "output_stl": true,
+      "output_json": true
+    }
+  },
+  "domains": {
+    "main_domain": {
+      "type": "cylinder",
+      "center": [0.0, 0.0, 0.0],
+      "radius": 0.005,
+      "height": 0.002
+    }
+  },
+  "components": [],
+  "embedding": {
+    "enable": false,
+    "outputs": {
+      "domain_with_void": null,
+      "void_mesh": null
+    }
+  },
+  "validity": {
+    "enable": false,
+    "save_report": "validity_report.json"
+  },
+  "outputs": {
+    "artifacts_dir": "artifacts",
+    "named": {
+      "domain_mesh": "domain_mesh_with_ridge.stl",
+      "run_report": "run_report.json"
+    }
+  }
+}

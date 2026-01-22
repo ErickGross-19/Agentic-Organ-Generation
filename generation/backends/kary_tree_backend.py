@@ -1,6 +1,15 @@
 """
 K-ary tree generation backend using recursive bifurcation.
 
+.. deprecated::
+    This backend is **deprecated** and will be removed in a future release.
+    Use ``scaffold_topdown`` instead, which provides better collision avoidance
+    and more flexible tree generation.
+
+STATUS: DEPRECATED
+REPLACEMENT: scaffold_topdown
+EXPECTED REMOVAL: Future release
+
 This backend generates vascular networks by recursively bifurcating
 from inlet nodes to achieve a target terminal count.
 

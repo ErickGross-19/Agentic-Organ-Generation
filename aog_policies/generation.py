@@ -293,7 +293,7 @@ class GrowthPolicy:
     JSON Schema:
     {
         "enabled": bool,
-        "backend": "space_colonization" | "kary_tree" | "cco_hybrid" | "programmatic",
+        "backend": "space_colonization" | "kary_tree" | "cco_hybrid" | "programmatic" | "scaffold_topdown",
         "target_terminals": int,
         "terminal_tolerance": float (fraction),
         "max_iterations": int,
@@ -304,6 +304,13 @@ class GrowthPolicy:
         "step_size": float (meters),
         "backend_params": dict (JSON-serializable backend-specific configuration)
     }
+
+    Backend Status:
+    - space_colonization: Active, recommended for organic growth
+    - scaffold_topdown: Active, recommended for bifurcating trees (preferred)
+    - programmatic: Active, for DSL-based generation
+    - kary_tree: DEPRECATED - use scaffold_topdown instead
+    - cco_hybrid: UNFINISHED - blocked from use
 
     backend_params Structure (for programmatic backend):
     {
