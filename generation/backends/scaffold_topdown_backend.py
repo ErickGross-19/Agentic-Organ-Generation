@@ -577,7 +577,13 @@ class ScaffoldTopDownBackend(GenerationBackend):
         collisions are enforced normally.
         """
         parent_pos = parent_node.position.to_array()
-        avg_radius = child_radius  # For children, avg_radius is approximately child_radius
+        
+        # Compute grandchild radius (the end radius of sibling segments)
+        grandchild_radius = child_radius * config.ratio
+        
+        # avg_radius is the average of start and end radius for the sibling segments
+        # This matches the calculation in _branch(): avg_radius = (current_radius + child_radius) / 2
+        avg_radius = (child_radius + grandchild_radius) / 2
         
         buffer = max(
             config.collision_online.buffer_abs_m,
@@ -585,8 +591,11 @@ class ScaffoldTopDownBackend(GenerationBackend):
         )
         
         # Compute junction ignore radius based on local scale
+        # Per task spec: junction_ignore = max(2 * current_radius, 2 * child_radius, 3 * buffer_abs_m)
+        # Here, child_radius is the "current_radius" for siblings, grandchild_radius is their "child_radius"
         junction_ignore = max(
             2 * child_radius,
+            2 * grandchild_radius,
             3 * config.collision_online.buffer_abs_m,
         )
         
@@ -702,7 +711,7 @@ class ScaffoldTopDownBackend(GenerationBackend):
                 position=Point3D(*target_pos),
                 node_type=end_node_type,
                 vessel_type=vessel_type,
-                attributes={"radius": child_radius},
+                attributes={"radius": grandchild_radius},  # End node radius is the segment's end radius
             )
             network.add_node(end_node)
             
@@ -711,8 +720,8 @@ class ScaffoldTopDownBackend(GenerationBackend):
             geometry = TubeGeometry(
                 start=parent_node.position,
                 end=end_node.position,
-                radius_start=child_radius,  # Parent's child_radius is this segment's start radius
-                radius_end=child_radius * config.ratio,  # Taper to next level
+                radius_start=child_radius,  # Start radius of this segment
+                radius_end=grandchild_radius,  # End radius (tapered)
                 centerline_points=[Point3D(*p) for p in centerline_points] if centerline_points else None,
             )
             segment = VesselSegment(
@@ -750,7 +759,7 @@ class ScaffoldTopDownBackend(GenerationBackend):
                     rng=rng,
                 )
                 
-                next_child_radius = child_radius * config.ratio
+                next_child_radius = grandchild_radius  # Use pre-computed value
                 next_child_step = child_step * config.step_decay
                 next_child_spread = child_spread * config.spread_decay
                 
