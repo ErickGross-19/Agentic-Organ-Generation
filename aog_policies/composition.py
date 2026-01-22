@@ -57,6 +57,10 @@ class ComposePolicy:
                 voxel_pitch=self.repair_voxel_pitch,
                 min_component_volume=self.min_component_volume,
             )
+        # Propagate top-level keep_largest_component to merge_policy
+        # This ensures the composition setting affects the merge policy
+        # unless the spec explicitly overrides merge_policy.keep_largest_component
+        self.merge_policy.keep_largest_component = self.keep_largest_component
     
     def to_dict(self) -> Dict[str, Any]:
         return {

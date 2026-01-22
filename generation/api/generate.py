@@ -419,8 +419,12 @@ def generate_network(
                 policy=postpass_policy,
             )
             
-            postpass_stats["collisions_resolved"] = resolution_result.resolved_count
-            postpass_stats["collisions_unresolved"] = resolution_result.unresolved_count
+            collisions_resolved = resolution_result.metadata.get(
+                "resolved_count", 
+                collision_result.collision_count - resolution_result.remaining_collisions
+            )
+            postpass_stats["collisions_resolved"] = collisions_resolved
+            postpass_stats["collisions_unresolved"] = resolution_result.remaining_collisions
             postpass_stats["resolution_strategies_used"] = list(set(
                 attempt.strategy for attempt in resolution_result.attempts if attempt.success
             ))
