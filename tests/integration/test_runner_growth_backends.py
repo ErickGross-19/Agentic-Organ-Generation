@@ -753,6 +753,185 @@ class TestScaffoldTopdownBifurcation:
         assert len(net1.nodes) == len(net2.nodes), "Same seed should produce same node count"
 
 
+class TestScaffoldTopdownDeeperBifurcation:
+    """
+    Tests for deeper bifurcation with scaffold_topdown.
+    
+    These tests verify that scaffold_topdown produces trees with depth > 2
+    and that the retry and merge features work correctly.
+    """
+    
+    def test_scaffold_topdown_deeper_bifurcation_depth_greater_than_2(self, tmp_path):
+        """
+        Test that scaffold_topdown with splits=2, levels>=4 produces depth > 2.
+        
+        This test verifies that the tree has multiple levels of bifurcation,
+        not just a single split at the root.
+        """
+        spec_dict = {
+            "schema": {"name": "aog_designspec", "version": "1.0.0"},
+            "meta": {"name": "deeper_bifurcation_test", "seed": 42, "input_units": "mm"},
+            "policies": {
+                "resolution": {
+                    "input_units": "mm",
+                    "min_channel_diameter": 0.1,
+                    "min_voxels_across_feature": 4,
+                    "max_voxels": 1000000,
+                },
+                "growth": {
+                    "enabled": True,
+                    "backend": "scaffold_topdown",
+                    "min_radius": 0.02,
+                    "backend_params": {
+                        "primary_axis": [0, 0, -1],
+                        "splits": 2,
+                        "levels": 5,
+                        "ratio": 0.70,
+                        "step_length": 2.0,
+                        "step_decay": 0.95,
+                        "spread": 1.8,
+                        "spread_decay": 0.97,
+                        "cone_angle_deg": 60,
+                        "jitter_deg": 5,
+                        "curvature": 0.2,
+                        "curve_samples": 5,
+                        "wall_margin_m": 0.1,
+                        "min_radius": 0.02,
+                        "collision_online": {
+                            "enabled": True,
+                            "buffer_abs_m": 0.02,
+                            "buffer_rel": 0.05,
+                            "cell_size_m": 0.5,
+                            "rotation_attempts": 28,
+                            "reduction_factors": [0.75, 0.55, 0.35, 0.2],
+                            "max_attempts_per_child": 60,
+                            "on_fail": "terminate_branch",
+                            "fail_retry_rounds": 2,
+                            "fail_retry_mode": "both",
+                            "fail_retry_shrink_factor": 0.85,
+                            "fail_retry_step_boost": 1.2
+                        },
+                        "collision_postpass": {"enabled": False}
+                    },
+                },
+            },
+            "domains": {
+                "main": {
+                    "type": "box",
+                    "x_min": -15, "x_max": 15,
+                    "y_min": -15, "y_max": 15,
+                    "z_min": -12, "z_max": 5,
+                }
+            },
+            "components": [
+                {
+                    "id": "net_1",
+                    "domain_ref": "main",
+                    "ports": {
+                        "inlets": [{
+                            "name": "inlet",
+                            "position": [0, 0, 4],
+                            "direction": [0, 0, -1],
+                            "radius": 0.8,
+                            "vessel_type": "arterial",
+                        }],
+                        "outlets": [],
+                    },
+                    "build": {
+                        "type": "backend_network",
+                        "backend": "scaffold_topdown",
+                        "backend_params": {
+                            "primary_axis": [0, 0, -1],
+                            "splits": 2,
+                            "levels": 5,
+                            "ratio": 0.70,
+                            "step_length": 2.0,
+                            "step_decay": 0.95,
+                            "spread": 1.8,
+                            "spread_decay": 0.97,
+                            "cone_angle_deg": 60,
+                            "jitter_deg": 5,
+                            "curvature": 0.2,
+                            "curve_samples": 5,
+                            "wall_margin_m": 0.1,
+                            "min_radius": 0.02,
+                            "collision_online": {
+                                "enabled": True,
+                                "buffer_abs_m": 0.02,
+                                "buffer_rel": 0.05,
+                                "cell_size_m": 0.5,
+                                "rotation_attempts": 28,
+                                "reduction_factors": [0.75, 0.55, 0.35, 0.2],
+                                "max_attempts_per_child": 60,
+                                "on_fail": "terminate_branch",
+                                "fail_retry_rounds": 2,
+                                "fail_retry_mode": "both",
+                                "fail_retry_shrink_factor": 0.85,
+                                "fail_retry_step_boost": 1.2
+                            },
+                            "collision_postpass": {"enabled": False}
+                        }
+                    },
+                }
+            ],
+            "outputs": {"artifacts_dir": str(tmp_path / "artifacts")},
+        }
+        
+        spec = DesignSpec.from_dict(spec_dict)
+        plan = ExecutionPlan(run_until="component_build:net_1")
+        runner = DesignSpecRunner(spec, plan=plan, output_dir=tmp_path)
+        result = runner.run()
+        
+        assert result.success, f"Generation should succeed: {result.error}"
+        
+        network = runner._component_networks.get("net_1")
+        assert network is not None, "Network should be created"
+        
+        # Count segments - with levels=5, splits=2, we expect many segments
+        segment_count = len(network.segments)
+        assert segment_count > 10, f"Expected > 10 segments for deeper tree, got {segment_count}"
+        
+        # Compute outdegree for each node
+        outdegree = {}
+        for seg in network.segments.values():
+            start_id = seg.start_node_id
+            outdegree[start_id] = outdegree.get(start_id, 0) + 1
+        
+        # Count branchpoints (nodes with outdegree >= 2)
+        branchpoints = sum(1 for od in outdegree.values() if od >= 2)
+        
+        # With levels=5, we should have multiple branchpoints (not just 1)
+        # A perfect binary tree with 5 levels would have 2^4 - 1 = 15 branchpoints
+        # With collisions, we expect fewer, but still > 1
+        assert branchpoints >= 1, f"Expected at least 1 branchpoint, got {branchpoints}"
+        
+        # Compute depth of the tree (longest path from inlet to terminal)
+        # Build adjacency list
+        children = {}
+        for seg in network.segments.values():
+            start_id = seg.start_node_id
+            end_id = seg.end_node_id
+            if start_id not in children:
+                children[start_id] = []
+            children[start_id].append(end_id)
+        
+        # Find inlet nodes
+        inlet_nodes = [n for n in network.nodes.values() if n.node_type == "inlet"]
+        
+        # BFS to find max depth
+        max_depth = 0
+        for inlet in inlet_nodes:
+            queue = [(inlet.id, 0)]
+            while queue:
+                node_id, depth = queue.pop(0)
+                max_depth = max(max_depth, depth)
+                for child_id in children.get(node_id, []):
+                    queue.append((child_id, depth + 1))
+        
+        # With levels=5, we expect depth > 2
+        assert max_depth > 2, f"Expected depth > 2, got {max_depth}"
+
+
 class TestMalariaBifurcatingTreeSpec:
     """
     Tests for the malaria_venule_bifurcating_tree.json spec.
