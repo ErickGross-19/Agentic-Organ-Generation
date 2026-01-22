@@ -424,7 +424,11 @@ def _detect_segment_segment_collisions_indexed(
         
         centerline = None
         if hasattr(seg.geometry, 'centerline_points') and seg.geometry.centerline_points:
-            centerline = [np.array(pt) for pt in seg.geometry.centerline_points]
+            # Use to_array() method for Point3D objects, fall back to np.array for raw arrays
+            centerline = [
+                pt.to_array() if hasattr(pt, 'to_array') else np.asarray(pt)
+                for pt in seg.geometry.centerline_points
+            ]
         
         spatial_index.insert_segment(seg.id, start, end, radius, centerline)
         segment_data[seg.id] = {
