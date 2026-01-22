@@ -34,6 +34,15 @@ class CollisionOnlineConfig:
     reduction_factors: List[float] = field(default_factory=lambda: [0.6, 0.35])
     max_attempts_per_child: int = 18
     on_fail: str = "terminate_branch"
+    # Merge on collision: connect to nearby existing branch instead of terminating
+    merge_on_collision: bool = False
+    merge_distance_m: float = 0.0002  # Max distance to merge target
+    merge_prefer_same_inlet: bool = True  # Prefer merging to same inlet's branches
+    # Ancestor-aware retry: retry with adjusted params before giving up
+    fail_retry_rounds: int = 0  # Number of retry rounds (0 = no retry)
+    fail_retry_mode: str = "both"  # "shrink_radius", "increase_step", "both", "none"
+    fail_retry_shrink_factor: float = 0.85  # Radius shrink factor per retry
+    fail_retry_step_boost: float = 1.2  # Step length boost factor per retry
 
 
 @dataclass
@@ -195,6 +204,11 @@ class ScaffoldTopDownBackend(GenerationBackend):
             "rotations_successful": 0,
             "branches_terminated": 0,
             "branches_skipped": 0,
+            "merges_attempted": 0,
+            "merges_succeeded": 0,
+            "merges_failed": 0,
+            "retries_attempted": 0,
+            "retries_succeeded": 0,
         }
         
         initial_angle = 0.0
@@ -284,6 +298,11 @@ class ScaffoldTopDownBackend(GenerationBackend):
             "rotations_successful": 0,
             "branches_terminated": 0,
             "branches_skipped": 0,
+            "merges_attempted": 0,
+            "merges_succeeded": 0,
+            "merges_failed": 0,
+            "retries_attempted": 0,
+            "retries_succeeded": 0,
         }
         
         for i, inlet in enumerate(inlets):
@@ -621,23 +640,89 @@ class ScaffoldTopDownBackend(GenerationBackend):
             target_pos = self._clamp_to_domain(target_pos, domain, config.wall_margin_m)
             
             # Try to find a safe position (checking against global index only)
-            target_pos, collision_resolved = self._find_safe_position(
-                parent_pos=parent_pos,
-                target_pos=target_pos,
-                avg_radius=avg_radius,
-                primary_axis=primary_axis,
-                perp1=perp1,
-                perp2=perp2,
-                current_spread=child_spread,
-                spatial_index=spatial_index,
-                config=config,
-                domain=domain,
-                rng=rng,
-                parent_direction=parent_direction,
-                parent_seg_id=parent_seg_id,
-            )
+            # Use retry logic if enabled
+            retry_radius = avg_radius
+            retry_step = child_step
+            collision_resolved = False
+            final_target_pos = target_pos
+            
+            for retry_round in range(config.collision_online.fail_retry_rounds + 1):
+                if retry_round > 0:
+                    self._stats["retries_attempted"] += 1
+                    # Adjust parameters based on retry mode
+                    mode = config.collision_online.fail_retry_mode
+                    if mode in ("shrink_radius", "both"):
+                        retry_radius *= config.collision_online.fail_retry_shrink_factor
+                    if mode in ("increase_step", "both"):
+                        retry_step *= config.collision_online.fail_retry_step_boost
+                    
+                    # Recompute target position with adjusted step
+                    retry_target = (
+                        parent_pos
+                        + primary_axis * retry_step
+                        + lateral_dir * child_spread
+                    )
+                    retry_target = self._clamp_to_domain(retry_target, domain, config.wall_margin_m)
+                else:
+                    retry_target = target_pos
+                
+                final_target_pos, collision_resolved = self._find_safe_position(
+                    parent_pos=parent_pos,
+                    target_pos=retry_target,
+                    avg_radius=retry_radius,
+                    primary_axis=primary_axis,
+                    perp1=perp1,
+                    perp2=perp2,
+                    current_spread=child_spread,
+                    spatial_index=spatial_index,
+                    config=config,
+                    domain=domain,
+                    rng=rng,
+                    parent_direction=parent_direction,
+                    parent_seg_id=parent_seg_id,
+                )
+                
+                if collision_resolved:
+                    if retry_round > 0:
+                        self._stats["retries_succeeded"] += 1
+                    break
+            
+            target_pos = final_target_pos
             
             if not collision_resolved:
+                # Try merge_on_collision if enabled
+                if config.collision_online.merge_on_collision:
+                    self._stats["merges_attempted"] += 1
+                    merge_result = self._find_nearest_segment_for_merge(
+                        target_pos=target_pos,
+                        merge_distance=config.collision_online.merge_distance_m,
+                        spatial_index=spatial_index,
+                        exclude_segment_ids=exclude_segment_ids,
+                    )
+                    
+                    if merge_result is not None:
+                        target_seg_id, merge_point, _ = merge_result
+                        merge_success = self._attempt_merge_to_segment(
+                            network=network,
+                            spatial_index=spatial_index,
+                            parent_node=parent_node,
+                            parent_direction=parent_direction,
+                            primary_axis=primary_axis,
+                            child_radius=grandchild_radius,
+                            target_seg_id=target_seg_id,
+                            merge_point=merge_point,
+                            config=config,
+                            vessel_type=vessel_type,
+                        )
+                        if merge_success:
+                            self._stats["merges_succeeded"] += 1
+                            # Merge doesn't create a recursive branch, just continue to next sibling
+                            continue
+                        else:
+                            self._stats["merges_failed"] += 1
+                    else:
+                        self._stats["merges_failed"] += 1
+                
                 self._stats["branches_terminated"] += 1
                 continue
             
@@ -934,6 +1019,296 @@ class ScaffoldTopDownBackend(GenerationBackend):
         closest2 = p3 + d2 * t
         
         return np.linalg.norm(closest1 - closest2), closest1, closest2
+    
+    def _find_nearest_segment_for_merge(
+        self,
+        target_pos: np.ndarray,
+        merge_distance: float,
+        spatial_index: DynamicSpatialIndex,
+        exclude_segment_ids: Optional[Set[int]] = None,
+    ) -> Optional[Tuple[int, np.ndarray, float]]:
+        """
+        Find the nearest segment within merge_distance of target_pos.
+        
+        Parameters
+        ----------
+        target_pos : np.ndarray
+            The target position to merge near
+        merge_distance : float
+            Maximum distance to consider for merge
+        spatial_index : DynamicSpatialIndex
+            Spatial index containing existing segments
+        exclude_segment_ids : Optional[Set[int]]
+            Segment IDs to exclude from consideration
+            
+        Returns
+        -------
+        Optional[Tuple[int, np.ndarray, float]]
+            (segment_id, closest_point_on_segment, distance) or None if no suitable target
+        """
+        # Query candidates using a small capsule around target_pos
+        candidates = spatial_index.query_candidate_segments_for_capsule(
+            target_pos, target_pos, merge_distance
+        )
+        
+        if not candidates:
+            return None
+        
+        best_seg_id = None
+        best_point = None
+        best_dist = float('inf')
+        
+        for seg_id in candidates:
+            if exclude_segment_ids and seg_id in exclude_segment_ids:
+                continue
+            
+            seg_data = spatial_index.get_segment_data(seg_id)
+            if seg_data is None:
+                continue
+            
+            seg_start = seg_data["start"]
+            seg_end = seg_data["end"]
+            centerline = seg_data.get("centerline")
+            
+            # Build polyline for the segment
+            if centerline and len(centerline) > 0:
+                polyline = [seg_start] + centerline + [seg_end]
+            else:
+                polyline = [seg_start, seg_end]
+            
+            # Find closest point on the polyline to target_pos
+            min_dist_to_seg = float('inf')
+            closest_on_seg = None
+            
+            for i in range(len(polyline) - 1):
+                p1 = polyline[i]
+                p2 = polyline[i + 1]
+                
+                # Project target_pos onto segment p1-p2
+                d = p2 - p1
+                length_sq = np.dot(d, d)
+                
+                if length_sq < 1e-12:
+                    closest = p1.copy()
+                else:
+                    t = np.clip(np.dot(target_pos - p1, d) / length_sq, 0.0, 1.0)
+                    closest = p1 + t * d
+                
+                dist = np.linalg.norm(target_pos - closest)
+                if dist < min_dist_to_seg:
+                    min_dist_to_seg = dist
+                    closest_on_seg = closest
+            
+            if min_dist_to_seg < best_dist and min_dist_to_seg < merge_distance:
+                best_dist = min_dist_to_seg
+                best_point = closest_on_seg
+                best_seg_id = seg_id
+        
+        if best_seg_id is not None:
+            return (best_seg_id, best_point, best_dist)
+        return None
+    
+    def _attempt_merge_to_segment(
+        self,
+        network: VascularNetwork,
+        spatial_index: DynamicSpatialIndex,
+        parent_node: Node,
+        parent_direction: np.ndarray,
+        primary_axis: np.ndarray,
+        child_radius: float,
+        target_seg_id: int,
+        merge_point: np.ndarray,
+        config: ScaffoldTopDownConfig,
+        vessel_type: str,
+    ) -> bool:
+        """
+        Attempt to merge a branch into an existing segment.
+        
+        This creates a new node at merge_point, splits the target segment,
+        and connects the parent to the new node.
+        
+        Parameters
+        ----------
+        network : VascularNetwork
+            The network to modify
+        spatial_index : DynamicSpatialIndex
+            Spatial index to update
+        parent_node : Node
+            The parent node to connect from
+        parent_direction : np.ndarray
+            Direction of the parent branch
+        primary_axis : np.ndarray
+            Primary growth axis
+        child_radius : float
+            Radius of the new branch
+        target_seg_id : int
+            ID of the segment to merge into
+        merge_point : np.ndarray
+            Point on the target segment to merge at
+        config : ScaffoldTopDownConfig
+            Configuration
+        vessel_type : str
+            Vessel type
+            
+        Returns
+        -------
+        bool
+            True if merge succeeded, False otherwise
+        """
+        # Get the target segment from the network
+        target_seg = network.get_segment(target_seg_id)
+        if target_seg is None:
+            return False
+        
+        # Get segment endpoints
+        start_node = network.get_node(target_seg.start_node_id)
+        end_node = network.get_node(target_seg.end_node_id)
+        if start_node is None or end_node is None:
+            return False
+        
+        seg_start = start_node.position.to_array()
+        seg_end = end_node.position.to_array()
+        
+        # Check if merge_point is too close to either endpoint (avoid degenerate splits)
+        dist_to_start = np.linalg.norm(merge_point - seg_start)
+        dist_to_end = np.linalg.norm(merge_point - seg_end)
+        min_split_dist = config.min_segment_length * 0.5
+        
+        if dist_to_start < min_split_dist or dist_to_end < min_split_dist:
+            # Too close to endpoint - connect directly to the nearest endpoint instead
+            if dist_to_start < dist_to_end:
+                merge_node = start_node
+            else:
+                merge_node = end_node
+        else:
+            # Create a new node at the merge point
+            merge_node_id = network.id_gen.next_id()
+            
+            # Interpolate radius at merge point
+            total_dist = np.linalg.norm(seg_end - seg_start)
+            if total_dist > 1e-9:
+                t = dist_to_start / total_dist
+            else:
+                t = 0.5
+            merge_radius = (1 - t) * target_seg.geometry.radius_start + t * target_seg.geometry.radius_end
+            
+            merge_node = Node(
+                id=merge_node_id,
+                position=Point3D(*merge_point),
+                node_type="junction",
+                vessel_type=vessel_type,
+                attributes={"radius": merge_radius, "merged": True},
+            )
+            network.add_node(merge_node)
+            
+            # Split the target segment: create two new segments
+            # Segment 1: start_node -> merge_node
+            seg1_id = network.id_gen.next_id()
+            seg1_geometry = TubeGeometry(
+                start=start_node.position,
+                end=merge_node.position,
+                radius_start=target_seg.geometry.radius_start,
+                radius_end=merge_radius,
+                centerline_points=None,  # Simplified - no centerline for split segments
+            )
+            seg1 = VesselSegment(
+                id=seg1_id,
+                start_node_id=start_node.id,
+                end_node_id=merge_node.id,
+                vessel_type=vessel_type,
+                geometry=seg1_geometry,
+            )
+            network.add_segment(seg1)
+            
+            # Segment 2: merge_node -> end_node
+            seg2_id = network.id_gen.next_id()
+            seg2_geometry = TubeGeometry(
+                start=merge_node.position,
+                end=end_node.position,
+                radius_start=merge_radius,
+                radius_end=target_seg.geometry.radius_end,
+                centerline_points=None,
+            )
+            seg2 = VesselSegment(
+                id=seg2_id,
+                start_node_id=merge_node.id,
+                end_node_id=end_node.id,
+                vessel_type=vessel_type,
+                geometry=seg2_geometry,
+            )
+            network.add_segment(seg2)
+            
+            # Update spatial index: remove old segment, add new segments
+            # Note: DynamicSpatialIndex doesn't have remove, so we just add new ones
+            # The old segment data remains but won't cause issues
+            avg_radius1 = (target_seg.geometry.radius_start + merge_radius) / 2
+            spatial_index.insert_segment(
+                segment_id=seg1_id,
+                start=seg_start,
+                end=merge_point,
+                radius=avg_radius1,
+                centerline=None,
+            )
+            
+            avg_radius2 = (merge_radius + target_seg.geometry.radius_end) / 2
+            spatial_index.insert_segment(
+                segment_id=seg2_id,
+                start=merge_point,
+                end=seg_end,
+                radius=avg_radius2,
+                centerline=None,
+            )
+            
+            # Remove the original segment from the network
+            network.remove_segment(target_seg_id)
+        
+        # Now create the merge branch: parent_node -> merge_node
+        parent_pos = parent_node.position.to_array()
+        merge_pos = merge_node.position.to_array()
+        
+        # Compute curved path for the merge branch
+        centerline_points, _ = self._compute_curved_path(
+            start=parent_pos,
+            end=merge_pos,
+            start_dir=parent_direction,
+            primary_axis=primary_axis,
+            curvature=config.curvature,
+            n_samples=config.curve_samples,
+        )
+        
+        # Create the merge segment
+        merge_seg_id = network.id_gen.next_id()
+        parent_radius = parent_node.attributes.get("radius", child_radius)
+        merge_geometry = TubeGeometry(
+            start=parent_node.position,
+            end=merge_node.position,
+            radius_start=parent_radius,
+            radius_end=child_radius,
+            centerline_points=[Point3D(*p) for p in centerline_points] if centerline_points else None,
+        )
+        merge_seg = VesselSegment(
+            id=merge_seg_id,
+            start_node_id=parent_node.id,
+            end_node_id=merge_node.id,
+            vessel_type=vessel_type,
+            geometry=merge_geometry,
+            attributes={"merged": True},
+        )
+        network.add_segment(merge_seg)
+        
+        self._stats["segments_created"] += 1
+        
+        # Add to spatial index
+        avg_radius = (parent_radius + child_radius) / 2
+        spatial_index.insert_segment(
+            segment_id=merge_seg_id,
+            start=parent_pos,
+            end=merge_pos,
+            radius=avg_radius,
+            centerline=centerline_points,
+        )
+        
+        return True
     
     def _get_perpendicular_axes(
         self,

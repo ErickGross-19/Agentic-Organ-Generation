@@ -93,7 +93,13 @@
           "rotation_attempts": 28,
           "reduction_factors": [0.75, 0.55, 0.35, 0.2],
           "max_attempts_per_child": 60,
-          "on_fail": "terminate_branch"
+          "on_fail": "terminate_branch",
+          "merge_on_collision": true,
+          "merge_distance_m": 2e-04,
+          "fail_retry_rounds": 2,
+          "fail_retry_mode": "both",
+          "fail_retry_shrink_factor": 0.85,
+          "fail_retry_step_boost": 1.2
         },
         "collision_postpass": {
           "enabled": true,
@@ -235,7 +241,13 @@
             "rotation_attempts": 28,
             "reduction_factors": [0.75, 0.55, 0.35, 0.2],
             "max_attempts_per_child": 60,
-            "on_fail": "terminate_branch"
+            "on_fail": "terminate_branch",
+            "merge_on_collision": true,
+            "merge_distance_m": 2e-04,
+            "fail_retry_rounds": 2,
+            "fail_retry_mode": "both",
+            "fail_retry_shrink_factor": 0.85,
+            "fail_retry_step_boost": 1.2
           },
           "collision_postpass": {
             "enabled": true,
