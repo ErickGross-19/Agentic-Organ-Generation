@@ -753,6 +753,70 @@ class TestScaffoldTopdownBifurcation:
         assert len(net1.nodes) == len(net2.nodes), "Same seed should produce same node count"
 
 
+class TestMalariaBifurcatingTreeSpec:
+    """
+    Tests for the malaria_venule_bifurcating_tree.json spec.
+    
+    These tests verify that the malaria bifurcating tree example produces
+    actual bifurcations with the junction-safe sibling generation fix.
+    """
+    
+    def test_malaria_bifurcating_tree_produces_bifurcation(self, tmp_path):
+        """
+        Test that malaria_venule_bifurcating_tree.json produces bifurcations.
+        
+        This is a regression test that verifies:
+        1. The spec runs through component_build without errors
+        2. The generated network has nodes with outdegree >= 2
+        3. The segment count is substantially larger than 2 * num_inlets
+        """
+        import json
+        from pathlib import Path
+        
+        # Load the malaria bifurcating tree spec
+        spec_path = Path(__file__).parent.parent.parent / "examples" / "designspec" / "malaria_venule_bifurcating_tree.json"
+        
+        if not spec_path.exists():
+            pytest.skip(f"Spec file not found: {spec_path}")
+        
+        with open(spec_path) as f:
+            spec_dict = json.load(f)
+        
+        # Override output directory
+        spec_dict["outputs"]["artifacts_dir"] = str(tmp_path / "artifacts")
+        spec_dict["policies"]["output"]["output_dir"] = str(tmp_path / "output")
+        
+        spec = DesignSpec.from_dict(spec_dict)
+        plan = ExecutionPlan(run_until="component_build:bifurcating_tree_5in")
+        runner = DesignSpecRunner(spec, plan=plan, output_dir=tmp_path)
+        result = runner.run()
+        
+        assert result.success, f"Generation should succeed: {result.error}"
+        
+        network = runner._component_networks.get("bifurcating_tree_5in")
+        assert network is not None, "Network should be created"
+        
+        # With 5 inlets and splits=2, levels=6, we expect many segments
+        # Minimum: 5 inlets * 2 = 10 segments (if no bifurcation)
+        # With bifurcation: should be much higher
+        segment_count = len(network.segments)
+        num_inlets = 5
+        assert segment_count > 2 * num_inlets, f"Expected > {2 * num_inlets} segments, got {segment_count}"
+        
+        # Compute outdegree for each node
+        outdegree = {}
+        for seg in network.segments.values():
+            start_id = seg.start_node_id
+            outdegree[start_id] = outdegree.get(start_id, 0) + 1
+        
+        # Check that at least one node has outdegree >= 2 (bifurcation)
+        max_outdegree = max(outdegree.values()) if outdegree else 0
+        nodes_with_outdegree_2 = sum(1 for od in outdegree.values() if od >= 2)
+        
+        assert max_outdegree >= 2, f"Expected at least one node with outdegree >= 2, max was {max_outdegree}"
+        assert nodes_with_outdegree_2 > 0, "Expected at least one bifurcation point (outdegree>=2)"
+
+
 class TestGrowthBackendMetrics:
     """Test growth backend metrics in reports."""
     

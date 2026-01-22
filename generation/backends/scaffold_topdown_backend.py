@@ -365,7 +365,15 @@ class ScaffoldTopDownBackend(GenerationBackend):
         1. Computes target endpoint with spread and curvature
         2. Checks for collisions and attempts rotation/reduction if needed
         3. Creates curved polyline segments
-        4. Recursively branches children
+        4. Recursively branches children using junction-safe sibling generation
+        
+        Junction-safe sibling generation (for splits > 1):
+        - All sibling candidates are generated and validated first
+        - Sibling-sibling collision checks use junction-safe rules that ignore
+          overlap within a small neighborhood around the shared parent junction
+        - Only after all siblings are accepted are they committed to the spatial index
+        - This prevents the first sibling from blocking subsequent siblings at the
+          shared junction point
         """
         if current_radius < config.min_radius:
             return
@@ -492,24 +500,431 @@ class ScaffoldTopDownBackend(GenerationBackend):
                 rng=rng,
             )
             
-            for child_angle in child_angles:
-                self._branch(
+            # Use junction-safe sibling generation for multiple children
+            if config.splits > 1 and config.collision_online.enabled:
+                self._generate_siblings_junction_safe(
                     network=network,
                     spatial_index=spatial_index,
                     parent_node=end_node,
                     parent_direction=end_direction,
                     primary_axis=primary_axis,
-                    current_radius=child_radius,
-                    current_step=child_step,
-                    current_spread=child_spread,
+                    child_radius=child_radius,
+                    child_step=child_step,
+                    child_spread=child_spread,
                     remaining_levels=remaining_levels - 1,
-                    angle=child_angle,
+                    child_angles=child_angles,
                     config=config,
                     vessel_type=vessel_type,
                     domain=domain,
                     rng=rng,
                     parent_seg_id=segment_id,
+                    perp1=perp1,
+                    perp2=perp2,
                 )
+            else:
+                # Single child or collision checking disabled - use simple sequential approach
+                for child_angle in child_angles:
+                    self._branch(
+                        network=network,
+                        spatial_index=spatial_index,
+                        parent_node=end_node,
+                        parent_direction=end_direction,
+                        primary_axis=primary_axis,
+                        current_radius=child_radius,
+                        current_step=child_step,
+                        current_spread=child_spread,
+                        remaining_levels=remaining_levels - 1,
+                        angle=child_angle,
+                        config=config,
+                        vessel_type=vessel_type,
+                        domain=domain,
+                        rng=rng,
+                        parent_seg_id=segment_id,
+                    )
+    
+    def _generate_siblings_junction_safe(
+        self,
+        network: VascularNetwork,
+        spatial_index: DynamicSpatialIndex,
+        parent_node: Node,
+        parent_direction: np.ndarray,
+        primary_axis: np.ndarray,
+        child_radius: float,
+        child_step: float,
+        child_spread: float,
+        remaining_levels: int,
+        child_angles: List[float],
+        config: ScaffoldTopDownConfig,
+        vessel_type: str,
+        domain: DomainSpec,
+        rng: np.random.Generator,
+        parent_seg_id: int,
+        perp1: np.ndarray,
+        perp2: np.ndarray,
+    ) -> None:
+        """
+        Generate multiple sibling branches using junction-safe collision checking.
+        
+        This method implements Option A from the junction-safe sibling generation:
+        1. For each child, propose candidate endpoint and compute polyline
+        2. Check collision against global index (excluding parent segment)
+        3. Check collision against already-accepted siblings using junction-safe rules
+        4. After all children processed, insert accepted segments into spatial index
+        5. Recursively branch from accepted children
+        
+        Junction-safe rule: Allow sibling overlap within a sphere of radius
+        junction_ignore around the parent junction point. Outside that region,
+        collisions are enforced normally.
+        """
+        parent_pos = parent_node.position.to_array()
+        avg_radius = child_radius  # For children, avg_radius is approximately child_radius
+        
+        buffer = max(
+            config.collision_online.buffer_abs_m,
+            config.collision_online.buffer_rel * avg_radius,
+        )
+        
+        # Compute junction ignore radius based on local scale
+        junction_ignore = max(
+            2 * child_radius,
+            3 * config.collision_online.buffer_abs_m,
+        )
+        
+        # Build exclude_segment_ids set from parent_seg_id
+        exclude_segment_ids = {parent_seg_id}
+        
+        # Collect accepted sibling candidates before committing to spatial index
+        accepted_siblings: List[Dict[str, Any]] = []
+        
+        for child_angle in child_angles:
+            # Compute target position for this child
+            jitter_rad = np.deg2rad(config.jitter_deg)
+            angle_jitter = rng.uniform(-jitter_rad, jitter_rad)
+            effective_angle = child_angle + angle_jitter
+            
+            lateral_dir = np.cos(effective_angle) * perp1 + np.sin(effective_angle) * perp2
+            
+            target_pos = (
+                parent_pos
+                + primary_axis * child_step
+                + lateral_dir * child_spread
+            )
+            target_pos = self._clamp_to_domain(target_pos, domain, config.wall_margin_m)
+            
+            # Try to find a safe position (checking against global index only)
+            target_pos, collision_resolved = self._find_safe_position(
+                parent_pos=parent_pos,
+                target_pos=target_pos,
+                avg_radius=avg_radius,
+                primary_axis=primary_axis,
+                perp1=perp1,
+                perp2=perp2,
+                current_spread=child_spread,
+                spatial_index=spatial_index,
+                config=config,
+                domain=domain,
+                rng=rng,
+                parent_direction=parent_direction,
+                parent_seg_id=parent_seg_id,
+            )
+            
+            if not collision_resolved:
+                self._stats["branches_terminated"] += 1
+                continue
+            
+            # Compute the curved path for this candidate
+            centerline_points, end_direction = self._compute_curved_path(
+                start=parent_pos,
+                end=target_pos,
+                start_dir=parent_direction,
+                primary_axis=primary_axis,
+                curvature=config.curvature,
+                n_samples=config.curve_samples,
+            )
+            
+            # Build polyline for sibling-sibling collision checking
+            polyline_points = [parent_pos]
+            polyline_points.extend(centerline_points)
+            polyline_points.append(target_pos)
+            
+            # Check collision against already-accepted siblings using junction-safe rules
+            sibling_collision = False
+            for accepted in accepted_siblings:
+                if self._check_sibling_collision_junction_safe(
+                    polyline1=polyline_points,
+                    radius1=avg_radius,
+                    polyline2=accepted["polyline"],
+                    radius2=accepted["radius"],
+                    junction_point=parent_pos,
+                    junction_ignore=junction_ignore,
+                    buffer=buffer,
+                ):
+                    sibling_collision = True
+                    break
+            
+            if sibling_collision:
+                self._stats["collisions_detected"] += 1
+                self._stats["branches_terminated"] += 1
+                continue
+            
+            # Check segment length
+            seg_length = np.linalg.norm(target_pos - parent_pos)
+            if seg_length < config.min_segment_length:
+                continue
+            
+            # Accept this sibling candidate
+            accepted_siblings.append({
+                "target_pos": target_pos,
+                "centerline_points": centerline_points,
+                "end_direction": end_direction,
+                "effective_angle": effective_angle,
+                "polyline": polyline_points,
+                "radius": avg_radius,
+            })
+        
+        # If no children were accepted, mark parent as terminal
+        if not accepted_siblings:
+            parent_node.node_type = "terminal"
+            return
+        
+        # Commit all accepted siblings to the network and spatial index
+        for sibling in accepted_siblings:
+            target_pos = sibling["target_pos"]
+            centerline_points = sibling["centerline_points"]
+            end_direction = sibling["end_direction"]
+            effective_angle = sibling["effective_angle"]
+            
+            # Create end node
+            end_node_id = network.id_gen.next_id()
+            end_node_type = "terminal" if remaining_levels == 0 else "junction"
+            end_node = Node(
+                id=end_node_id,
+                position=Point3D(*target_pos),
+                node_type=end_node_type,
+                vessel_type=vessel_type,
+                attributes={"radius": child_radius},
+            )
+            network.add_node(end_node)
+            
+            # Create segment
+            segment_id = network.id_gen.next_id()
+            geometry = TubeGeometry(
+                start=parent_node.position,
+                end=end_node.position,
+                radius_start=child_radius,  # Parent's child_radius is this segment's start radius
+                radius_end=child_radius * config.ratio,  # Taper to next level
+                centerline_points=[Point3D(*p) for p in centerline_points] if centerline_points else None,
+            )
+            segment = VesselSegment(
+                id=segment_id,
+                start_node_id=parent_node.id,
+                end_node_id=end_node.id,
+                vessel_type=vessel_type,
+                geometry=geometry,
+            )
+            network.add_segment(segment)
+            
+            self._stats["segments_created"] += 1
+            
+            # Insert into spatial index
+            spatial_index.insert_segment(
+                segment_id=segment_id,
+                start=parent_pos,
+                end=target_pos,
+                radius=avg_radius,
+                centerline=centerline_points,
+            )
+            
+            # Store segment_id for recursive branching
+            sibling["segment_id"] = segment_id
+            sibling["end_node"] = end_node
+            sibling["end_direction"] = end_direction
+        
+        # Recursively branch from all accepted children
+        for sibling in accepted_siblings:
+            if remaining_levels > 0:
+                next_child_angles = self._compute_child_angles(
+                    parent_angle=sibling["effective_angle"],
+                    splits=config.splits,
+                    cone_angle_deg=config.cone_angle_deg,
+                    rng=rng,
+                )
+                
+                next_child_radius = child_radius * config.ratio
+                next_child_step = child_step * config.step_decay
+                next_child_spread = child_spread * config.spread_decay
+                
+                if config.splits > 1:
+                    self._generate_siblings_junction_safe(
+                        network=network,
+                        spatial_index=spatial_index,
+                        parent_node=sibling["end_node"],
+                        parent_direction=sibling["end_direction"],
+                        primary_axis=primary_axis,
+                        child_radius=next_child_radius,
+                        child_step=next_child_step,
+                        child_spread=next_child_spread,
+                        remaining_levels=remaining_levels - 1,
+                        child_angles=next_child_angles,
+                        config=config,
+                        vessel_type=vessel_type,
+                        domain=domain,
+                        rng=rng,
+                        parent_seg_id=sibling["segment_id"],
+                        perp1=perp1,
+                        perp2=perp2,
+                    )
+                else:
+                    for child_angle in next_child_angles:
+                        self._branch(
+                            network=network,
+                            spatial_index=spatial_index,
+                            parent_node=sibling["end_node"],
+                            parent_direction=sibling["end_direction"],
+                            primary_axis=primary_axis,
+                            current_radius=next_child_radius,
+                            current_step=next_child_step,
+                            current_spread=next_child_spread,
+                            remaining_levels=remaining_levels - 1,
+                            angle=child_angle,
+                            config=config,
+                            vessel_type=vessel_type,
+                            domain=domain,
+                            rng=rng,
+                            parent_seg_id=sibling["segment_id"],
+                        )
+    
+    def _check_sibling_collision_junction_safe(
+        self,
+        polyline1: List[np.ndarray],
+        radius1: float,
+        polyline2: List[np.ndarray],
+        radius2: float,
+        junction_point: np.ndarray,
+        junction_ignore: float,
+        buffer: float,
+    ) -> bool:
+        """
+        Check if two sibling polylines collide, ignoring overlap near the junction.
+        
+        This implements the junction-safe rule: allow sibling overlap within a sphere
+        of radius junction_ignore around the junction point. Outside that region,
+        collisions are enforced normally.
+        
+        Parameters
+        ----------
+        polyline1, polyline2 : List[np.ndarray]
+            The two polylines to check
+        radius1, radius2 : float
+            Radii of the two polylines
+        junction_point : np.ndarray
+            The shared parent junction point
+        junction_ignore : float
+            Radius of the junction ignore sphere
+        buffer : float
+            Additional clearance buffer
+            
+        Returns
+        -------
+        bool
+            True if collision detected outside junction zone, False otherwise
+        """
+        min_separation = radius1 + radius2 + buffer
+        
+        # Check each segment of polyline1 against each segment of polyline2
+        for i in range(len(polyline1) - 1):
+            seg1_start = polyline1[i]
+            seg1_end = polyline1[i + 1]
+            
+            for j in range(len(polyline2) - 1):
+                seg2_start = polyline2[j]
+                seg2_end = polyline2[j + 1]
+                
+                # Compute closest points between the two segments
+                dist, closest1, closest2 = self._segment_segment_closest_points(
+                    seg1_start, seg1_end, seg2_start, seg2_end
+                )
+                
+                if dist < min_separation:
+                    # Check if both closest points are within junction ignore zone
+                    dist_to_junction1 = np.linalg.norm(closest1 - junction_point)
+                    dist_to_junction2 = np.linalg.norm(closest2 - junction_point)
+                    
+                    if dist_to_junction1 < junction_ignore and dist_to_junction2 < junction_ignore:
+                        # Both points are near junction - ignore this collision
+                        continue
+                    else:
+                        # Real collision outside junction zone
+                        return True
+        
+        return False
+    
+    def _segment_segment_closest_points(
+        self,
+        p1: np.ndarray,
+        p2: np.ndarray,
+        p3: np.ndarray,
+        p4: np.ndarray,
+    ) -> Tuple[float, np.ndarray, np.ndarray]:
+        """
+        Compute the closest points between two line segments.
+        
+        Segment 1: p1 to p2
+        Segment 2: p3 to p4
+        
+        Returns
+        -------
+        Tuple[float, np.ndarray, np.ndarray]
+            (distance, closest_point_on_seg1, closest_point_on_seg2)
+        """
+        d1 = p2 - p1  # Direction of segment 1
+        d2 = p4 - p3  # Direction of segment 2
+        r = p1 - p3
+        
+        a = np.dot(d1, d1)  # Squared length of segment 1
+        e = np.dot(d2, d2)  # Squared length of segment 2
+        f = np.dot(d2, r)
+        
+        EPSILON = 1e-10
+        
+        # Check if either or both segments degenerate into points
+        if a <= EPSILON and e <= EPSILON:
+            # Both segments degenerate into points
+            return np.linalg.norm(p1 - p3), p1.copy(), p3.copy()
+        
+        if a <= EPSILON:
+            # First segment degenerates into a point
+            s = 0.0
+            t = np.clip(f / e, 0.0, 1.0)
+        else:
+            c = np.dot(d1, r)
+            if e <= EPSILON:
+                # Second segment degenerates into a point
+                t = 0.0
+                s = np.clip(-c / a, 0.0, 1.0)
+            else:
+                # General nondegenerate case
+                b = np.dot(d1, d2)
+                denom = a * e - b * b
+                
+                if denom != 0.0:
+                    s = np.clip((b * f - c * e) / denom, 0.0, 1.0)
+                else:
+                    s = 0.0
+                
+                t = (b * s + f) / e
+                
+                if t < 0.0:
+                    t = 0.0
+                    s = np.clip(-c / a, 0.0, 1.0)
+                elif t > 1.0:
+                    t = 1.0
+                    s = np.clip((b - c) / a, 0.0, 1.0)
+        
+        closest1 = p1 + d1 * s
+        closest2 = p3 + d2 * t
+        
+        return np.linalg.norm(closest1 - closest2), closest1, closest2
     
     def _get_perpendicular_axes(
         self,
