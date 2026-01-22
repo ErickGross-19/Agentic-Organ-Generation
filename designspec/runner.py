@@ -378,7 +378,23 @@ class DesignSpecRunner:
         )
         
         warnings = []
+        errors = []
         metadata = {}
+        
+        # Validate backend usage and emit deprecation/blocking errors
+        backend_validation = self._validate_backend_usage()
+        warnings.extend(backend_validation.get("warnings", []))
+        errors.extend(backend_validation.get("errors", []))
+        
+        # If there are blocking errors (CCO/NLP), fail fast
+        if errors:
+            return StageReport(
+                stage=Stage.COMPILE_POLICIES.value,
+                success=False,
+                warnings=warnings,
+                errors=errors,
+                metadata={"backend_validation": "failed"},
+            )
         
         policy_names = list(self.spec.policies.keys())
         logger.info(f"  Compiling {len(policy_names)} policies: {', '.join(policy_names)}")
@@ -1652,6 +1668,77 @@ class DesignSpecRunner:
             raise ValueError(f"Expected Trimesh, got {type(mesh)}")
         
         return mesh
+
+    def _validate_backend_usage(self) -> Dict[str, List[str]]:
+        """
+        Validate backend usage in the spec.
+        
+        Returns warnings for deprecated backends (kary_tree) and errors for
+        unfinished/blocked backends (cco_hybrid, nlp_optimization).
+        
+        Returns
+        -------
+        dict
+            Dictionary with "warnings" and "errors" lists
+        """
+        warnings = []
+        errors = []
+        
+        # Deprecated backends (warn but allow)
+        deprecated_backends = {"kary_tree"}
+        
+        # Blocked/unfinished backends (error and reject)
+        blocked_backends = {
+            "cco_hybrid": "CCO backend is not finished; do not use.",
+            "cco": "CCO backend is not finished; do not use.",
+            "cco_network": "CCO backend is not finished; do not use.",
+            "nlp": "NLP optimization is not finished; do not use.",
+            "nlp_optimization": "NLP optimization is not finished; do not use.",
+        }
+        
+        # Check top-level growth policy backend
+        growth_policy = self.spec.policies.get("growth", {})
+        if isinstance(growth_policy, dict):
+            backend = growth_policy.get("backend")
+            if backend in deprecated_backends:
+                warnings.append(
+                    f"Deprecated backend '{backend}' in policies.growth.backend. "
+                    "Use 'scaffold_topdown' instead. This backend will be removed in a future release."
+                )
+            if backend in blocked_backends:
+                errors.append(blocked_backends[backend])
+            
+            # Check for NLP optimization in backend_params
+            backend_params = growth_policy.get("backend_params", {})
+            if isinstance(backend_params, dict):
+                if backend_params.get("use_nlp_optimization"):
+                    errors.append("NLP optimization is not finished; do not use.")
+        
+        # Check each component's build.backend
+        for component in self.spec.components:
+            component_id = component.get("id", "unknown")
+            build = component.get("build", {})
+            if isinstance(build, dict):
+                backend = build.get("backend")
+                if backend in deprecated_backends:
+                    warnings.append(
+                        f"Deprecated backend '{backend}' in component '{component_id}'. "
+                        "Use 'scaffold_topdown' instead. This backend will be removed in a future release."
+                    )
+                if backend in blocked_backends:
+                    errors.append(
+                        f"Component '{component_id}': {blocked_backends[backend]}"
+                    )
+                
+                # Check for NLP optimization in component backend_params
+                backend_params = build.get("backend_params", {})
+                if isinstance(backend_params, dict):
+                    if backend_params.get("use_nlp_optimization"):
+                        errors.append(
+                            f"Component '{component_id}': NLP optimization is not finished; do not use."
+                        )
+        
+        return {"warnings": warnings, "errors": errors}
 
 
 def run_spec(

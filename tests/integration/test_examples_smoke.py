@@ -1,17 +1,16 @@
 """
 Smoke tests for DesignSpec examples.
 
-This module runs a fast subset of examples through the DesignSpecRunner
+This module runs malaria venule insert examples through the DesignSpecRunner
 to verify they are valid and produce expected outputs.
 
 Fast CI subset (run by default):
-- 01_minimal_box_network.json
-- 02_multicomponent_union_embed.json
-- 03_transform_domain.json
-- 05_implicit_ast_domain.json
+- malaria_venule_vertical_channels.json
+- malaria_venule_fang_hook_channels.json
 
 Slow examples (marked with @pytest.mark.slow):
-- All other examples that take longer to run
+- malaria_venule_bifurcating_tree.json
+- malaria_venule_space_colonization.json
 
 Usage:
     # Run fast smoke tests (CI subset)
@@ -21,7 +20,7 @@ Usage:
     pytest -q -m slow tests/integration/test_examples_smoke.py
 
     # Run specific example test
-    pytest -q tests/integration/test_examples_smoke.py::test_01_minimal_box_network
+    pytest -q tests/integration/test_examples_smoke.py::test_malaria_venule_vertical_channels
 """
 
 import json
@@ -37,23 +36,13 @@ EXAMPLES_DIR = Path(__file__).parent.parent.parent / "examples" / "designspec"
 
 
 FAST_EXAMPLES = [
-    "01_minimal_box_network.json",
-    "02_multicomponent_union_embed.json",
-    "03_transform_domain.json",
-    "05_implicit_ast_domain.json",
+    "malaria_venule_vertical_channels.json",
+    "malaria_venule_fang_hook_channels.json",
 ]
 
 SLOW_EXAMPLES = [
-    "04_composite_domain_boolean.json",
-    "06_mesh_domain_user_faces.json",
-    "07_fang_hook_channels.json",
-    "08_path_channel_tube_sweep.json",
-    "09_hierarchical_pathfinding_waypoints.json",
-    "10_programmatic_backend_dsl.json",
-    "11_kary_backend.json",
-    "12_cco_hybrid_backend.json",
-    "13_validity_open_ports_focus.json",
-    "14_budget_relaxation_showcase.json",
+    "malaria_venule_bifurcating_tree.json",
+    "malaria_venule_space_colonization.json",
 ]
 
 
@@ -86,33 +75,17 @@ def assert_result_json_serializable(result: RunnerResult):
 class TestFastExamplesUnionOnly:
     """Fast smoke tests that run examples until union_voids stage."""
 
-    def test_01_minimal_box_network(self, tmp_path):
-        """Test 01_minimal_box_network.json runs until union_voids."""
-        spec = load_example("01_minimal_box_network.json")
+    def test_malaria_venule_vertical_channels(self, tmp_path):
+        """Test malaria_venule_vertical_channels.json runs until union_voids."""
+        spec = load_example("malaria_venule_vertical_channels.json")
         result = run_example_until_stage(spec, "union_voids", tmp_path)
 
         assert isinstance(result, RunnerResult)
         assert_result_json_serializable(result)
 
-    def test_02_multicomponent_union_embed(self, tmp_path):
-        """Test 02_multicomponent_union_embed.json runs until union_voids."""
-        spec = load_example("02_multicomponent_union_embed.json")
-        result = run_example_until_stage(spec, "union_voids", tmp_path)
-
-        assert isinstance(result, RunnerResult)
-        assert_result_json_serializable(result)
-
-    def test_03_transform_domain(self, tmp_path):
-        """Test 03_transform_domain.json runs until union_voids."""
-        spec = load_example("03_transform_domain.json")
-        result = run_example_until_stage(spec, "union_voids", tmp_path)
-
-        assert isinstance(result, RunnerResult)
-        assert_result_json_serializable(result)
-
-    def test_05_implicit_ast_domain(self, tmp_path):
-        """Test 05_implicit_ast_domain.json runs until union_voids."""
-        spec = load_example("05_implicit_ast_domain.json")
+    def test_malaria_venule_fang_hook_channels(self, tmp_path):
+        """Test malaria_venule_fang_hook_channels.json runs until union_voids."""
+        spec = load_example("malaria_venule_fang_hook_channels.json")
         result = run_example_until_stage(spec, "union_voids", tmp_path)
 
         assert isinstance(result, RunnerResult)
@@ -122,18 +95,18 @@ class TestFastExamplesUnionOnly:
 class TestFastExamplesFullPipeline:
     """Fast smoke tests that run selected examples through full pipeline."""
 
-    def test_01_minimal_box_network_full(self, tmp_path):
-        """Test 01_minimal_box_network.json runs full pipeline with validity."""
-        spec = load_example("01_minimal_box_network.json")
+    def test_malaria_venule_vertical_channels_full(self, tmp_path):
+        """Test malaria_venule_vertical_channels.json runs full pipeline with validity."""
+        spec = load_example("malaria_venule_vertical_channels.json")
         runner = DesignSpecRunner(spec, output_dir=tmp_path)
         result = runner.run()
 
         assert isinstance(result, RunnerResult)
         assert_result_json_serializable(result)
 
-    def test_03_transform_domain_full(self, tmp_path):
-        """Test 03_transform_domain.json runs full pipeline with validity."""
-        spec = load_example("03_transform_domain.json")
+    def test_malaria_venule_fang_hook_channels_full(self, tmp_path):
+        """Test malaria_venule_fang_hook_channels.json runs full pipeline with validity."""
+        spec = load_example("malaria_venule_fang_hook_channels.json")
         runner = DesignSpecRunner(spec, output_dir=tmp_path)
         result = runner.run()
 
@@ -181,81 +154,17 @@ class TestExampleDomainCompilation:
 class TestSlowExamplesUnionOnly:
     """Slow smoke tests that run examples until union_voids stage."""
 
-    def test_04_composite_domain_boolean(self, tmp_path):
-        """Test 04_composite_domain_boolean.json runs until union_voids."""
-        spec = load_example("04_composite_domain_boolean.json")
+    def test_malaria_venule_bifurcating_tree(self, tmp_path):
+        """Test malaria_venule_bifurcating_tree.json runs until union_voids."""
+        spec = load_example("malaria_venule_bifurcating_tree.json")
         result = run_example_until_stage(spec, "union_voids", tmp_path)
 
         assert isinstance(result, RunnerResult)
         assert_result_json_serializable(result)
 
-    def test_06_mesh_domain_user_faces(self, tmp_path):
-        """Test 06_mesh_domain_user_faces.json runs until union_voids."""
-        spec = load_example("06_mesh_domain_user_faces.json")
-        result = run_example_until_stage(spec, "union_voids", tmp_path)
-
-        assert isinstance(result, RunnerResult)
-        assert_result_json_serializable(result)
-
-    def test_07_fang_hook_channels(self, tmp_path):
-        """Test 07_fang_hook_channels.json runs until union_voids."""
-        spec = load_example("07_fang_hook_channels.json")
-        result = run_example_until_stage(spec, "union_voids", tmp_path)
-
-        assert isinstance(result, RunnerResult)
-        assert_result_json_serializable(result)
-
-    def test_08_path_channel_tube_sweep(self, tmp_path):
-        """Test 08_path_channel_tube_sweep.json runs until union_voids."""
-        spec = load_example("08_path_channel_tube_sweep.json")
-        result = run_example_until_stage(spec, "union_voids", tmp_path)
-
-        assert isinstance(result, RunnerResult)
-        assert_result_json_serializable(result)
-
-    def test_09_hierarchical_pathfinding_waypoints(self, tmp_path):
-        """Test 09_hierarchical_pathfinding_waypoints.json runs until union_voids."""
-        spec = load_example("09_hierarchical_pathfinding_waypoints.json")
-        result = run_example_until_stage(spec, "union_voids", tmp_path)
-
-        assert isinstance(result, RunnerResult)
-        assert_result_json_serializable(result)
-
-    def test_10_programmatic_backend_dsl(self, tmp_path):
-        """Test 10_programmatic_backend_dsl.json runs until union_voids."""
-        spec = load_example("10_programmatic_backend_dsl.json")
-        result = run_example_until_stage(spec, "union_voids", tmp_path)
-
-        assert isinstance(result, RunnerResult)
-        assert_result_json_serializable(result)
-
-    def test_11_kary_backend(self, tmp_path):
-        """Test 11_kary_backend.json runs until union_voids."""
-        spec = load_example("11_kary_backend.json")
-        result = run_example_until_stage(spec, "union_voids", tmp_path)
-
-        assert isinstance(result, RunnerResult)
-        assert_result_json_serializable(result)
-
-    def test_12_cco_hybrid_backend(self, tmp_path):
-        """Test 12_cco_hybrid_backend.json runs until union_voids."""
-        spec = load_example("12_cco_hybrid_backend.json")
-        result = run_example_until_stage(spec, "union_voids", tmp_path)
-
-        assert isinstance(result, RunnerResult)
-        assert_result_json_serializable(result)
-
-    def test_13_validity_open_ports_focus(self, tmp_path):
-        """Test 13_validity_open_ports_focus.json runs until union_voids."""
-        spec = load_example("13_validity_open_ports_focus.json")
-        result = run_example_until_stage(spec, "union_voids", tmp_path)
-
-        assert isinstance(result, RunnerResult)
-        assert_result_json_serializable(result)
-
-    def test_14_budget_relaxation_showcase(self, tmp_path):
-        """Test 14_budget_relaxation_showcase.json runs until union_voids."""
-        spec = load_example("14_budget_relaxation_showcase.json")
+    def test_malaria_venule_space_colonization(self, tmp_path):
+        """Test malaria_venule_space_colonization.json runs until union_voids."""
+        spec = load_example("malaria_venule_space_colonization.json")
         result = run_example_until_stage(spec, "union_voids", tmp_path)
 
         assert isinstance(result, RunnerResult)

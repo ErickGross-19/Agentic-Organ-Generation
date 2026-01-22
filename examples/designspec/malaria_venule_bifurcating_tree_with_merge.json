@@ -1,0 +1,277 @@
+{
+  "schema": {
+    "name": "aog_designspec",
+    "version": "1.0.0",
+    "compatible_with": ["1.0.x"]
+  },
+  "meta": {
+    "name": "malaria_venule_bifurcating_tree_with_merge",
+    "description": "Cylinder R=5mm H=2mm with ridge. 5 inlets (center + 4 @ r=3mm). Scaffold top-down bifurcating tree with collision avoidance and merge on collision enabled. Inputs in meters.",
+    "seed": 42,
+    "input_units": "m",
+    "tags": ["malaria", "venule", "bifurcating", "scaffold_topdown", "merge_on_collision", "meters"]
+  },
+  "policies": {
+    "resolution": {
+      "input_units": "m",
+      "min_channel_diameter": 0.00002,
+      "min_voxels_across_feature": 18,
+      "max_voxels": 50000000,
+      "min_pitch": 1e-06,
+      "max_pitch": 5e-05,
+      "auto_relax_pitch": true,
+      "pitch_step_factor": 1.5,
+      "max_voxels_embed": 12000000,
+      "max_voxels_merge": 12000000,
+      "max_voxels_repair": 12000000
+    },
+    "domain_meshing": {
+      "cache_meshes": true,
+      "emit_warnings": true,
+      "target_face_count": 120000,
+      "voxel_pitch": null,
+      "primitive_policy": {
+        "sections_radial": 128,
+        "sections_axial": 64,
+        "sections_angular": 128,
+        "subdivisions": 2
+      },
+      "mesh_policy": {
+        "validate_watertight": true,
+        "repair_if_needed": true,
+        "repair_voxel_pitch": 5e-05,
+        "max_faces": 800000,
+        "simplify_if_over_max": true,
+        "simplify_target_ratio": 0.6
+      }
+    },
+    "ridge": {
+      "enabled": true,
+      "face": "top",
+      "height": 0.0005,
+      "thickness": 0.0005,
+      "inset": 0.0,
+      "overlap": 0.00025,
+      "resolution": 128
+    },
+    "ports": {
+      "enabled": true,
+      "projection_mode": "clamp_to_face",
+      "ridge_constraint_enabled": true,
+      "disk_constraint_enabled": true
+    },
+    "growth": {
+      "enabled": true,
+      "backend": "scaffold_topdown",
+      "target_terminals": null,
+      "terminal_tolerance": 0.15,
+      "max_iterations": 800,
+      "min_segment_length": 2e-05,
+      "max_segment_length": 8e-04,
+      "min_radius": 5e-05,
+      "step_size": 8e-05,
+      "backend_params": {
+        "primary_axis": [0, 0, -1],
+        "splits": 2,
+        "levels": 6,
+        "ratio": 0.7,
+        "step_length": 0.0005,
+        "step_decay": 0.95,
+        "spread": 0.0009,
+        "spread_decay": 0.97,
+        "cone_angle_deg": 60,
+        "jitter_deg": 10,
+        "curvature": 0.3,
+        "curve_samples": 5,
+        "wall_margin_m": 0.0001,
+        "min_radius": 5e-05,
+        "collision_online": {
+          "enabled": true,
+          "buffer_abs_m": 2e-05,
+          "buffer_rel": 0.05,
+          "cell_size_m": 0.0005,
+          "rotation_attempts": 28,
+          "reduction_factors": [0.75, 0.55, 0.35, 0.2],
+          "max_attempts_per_child": 60,
+          "on_fail": "terminate_branch",
+          "merge_on_collision": true,
+          "merge_distance_m": 2e-04
+        },
+        "collision_postpass": {
+          "enabled": true,
+          "min_clearance_m": 2e-05,
+          "strategy_order": ["shrink", "terminate"],
+          "shrink_factor": 0.9,
+          "shrink_max_iterations": 5
+        }
+      }
+    },
+    "radius": {
+      "mode": "murray",
+      "murray_exponent": 3.0,
+      "taper_factor": 0.8,
+      "min_radius": 5e-05,
+      "max_radius": 5e-04
+    },
+    "collision": {
+      "enabled": true,
+      "check_collisions": true,
+      "collision_clearance": 2e-05
+    },
+    "composition": {
+      "repair_enabled": false,
+      "union_before_embed": true,
+      "keep_largest_component": false,
+      "merge_policy": {
+        "keep_largest_component": false
+      }
+    },
+    "repair": {
+      "voxel_repair_enabled": false,
+      "fill_voxels": false
+    },
+    "embedding": {
+      "voxel_pitch": 5e-05,
+      "shell_thickness": 0.0,
+      "use_resolution_policy": true,
+      "auto_adjust_pitch": true,
+      "max_pitch_steps": 4,
+      "pitch_step_factor": 1.5,
+      "max_voxels": 12000000,
+      "fallback": "auto",
+      "preserve_ports_enabled": true,
+      "preserve_mode": "recarve",
+      "carve_radius_factor": 1.4,
+      "carve_depth": 0.001
+    },
+    "open_port": {
+      "enabled": false
+    },
+    "validity": {
+      "check_watertight": false,
+      "check_components": false,
+      "check_min_diameter": false,
+      "check_open_ports": false,
+      "check_bounds": true,
+      "check_void_inside_domain": true
+    },
+    "output": {
+      "output_dir": "./out/malaria_venule_bifurcating_tree_with_merge",
+      "output_units": "m",
+      "save_intermediates": true,
+      "save_reports": true,
+      "output_stl": true,
+      "output_json": true
+    }
+  },
+  "domains": {
+    "main_domain": {
+      "type": "cylinder",
+      "center": [0.0, 0.0, 0.0],
+      "radius": 0.005,
+      "height": 0.002
+    }
+  },
+  "components": [
+    {
+      "id": "bifurcating_tree_5in_merge",
+      "domain_ref": "main_domain",
+      "ports": {
+        "inlets": [
+          {
+            "name": "inlet_center",
+            "position": [0.0, 0.0, 0.001],
+            "direction": [0.0, 0.0, -1.0],
+            "radius": 0.0005
+          },
+          {
+            "name": "inlet_e",
+            "position": [0.003, 0.0, 0.001],
+            "direction": [0.0, 0.0, -1.0],
+            "radius": 0.0005
+          },
+          {
+            "name": "inlet_w",
+            "position": [-0.003, 0.0, 0.001],
+            "direction": [0.0, 0.0, -1.0],
+            "radius": 0.0005
+          },
+          {
+            "name": "inlet_n",
+            "position": [0.0, 0.003, 0.001],
+            "direction": [0.0, 0.0, -1.0],
+            "radius": 0.0005
+          },
+          {
+            "name": "inlet_s",
+            "position": [0.0, -0.003, 0.001],
+            "direction": [0.0, 0.0, -1.0],
+            "radius": 0.0005
+          }
+        ],
+        "outlets": []
+      },
+      "build": {
+        "type": "backend_network",
+        "backend": "scaffold_topdown",
+        "backend_params": {
+          "primary_axis": [0, 0, -1],
+          "splits": 2,
+          "levels": 6,
+          "ratio": 0.7,
+          "step_length": 0.0005,
+          "step_decay": 0.95,
+          "spread": 0.0009,
+          "spread_decay": 0.97,
+          "cone_angle_deg": 60,
+          "jitter_deg": 10,
+          "curvature": 0.3,
+          "curve_samples": 5,
+          "wall_margin_m": 0.0001,
+          "min_radius": 5e-05,
+          "collision_online": {
+            "enabled": true,
+            "buffer_abs_m": 2e-05,
+            "buffer_rel": 0.05,
+            "cell_size_m": 0.0005,
+            "rotation_attempts": 28,
+            "reduction_factors": [0.75, 0.55, 0.35, 0.2],
+            "max_attempts_per_child": 60,
+            "on_fail": "terminate_branch",
+            "merge_on_collision": true,
+            "merge_distance_m": 2e-04
+          },
+          "collision_postpass": {
+            "enabled": true,
+            "min_clearance_m": 2e-05,
+            "strategy_order": ["shrink", "terminate"],
+            "shrink_factor": 0.9,
+            "shrink_max_iterations": 5
+          }
+        }
+      },
+      "save_artifacts": {
+        "network": "artifacts/bifurcating_tree_merge_network.json",
+        "void_mesh": "artifacts/bifurcating_tree_merge_void.stl"
+      }
+    }
+  ],
+  "embedding": {
+    "enable": true,
+    "outputs": {
+      "domain_with_void": "domain_with_void.stl",
+      "void_mesh": "void_union.stl"
+    }
+  },
+  "validity": {
+    "enable": false,
+    "save_report": "validity_report.json"
+  },
+  "outputs": {
+    "artifacts_dir": "artifacts",
+    "named": {
+      "domain_mesh": "artifacts/domain_mesh_with_ridge.stl",
+      "run_report": "run_report.json"
+    }
+  }
+}

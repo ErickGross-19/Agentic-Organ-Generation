@@ -13,6 +13,7 @@ from typing import Optional, Tuple, Dict, Any, Union, TYPE_CHECKING
 import logging
 import hashlib
 import json
+import warnings
 import numpy as np
 
 # Import policies from aog_policies (canonical source for runner contract)
@@ -342,6 +343,12 @@ def generate_network(
         metadata.update(gen_meta)
         
     elif generator_kind == "kary_tree":
+        warnings.warn(
+            "kary_tree is deprecated and will be removed in a future release; "
+            "use scaffold_topdown instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
         network, gen_meta = _generate_kary_tree(
             compiled_domain, ports, growth_policy, collision_policy, seed
         )

@@ -1,20 +1,15 @@
 # DesignSpec Examples
 
-This directory contains a comprehensive set of DesignSpec JSON examples that showcase the capabilities of the Agentic Organ Generation system and serve as runnable "spec fixtures" to exercise the DesignSpec + DesignSpecRunner pipeline.
+This directory contains malaria venule insert DesignSpec JSON examples that showcase the capabilities of the Agentic Organ Generation system and serve as runnable "spec fixtures" to exercise the DesignSpec + DesignSpecRunner pipeline.
 
 ## How to Run an Example
 
 ### Using the Runner Script
 
 ```bash
-# Run a specific example
-python scripts/run_designspec_example.py --spec examples/designspec/01_minimal_box_network.json --out ./output
+python scripts/run_designspec_example.py --spec examples/designspec/malaria_venule_bifurcating_tree.json --out ./output
 
-# Run until a specific stage (for debugging)
-python scripts/run_designspec_example.py --spec examples/designspec/01_minimal_box_network.json --out ./output --run-until compile_domains
-
-# Available stages: compile_policies, compile_domains, place_ports, build_components, 
-#                   synthesize_meshes, merge_meshes, union_voids, embed, validate, export
+python scripts/run_designspec_example.py --spec examples/designspec/malaria_venule_bifurcating_tree.json --out ./output --run-until compile_domains
 ```
 
 ### Using Python Directly
@@ -25,18 +20,14 @@ from designspec.runner import DesignSpecRunner
 from designspec.plan import ExecutionPlan
 from pathlib import Path
 
-# Load the spec
-spec = DesignSpec.from_file("examples/designspec/01_minimal_box_network.json")
+spec = DesignSpec.from_file("examples/designspec/malaria_venule_bifurcating_tree.json")
 
-# Create output directory
-output_dir = Path("./output/01_minimal_box_network")
+output_dir = Path("./output/malaria_venule_bifurcating_tree")
 output_dir.mkdir(parents=True, exist_ok=True)
 
-# Run the full pipeline
 runner = DesignSpecRunner(spec, output_dir=output_dir)
 result = runner.run()
 
-# Check results
 print(f"Success: {result.success}")
 print(f"Stages completed: {result.stages_completed}")
 ```
@@ -88,125 +79,32 @@ python scripts/run_designspec_example.py --spec example.json --out ./out --run-u
 python scripts/run_designspec_example.py --spec example.json --out ./out --run-until embed
 ```
 
-## Examples Overview
+## Malaria Venule Insert Examples
 
-| # | Example | Description |
-|---|---------|-------------|
-| 01 | minimal_box_network | Simplest complete example: box domain, space colonization, embedding, validity |
-| 02 | multicomponent_union_embed | Two components (network + channels) unioned before single embedding |
-| 03 | transform_domain | TransformDomain with 4x4 row-major rotation/translation matrix |
-| 04 | composite_domain_boolean | CompositeDomain with difference operation (cylinder - box) |
-| 05 | implicit_ast_domain | ImplicitDomain with JSON AST SDF (sphere) |
-| 06 | mesh_domain_user_faces | Box domain with user-defined face planes for port placement |
-| 07 | fang_hook_channels | Fang-hook curved channels with radial outward bending |
-| 08 | path_channel_tube_sweep | Taper channels with explicit length and taper schedule |
-| 09 | hierarchical_pathfinding_waypoints | Pathfinding with obstacles, waypoints, and corridor search |
-| 10 | programmatic_backend_dsl | Programmatic backend with DSL via backend_params |
-| 11 | kary_backend | K-ary recursive tree backend with stable ID allocation |
-| 12 | cco_hybrid_backend | CCO hybrid backend with Murray's Law optimization |
-| 13 | validity_open_ports_focus | Open-port validation with voxel recarve preservation |
-| 14 | budget_relaxation_showcase | Budget relaxation with max_voxels and pitch warnings |
+| Example | Description | Backend |
+|---------|-------------|---------|
+| malaria_venule_bifurcating_tree | Bifurcating tree with scaffold_topdown backend, 5 inlets | scaffold_topdown |
+| malaria_venule_bifurcating_tree_with_merge | Bifurcating tree with merge on collision enabled | scaffold_topdown |
+| malaria_venule_control_ridge_only | Control spec: ridged cylinder only, no network/void | none |
+| malaria_venule_vertical_channels | 9 straight tapered vertical channels | primitive_channels |
+| malaria_venule_fang_hook_channels | 9 radial-out fang-hook curved channels | primitive_channels |
+| malaria_venule_space_colonization | Dense multi-inlet space colonization network | space_colonization |
 
-## Capability Coverage Matrix
+All malaria venule insert examples share common characteristics:
+- Cylinder domain: R=5mm, H=2mm
+- Ridge enabled on top face
+- Multiple inlets for multi-channel flow
+- Consistent composition policies (`keep_largest_component: false`)
 
-The following matrix shows which capabilities each example exercises:
+## Backend Status
 
-### Domain Types
-
-| Example | Box | Cylinder | Sphere | Ellipsoid | Capsule | Frustum | Transform | Composite | Implicit | Mesh |
-|---------|-----|----------|--------|-----------|---------|---------|-----------|-----------|----------|------|
-| 01 | X | | | | | | | | | |
-| 02 | | X | | | | | | | | |
-| 03 | | X | | | | | X | | | |
-| 04 | | X | | | | | | X | | |
-| 05 | | | | | | | | | X | |
-| 06 | X | | | | | | | | | X* |
-| 07 | | X | | | | | | | | |
-| 08 | X | | | | | | | | | |
-| 09 | X | | | | | | | X | | |
-| 10 | X | | | | | | | | | |
-| 11 | | X | | | | | | | | |
-| 12 | | X | | | | | | | | |
-| 13 | | X | | | | | | | | |
-| 14 | X | | | | | | | | | |
-
-*Example 06 uses box with user-defined faces (mesh-like behavior)
-
-### Generation Backends
-
-| Example | Space Colonization | K-ary Tree | CCO Hybrid | Programmatic |
-|---------|-------------------|------------|------------|--------------|
-| 01 | X | | | |
-| 02 | X | | | |
-| 03 | X | | | |
-| 04 | X | | | |
-| 05 | X | | | |
-| 06 | X | | | |
-| 07 | | | | |
-| 08 | | | | |
-| 09 | X | | | |
-| 10 | | | | X |
-| 11 | | X | | |
-| 12 | | | X | |
-| 13 | X | | | |
-| 14 | X | | | |
-
-### Channel Types
-
-| Example | Straight | Taper | Fang-Hook | Path Channel |
-|---------|----------|-------|-----------|--------------|
-| 01 | | | | |
-| 02 | | X | | |
-| 03 | | | | |
-| 04 | | | | |
-| 05 | | | | |
-| 06 | | | | |
-| 07 | | | X | |
-| 08 | | X | | |
-| 09 | | | | |
-| 10 | | | | |
-| 11 | | | | |
-| 12 | | | | |
-| 13 | | | | |
-| 14 | | | | |
-
-### Port & Embedding Features
-
-| Example | Face Placement | Ridge Constraint | Port Recarve | Multi-Port | Shell Output |
-|---------|---------------|------------------|--------------|------------|--------------|
-| 01 | X | X | X | | X |
-| 02 | X | X | X | | X |
-| 03 | X | X | X | | |
-| 04 | X | X | X | | |
-| 05 | X | | X | | |
-| 06 | X | X | X | | |
-| 07 | X | X | X | X | |
-| 08 | X | X | X | X | X |
-| 09 | X | X | X | | |
-| 10 | X | X | X | | |
-| 11 | X | X | X | | |
-| 12 | X | X | X | | |
-| 13 | X | X | X | X | |
-| 14 | X | X | X | | X |
-
-### Validation & Special Features
-
-| Example | Watertight | Open Ports | Components | Pathfinding | Waypoints | Budget Relaxation |
-|---------|------------|------------|------------|-------------|-----------|-------------------|
-| 01 | X | X | X | | | |
-| 02 | X | X | X | | | |
-| 03 | X | X | X | | | |
-| 04 | X | X | X | | | |
-| 05 | X | X | X | | | |
-| 06 | X | X | X | | | |
-| 07 | X | X | X | | | |
-| 08 | X | X | X | | | |
-| 09 | X | X | X | X | X | |
-| 10 | X | X | X | | | |
-| 11 | X | X | X | | | |
-| 12 | X | X | X | | | |
-| 13 | X | X | X | | | |
-| 14 | X | X | X | | | X |
+See `docs/status.md` for the current status of generation backends:
+- **scaffold_topdown**: Active, preferred for bifurcating trees
+- **space_colonization**: Active, recommended for organic growth
+- **programmatic**: Active, for DSL-based generation
+- **kary_tree**: DEPRECATED - use scaffold_topdown instead
+- **cco_hybrid**: BLOCKED - not finished, do not use
+- **NLP optimization**: BLOCKED - not finished, do not use
 
 ## Running Integration Tests
 
