@@ -8,13 +8,42 @@ pipeline, saving outputs and printing a stage summary.
 Usage:
     python scripts/run_designspec_example.py --spec examples/designspec/01_minimal_box_network.json --out ./output
     python scripts/run_designspec_example.py --spec examples/designspec/01_minimal_box_network.json --out ./output --run-until compile_domains
+
+Malaria Venule Examples:
+    # Run bifurcating tree (scaffold_topdown backend)
+    python scripts/run_designspec_example.py --spec examples/designspec/malaria_venule_bifurcating_tree.json --out ./out/malaria_bifurcating
+
+    # Run space colonization
+    python scripts/run_designspec_example.py --spec examples/designspec/malaria_venule_space_colonization.json --out ./out/malaria_space_col
+
+    # Run CCO hybrid
+    python scripts/run_designspec_example.py --spec examples/designspec/malaria_venule_cco.json --out ./out/malaria_cco
+
+    # Run fang hook channels
+    python scripts/run_designspec_example.py --spec examples/designspec/malaria_venule_fang_hook_channels.json --out ./out/malaria_fang_hook
+
+    # Run vertical channels
+    python scripts/run_designspec_example.py --spec examples/designspec/malaria_venule_vertical_channels.json --out ./out/malaria_vertical
+
+Artifacts:
+    After running, check the output directory for:
+    - run_report.json: Execution summary with stage reports
+    - artifacts/: Component-specific outputs (network.json, void.stl)
+    - domain_with_void.stl: Final embedded scaffold (if embedding enabled)
 """
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
+
+# Bootstrap: Add repo root to sys.path so imports work when running directly
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _SCRIPT_DIR.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from designspec.spec import DesignSpec
 from designspec.runner import DesignSpecRunner

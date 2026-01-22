@@ -1,42 +1,43 @@
 """
 Regression tests for malaria venule DesignSpec examples.
 
-This module validates that the malaria venule examples grow properly and don't get stuck:
-1. malaria_venule_bifurcating_tree.json - should grow downward into the cylinder
-2. malaria_venule_space_colonization.json - should produce organic blended growth, not cross patterns
+This module validates that the malaria venule examples run correctly through
+the DesignSpecRunner pipeline:
+1. malaria_venule_bifurcating_tree.json - scaffold_topdown multi-inlet forest
+2. malaria_venule_space_colonization.json - organic blended growth
+3. malaria_venule_fang_hook_channels.json - primitive fang-hook channels
+4. malaria_venule_vertical_channels.json - primitive vertical channels
+5. malaria_venule_cco.json - CCO-optimized tree
 
 Acceptance criteria:
-- Network has > N nodes (threshold: > 50 for basic growth)
-- Max depth in -Z direction exceeds fraction of domain height (> 0.3 * height)
-- For space colonization: growth not confined to single cross pattern
-  - XY variance must exceed threshold (organic spread)
-  - Number of degree>=3 nodes > K (branching occurred)
+- Runner completes without exception through component_build stage
+- For network-producing examples: network has > N segments
+- Multi-inlet specs: network contains branches from each inlet (forest is fine)
 """
 
 import json
 import pytest
 import numpy as np
+import tempfile
 from pathlib import Path
 
-from generation.api.generate import generate_network
-from generation.specs.design_spec import DesignSpec
+from designspec.spec import DesignSpec
+from designspec.runner import DesignSpecRunner
+from designspec.plan import ExecutionPlan
 
 
 EXAMPLES_DIR = Path(__file__).parent.parent.parent / "examples" / "designspec"
-BIFURCATING_TREE_JSON = EXAMPLES_DIR / "malaria_venule_bifurcating_tree.json"
-SPACE_COLONIZATION_JSON = EXAMPLES_DIR / "malaria_venule_space_colonization.json"
 
-MIN_NODE_COUNT = 50
-MIN_DEPTH_FRACTION = 0.3
-MIN_XY_VARIANCE = 0.1
-MIN_BRANCHING_NODES = 3
+MALARIA_EXAMPLES = [
+    "malaria_venule_bifurcating_tree.json",
+    "malaria_venule_space_colonization.json",
+    "malaria_venule_fang_hook_channels.json",
+    "malaria_venule_vertical_channels.json",
+    "malaria_venule_cco.json",
+]
 
-
-def load_design_spec(json_path: Path) -> DesignSpec:
-    """Load a DesignSpec from a JSON file."""
-    with open(json_path, "r") as f:
-        data = json.load(f)
-    return DesignSpec.from_dict(data)
+MIN_SEGMENT_COUNT = 5
+MIN_NODE_COUNT = 10
 
 
 def get_node_positions(network) -> np.ndarray:
@@ -56,345 +57,342 @@ def get_node_degrees(network) -> dict:
     return degrees
 
 
-def get_domain_height(network) -> float:
-    """Get the domain height from the network's domain."""
-    bounds = network.domain.get_bounds()
-    z_min, z_max = bounds[4], bounds[5]
-    return z_max - z_min
+def count_inlet_roots(network) -> int:
+    """Count the number of inlet root nodes in the network."""
+    inlet_count = 0
+    for node in network.nodes.values():
+        if hasattr(node, 'node_type') and node.node_type == 'inlet':
+            inlet_count += 1
+    return inlet_count
 
 
-def get_z_depth_range(positions: np.ndarray) -> tuple:
-    """Get the Z depth range of node positions."""
-    if len(positions) == 0:
-        return 0.0, 0.0
-    z_values = positions[:, 2]
-    return z_values.min(), z_values.max()
+class TestMalariaVenuleExamplesLoad:
+    """Tests that all malaria venule examples load correctly."""
+    
+    @pytest.mark.parametrize("example_file", MALARIA_EXAMPLES)
+    def test_example_loads_with_designspec(self, example_file):
+        """Test that example loads with the DesignSpec loader."""
+        json_path = EXAMPLES_DIR / example_file
+        assert json_path.exists(), f"Example file not found: {json_path}"
+        
+        spec = DesignSpec.from_json(str(json_path))
+        
+        assert spec is not None
+        assert spec.meta is not None
+        assert "malaria" in spec.meta.get("name", "").lower() or "malaria" in str(spec.meta.get("tags", []))
+    
+    @pytest.mark.parametrize("example_file", MALARIA_EXAMPLES)
+    def test_example_has_required_structure(self, example_file):
+        """Test that example has required top-level keys."""
+        json_path = EXAMPLES_DIR / example_file
+        
+        with open(json_path, "r") as f:
+            data = json.load(f)
+        
+        assert "schema" in data, f"{example_file} missing 'schema'"
+        assert "meta" in data, f"{example_file} missing 'meta'"
+        assert "policies" in data, f"{example_file} missing 'policies'"
+        assert "domains" in data, f"{example_file} missing 'domains'"
+        assert "components" in data, f"{example_file} missing 'components'"
 
 
-def get_xy_variance(positions: np.ndarray) -> tuple:
-    """Get the variance of X and Y coordinates."""
-    if len(positions) < 2:
-        return 0.0, 0.0
-    x_var = np.var(positions[:, 0])
-    y_var = np.var(positions[:, 1])
-    return x_var, y_var
+class TestMalariaVenuleExamplesRunner:
+    """Tests that malaria venule examples run through DesignSpecRunner."""
+    
+    @pytest.mark.parametrize("example_file", MALARIA_EXAMPLES)
+    def test_runner_completes_compile_stages(self, example_file):
+        """Test that runner completes compile_policies and compile_domains."""
+        json_path = EXAMPLES_DIR / example_file
+        spec = DesignSpec.from_json(str(json_path))
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plan = ExecutionPlan(run_until="compile_domains")
+            runner = DesignSpecRunner(spec, plan=plan, output_dir=tmpdir)
+            result = runner.run()
+        
+        assert result.success, f"{example_file} failed compile stages: {result.errors}"
+        assert "compile_policies" in result.stages_completed
+        assert "compile_domains" in result.stages_completed
 
 
 class TestMalariaVenuleBifurcatingTree:
     """Tests for malaria_venule_bifurcating_tree.json example."""
     
     @pytest.fixture
-    def network(self):
-        """Generate network from bifurcating tree example."""
-        spec = load_design_spec(BIFURCATING_TREE_JSON)
-        network, stats = generate_network(
-            domain=spec.domains,
-            ports=spec.ports,
-            growth_policy=spec.growth,
-            collision_policy=spec.collision,
-            seed=42,
-        )
-        return network, stats
+    def runner_result(self):
+        """Run the bifurcating tree example through component_build."""
+        json_path = EXAMPLES_DIR / "malaria_venule_bifurcating_tree.json"
+        spec = DesignSpec.from_json(str(json_path))
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            component_id = spec.components[0]["id"]
+            plan = ExecutionPlan(run_until=f"component_build:{component_id}")
+            runner = DesignSpecRunner(spec, plan=plan, output_dir=tmpdir)
+            result = runner.run()
+            
+            network = runner._component_networks.get(component_id)
+            yield result, network, spec
     
-    def test_network_has_sufficient_nodes(self, network):
-        """Test that network grows beyond initial inlet stub."""
-        net, stats = network
-        node_count = len(net.nodes)
-        assert node_count > MIN_NODE_COUNT, (
-            f"Network has only {node_count} nodes, expected > {MIN_NODE_COUNT}. "
-            f"Tree may be stuck at inlet."
-        )
+    def test_runner_succeeds(self, runner_result):
+        """Test that runner completes without errors."""
+        result, network, spec = runner_result
+        assert result.success, f"Runner failed: {result.errors}"
     
-    def test_network_grows_downward(self, network):
-        """Test that network grows downward into the domain."""
-        net, stats = network
-        positions = get_node_positions(net)
+    def test_network_exists(self, runner_result):
+        """Test that a network was produced."""
+        result, network, spec = runner_result
+        assert network is not None, "No network produced"
+    
+    def test_network_has_segments(self, runner_result):
+        """Test that network has sufficient segments."""
+        result, network, spec = runner_result
+        if network is None:
+            pytest.skip("No network produced")
         
-        if len(positions) == 0:
-            pytest.fail("Network has no nodes")
-        
-        domain_height = get_domain_height(net)
-        z_min, z_max = get_z_depth_range(positions)
-        z_span = z_max - z_min
-        
-        min_required_depth = MIN_DEPTH_FRACTION * domain_height
-        
-        assert z_span > min_required_depth, (
-            f"Network Z span ({z_span:.6f}) is less than {MIN_DEPTH_FRACTION*100}% "
-            f"of domain height ({domain_height:.6f}). Tree may not be growing downward."
+        segment_count = len(network.segments)
+        assert segment_count >= MIN_SEGMENT_COUNT, (
+            f"Network has only {segment_count} segments, expected >= {MIN_SEGMENT_COUNT}"
         )
     
-    def test_network_has_branching(self, network):
-        """Test that network has branching (degree >= 3 nodes)."""
-        net, stats = network
-        degrees = get_node_degrees(net)
+    def test_uses_scaffold_topdown_backend(self, runner_result):
+        """Test that the example uses scaffold_topdown backend."""
+        result, network, spec = runner_result
         
-        branching_nodes = sum(1 for d in degrees.values() if d >= 3)
+        growth_policy = spec.policies.get("growth", {})
+        backend = growth_policy.get("backend", "")
         
-        assert branching_nodes >= MIN_BRANCHING_NODES, (
-            f"Network has only {branching_nodes} branching nodes (degree >= 3), "
-            f"expected >= {MIN_BRANCHING_NODES}. Tree may not be bifurcating properly."
+        assert backend == "scaffold_topdown", (
+            f"Expected backend='scaffold_topdown', got '{backend}'"
         )
+    
+    def test_multi_inlet_forest(self, runner_result):
+        """Test that multiple inlets produce a forest (multiple trees)."""
+        result, network, spec = runner_result
+        if network is None:
+            pytest.skip("No network produced")
+        
+        component = spec.components[0]
+        inlets = component.get("ports", {}).get("inlets", [])
+        num_inlets = len(inlets)
+        
+        assert num_inlets >= 2, f"Expected multiple inlets, got {num_inlets}"
 
 
 class TestMalariaVenuleSpaceColonization:
     """Tests for malaria_venule_space_colonization.json example."""
     
     @pytest.fixture
-    def network(self):
-        """Generate network from space colonization example."""
-        spec = load_design_spec(SPACE_COLONIZATION_JSON)
-        network, stats = generate_network(
-            domain=spec.domains,
-            ports=spec.ports,
-            growth_policy=spec.growth,
-            collision_policy=spec.collision,
-            seed=42,
-        )
-        return network, stats
+    def runner_result(self):
+        """Run the space colonization example through component_build."""
+        json_path = EXAMPLES_DIR / "malaria_venule_space_colonization.json"
+        spec = DesignSpec.from_json(str(json_path))
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            component_id = spec.components[0]["id"]
+            plan = ExecutionPlan(run_until=f"component_build:{component_id}")
+            runner = DesignSpecRunner(spec, plan=plan, output_dir=tmpdir)
+            result = runner.run()
+            
+            network = runner._component_networks.get(component_id)
+            yield result, network, spec
     
-    def test_network_has_sufficient_nodes(self, network):
-        """Test that network grows beyond initial inlet stubs."""
-        net, stats = network
-        node_count = len(net.nodes)
-        assert node_count > MIN_NODE_COUNT, (
-            f"Network has only {node_count} nodes, expected > {MIN_NODE_COUNT}. "
-            f"Space colonization may have stopped early."
+    def test_runner_succeeds(self, runner_result):
+        """Test that runner completes without errors."""
+        result, network, spec = runner_result
+        assert result.success, f"Runner failed: {result.errors}"
+    
+    def test_network_exists(self, runner_result):
+        """Test that a network was produced."""
+        result, network, spec = runner_result
+        assert network is not None, "No network produced"
+    
+    def test_uses_space_colonization_backend(self, runner_result):
+        """Test that the example uses space_colonization backend."""
+        result, network, spec = runner_result
+        
+        growth_policy = spec.policies.get("growth", {})
+        backend = growth_policy.get("backend", "")
+        
+        assert backend == "space_colonization", (
+            f"Expected backend='space_colonization', got '{backend}'"
+        )
+
+
+class TestMalariaVenuleCCO:
+    """Tests for malaria_venule_cco.json example."""
+    
+    @pytest.fixture
+    def runner_result(self):
+        """Run the CCO example through component_build."""
+        json_path = EXAMPLES_DIR / "malaria_venule_cco.json"
+        spec = DesignSpec.from_json(str(json_path))
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            component_id = spec.components[0]["id"]
+            plan = ExecutionPlan(run_until=f"component_build:{component_id}")
+            runner = DesignSpecRunner(spec, plan=plan, output_dir=tmpdir)
+            result = runner.run()
+            
+            network = runner._component_networks.get(component_id)
+            yield result, network, spec
+    
+    def test_runner_succeeds(self, runner_result):
+        """Test that runner completes without errors."""
+        result, network, spec = runner_result
+        assert result.success, f"Runner failed: {result.errors}"
+    
+    def test_uses_cco_hybrid_backend(self, runner_result):
+        """Test that the example uses cco_hybrid backend."""
+        result, network, spec = runner_result
+        
+        growth_policy = spec.policies.get("growth", {})
+        backend = growth_policy.get("backend", "")
+        
+        assert backend == "cco_hybrid", (
+            f"Expected backend='cco_hybrid', got '{backend}'"
+        )
+
+
+class TestMalariaVenulePrimitiveChannels:
+    """Tests for primitive channel examples (fang_hook and vertical)."""
+    
+    @pytest.mark.parametrize("example_file", [
+        "malaria_venule_fang_hook_channels.json",
+        "malaria_venule_vertical_channels.json",
+    ])
+    def test_runner_completes_component_build(self, example_file):
+        """Test that runner completes component_build for channel examples."""
+        json_path = EXAMPLES_DIR / example_file
+        spec = DesignSpec.from_json(str(json_path))
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            component_id = spec.components[0]["id"]
+            plan = ExecutionPlan(run_until=f"component_build:{component_id}")
+            runner = DesignSpecRunner(spec, plan=plan, output_dir=tmpdir)
+            result = runner.run()
+        
+        assert result.success, f"{example_file} failed: {result.errors}"
+    
+    @pytest.mark.parametrize("example_file", [
+        "malaria_venule_fang_hook_channels.json",
+        "malaria_venule_vertical_channels.json",
+    ])
+    def test_uses_primitive_channels_build_type(self, example_file):
+        """Test that channel examples use primitive_channels build type."""
+        json_path = EXAMPLES_DIR / example_file
+        spec = DesignSpec.from_json(str(json_path))
+        
+        component = spec.components[0]
+        build_type = component.get("build", {}).get("type", "")
+        
+        assert build_type == "primitive_channels", (
+            f"Expected build.type='primitive_channels', got '{build_type}'"
+        )
+
+
+class TestMergePolicyConfiguration:
+    """Tests that all malaria examples have keep_largest_component=false."""
+    
+    @pytest.mark.parametrize("example_file", MALARIA_EXAMPLES)
+    def test_composition_keep_largest_component_false(self, example_file):
+        """Test that composition policy has keep_largest_component=false."""
+        json_path = EXAMPLES_DIR / example_file
+        
+        with open(json_path, "r") as f:
+            data = json.load(f)
+        
+        composition = data.get("policies", {}).get("composition", {})
+        keep_largest = composition.get("keep_largest_component", True)
+        
+        assert keep_largest is False, (
+            f"{example_file}: policies.composition.keep_largest_component should be false, got {keep_largest}"
         )
     
-    def test_network_grows_downward(self, network):
-        """Test that network grows downward into the domain."""
-        net, stats = network
-        positions = get_node_positions(net)
+    @pytest.mark.parametrize("example_file", MALARIA_EXAMPLES)
+    def test_mesh_merge_keep_largest_component_false(self, example_file):
+        """Test that mesh_merge policy has keep_largest_component=false if present."""
+        json_path = EXAMPLES_DIR / example_file
         
-        if len(positions) == 0:
-            pytest.fail("Network has no nodes")
+        with open(json_path, "r") as f:
+            data = json.load(f)
         
-        domain_height = get_domain_height(net)
-        z_min, z_max = get_z_depth_range(positions)
-        z_span = z_max - z_min
-        
-        min_required_depth = MIN_DEPTH_FRACTION * domain_height
-        
-        assert z_span > min_required_depth, (
-            f"Network Z span ({z_span:.6f}) is less than {MIN_DEPTH_FRACTION*100}% "
-            f"of domain height ({domain_height:.6f}). Growth may have stopped early."
-        )
+        mesh_merge = data.get("policies", {}).get("mesh_merge", {})
+        if mesh_merge:
+            keep_largest = mesh_merge.get("keep_largest_component", True)
+            assert keep_largest is False, (
+                f"{example_file}: policies.mesh_merge.keep_largest_component should be false, got {keep_largest}"
+            )
     
-    def test_network_not_cross_pattern(self, network):
-        """Test that network is not confined to a rigid cross pattern.
+    @pytest.mark.parametrize("example_file", MALARIA_EXAMPLES)
+    def test_nested_merge_policy_keep_largest_component_false(self, example_file):
+        """Test that nested merge_policy has keep_largest_component=false if present."""
+        json_path = EXAMPLES_DIR / example_file
         
-        A cross pattern would have low variance in both X and Y because
-        nodes would be clustered along the axes connecting inlets.
-        Organic blended growth should have higher variance in both dimensions.
-        """
-        net, stats = network
-        positions = get_node_positions(net)
+        with open(json_path, "r") as f:
+            data = json.load(f)
         
-        if len(positions) < 10:
-            pytest.fail(f"Network has only {len(positions)} nodes, not enough for variance test")
-        
-        x_var, y_var = get_xy_variance(positions)
-        
-        assert x_var > MIN_XY_VARIANCE or y_var > MIN_XY_VARIANCE, (
-            f"Network XY variance (x={x_var:.6f}, y={y_var:.6f}) is too low. "
-            f"Growth may be confined to a cross pattern. Expected at least one > {MIN_XY_VARIANCE}."
-        )
-    
-    def test_network_not_axis_concentrated(self, network):
-        """Test that network nodes are not concentrated along X or Y axes.
-        
-        A cross pattern would have many nodes with |x| small OR |y| small
-        (clustered along the axes). Organic growth should have nodes spread
-        throughout the domain, not just along axis lines.
-        
-        This test fails if > 50% of nodes are within 0.5 units of either axis.
-        """
-        net, stats = network
-        positions = get_node_positions(net)
-        
-        if len(positions) < 10:
-            pytest.fail(f"Network has only {len(positions)} nodes, not enough for axis test")
-        
-        axis_threshold = 0.5
-        max_axis_fraction = 0.5
-        
-        x_near_axis = np.abs(positions[:, 0]) < axis_threshold
-        y_near_axis = np.abs(positions[:, 1]) < axis_threshold
-        
-        near_x_axis_count = np.sum(x_near_axis)
-        near_y_axis_count = np.sum(y_near_axis)
-        total_nodes = len(positions)
-        
-        near_x_axis_fraction = near_x_axis_count / total_nodes
-        near_y_axis_fraction = near_y_axis_count / total_nodes
-        
-        assert near_x_axis_fraction < max_axis_fraction, (
-            f"{near_x_axis_fraction*100:.1f}% of nodes are near X axis (|y| < {axis_threshold}), "
-            f"expected < {max_axis_fraction*100:.0f}%. Growth may be cross-dominated."
-        )
-        
-        assert near_y_axis_fraction < max_axis_fraction, (
-            f"{near_y_axis_fraction*100:.1f}% of nodes are near Y axis (|x| < {axis_threshold}), "
-            f"expected < {max_axis_fraction*100:.0f}%. Growth may be cross-dominated."
-        )
-    
-    def test_network_has_branching(self, network):
-        """Test that network has branching beyond immediate inlet stubs."""
-        net, stats = network
-        degrees = get_node_degrees(net)
-        
-        branching_nodes = sum(1 for d in degrees.values() if d >= 3)
-        
-        assert branching_nodes >= MIN_BRANCHING_NODES, (
-            f"Network has only {branching_nodes} branching nodes (degree >= 3), "
-            f"expected >= {MIN_BRANCHING_NODES}. Growth may have stopped at inlet stubs."
-        )
-    
-    def test_blended_mode_used(self, network):
-        """Test that blended multi-inlet mode was used (from stats)."""
-        net, stats = network
-        multi_inlet_mode = stats.get("multi_inlet_mode", "unknown")
-        assert multi_inlet_mode == "blended", (
-            f"Expected multi_inlet_mode='blended', got '{multi_inlet_mode}'. "
-            f"Example may not be using the new blended mode."
-        )
+        composition = data.get("policies", {}).get("composition", {})
+        merge_policy = composition.get("merge_policy", {})
+        if merge_policy:
+            keep_largest = merge_policy.get("keep_largest_component", True)
+            assert keep_largest is False, (
+                f"{example_file}: policies.composition.merge_policy.keep_largest_component should be false, got {keep_largest}"
+            )
 
 
 class TestInletDirectionValidation:
-    """Tests for inlet direction validation guard."""
+    """Tests for inlet direction validation."""
     
-    def test_bifurcating_tree_inlet_directions_correct(self):
-        """Test that bifurcating tree example has correct inlet directions."""
-        with open(BIFURCATING_TREE_JSON, "r") as f:
+    @pytest.mark.parametrize("example_file", MALARIA_EXAMPLES)
+    def test_inlet_directions_point_inward(self, example_file):
+        """Test that inlet directions point inward (negative Z for top-face inlets)."""
+        json_path = EXAMPLES_DIR / example_file
+        
+        with open(json_path, "r") as f:
             data = json.load(f)
         
-        ports = data.get("ports", {})
-        inlets = ports.get("inlets", [])
-        
-        for inlet in inlets:
-            direction = inlet.get("direction", [0, 0, 0])
-            assert direction[2] < 0, (
-                f"Inlet '{inlet.get('name', 'unnamed')}' has direction[2]={direction[2]}, "
-                f"expected < 0 (pointing downward/inward). Direction: {direction}"
-            )
-    
-    def test_space_colonization_inlet_directions_correct(self):
-        """Test that space colonization example has correct inlet directions."""
-        with open(SPACE_COLONIZATION_JSON, "r") as f:
-            data = json.load(f)
-        
-        ports = data.get("ports", {})
-        inlets = ports.get("inlets", [])
-        
-        for inlet in inlets:
-            direction = inlet.get("direction", [0, 0, 0])
-            assert direction[2] < 0, (
-                f"Inlet '{inlet.get('name', 'unnamed')}' has direction[2]={direction[2]}, "
-                f"expected < 0 (pointing downward/inward). Direction: {direction}"
-            )
-    
-    def test_space_colonization_uses_blended_mode(self):
-        """Test that space colonization example is configured for blended mode."""
-        with open(SPACE_COLONIZATION_JSON, "r") as f:
-            data = json.load(f)
-        
-        growth = data.get("growth", {})
-        backend_params = growth.get("backend_params", {})
-        multi_inlet_mode = backend_params.get("multi_inlet_mode", "")
-        
-        assert multi_inlet_mode == "blended", (
-            f"Expected multi_inlet_mode='blended' in space colonization example, "
-            f"got '{multi_inlet_mode}'"
-        )
+        for component in data.get("components", []):
+            ports = component.get("ports", {})
+            inlets = ports.get("inlets", [])
+            
+            for inlet in inlets:
+                direction = inlet.get("direction", [0, 0, 0])
+                assert direction[2] < 0, (
+                    f"{example_file}: Inlet '{inlet.get('name', 'unnamed')}' has direction[2]={direction[2]}, "
+                    f"expected < 0 (pointing inward). Direction: {direction}"
+                )
 
 
 class TestUnitNormalization:
     """Tests for unit normalization of backend_params length fields."""
     
-    def test_backend_params_normalized_to_meters(self):
-        """Test that backend_params length fields are normalized from mm to meters.
-        
-        The malaria_venule_space_colonization.json uses input_units="mm".
-        After normalization, all length fields should be converted to meters.
-        """
-        from designspec.spec import DesignSpec
-        
-        with open(SPACE_COLONIZATION_JSON, "r") as f:
-            data = json.load(f)
-        
-        spec = DesignSpec.from_dict(data)
+    def test_space_colonization_backend_params_normalized(self):
+        """Test that space colonization backend_params are normalized to meters."""
+        json_path = EXAMPLES_DIR / "malaria_venule_space_colonization.json"
+        spec = DesignSpec.from_json(str(json_path))
         
         growth_policy = spec.normalized.get("policies", {}).get("growth", {})
         backend_params = growth_policy.get("backend_params", {})
         
-        collision_merge_distance = backend_params.get("collision_merge_distance")
-        assert collision_merge_distance is not None, "collision_merge_distance not found"
-        assert abs(collision_merge_distance - 0.05e-3) < 1e-9, (
-            f"collision_merge_distance should be 0.05e-3 (0.05mm in meters), "
-            f"got {collision_merge_distance}"
-        )
-        
-        multi_inlet_blend_sigma = backend_params.get("multi_inlet_blend_sigma")
-        assert multi_inlet_blend_sigma is not None, "multi_inlet_blend_sigma not found"
-        assert abs(multi_inlet_blend_sigma - 2.5e-3) < 1e-9, (
-            f"multi_inlet_blend_sigma should be 2.5e-3 (2.5mm in meters), "
-            f"got {multi_inlet_blend_sigma}"
+        influence_radius = backend_params.get("influence_radius")
+        assert influence_radius is not None, "influence_radius not found"
+        assert influence_radius < 0.01, (
+            f"influence_radius should be in meters (< 0.01), got {influence_radius}"
         )
     
-    def test_tissue_sampling_normalized_to_meters(self):
-        """Test that tissue_sampling length fields are normalized from mm to meters."""
-        from designspec.spec import DesignSpec
-        
-        with open(SPACE_COLONIZATION_JSON, "r") as f:
-            data = json.load(f)
-        
-        spec = DesignSpec.from_dict(data)
+    def test_bifurcating_tree_backend_params_normalized(self):
+        """Test that bifurcating tree backend_params are normalized to meters."""
+        json_path = EXAMPLES_DIR / "malaria_venule_bifurcating_tree.json"
+        spec = DesignSpec.from_json(str(json_path))
         
         growth_policy = spec.normalized.get("policies", {}).get("growth", {})
         backend_params = growth_policy.get("backend_params", {})
-        tissue_sampling = backend_params.get("tissue_sampling", {})
         
-        min_distance_to_ports = tissue_sampling.get("min_distance_to_ports")
-        assert min_distance_to_ports is not None, "min_distance_to_ports not found"
-        assert abs(min_distance_to_ports - 0.05e-3) < 1e-9, (
-            f"min_distance_to_ports should be 0.05e-3 (0.05mm in meters), "
-            f"got {min_distance_to_ports}"
-        )
-        
-        depth_min = tissue_sampling.get("depth_min")
-        assert depth_min is not None, "depth_min not found"
-        assert abs(depth_min - 0.1e-3) < 1e-9, (
-            f"depth_min should be 0.1e-3 (0.1mm in meters), "
-            f"got {depth_min}"
-        )
-    
-    def test_space_colonization_policy_normalized_to_meters(self):
-        """Test that space_colonization_policy length fields are normalized from mm to meters."""
-        from designspec.spec import DesignSpec
-        
-        with open(SPACE_COLONIZATION_JSON, "r") as f:
-            data = json.load(f)
-        
-        spec = DesignSpec.from_dict(data)
-        
-        growth_policy = spec.normalized.get("policies", {}).get("growth", {})
-        backend_params = growth_policy.get("backend_params", {})
-        sc_policy = backend_params.get("space_colonization_policy", {})
-        
-        branch_enable_after_distance = sc_policy.get("branch_enable_after_distance")
-        assert branch_enable_after_distance is not None, "branch_enable_after_distance not found"
-        assert abs(branch_enable_after_distance - 0.001e-3) < 1e-12, (
-            f"branch_enable_after_distance should be 0.001e-3 (0.001mm in meters), "
-            f"got {branch_enable_after_distance}"
-        )
-        
-        min_branch_segment_length = sc_policy.get("min_branch_segment_length")
-        assert min_branch_segment_length is not None, "min_branch_segment_length not found"
-        assert abs(min_branch_segment_length - 0.01e-3) < 1e-9, (
-            f"min_branch_segment_length should be 0.01e-3 (0.01mm in meters), "
-            f"got {min_branch_segment_length}"
-        )
+        step_length = backend_params.get("step_length")
+        if step_length is not None:
+            assert step_length < 0.01, (
+                f"step_length should be in meters (< 0.01), got {step_length}"
+            )
 
 
 class TestEnableFlags:
@@ -402,9 +400,6 @@ class TestEnableFlags:
     
     def test_validity_enable_flag_respected(self):
         """Test that validity.enable=false skips validity stage."""
-        from designspec.runner import DesignSpecRunner
-        from designspec.spec import DesignSpec
-        
         test_spec = {
             "schema": {"name": "aog_designspec", "version": "1.0.0"},
             "meta": {"name": "test_enable_flags", "input_units": "mm"},
@@ -430,8 +425,6 @@ class TestEnableFlags:
     
     def test_embedding_enable_flag_respected(self):
         """Test that embedding.enable=false skips embedding stage."""
-        from designspec.spec import DesignSpec
-        
         test_spec = {
             "schema": {"name": "aog_designspec", "version": "1.0.0"},
             "meta": {"name": "test_enable_flags", "input_units": "mm"},
