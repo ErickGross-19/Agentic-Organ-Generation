@@ -62,7 +62,12 @@
       "constraint_strategy": "reduce_depth"
     },
 
-    "composition": { "repair_enabled": false, "union_before_embed": true, "keep_largest_component": false },
+    "composition": {
+      "repair_enabled": false,
+      "union_before_embed": true,
+      "keep_largest_component": false,
+      "merge_policy": { "keep_largest_component": false }
+    },
     "repair": { "voxel_repair_enabled": false, "fill_voxels": false },
 
     "embedding": {

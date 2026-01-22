@@ -88,6 +88,22 @@ class TestMalariaVenueMergePolicyConfiguration:
             f"{example_file}: policies.composition.keep_largest_component should be false, got {keep_largest}"
         )
 
+    @pytest.mark.parametrize("example_file", MALARIA_EXAMPLES)
+    def test_merge_policy_keep_largest_component_false(self, example_file):
+        """Test that merge_policy has keep_largest_component=false."""
+        json_path = EXAMPLES_DIR / example_file
+        
+        with open(json_path, "r") as f:
+            data = json.load(f)
+        
+        composition = data.get("policies", {}).get("composition", {})
+        merge_policy = composition.get("merge_policy", {})
+        keep_largest = merge_policy.get("keep_largest_component", True)
+        
+        assert keep_largest is False, (
+            f"{example_file}: policies.composition.merge_policy.keep_largest_component should be false, got {keep_largest}"
+        )
+
 
 class TestMalariaBifurcatingTreeScaffoldTopdown:
     """Tests specific to the bifurcating tree example with scaffold_topdown backend."""
