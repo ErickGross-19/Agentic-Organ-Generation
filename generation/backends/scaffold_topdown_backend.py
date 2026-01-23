@@ -1119,10 +1119,9 @@ class ScaffoldTopDownBackend(GenerationBackend):
                     closest_on_seg = closest
             
             if min_dist_to_seg < best_dist and min_dist_to_seg < merge_distance:
-                # Check boundary clearance for the merge point
+                # Check boundary clearance for the merge point (radial only for CylinderDomain)
                 if domain is not None and config is not None and closest_on_seg is not None:
-                    point_3d = Point3D(*closest_on_seg)
-                    dist_to_boundary = domain.distance_to_boundary(point_3d)
+                    dist_to_boundary = self._get_radial_boundary_distance(closest_on_seg, domain)
                     required_clearance = config.wall_margin_m + merge_radius + config.boundary_extra_m
                     if dist_to_boundary < required_clearance:
                         self._stats["boundary_clearance_failures"] += 1
@@ -1609,6 +1608,11 @@ class ScaffoldTopDownBackend(GenerationBackend):
         
         This ensures the tube surface (not just centerline) stays within the domain.
         
+        For CylinderDomain, only RADIAL clearance is checked (not axial), since
+        inlets are typically at the axial faces and branches naturally start close
+        to those faces. The user's concern is preventing radial breaches (tubes
+        touching the cylinder wall), not axial breaches.
+        
         Parameters
         ----------
         polyline_points : List[np.ndarray]
@@ -1629,7 +1633,10 @@ class ScaffoldTopDownBackend(GenerationBackend):
         
         for point in polyline_points:
             point_3d = Point3D(*point)
-            dist_to_boundary = domain.distance_to_boundary(point_3d)
+            
+            # For CylinderDomain, only check RADIAL clearance (not axial)
+            # Inlets are at axial faces, so branches naturally start close to them
+            dist_to_boundary = self._get_radial_boundary_distance(point, domain)
             
             # Track minimum observed clearance for reporting
             effective_clearance = dist_to_boundary - radius
@@ -1641,6 +1648,34 @@ class ScaffoldTopDownBackend(GenerationBackend):
                 return True
         
         return False
+    
+    def _get_radial_boundary_distance(
+        self,
+        point: np.ndarray,
+        domain: DomainSpec,
+    ) -> float:
+        """
+        Get the radial distance to boundary for a point.
+        
+        For CylinderDomain, returns only the radial distance (ignoring axial).
+        For other domain types, falls back to the standard distance_to_boundary.
+        
+        This is used for boundary clearance checking where we only care about
+        radial breaches (tubes touching the cylinder wall), not axial breaches
+        (which are expected near inlet faces).
+        """
+        from ..core.domain import CylinderDomain
+        
+        if isinstance(domain, CylinderDomain):
+            # Compute radial distance only
+            dx = point[0] - domain.center.x
+            dy = point[1] - domain.center.y
+            r_xy = np.sqrt(dx**2 + dy**2)
+            return float(domain.radius - r_xy)
+        else:
+            # Fall back to standard distance_to_boundary for other domain types
+            point_3d = Point3D(*point)
+            return domain.distance_to_boundary(point_3d)
     
     def _compute_curved_path(
         self,
