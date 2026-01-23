@@ -941,8 +941,8 @@ class DesignSpecRunner:
         if not self._component_voids:
             return StageReport(
                 stage=Stage.UNION_VOIDS.value,
-                success=False,
-                errors=["No component voids to union"],
+                success=True,
+                warnings=["No component voids to union; skipping union."],
             )
         
         component_ids = list(self._component_voids.keys())
