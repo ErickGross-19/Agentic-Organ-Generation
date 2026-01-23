@@ -85,14 +85,16 @@
       "carve_depth": 0.001
     },
 
-    "open_port": { "enabled": false },
+    "open_port": { "enabled": true },
     "validity": {
       "check_watertight": true,
       "check_components": true,
+      "max_components": 12,
       "check_min_diameter": true,
-      "check_open_ports": false,
+      "check_open_ports": true,
       "check_bounds": true,
-      "check_void_inside_domain": true
+      "check_void_inside_domain": true,
+      "allow_boundary_intersections_at_ports": true
     },
 
     "output": {
