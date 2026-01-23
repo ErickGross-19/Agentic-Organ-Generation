@@ -79,6 +79,14 @@
         "multi_inlet_mode": "forest_with_merge",
         "collision_merge_distance": 5e-05,
 
+        "progress": false,
+        "kdtree_rebuild_tip_every": 1,
+        "kdtree_rebuild_all_nodes_every": 10,
+        "kdtree_rebuild_all_nodes_min_new_nodes": 5,
+        "stall_steps_per_inlet": 10,
+        "merge_check_every_steps": 50,
+        "interleaving_strategy": "round_robin",
+
         "tissue_sampling": {
           "enabled": true,
           "mode": "volume_uniform",

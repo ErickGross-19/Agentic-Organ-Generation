@@ -1603,3 +1603,649 @@ def space_colonization_step_v2(
             "tree_metrics": metrics.to_dict(),
         },
     )
+
+
+@dataclass
+class SpaceColonizationState:
+    """
+    Persistent state for space colonization across multiple single-step calls.
+    
+    This enables efficient multi-inlet interleaving without nested loops or
+    repeated progress bar creation.
+    """
+    network: VascularNetwork
+    params: SpaceColonizationParams
+    constraints: BranchingConstraints
+    
+    tissue_points: np.ndarray
+    active_tissue_indices: Set[int] = field(default_factory=set)
+    initial_tissue_count: int = 0
+    
+    active_tip_ids: Set[int] = field(default_factory=set)
+    tip_states: Dict[int, TipState] = field(default_factory=dict)
+    
+    tip_kdtree: Optional[cKDTree] = None
+    all_nodes_kdtree: Optional[cKDTree] = None
+    tip_kdtree_node_ids: List[int] = field(default_factory=list)
+    all_nodes_kdtree_node_ids: List[int] = field(default_factory=list)
+    
+    global_step: int = 0
+    steps_since_tip_kdtree_rebuild: int = 0
+    steps_since_all_nodes_kdtree_rebuild: int = 0
+    nodes_added_since_tip_kdtree_rebuild: int = 0
+    nodes_added_since_all_nodes_kdtree_rebuild: int = 0
+    
+    consecutive_stall_steps: int = 0
+    total_nodes_added: int = 0
+    total_segments_added: int = 0
+    
+    rng: Optional[np.random.Generator] = None
+    inlet_id: Optional[int] = None
+    vessel_type: str = "arterial"
+    
+    kdtree_rebuild_tip_every: int = 1
+    kdtree_rebuild_all_nodes_every: int = 10
+    kdtree_rebuild_all_nodes_min_new_nodes: int = 5
+    stall_steps_threshold: int = 10
+    
+    def needs_tip_kdtree_rebuild(self) -> bool:
+        """Check if tip KD-tree needs rebuilding."""
+        if self.tip_kdtree is None:
+            return True
+        if self.steps_since_tip_kdtree_rebuild >= self.kdtree_rebuild_tip_every:
+            return True
+        return False
+    
+    def needs_all_nodes_kdtree_rebuild(self) -> bool:
+        """Check if all-nodes KD-tree needs rebuilding."""
+        if self.all_nodes_kdtree is None:
+            return True
+        if self.steps_since_all_nodes_kdtree_rebuild >= self.kdtree_rebuild_all_nodes_every:
+            return True
+        if self.nodes_added_since_all_nodes_kdtree_rebuild >= self.kdtree_rebuild_all_nodes_min_new_nodes:
+            return True
+        return False
+    
+    def rebuild_tip_kdtree(self) -> None:
+        """Rebuild the KD-tree for active tip nodes."""
+        tip_nodes = [
+            self.network.nodes[tid] for tid in self.active_tip_ids
+            if tid in self.network.nodes
+        ]
+        if tip_nodes:
+            positions = np.array([
+                [n.position.x, n.position.y, n.position.z] for n in tip_nodes
+            ])
+            self.tip_kdtree = cKDTree(positions)
+            self.tip_kdtree_node_ids = [n.id for n in tip_nodes]
+        else:
+            self.tip_kdtree = None
+            self.tip_kdtree_node_ids = []
+        self.steps_since_tip_kdtree_rebuild = 0
+    
+    def rebuild_all_nodes_kdtree(self) -> None:
+        """Rebuild the KD-tree for all nodes (used for kill radius)."""
+        if self.network.nodes:
+            nodes = list(self.network.nodes.values())
+            positions = np.array([
+                [n.position.x, n.position.y, n.position.z] for n in nodes
+            ])
+            self.all_nodes_kdtree = cKDTree(positions)
+            self.all_nodes_kdtree_node_ids = [n.id for n in nodes]
+        else:
+            self.all_nodes_kdtree = None
+            self.all_nodes_kdtree_node_ids = []
+        self.steps_since_all_nodes_kdtree_rebuild = 0
+        self.nodes_added_since_all_nodes_kdtree_rebuild = 0
+    
+    def is_stalled(self) -> bool:
+        """Check if growth has stalled."""
+        return self.consecutive_stall_steps >= self.stall_steps_threshold
+    
+    def is_exhausted(self) -> bool:
+        """Check if no more growth is possible."""
+        return len(self.active_tissue_indices) == 0 or len(self.active_tip_ids) == 0
+
+
+@dataclass
+class SingleStepResult:
+    """Result of a single space colonization step."""
+    nodes_added: int = 0
+    segments_added: int = 0
+    attractors_killed: int = 0
+    active_attractors: int = 0
+    active_tips: int = 0
+    coverage_fraction: float = 0.0
+    stalled: bool = False
+    exhausted: bool = False
+    new_node_ids: List[int] = field(default_factory=list)
+    new_segment_ids: List[int] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    
+    def to_dict(self) -> Dict[str, any]:
+        return {
+            "nodes_added": self.nodes_added,
+            "segments_added": self.segments_added,
+            "attractors_killed": self.attractors_killed,
+            "active_attractors": self.active_attractors,
+            "active_tips": self.active_tips,
+            "coverage_fraction": self.coverage_fraction,
+            "stalled": self.stalled,
+            "exhausted": self.exhausted,
+        }
+
+
+def create_space_colonization_state(
+    network: VascularNetwork,
+    tissue_points: np.ndarray,
+    params: Optional[SpaceColonizationParams] = None,
+    constraints: Optional[BranchingConstraints] = None,
+    seed: Optional[int] = None,
+    seed_node_ids: Optional[List[int]] = None,
+    inlet_id: Optional[int] = None,
+    vessel_type: str = "arterial",
+    kdtree_rebuild_tip_every: int = 1,
+    kdtree_rebuild_all_nodes_every: int = 10,
+    kdtree_rebuild_all_nodes_min_new_nodes: int = 5,
+    stall_steps_threshold: int = 10,
+) -> SpaceColonizationState:
+    """
+    Create initial state for space colonization.
+    
+    Parameters
+    ----------
+    network : VascularNetwork
+        Network to grow
+    tissue_points : np.ndarray
+        Array of tissue points (N, 3) that need perfusion
+    params : SpaceColonizationParams, optional
+        Algorithm parameters
+    constraints : BranchingConstraints, optional
+        Branching constraints
+    seed : int, optional
+        Random seed
+    seed_node_ids : List[int], optional
+        List of node IDs to use as seed nodes for growth
+    inlet_id : int, optional
+        Identifier for this inlet (for multi-inlet tracking)
+    vessel_type : str
+        Type of vessels ("arterial" or "venous")
+    kdtree_rebuild_tip_every : int
+        Rebuild tip KD-tree every N steps
+    kdtree_rebuild_all_nodes_every : int
+        Rebuild all-nodes KD-tree every N steps
+    kdtree_rebuild_all_nodes_min_new_nodes : int
+        Rebuild all-nodes KD-tree if this many nodes added
+    stall_steps_threshold : int
+        Mark as stalled after this many steps with no growth
+        
+    Returns
+    -------
+    SpaceColonizationState
+        Initial state for space colonization
+    """
+    if params is None:
+        params = SpaceColonizationParams()
+    
+    if constraints is None:
+        constraints = BranchingConstraints(
+            min_segment_length=params.step_size,
+            min_radius=params.min_radius,
+        )
+    
+    rng = np.random.default_rng(seed) if seed is not None else network.id_gen.rng
+    
+    if isinstance(tissue_points, list):
+        tissue_points_arr = np.array([
+            [p.x, p.y, p.z] if isinstance(p, Point3D) else p
+            for p in tissue_points
+        ])
+    else:
+        tissue_points_arr = tissue_points
+    
+    active_tissue_indices = set(range(len(tissue_points_arr)))
+    
+    if seed_node_ids is not None:
+        active_tip_ids = set(
+            nid for nid in seed_node_ids
+            if nid in network.nodes and network.nodes[nid].vessel_type == vessel_type
+        )
+    else:
+        active_tip_ids = set(
+            node.id for node in network.nodes.values()
+            if node.node_type in ("terminal", "inlet", "outlet") and
+            node.vessel_type == vessel_type
+        )
+    
+    tip_states = {}
+    for tip_id in active_tip_ids:
+        tip_states[tip_id] = TipState(
+            node_id=tip_id,
+            steps_since_split=0,
+            total_steps=0,
+            distance_from_root=0.0,
+            is_root=(tip_id in seed_node_ids) if seed_node_ids else True,
+        )
+    
+    state = SpaceColonizationState(
+        network=network,
+        params=params,
+        constraints=constraints,
+        tissue_points=tissue_points_arr,
+        active_tissue_indices=active_tissue_indices,
+        initial_tissue_count=len(tissue_points_arr),
+        active_tip_ids=active_tip_ids,
+        tip_states=tip_states,
+        rng=rng,
+        inlet_id=inlet_id,
+        vessel_type=vessel_type,
+        kdtree_rebuild_tip_every=kdtree_rebuild_tip_every,
+        kdtree_rebuild_all_nodes_every=kdtree_rebuild_all_nodes_every,
+        kdtree_rebuild_all_nodes_min_new_nodes=kdtree_rebuild_all_nodes_min_new_nodes,
+        stall_steps_threshold=stall_steps_threshold,
+    )
+    
+    state.rebuild_tip_kdtree()
+    state.rebuild_all_nodes_kdtree()
+    
+    return state
+
+
+def space_colonization_one_step(
+    state: SpaceColonizationState,
+) -> SingleStepResult:
+    """
+    Perform exactly ONE iteration of space colonization growth.
+    
+    This function is designed for efficient multi-inlet interleaving.
+    It does NOT create progress bars or print output.
+    
+    Parameters
+    ----------
+    state : SpaceColonizationState
+        Persistent state object (modified in-place)
+        
+    Returns
+    -------
+    SingleStepResult
+        Result of this single step
+    """
+    result = SingleStepResult()
+    params = state.params
+    network = state.network
+    constraints = state.constraints
+    rng = state.rng
+    
+    if state.is_exhausted():
+        result.exhausted = True
+        result.active_attractors = len(state.active_tissue_indices)
+        result.active_tips = len(state.active_tip_ids)
+        return result
+    
+    if state.needs_tip_kdtree_rebuild():
+        state.rebuild_tip_kdtree()
+    
+    if state.tip_kdtree is None or len(state.tip_kdtree_node_ids) == 0:
+        result.exhausted = True
+        result.active_attractors = len(state.active_tissue_indices)
+        result.active_tips = 0
+        return result
+    
+    active_tp_indices = list(state.active_tissue_indices)
+    if not active_tp_indices:
+        result.exhausted = True
+        result.active_tips = len(state.active_tip_ids)
+        return result
+    
+    active_tp_positions = state.tissue_points[active_tp_indices]
+    
+    distances, nearest_indices = state.tip_kdtree.query(active_tp_positions, k=1)
+    
+    attractions: Dict[int, List[int]] = {tid: [] for tid in state.active_tip_ids}
+    for i, tp_idx in enumerate(active_tp_indices):
+        if distances[i] < params.influence_radius:
+            nearest_tip_id = state.tip_kdtree_node_ids[nearest_indices[i]]
+            if nearest_tip_id in attractions:
+                attractions[nearest_tip_id].append(tp_idx)
+    
+    grown_any = False
+    new_node_ids = []
+    new_segment_ids = []
+    warnings = []
+    
+    for tip_id in list(state.active_tip_ids):
+        if tip_id not in network.nodes:
+            state.active_tip_ids.discard(tip_id)
+            continue
+        
+        node = network.nodes[tip_id]
+        attracted_indices = attractions.get(tip_id, [])
+        
+        if not attracted_indices:
+            continue
+        
+        attracted_points = [
+            Point3D(
+                state.tissue_points[idx][0],
+                state.tissue_points[idx][1],
+                state.tissue_points[idx][2]
+            )
+            for idx in attracted_indices
+        ]
+        num_attractions = len(attracted_points)
+        
+        should_bifurcate = (
+            params.encourage_bifurcation and
+            num_attractions >= params.min_attractions_for_bifurcation
+        )
+        
+        if should_bifurcate:
+            attraction_vectors = []
+            for tp in attracted_points:
+                direction = np.array([
+                    tp.x - node.position.x,
+                    tp.y - node.position.y,
+                    tp.z - node.position.z,
+                ])
+                direction_norm = np.linalg.norm(direction)
+                if direction_norm > 1e-10:
+                    attraction_vectors.append(direction / direction_norm)
+            
+            if len(attraction_vectors) >= 2:
+                angle_spread = _compute_angle_spread(attraction_vectors)
+                
+                if angle_spread >= params.bifurcation_angle_threshold_deg:
+                    if rng.random() < params.bifurcation_probability:
+                        clusters = _cluster_attractions_by_angle(
+                            attraction_vectors,
+                            max_clusters=min(params.max_children_per_node, len(attraction_vectors))
+                        )
+                        
+                        parent_radius = node.attributes.get("radius", params.min_radius * 2)
+                        n_children = len(clusters)
+                        if n_children > 1:
+                            child_radii = [
+                                parent_radius * (1.0 / n_children) ** (1.0/3.0) * params.taper_factor
+                                for _ in range(n_children)
+                            ]
+                        else:
+                            child_radii = [parent_radius * params.taper_factor]
+                        
+                        from .growth import grow_branch
+                        children_created = 0
+                        for cluster_idx, cluster in enumerate(clusters):
+                            if cluster_idx >= params.max_children_per_node:
+                                break
+                            
+                            cluster_direction = np.mean([attraction_vectors[i] for i in cluster], axis=0)
+                            cluster_direction = cluster_direction / np.linalg.norm(cluster_direction)
+                            
+                            cluster_direction = _apply_directional_blending(cluster_direction, node, params)
+                            cluster_direction = _apply_curvature_constraint(cluster_direction, node, params)
+                            
+                            growth_direction = Direction3D.from_array(cluster_direction)
+                            
+                            new_pos = Point3D(
+                                node.position.x + growth_direction.dx * params.step_size,
+                                node.position.y + growth_direction.dy * params.step_size,
+                                node.position.z + growth_direction.dz * params.step_size,
+                            )
+                            
+                            if not _check_clearance(new_pos, network, tip_id, params):
+                                continue
+                            
+                            new_radius = max(child_radii[cluster_idx], params.min_radius)
+                            
+                            branch_result = grow_branch(
+                                network,
+                                from_node_id=tip_id,
+                                length=params.step_size,
+                                direction=growth_direction,
+                                target_radius=new_radius,
+                                constraints=constraints,
+                                check_collisions=True,
+                                seed=int(rng.integers(0, 2**31)) if rng else None,
+                            )
+                            
+                            if branch_result.is_success():
+                                new_node_id = branch_result.new_ids["node"]
+                                new_node_ids.append(new_node_id)
+                                new_segment_ids.append(branch_result.new_ids["segment"])
+                                grown_any = True
+                                children_created += 1
+                                
+                                state.active_tip_ids.add(new_node_id)
+                                state.tip_states[new_node_id] = TipState(
+                                    node_id=new_node_id,
+                                    steps_since_split=0,
+                                    total_steps=state.tip_states.get(tip_id, TipState(tip_id)).total_steps + 1,
+                                    distance_from_root=state.tip_states.get(tip_id, TipState(tip_id)).distance_from_root + params.step_size,
+                                    is_root=False,
+                                )
+                            else:
+                                warnings.extend(branch_result.errors)
+                        
+                        if children_created > 0:
+                            state.active_tip_ids.discard(tip_id)
+                            if tip_id in state.tip_states:
+                                del state.tip_states[tip_id]
+                        
+                        continue
+        
+        avg_direction = np.zeros(3)
+        for tp in attracted_points:
+            direction = np.array([
+                tp.x - node.position.x,
+                tp.y - node.position.y,
+                tp.z - node.position.z,
+            ])
+            direction_norm = np.linalg.norm(direction)
+            if direction_norm > 1e-10:
+                avg_direction += direction / direction_norm
+        
+        if np.linalg.norm(avg_direction) < 1e-10:
+            continue
+        
+        avg_direction = avg_direction / np.linalg.norm(avg_direction)
+        avg_direction = _apply_directional_blending(avg_direction, node, params)
+        avg_direction = _apply_curvature_constraint(avg_direction, node, params)
+        
+        growth_direction = Direction3D.from_array(avg_direction)
+        
+        new_pos = Point3D(
+            node.position.x + growth_direction.dx * params.step_size,
+            node.position.y + growth_direction.dy * params.step_size,
+            node.position.z + growth_direction.dz * params.step_size,
+        )
+        
+        if not _check_clearance(new_pos, network, tip_id, params):
+            continue
+        
+        parent_radius = node.attributes.get("radius", params.min_radius * 2)
+        new_radius = max(parent_radius * params.taper_factor, params.min_radius)
+        
+        from .growth import grow_branch
+        branch_result = grow_branch(
+            network,
+            from_node_id=tip_id,
+            length=params.step_size,
+            direction=growth_direction,
+            target_radius=new_radius,
+            constraints=constraints,
+            check_collisions=True,
+            seed=int(rng.integers(0, 2**31)) if rng else None,
+        )
+        
+        if branch_result.is_success():
+            new_node_id = branch_result.new_ids["node"]
+            new_node_ids.append(new_node_id)
+            new_segment_ids.append(branch_result.new_ids["segment"])
+            grown_any = True
+            
+            state.active_tip_ids.discard(tip_id)
+            state.active_tip_ids.add(new_node_id)
+            
+            if tip_id in state.tip_states:
+                old_state = state.tip_states[tip_id]
+                state.tip_states[new_node_id] = TipState(
+                    node_id=new_node_id,
+                    steps_since_split=old_state.steps_since_split + 1,
+                    total_steps=old_state.total_steps + 1,
+                    distance_from_root=old_state.distance_from_root + params.step_size,
+                    is_root=False,
+                )
+                del state.tip_states[tip_id]
+            else:
+                state.tip_states[new_node_id] = TipState(
+                    node_id=new_node_id,
+                    steps_since_split=1,
+                    total_steps=1,
+                    distance_from_root=params.step_size,
+                    is_root=False,
+                )
+        else:
+            warnings.extend(branch_result.errors)
+    
+    if new_node_ids:
+        state.nodes_added_since_tip_kdtree_rebuild += len(new_node_ids)
+        state.nodes_added_since_all_nodes_kdtree_rebuild += len(new_node_ids)
+        
+        if state.needs_all_nodes_kdtree_rebuild():
+            state.rebuild_all_nodes_kdtree()
+        
+        if state.all_nodes_kdtree is not None and state.active_tissue_indices:
+            active_tp_indices = list(state.active_tissue_indices)
+            active_tp_positions = state.tissue_points[active_tp_indices]
+            
+            nearby_results = state.all_nodes_kdtree.query_ball_point(
+                active_tp_positions, params.kill_radius
+            )
+            
+            attractors_killed = 0
+            for i, tp_idx in enumerate(active_tp_indices):
+                if nearby_results[i]:
+                    state.active_tissue_indices.discard(tp_idx)
+                    attractors_killed += 1
+            
+            result.attractors_killed = attractors_killed
+    
+    state.global_step += 1
+    state.steps_since_tip_kdtree_rebuild += 1
+    state.steps_since_all_nodes_kdtree_rebuild += 1
+    
+    if grown_any:
+        state.consecutive_stall_steps = 0
+        state.total_nodes_added += len(new_node_ids)
+        state.total_segments_added += len(new_segment_ids)
+    else:
+        state.consecutive_stall_steps += 1
+    
+    result.nodes_added = len(new_node_ids)
+    result.segments_added = len(new_segment_ids)
+    result.active_attractors = len(state.active_tissue_indices)
+    result.active_tips = len(state.active_tip_ids)
+    result.stalled = state.is_stalled()
+    result.exhausted = state.is_exhausted()
+    result.new_node_ids = new_node_ids
+    result.new_segment_ids = new_segment_ids
+    result.warnings = warnings
+    
+    if state.initial_tissue_count > 0:
+        perfused = state.initial_tissue_count - len(state.active_tissue_indices)
+        result.coverage_fraction = perfused / state.initial_tissue_count
+    
+    return result
+
+
+def run_space_colonization_multi_step(
+    state: SpaceColonizationState,
+    max_steps: int,
+    progress: bool = False,
+    progress_desc: str = "Space colonization",
+) -> OperationResult:
+    """
+    Run multiple space colonization steps using the single-step function.
+    
+    This is a convenience wrapper that provides backward compatibility
+    with the old multi-step interface while using the new single-step
+    implementation internally.
+    
+    Parameters
+    ----------
+    state : SpaceColonizationState
+        Persistent state object
+    max_steps : int
+        Maximum number of steps to run
+    progress : bool
+        Whether to show progress bar
+    progress_desc : str
+        Description for progress bar
+        
+    Returns
+    -------
+    OperationResult
+        Combined result of all steps
+    """
+    all_new_node_ids = []
+    all_new_segment_ids = []
+    all_warnings = []
+    steps_taken = 0
+    
+    pbar = None
+    if progress:
+        pbar = tqdm(total=max_steps, desc=progress_desc, unit="step")
+    
+    try:
+        for step in range(max_steps):
+            result = space_colonization_one_step(state)
+            
+            all_new_node_ids.extend(result.new_node_ids)
+            all_new_segment_ids.extend(result.new_segment_ids)
+            all_warnings.extend(result.warnings)
+            
+            if result.nodes_added > 0:
+                steps_taken += 1
+            
+            if pbar:
+                pbar.update(1)
+                pbar.set_postfix({
+                    'nodes': len(all_new_node_ids),
+                    'coverage': f'{result.coverage_fraction:.1%}'
+                })
+            
+            if result.exhausted or result.stalled:
+                break
+    finally:
+        if pbar:
+            pbar.close()
+    
+    delta = Delta(
+        created_node_ids=all_new_node_ids,
+        created_segment_ids=all_new_segment_ids,
+    )
+    
+    if all_new_node_ids:
+        status = OperationStatus.SUCCESS if not all_warnings else OperationStatus.PARTIAL_SUCCESS
+        message = f"Grew {len(all_new_node_ids)} nodes in {steps_taken} steps"
+    else:
+        status = OperationStatus.WARNING
+        message = "No growth occurred"
+    
+    return OperationResult(
+        status=status,
+        message=message,
+        new_ids={
+            "nodes": all_new_node_ids,
+            "segments": all_new_segment_ids,
+        },
+        warnings=all_warnings,
+        delta=delta,
+        rng_state=state.network.id_gen.get_state(),
+        metadata={
+            "steps_taken": steps_taken,
+            "nodes_grown": len(all_new_node_ids),
+            "initial_tissue_points": state.initial_tissue_count,
+            "perfused_tissue_points": state.initial_tissue_count - len(state.active_tissue_indices),
+            "coverage_fraction": (state.initial_tissue_count - len(state.active_tissue_indices)) / state.initial_tissue_count if state.initial_tissue_count > 0 else 0.0,
+        },
+    )
