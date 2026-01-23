@@ -232,7 +232,8 @@
           "jitter_deg": 10,
           "curvature": 0.3,
           "curve_samples": 5,
-          "wall_margin_m": 0.0001,
+          "wall_margin_m": 0.0003,
+          "boundary_extra_m": 0.0001,
           "min_radius": 5e-05,
           "collision_online": {
             "enabled": true,
