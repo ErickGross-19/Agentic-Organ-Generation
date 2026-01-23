@@ -533,6 +533,13 @@ def _generate_space_colonization(
             bifurcation_angle_threshold_deg=backend_params.get('bifurcation_angle_threshold_deg', 40.0),
             # Step control
             max_steps=backend_params.get('max_steps', 100),
+            # Single-step refactor parameters
+            progress=backend_params.get('progress', False),
+            kdtree_rebuild_tip_every=backend_params.get('kdtree_rebuild_tip_every', 1),
+            kdtree_rebuild_all_nodes_every=backend_params.get('kdtree_rebuild_all_nodes_every', 10),
+            kdtree_rebuild_all_nodes_min_new_nodes=backend_params.get('kdtree_rebuild_all_nodes_min_new_nodes', 5),
+            stall_steps_per_inlet=backend_params.get('stall_steps_per_inlet', 10),
+            interleaving_strategy=backend_params.get('interleaving_strategy', 'round_robin'),
         )
         
         inlet_specs = []
