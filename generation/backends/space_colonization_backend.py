@@ -194,6 +194,14 @@ class SpaceColonizationBackend(GenerationBackend):
             influence_radius=config.attraction_distance,
             kill_radius=config.kill_distance,
             step_size=config.step_size,
+            min_radius=config.min_radius,
+            taper_factor=config.taper_factor,
+            max_steps=config.max_steps,
+            encourage_bifurcation=config.encourage_bifurcation,
+            max_children_per_node=config.max_children_per_node,
+            bifurcation_probability=config.bifurcation_probability,
+            min_attractions_for_bifurcation=config.min_attractions_for_bifurcation,
+            bifurcation_angle_threshold_deg=config.bifurcation_angle_threshold_deg,
         )
         
         active_nodes = [inlet_node.id]
@@ -860,6 +868,14 @@ class SpaceColonizationBackend(GenerationBackend):
                     influence_radius=config.attraction_distance,
                     kill_radius=config.kill_distance,
                     step_size=config.step_size,
+                    min_radius=config.min_radius,
+                    taper_factor=config.taper_factor,
+                    max_steps=config.max_steps,
+                    encourage_bifurcation=config.encourage_bifurcation,
+                    max_children_per_node=config.max_children_per_node,
+                    bifurcation_probability=config.bifurcation_probability,
+                    min_attractions_for_bifurcation=config.min_attractions_for_bifurcation,
+                    bifurcation_angle_threshold_deg=config.bifurcation_angle_threshold_deg,
                 )
                 
                 result = space_colonization_step(
@@ -987,6 +1003,14 @@ class SpaceColonizationBackend(GenerationBackend):
             influence_radius=config.attraction_distance,
             kill_radius=config.kill_distance,
             step_size=config.step_size,
+            min_radius=config.min_radius,
+            taper_factor=config.taper_factor,
+            max_steps=config.max_steps,
+            encourage_bifurcation=config.encourage_bifurcation,
+            max_children_per_node=config.max_children_per_node,
+            bifurcation_probability=config.bifurcation_probability,
+            min_attractions_for_bifurcation=config.min_attractions_for_bifurcation,
+            bifurcation_angle_threshold_deg=config.bifurcation_angle_threshold_deg,
         )
         
         active_nodes = [arterial_inlet_node.id]
