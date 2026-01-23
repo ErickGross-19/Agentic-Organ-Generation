@@ -522,6 +522,17 @@ def _generate_space_colonization(
             directional_bias=backend_params.get('directional_bias', 0.0),
             max_deviation_deg=backend_params.get('max_deviation_deg', 180.0),
             seed=seed,
+            # Radius and taper control
+            min_radius=backend_params.get('min_radius', growth_policy.min_radius),
+            taper_factor=backend_params.get('taper_factor', 0.95),
+            # Bifurcation control
+            encourage_bifurcation=backend_params.get('encourage_bifurcation', False),
+            max_children_per_node=backend_params.get('max_children_per_node', 2),
+            bifurcation_probability=backend_params.get('bifurcation_probability', 0.7),
+            min_attractions_for_bifurcation=backend_params.get('min_attractions_for_bifurcation', 3),
+            bifurcation_angle_threshold_deg=backend_params.get('bifurcation_angle_threshold_deg', 40.0),
+            # Step control
+            max_steps=backend_params.get('max_steps', 100),
         )
         
         inlet_specs = []

@@ -45,6 +45,20 @@ class SpaceColonizationConfig(BackendConfig):
     # Directional constraints for multi-inlet (less restrictive for blended mode)
     directional_bias: float = 0.5  # 0.0 = no bias, 1.0 = strict directional growth
     max_deviation_deg: float = 60.0  # Maximum angle from inlet direction
+    
+    # Radius and taper control (passed to SCParams)
+    min_radius: float = 0.0001  # 0.1mm - minimum vessel radius
+    taper_factor: float = 0.95  # Radius reduction per generation
+    
+    # Bifurcation control (passed to SCParams)
+    encourage_bifurcation: bool = False  # Whether to encourage multiple children per node
+    max_children_per_node: int = 2  # Maximum children to create (typically 2 for bifurcation)
+    bifurcation_probability: float = 0.7  # Probability of bifurcating when conditions are met
+    min_attractions_for_bifurcation: int = 3  # Minimum attraction points needed to consider bifurcation
+    bifurcation_angle_threshold_deg: float = 40.0  # Minimum angle spread to trigger bifurcation
+    
+    # Step control
+    max_steps: int = 100  # Maximum growth steps per space_colonization_step call
 
 
 class SpaceColonizationBackend(GenerationBackend):
@@ -180,6 +194,14 @@ class SpaceColonizationBackend(GenerationBackend):
             influence_radius=config.attraction_distance,
             kill_radius=config.kill_distance,
             step_size=config.step_size,
+            min_radius=config.min_radius,
+            taper_factor=config.taper_factor,
+            max_steps=config.max_steps,
+            encourage_bifurcation=config.encourage_bifurcation,
+            max_children_per_node=config.max_children_per_node,
+            bifurcation_probability=config.bifurcation_probability,
+            min_attractions_for_bifurcation=config.min_attractions_for_bifurcation,
+            bifurcation_angle_threshold_deg=config.bifurcation_angle_threshold_deg,
         )
         
         active_nodes = [inlet_node.id]
@@ -504,6 +526,14 @@ class SpaceColonizationBackend(GenerationBackend):
                     preferred_direction=None,
                     directional_bias=config.directional_bias,
                     max_deviation_deg=config.max_deviation_deg,
+                    min_radius=config.min_radius,
+                    taper_factor=config.taper_factor,
+                    max_steps=config.max_steps,
+                    encourage_bifurcation=config.encourage_bifurcation,
+                    max_children_per_node=config.max_children_per_node,
+                    bifurcation_probability=config.bifurcation_probability,
+                    min_attractions_for_bifurcation=config.min_attractions_for_bifurcation,
+                    bifurcation_angle_threshold_deg=config.bifurcation_angle_threshold_deg,
                 )
                 
                 seed_nodes = list(active_tips_per_inlet[i])
@@ -607,6 +637,14 @@ class SpaceColonizationBackend(GenerationBackend):
                 preferred_direction=tuple(inlet_dir_arr),
                 directional_bias=1.0,
                 max_deviation_deg=30.0,
+                min_radius=config.min_radius,
+                taper_factor=config.taper_factor,
+                max_steps=config.max_steps,
+                encourage_bifurcation=config.encourage_bifurcation,
+                max_children_per_node=config.max_children_per_node,
+                bifurcation_probability=config.bifurcation_probability,
+                min_attractions_for_bifurcation=config.min_attractions_for_bifurcation,
+                bifurcation_angle_threshold_deg=config.bifurcation_angle_threshold_deg,
             )
             
             tissue_points = self._filter_tissue_points_by_cylinder(
@@ -830,6 +868,14 @@ class SpaceColonizationBackend(GenerationBackend):
                     influence_radius=config.attraction_distance,
                     kill_radius=config.kill_distance,
                     step_size=config.step_size,
+                    min_radius=config.min_radius,
+                    taper_factor=config.taper_factor,
+                    max_steps=config.max_steps,
+                    encourage_bifurcation=config.encourage_bifurcation,
+                    max_children_per_node=config.max_children_per_node,
+                    bifurcation_probability=config.bifurcation_probability,
+                    min_attractions_for_bifurcation=config.min_attractions_for_bifurcation,
+                    bifurcation_angle_threshold_deg=config.bifurcation_angle_threshold_deg,
                 )
                 
                 result = space_colonization_step(
@@ -957,6 +1003,14 @@ class SpaceColonizationBackend(GenerationBackend):
             influence_radius=config.attraction_distance,
             kill_radius=config.kill_distance,
             step_size=config.step_size,
+            min_radius=config.min_radius,
+            taper_factor=config.taper_factor,
+            max_steps=config.max_steps,
+            encourage_bifurcation=config.encourage_bifurcation,
+            max_children_per_node=config.max_children_per_node,
+            bifurcation_probability=config.bifurcation_probability,
+            min_attractions_for_bifurcation=config.min_attractions_for_bifurcation,
+            bifurcation_angle_threshold_deg=config.bifurcation_angle_threshold_deg,
         )
         
         active_nodes = [arterial_inlet_node.id]

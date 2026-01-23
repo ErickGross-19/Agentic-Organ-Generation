@@ -496,20 +496,33 @@ class ProgrammaticBackend(GenerationBackend):
         pathfinding_params = backend_params.get("pathfinding_policy", {})
         default_clearance = pathfinding_params.get("clearance", 0.0002)
         
-        # Use collision_policy from unified API if provided
+        # Check for collision_policy in backend_params (takes precedence for strategy_order)
+        collision_policy_params = backend_params.get("collision_policy", {})
+        
+        # Use collision_policy from unified API if provided, but merge with backend_params
         if collision_policy is not None:
             prog_collision_policy = ProgramCollisionPolicy(
-                enabled=collision_policy.check_collisions,
-                min_clearance=collision_policy.collision_clearance,
-                inflate_by_radius=True,
-                check_after_each_step=True,
+                enabled=collision_policy_params.get("enabled", collision_policy.check_collisions),
+                min_clearance=collision_policy_params.get("min_clearance", collision_policy.collision_clearance),
+                inflate_by_radius=collision_policy_params.get("inflate_by_radius", True),
+                check_after_each_step=collision_policy_params.get("check_after_each_step", True),
+                strategy_order=collision_policy_params.get("strategy_order", ["reroute", "shrink", "terminate"]),
+                min_radius=collision_policy_params.get("min_radius", 0.0001),
+                check_segment_segment=collision_policy_params.get("check_segment_segment", True),
+                check_segment_boundary=collision_policy_params.get("check_segment_boundary", True),
+                check_segment_mesh=collision_policy_params.get("check_segment_mesh", False),
             )
         else:
             prog_collision_policy = ProgramCollisionPolicy(
-                enabled=pathfinding_params.get("check_collisions", True),
-                min_clearance=default_clearance,
-                inflate_by_radius=True,
-                check_after_each_step=True,
+                enabled=collision_policy_params.get("enabled", pathfinding_params.get("check_collisions", True)),
+                min_clearance=collision_policy_params.get("min_clearance", default_clearance),
+                inflate_by_radius=collision_policy_params.get("inflate_by_radius", True),
+                check_after_each_step=collision_policy_params.get("check_after_each_step", True),
+                strategy_order=collision_policy_params.get("strategy_order", ["reroute", "shrink", "terminate"]),
+                min_radius=collision_policy_params.get("min_radius", 0.0001),
+                check_segment_segment=collision_policy_params.get("check_segment_segment", True),
+                check_segment_boundary=collision_policy_params.get("check_segment_boundary", True),
+                check_segment_mesh=collision_policy_params.get("check_segment_mesh", False),
             )
         
         # Build radius policy from backend_params

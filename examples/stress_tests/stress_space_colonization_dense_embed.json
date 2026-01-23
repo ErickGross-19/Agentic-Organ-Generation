@@ -1,0 +1,245 @@
+{
+  "schema": {
+    "name": "aog_designspec",
+    "version": "1.0.0",
+    "compatible_with": ["1.0.x"]
+  },
+  "meta": {
+    "name": "stress_space_colonization_dense_embed",
+    "description": "Stress test: Cylinder R=10mm H=30mm with ridge. 5 inlets (center + 4 @ r=6mm). Space colonization with forest_with_merge, 500k attraction points, dense bifurcation, and embedding at 1um voxel pitch. WARNING: This spec is intentionally extreme and may exceed memory/time limits.",
+    "seed": 42,
+    "input_units": "m",
+    "tags": ["stress_test", "space_colonization", "dense", "forest_with_merge", "multi_inlet", "embed", "extreme"]
+  },
+  "policies": {
+    "resolution": {
+      "input_units": "m",
+      "min_channel_diameter": 5e-05,
+      "min_voxels_across_feature": 50,
+      "max_voxels": 10000000000000,
+      "min_pitch": 1e-06,
+      "max_pitch": 1e-06,
+      "auto_relax_pitch": false,
+      "pitch_step_factor": 1.0,
+      "max_voxels_embed": 10000000000000,
+      "max_voxels_merge": 10000000000000,
+      "max_voxels_repair": 10000000000000
+    },
+    "domain_meshing": {
+      "cache_meshes": true,
+      "emit_warnings": true,
+      "target_face_count": 200000,
+      "voxel_pitch": null,
+      "primitive_policy": {
+        "sections_radial": 128,
+        "sections_axial": 64,
+        "sections_angular": 128,
+        "subdivisions": 2
+      },
+      "mesh_policy": {
+        "validate_watertight": true,
+        "repair_if_needed": true,
+        "repair_voxel_pitch": 5e-05,
+        "max_faces": 1000000,
+        "simplify_if_over_max": true,
+        "simplify_target_ratio": 0.6
+      }
+    },
+    "ridge": {
+      "enabled": true,
+      "face": "top",
+      "height": 0.005,
+      "thickness": 0.0005,
+      "inset": 0.0,
+      "overlap": 0.00025,
+      "resolution": 128
+    },
+    "ports": {
+      "enabled": true,
+      "projection_mode": "clamp_to_face",
+      "ridge_constraint_enabled": true,
+      "disk_constraint_enabled": true
+    },
+    "growth": {
+      "enabled": true,
+      "backend": "space_colonization",
+      "target_terminals": null,
+      "terminal_tolerance": 0.15,
+      "max_iterations": 2500,
+      "min_segment_length": 1e-05,
+      "max_segment_length": 0.005,
+      "min_radius": 2.5e-05,
+      "step_size": 7.5e-04,
+      "backend_params": {
+        "multi_inlet_mode": "forest_with_merge",
+        "collision_merge_distance": 5e-04,
+        "num_attraction_points": 500000,
+        "influence_radius": 0.004,
+        "kill_radius": 0.0005,
+        "max_inlets": 10,
+        "multi_inlet_blend_sigma": 0.0,
+        "directional_bias": 0.3,
+        "max_deviation_deg": 90.0,
+        "min_radius": 2.5e-05,
+        "taper_factor": 0.85,
+        "encourage_bifurcation": true,
+        "max_children_per_node": 3,
+        "bifurcation_probability": 0.95,
+        "min_attractions_for_bifurcation": 2,
+        "bifurcation_angle_threshold_deg": 25,
+        "max_steps": 1000
+      }
+    },
+    "radius": {
+      "mode": "murray",
+      "murray_exponent": 3.0,
+      "taper_factor": 0.85,
+      "min_radius": 2.5e-05,
+      "max_radius": 0.001
+    },
+    "collision": {
+      "enabled": true,
+      "check_collisions": true,
+      "collision_clearance": 2e-05
+    },
+    "composition": {
+      "repair_enabled": false,
+      "union_before_embed": true,
+      "keep_largest_component": false,
+      "merge_policy": {
+        "keep_largest_component": false
+      }
+    },
+    "repair": {
+      "voxel_repair_enabled": false,
+      "fill_voxels": false
+    },
+    "embedding": {
+      "voxel_pitch": 1e-06,
+      "shell_thickness": 0.0,
+      "use_resolution_policy": false,
+      "auto_adjust_pitch": false,
+      "max_pitch_steps": 1,
+      "pitch_step_factor": 1.0,
+      "max_voxels": 10000000000000,
+      "fallback": "auto",
+      "preserve_ports_enabled": true,
+      "preserve_mode": "recarve",
+      "carve_radius_factor": 1.4,
+      "carve_depth": 0.002
+    },
+    "open_port": {
+      "enabled": false
+    },
+    "validity": {
+      "check_watertight": false,
+      "check_components": false,
+      "check_min_diameter": false,
+      "check_open_ports": false,
+      "check_bounds": true,
+      "check_void_inside_domain": false
+    },
+    "output": {
+      "output_dir": "./out/stress_space_colonization_dense_embed",
+      "output_units": "m",
+      "save_intermediates": true,
+      "save_reports": true,
+      "output_stl": true,
+      "output_json": true
+    }
+  },
+  "domains": {
+    "main_domain": {
+      "type": "cylinder",
+      "center": [0.0, 0.0, 0.0],
+      "radius": 0.01,
+      "height": 0.03
+    }
+  },
+  "components": [
+    {
+      "id": "stress_space_colonization",
+      "domain_ref": "main_domain",
+      "ports": {
+        "inlets": [
+          {
+            "name": "inlet_center",
+            "position": [0.0, 0.0, 0.015],
+            "direction": [0.0, 0.0, -1.0],
+            "radius": 0.001
+          },
+          {
+            "name": "inlet_e",
+            "position": [0.006, 0.0, 0.015],
+            "direction": [0.0, 0.0, -1.0],
+            "radius": 0.001
+          },
+          {
+            "name": "inlet_w",
+            "position": [-0.006, 0.0, 0.015],
+            "direction": [0.0, 0.0, -1.0],
+            "radius": 0.001
+          },
+          {
+            "name": "inlet_n",
+            "position": [0.0, 0.006, 0.015],
+            "direction": [0.0, 0.0, -1.0],
+            "radius": 0.001
+          },
+          {
+            "name": "inlet_s",
+            "position": [0.0, -0.006, 0.015],
+            "direction": [0.0, 0.0, -1.0],
+            "radius": 0.001
+          }
+        ],
+        "outlets": []
+      },
+      "build": {
+        "type": "backend_network",
+        "backend": "space_colonization",
+        "backend_params": {
+          "multi_inlet_mode": "forest_with_merge",
+          "collision_merge_distance": 5e-04,
+          "num_attraction_points": 500000,
+          "influence_radius": 0.004,
+          "kill_radius": 0.0005,
+          "max_inlets": 10,
+          "multi_inlet_blend_sigma": 0.0,
+          "directional_bias": 0.3,
+          "max_deviation_deg": 90.0,
+          "min_radius": 2.5e-05,
+          "taper_factor": 0.85,
+          "encourage_bifurcation": true,
+          "max_children_per_node": 3,
+          "bifurcation_probability": 0.95,
+          "min_attractions_for_bifurcation": 2,
+          "bifurcation_angle_threshold_deg": 25,
+          "max_steps": 1000
+        }
+      },
+      "save_artifacts": {
+        "network": "artifacts/stress_space_colonization_network.json",
+        "void_mesh": "artifacts/stress_space_colonization_void.stl"
+      }
+    }
+  ],
+  "embedding": {
+    "enable": true,
+    "outputs": {
+      "domain_with_void": "domain_with_void.stl",
+      "void_mesh": "void_union.stl"
+    }
+  },
+  "validity": {
+    "enable": false,
+    "save_report": "validity_report.json"
+  },
+  "outputs": {
+    "artifacts_dir": "artifacts",
+    "named": {
+      "domain_mesh": "artifacts/domain_mesh_with_ridge.stl",
+      "run_report": "run_report.json"
+    }
+  }
+}
