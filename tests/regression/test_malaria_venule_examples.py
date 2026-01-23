@@ -447,3 +447,96 @@ class TestEnableFlags:
         assert embedding_spec.get("enable") == False, (
             "embedding.enable should be False in normalized spec"
         )
+
+
+class TestMalariaChannelValidityConfiguration:
+    """
+    Tests for validity configuration of channel-based malaria examples.
+    
+    These tests verify that the fang_hook and vertical channel examples
+    have proper validity configuration for multi-component channel grids
+    where void intersection at inlet ports is expected.
+    """
+    
+    CHANNEL_EXAMPLES = [
+        "malaria_venule_fang_hook_channels.json",
+        "malaria_venule_vertical_channels.json",
+    ]
+    
+    @pytest.mark.parametrize("example_file", CHANNEL_EXAMPLES)
+    def test_max_components_allows_multiple_channels(self, example_file):
+        """Test that max_components is set high enough for 9 channels."""
+        json_path = EXAMPLES_DIR / example_file
+        
+        with open(json_path, "r") as f:
+            data = json.load(f)
+        
+        validity = data.get("policies", {}).get("validity", {})
+        max_components = validity.get("max_components", 1)
+        
+        assert max_components >= 9, (
+            f"{example_file}: max_components should be >= 9 for 9-channel grid, got {max_components}"
+        )
+    
+    @pytest.mark.parametrize("example_file", CHANNEL_EXAMPLES)
+    def test_allow_boundary_intersections_at_ports_enabled(self, example_file):
+        """Test that allow_boundary_intersections_at_ports is enabled."""
+        json_path = EXAMPLES_DIR / example_file
+        
+        with open(json_path, "r") as f:
+            data = json.load(f)
+        
+        validity = data.get("policies", {}).get("validity", {})
+        allow_boundary = validity.get("allow_boundary_intersections_at_ports", False)
+        
+        assert allow_boundary is True, (
+            f"{example_file}: allow_boundary_intersections_at_ports should be true, got {allow_boundary}"
+        )
+    
+    @pytest.mark.parametrize("example_file", CHANNEL_EXAMPLES)
+    def test_open_port_policy_enabled(self, example_file):
+        """Test that open_port policy is enabled."""
+        json_path = EXAMPLES_DIR / example_file
+        
+        with open(json_path, "r") as f:
+            data = json.load(f)
+        
+        open_port = data.get("policies", {}).get("open_port", {})
+        enabled = open_port.get("enabled", False)
+        
+        assert enabled is True, (
+            f"{example_file}: open_port.enabled should be true, got {enabled}"
+        )
+    
+    @pytest.mark.parametrize("example_file", CHANNEL_EXAMPLES)
+    def test_check_open_ports_enabled(self, example_file):
+        """Test that check_open_ports is enabled in validity policy."""
+        json_path = EXAMPLES_DIR / example_file
+        
+        with open(json_path, "r") as f:
+            data = json.load(f)
+        
+        validity = data.get("policies", {}).get("validity", {})
+        check_open_ports = validity.get("check_open_ports", False)
+        
+        assert check_open_ports is True, (
+            f"{example_file}: check_open_ports should be true, got {check_open_ports}"
+        )
+    
+    @pytest.mark.parametrize("example_file", CHANNEL_EXAMPLES)
+    def test_has_nine_inlets(self, example_file):
+        """Test that channel examples have exactly 9 inlets."""
+        json_path = EXAMPLES_DIR / example_file
+        
+        with open(json_path, "r") as f:
+            data = json.load(f)
+        
+        components = data.get("components", [])
+        assert len(components) > 0, f"{example_file}: No components found"
+        
+        component = components[0]
+        inlets = component.get("ports", {}).get("inlets", [])
+        
+        assert len(inlets) == 9, (
+            f"{example_file}: Expected 9 inlets for 9-channel grid, got {len(inlets)}"
+        )

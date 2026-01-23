@@ -12,7 +12,7 @@ UNIT CONVENTIONS
 All geometric values are in METERS internally.
 """
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, TYPE_CHECKING, Literal
 import json
 import logging
@@ -378,26 +378,29 @@ def _check_void_inside_domain(
         validation_policy = ValidationPolicy()
     
     # Extract surface opening ports if enabled
+    # When allow_boundary_intersections_at_ports is True, ALL ports (inlets and outlets)
+    # are treated as allowed surface openings, not just those with is_surface_opening=True.
+    # This enables channel-grid specs where void intersection at inlet ports is expected.
     surface_opening_ports = []
     if validation_policy.allow_boundary_intersections_at_ports and ports:
         for port in ports:
-            # Check if port is marked as surface opening
-            if port.get("is_surface_opening", False):
-                position = np.array(port.get("position", [0, 0, 0]))
-                direction = np.array(port.get("direction", [0, 0, -1]))
-                # Normalize direction
-                dir_norm = np.linalg.norm(direction)
-                if dir_norm > 0:
-                    direction = direction / dir_norm
-                radius = port.get("radius", 0.001)
-                name = port.get("name", "unknown")
-                
-                surface_opening_ports.append(SurfaceOpeningPort(
-                    name=name,
-                    position=position,
-                    direction=direction,
-                    radius=radius,
-                ))
+            # When allow_boundary_intersections_at_ports is True, treat ALL ports as surface openings
+            # This is the key change: we no longer require is_surface_opening=True
+            position = np.array(port.get("position", [0, 0, 0]))
+            direction = np.array(port.get("direction", [0, 0, -1]))
+            # Normalize direction
+            dir_norm = np.linalg.norm(direction)
+            if dir_norm > 0:
+                direction = direction / dir_norm
+            radius = port.get("radius", 0.001)
+            name = port.get("name", "unknown")
+            
+            surface_opening_ports.append(SurfaceOpeningPort(
+                name=name,
+                position=position,
+                direction=direction,
+                radius=radius,
+            ))
     
     sample_points = void_mesh.vertices[::max(1, len(void_mesh.vertices) // 100)]
     
@@ -433,7 +436,6 @@ def _check_void_inside_domain(
     
     total_samples = len(sample_points)
     fraction_inside = inside_count / total_samples if total_samples > 0 else 0
-    outside_ratio = outside_count / total_samples if total_samples > 0 else 0
     outside_not_in_opening_ratio = outside_not_in_opening_count / total_samples if total_samples > 0 else 0
     outside_in_opening_ratio = outside_in_opening_count / total_samples if total_samples > 0 else 0
     
