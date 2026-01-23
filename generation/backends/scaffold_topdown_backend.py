@@ -1572,16 +1572,19 @@ class ScaffoldTopDownBackend(GenerationBackend):
         polyline_points.extend(centerline)
         polyline_points.append(target_pos)
         
-        # Check boundary clearance for all polyline points (tube-aware)
+        # Check boundary clearance for NEW points only (centerline + target_pos)
+        # Exclude parent_pos since it's already validated (may be at inlet/boundary)
         if domain is not None:
-            boundary_violation = self._check_polyline_boundary_clearance(
-                polyline_points=polyline_points,
-                radius=avg_radius,
-                domain=domain,
-                config=config,
-            )
-            if boundary_violation:
-                return True
+            new_points = centerline + [target_pos]
+            if new_points:
+                boundary_violation = self._check_polyline_boundary_clearance(
+                    polyline_points=new_points,
+                    radius=avg_radius,
+                    domain=domain,
+                    config=config,
+                )
+                if boundary_violation:
+                    return True
         
         # Check collision on the entire polyline using segment ID-based exclusion
         return spatial_index.check_polyline_collision(
