@@ -11,11 +11,21 @@ from dataclasses import dataclass
 from typing import Optional
 import numpy as np
 
+import os
+from tqdm import tqdm
+
 from .base import GenerationBackend, BackendConfig, GenerationState, GenerationAction
 from ..core.network import VascularNetwork, Node
 from ..core.domain import DomainSpec
 from ..core.types import Point3D, Direction3D
-from ..ops.space_colonization import space_colonization_step, SpaceColonizationParams as SCParams
+from ..ops.space_colonization import (
+    space_colonization_step,
+    SpaceColonizationParams as SCParams,
+    SpaceColonizationState,
+    SingleStepResult,
+    create_space_colonization_state,
+    space_colonization_one_step,
+)
 from ..utils.tissue_sampling import sample_tissue_points
 from aog_policies import TissueSamplingPolicy
 
@@ -59,6 +69,14 @@ class SpaceColonizationConfig(BackendConfig):
     
     # Step control
     max_steps: int = 100  # Maximum growth steps per space_colonization_step call
+    
+    # Single-step refactor parameters
+    progress: bool = False  # Show progress bar (single bar at outer level)
+    kdtree_rebuild_tip_every: int = 1  # Rebuild tip KD-tree every N steps
+    kdtree_rebuild_all_nodes_every: int = 10  # Rebuild all-nodes KD-tree every N steps
+    kdtree_rebuild_all_nodes_min_new_nodes: int = 5  # Rebuild if this many nodes added
+    stall_steps_per_inlet: int = 10  # Mark inlet as stalled after N steps with no growth
+    interleaving_strategy: str = "round_robin"  # "round_robin" or "weighted"
 
 
 class SpaceColonizationBackend(GenerationBackend):
@@ -422,24 +440,53 @@ class SpaceColonizationBackend(GenerationBackend):
         """
         Generate multi-inlet network using overlapping attractor selection.
         
-        This mode uses Gaussian-weighted sampling where each inlet samples its own
-        subset of attractors, but subsets can OVERLAP (attractors are shared, not
-        exclusively assigned). This removes Voronoi-like boundaries and produces
-        organic, intertwined growth patterns.
+        REFACTORED: Now uses single-step iteration with round-robin interleaving
+        and a single optional progress bar at the outer level.
         
         Key features:
-        - Overlapping selection: each inlet samples weighted subset, subsets overlap
-        - Gaussian weights: w_i = exp(-d_i^2 / (2*sigma^2)) for each attractor-inlet pair
-        - Shared attractors: same attractor can influence multiple inlets simultaneously
-        - Global kill: attractors removed when within kill_radius of ANY new node
-        - Minimal directional constraints: allows organic branching in all directions
+        - Single outer loop with round-robin interleaving across inlets
+        - No nested progress bars - one optional bar at outer level only
+        - KD-tree caching to reduce rebuild frequency
+        - Stall detection for early stopping
+        - Periodic merge checks instead of every step
         """
         n_inlets = len(inlets)
         
+        progress_enabled = config.progress and not os.environ.get("SPACE_COLONIZATION_PROGRESS", "1") == "0"
+        
         inlet_nodes = []
         inlet_directions = []
-        active_tips_per_inlet: list = [set() for _ in range(n_inlets)]
         inlet_node_sets: list = [set() for _ in range(n_inlets)]
+        states_by_inlet: list = []
+        stalled_inlets: set = set()
+        
+        sc_params = SCParams(
+            influence_radius=config.attraction_distance,
+            kill_radius=config.kill_distance,
+            step_size=config.step_size,
+            vessel_type=vessel_type,
+            preferred_direction=None,
+            directional_bias=config.directional_bias,
+            max_deviation_deg=config.max_deviation_deg,
+            min_radius=config.min_radius,
+            taper_factor=config.taper_factor,
+            max_steps=config.max_steps,
+            encourage_bifurcation=config.encourage_bifurcation,
+            max_children_per_node=config.max_children_per_node,
+            bifurcation_probability=config.bifurcation_probability,
+            min_attractions_for_bifurcation=config.min_attractions_for_bifurcation,
+            bifurcation_angle_threshold_deg=config.bifurcation_angle_threshold_deg,
+        )
+        
+        def compute_attractor_weights(tissue_points: np.ndarray) -> np.ndarray:
+            if len(tissue_points) == 0:
+                return np.zeros((0, n_inlets))
+            xy_points = tissue_points[:, :2]
+            xy_inlets = inlet_positions[:, :2]
+            diffs = xy_points[:, np.newaxis, :] - xy_inlets[np.newaxis, :, :]
+            distances = np.linalg.norm(diffs, axis=2)
+            weights = np.exp(-distances**2 / (2 * blend_sigma**2))
+            return weights
         
         for i, inlet in enumerate(inlets):
             inlet_position = np.array(inlet.get("position", [0, 0, 0]))
@@ -470,113 +517,108 @@ class SpaceColonizationBackend(GenerationBackend):
             
             inlet_nodes.append(inlet_node)
             inlet_directions.append(inlet_direction.to_array())
-            active_tips_per_inlet[i].add(inlet_node.id)
             inlet_node_sets[i].add(inlet_node.id)
-        
-        def compute_attractor_weights(tissue_points: np.ndarray) -> np.ndarray:
-            if len(tissue_points) == 0:
-                return np.zeros((0, n_inlets))
-            xy_points = tissue_points[:, :2]
-            xy_inlets = inlet_positions[:, :2]
-            diffs = xy_points[:, np.newaxis, :] - xy_inlets[np.newaxis, :, :]
-            distances = np.linalg.norm(diffs, axis=2)
-            weights = np.exp(-distances**2 / (2 * blend_sigma**2))
-            return weights
-        
-        tissue_points = all_tissue_points.copy()
-        
-        for iteration in range(config.max_iterations):
-            if len(tissue_points) == 0:
-                logger.info(f"Blended mode: stopping at iteration {iteration}, no attractors left")
-                break
             
-            total_active = sum(len(tips) for tips in active_tips_per_inlet)
-            if total_active == 0:
-                logger.info(f"Blended mode: stopping at iteration {iteration}, no active tips")
-                break
-            
-            weights = compute_attractor_weights(tissue_points)
-            
-            all_new_nodes = []
-            
-            for i in range(n_inlets):
-                if not active_tips_per_inlet[i]:
-                    continue
-                
-                inlet_weights = weights[:, i]
-                
-                if inlet_weights.sum() == 0:
-                    continue
-                
+            weights = compute_attractor_weights(all_tissue_points)
+            inlet_weights = weights[:, i]
+            if inlet_weights.sum() > 0:
                 sample_probs = inlet_weights / inlet_weights.sum()
-                n_samples = min(len(tissue_points), max(100, len(tissue_points) // n_inlets))
+                n_samples = min(len(all_tissue_points), max(100, len(all_tissue_points) // n_inlets))
                 sampled_indices = rng.choice(
-                    len(tissue_points),
+                    len(all_tissue_points),
                     size=n_samples,
                     replace=False,
                     p=sample_probs,
                 )
-                inlet_tissue_points = tissue_points[sampled_indices]
-                
-                sc_params = SCParams(
-                    influence_radius=config.attraction_distance,
-                    kill_radius=config.kill_distance,
-                    step_size=config.step_size,
-                    vessel_type=vessel_type,
-                    preferred_direction=None,
-                    directional_bias=config.directional_bias,
-                    max_deviation_deg=config.max_deviation_deg,
-                    min_radius=config.min_radius,
-                    taper_factor=config.taper_factor,
-                    max_steps=config.max_steps,
-                    encourage_bifurcation=config.encourage_bifurcation,
-                    max_children_per_node=config.max_children_per_node,
-                    bifurcation_probability=config.bifurcation_probability,
-                    min_attractions_for_bifurcation=config.min_attractions_for_bifurcation,
-                    bifurcation_angle_threshold_deg=config.bifurcation_angle_threshold_deg,
-                )
-                
-                seed_nodes = list(active_tips_per_inlet[i])
-                
-                result = space_colonization_step(
-                    network=network,
-                    tissue_points=inlet_tissue_points,
-                    params=sc_params,
-                    seed=int(rng.integers(0, 2**31)),
-                    seed_nodes=seed_nodes,
-                )
-                
-                if result.is_success():
-                    new_node_ids = result.new_ids.get("nodes", [])
-                    
-                    if new_node_ids:
-                        for node_id in new_node_ids:
-                            active_tips_per_inlet[i].add(node_id)
-                            inlet_node_sets[i].add(node_id)
-                            all_new_nodes.append(node_id)
-                        
-                        tips_to_remove = set()
-                        for tip_id in active_tips_per_inlet[i]:
-                            if tip_id in new_node_ids:
-                                continue
-                            has_children = any(
-                                seg.start_node_id == tip_id 
-                                for seg in network.segments.values()
-                            )
-                            if has_children:
-                                tips_to_remove.add(tip_id)
-                        active_tips_per_inlet[i] -= tips_to_remove
-            
-            if all_new_nodes:
-                for node_id in all_new_nodes:
-                    node = network.nodes.get(node_id)
-                    if node:
-                        node_pos = np.array([node.position.x, node.position.y, node.position.z])
-                        distances = np.linalg.norm(tissue_points - node_pos, axis=1)
-                        tissue_points = tissue_points[distances > config.kill_distance]
+                inlet_tissue_points = all_tissue_points[sampled_indices]
             else:
-                logger.info(f"Blended mode: no growth at iteration {iteration}")
-                break
+                inlet_tissue_points = all_tissue_points.copy()
+            
+            state = create_space_colonization_state(
+                network=network,
+                tissue_points=inlet_tissue_points,
+                params=sc_params,
+                seed=int(rng.integers(0, 2**31)),
+                seed_node_ids=[inlet_node.id],
+                inlet_id=i,
+                vessel_type=vessel_type,
+                kdtree_rebuild_tip_every=config.kdtree_rebuild_tip_every,
+                kdtree_rebuild_all_nodes_every=config.kdtree_rebuild_all_nodes_every,
+                kdtree_rebuild_all_nodes_min_new_nodes=config.kdtree_rebuild_all_nodes_min_new_nodes,
+                stall_steps_threshold=config.stall_steps_per_inlet,
+            )
+            states_by_inlet.append(state)
+        
+        total_nodes_added = 0
+        global_tissue_points = all_tissue_points.copy()
+        
+        pbar = None
+        if progress_enabled:
+            pbar = tqdm(
+                total=config.max_iterations,
+                desc="Space colonization (blended)",
+                unit="step",
+            )
+        
+        try:
+            for global_iter in range(config.max_iterations):
+                if len(stalled_inlets) >= n_inlets:
+                    logger.info(f"Blended mode: all inlets stalled at iteration {global_iter}")
+                    break
+                
+                if len(global_tissue_points) == 0:
+                    logger.info(f"Blended mode: no attractors left at iteration {global_iter}")
+                    break
+                
+                if config.interleaving_strategy == "round_robin":
+                    inlet_idx = global_iter % n_inlets
+                else:
+                    active_counts = [
+                        len(states_by_inlet[i].active_tip_ids) if i not in stalled_inlets else 0
+                        for i in range(n_inlets)
+                    ]
+                    if sum(active_counts) == 0:
+                        break
+                    inlet_idx = int(np.argmax(active_counts))
+                
+                if inlet_idx in stalled_inlets:
+                    if pbar:
+                        pbar.update(1)
+                    continue
+                
+                state = states_by_inlet[inlet_idx]
+                
+                if state.is_exhausted():
+                    stalled_inlets.add(inlet_idx)
+                    if pbar:
+                        pbar.update(1)
+                    continue
+                
+                result = space_colonization_one_step(state)
+                
+                if result.nodes_added > 0:
+                    total_nodes_added += result.nodes_added
+                    for node_id in result.new_node_ids:
+                        inlet_node_sets[inlet_idx].add(node_id)
+                        node = network.nodes.get(node_id)
+                        if node:
+                            node_pos = np.array([node.position.x, node.position.y, node.position.z])
+                            distances = np.linalg.norm(global_tissue_points - node_pos, axis=1)
+                            global_tissue_points = global_tissue_points[distances > config.kill_distance]
+                
+                if result.stalled or result.exhausted:
+                    stalled_inlets.add(inlet_idx)
+                
+                if pbar:
+                    pbar.update(1)
+                    pbar.set_postfix({
+                        'nodes': total_nodes_added,
+                        'inlet': inlet_idx,
+                        'stalled': len(stalled_inlets),
+                    })
+        finally:
+            if pbar:
+                pbar.close()
         
         self._mark_terminals(network)
         
@@ -587,8 +629,8 @@ class SpaceColonizationBackend(GenerationBackend):
             vessel_type=vessel_type,
         )
         logger.info(
-            f"Blended mode: overlapping selection with {n_inlets} inlets, performed {merges} merges, "
-            f"total nodes: {len(network.nodes)}"
+            f"Blended mode (refactored): {n_inlets} inlets, {total_nodes_added} nodes grown, "
+            f"{merges} merges, total nodes: {len(network.nodes)}"
         )
         
         return network
@@ -608,11 +650,17 @@ class SpaceColonizationBackend(GenerationBackend):
         """
         Generate multi-inlet network using partitioned/cylinder filtering (legacy mode).
         
-        This is the original implementation that uses strict cylinder filtering
-        and directional constraints. Kept for backward compatibility.
+        REFACTORED: Now uses single-step iteration with round-robin interleaving
+        and a single optional progress bar at the outer level.
+        
+        This mode uses strict cylinder filtering and directional constraints.
         """
         n_inlets = len(inlets)
         inlet_node_sets: list = [set() for _ in range(n_inlets)]
+        states_by_inlet: list = []
+        stalled_inlets: set = set()
+        
+        progress_enabled = config.progress and not os.environ.get("SPACE_COLONIZATION_PROGRESS", "1") == "0"
         
         for i, inlet in enumerate(inlets):
             inlet_position = np.array(inlet.get("position", [0, 0, 0]))
@@ -661,8 +709,6 @@ class SpaceColonizationBackend(GenerationBackend):
                 cone_angle_deg=30.0,
             )
             
-            nodes_before = set(network.nodes.keys())
-            
             inlet_node = Node(
                 id=network.id_gen.next_id(),
                 position=inlet_point,
@@ -676,50 +722,83 @@ class SpaceColonizationBackend(GenerationBackend):
                 },
             )
             network.add_node(inlet_node)
+            inlet_node_sets[i].add(inlet_node.id)
             
-            seed_nodes = [inlet_node.id]
-            iterations_per_inlet = config.max_iterations // n_inlets
-            
-            for iteration in range(iterations_per_inlet):
-                if len(tissue_points) == 0 or not seed_nodes:
+            state = create_space_colonization_state(
+                network=network,
+                tissue_points=tissue_points,
+                params=sc_params,
+                seed=int(rng.integers(0, 2**31)),
+                seed_node_ids=[inlet_node.id],
+                inlet_id=i,
+                vessel_type=vessel_type,
+                kdtree_rebuild_tip_every=config.kdtree_rebuild_tip_every,
+                kdtree_rebuild_all_nodes_every=config.kdtree_rebuild_all_nodes_every,
+                kdtree_rebuild_all_nodes_min_new_nodes=config.kdtree_rebuild_all_nodes_min_new_nodes,
+                stall_steps_threshold=config.stall_steps_per_inlet,
+            )
+            states_by_inlet.append(state)
+        
+        total_nodes_added = 0
+        
+        pbar = None
+        if progress_enabled:
+            pbar = tqdm(
+                total=config.max_iterations,
+                desc="Space colonization (partitioned)",
+                unit="step",
+            )
+        
+        try:
+            for global_iter in range(config.max_iterations):
+                if len(stalled_inlets) >= n_inlets:
+                    logger.info(f"Partitioned mode: all inlets stalled at iteration {global_iter}")
                     break
                 
-                result = space_colonization_step(
-                    network=network,
-                    tissue_points=tissue_points,
-                    params=sc_params,
-                    seed=int(rng.integers(0, 2**31)),
-                    seed_nodes=seed_nodes,
-                )
-                
-                if result.is_success():
-                    new_node_ids = result.new_ids.get("nodes", [])
-                    
-                    if new_node_ids:
-                        seed_nodes = new_node_ids
-                    
-                    remaining_mask = result.metadata.get("remaining_tissue_mask")
-                    if remaining_mask is not None:
-                        tissue_points = tissue_points[remaining_mask]
-                    else:
-                        for node_id in new_node_ids:
-                            node = network.nodes.get(node_id)
-                            if node:
-                                node_pos = np.array([node.position.x, node.position.y, node.position.z])
-                                distances = np.linalg.norm(tissue_points - node_pos, axis=1)
-                                tissue_points = tissue_points[distances > config.kill_distance]
-                    
-                    for node_id in new_node_ids:
-                        node = network.nodes.get(node_id)
-                        if node:
-                            node_pos = np.array([node.position.x, node.position.y, node.position.z])
-                            distances = np.linalg.norm(all_tissue_points - node_pos, axis=1)
-                            all_tissue_points = all_tissue_points[distances > config.kill_distance]
+                if config.interleaving_strategy == "round_robin":
+                    inlet_idx = global_iter % n_inlets
                 else:
-                    break
-            
-            nodes_after = set(network.nodes.keys())
-            inlet_node_sets[i] = nodes_after - nodes_before
+                    active_counts = [
+                        len(states_by_inlet[i].active_tip_ids) if i not in stalled_inlets else 0
+                        for i in range(n_inlets)
+                    ]
+                    if sum(active_counts) == 0:
+                        break
+                    inlet_idx = int(np.argmax(active_counts))
+                
+                if inlet_idx in stalled_inlets:
+                    if pbar:
+                        pbar.update(1)
+                    continue
+                
+                state = states_by_inlet[inlet_idx]
+                
+                if state.is_exhausted():
+                    stalled_inlets.add(inlet_idx)
+                    if pbar:
+                        pbar.update(1)
+                    continue
+                
+                result = space_colonization_one_step(state)
+                
+                if result.nodes_added > 0:
+                    total_nodes_added += result.nodes_added
+                    for node_id in result.new_node_ids:
+                        inlet_node_sets[inlet_idx].add(node_id)
+                
+                if result.stalled or result.exhausted:
+                    stalled_inlets.add(inlet_idx)
+                
+                if pbar:
+                    pbar.update(1)
+                    pbar.set_postfix({
+                        'nodes': total_nodes_added,
+                        'inlet': inlet_idx,
+                        'stalled': len(stalled_inlets),
+                    })
+        finally:
+            if pbar:
+                pbar.close()
         
         self._mark_terminals(network)
         
@@ -731,7 +810,11 @@ class SpaceColonizationBackend(GenerationBackend):
                 vessel_type=vessel_type,
             )
             logger.info(
-                f"Forest with merge mode: generated {n_inlets} trees, performed {merges} merges"
+                f"Forest with merge mode (refactored): {n_inlets} trees, {total_nodes_added} nodes, {merges} merges"
+            )
+        else:
+            logger.info(
+                f"Partitioned mode (refactored): {n_inlets} inlets, {total_nodes_added} nodes grown"
             )
         
         return network
