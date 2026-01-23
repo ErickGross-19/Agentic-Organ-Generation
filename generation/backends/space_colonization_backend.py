@@ -70,14 +70,12 @@ class SpaceColonizationConfig(BackendConfig):
     # Step control
     max_steps: int = 100  # Maximum growth steps per space_colonization_step call
     
-    # Single-step refactor parameters (new)
-    use_single_step: bool = True  # Use new single-step implementation
+    # Single-step refactor parameters
     progress: bool = False  # Show progress bar (single bar at outer level)
     kdtree_rebuild_tip_every: int = 1  # Rebuild tip KD-tree every N steps
     kdtree_rebuild_all_nodes_every: int = 10  # Rebuild all-nodes KD-tree every N steps
     kdtree_rebuild_all_nodes_min_new_nodes: int = 5  # Rebuild if this many nodes added
     stall_steps_per_inlet: int = 10  # Mark inlet as stalled after N steps with no growth
-    merge_check_every_steps: int = 50  # Check for merges every N steps
     interleaving_strategy: str = "round_robin"  # "round_robin" or "weighted"
 
 
@@ -610,9 +608,6 @@ class SpaceColonizationBackend(GenerationBackend):
                 
                 if result.stalled or result.exhausted:
                     stalled_inlets.add(inlet_idx)
-                
-                if (global_iter + 1) % config.merge_check_every_steps == 0:
-                    pass
                 
                 if pbar:
                     pbar.update(1)

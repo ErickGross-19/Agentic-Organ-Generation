@@ -71,13 +71,11 @@ The refactor introduces a true single-step iteration function and moves iteratio
 New backend parameters in `SpaceColonizationConfig`:
 
 ```python
-use_single_step: bool = True  # Use new single-step implementation
 progress: bool = False  # Show progress bar (single bar at outer level)
 kdtree_rebuild_tip_every: int = 1
 kdtree_rebuild_all_nodes_every: int = 10
 kdtree_rebuild_all_nodes_min_new_nodes: int = 5
 stall_steps_per_inlet: int = 10
-merge_check_every_steps: int = 50
 interleaving_strategy: str = "round_robin"
 ```
 
@@ -90,7 +88,6 @@ Example in DesignSpec JSON:
     "kdtree_rebuild_all_nodes_every": 10,
     "kdtree_rebuild_all_nodes_min_new_nodes": 5,
     "stall_steps_per_inlet": 10,
-    "merge_check_every_steps": 50,
     "interleaving_strategy": "round_robin"
   }
 }

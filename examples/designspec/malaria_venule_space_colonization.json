@@ -84,7 +84,6 @@
         "kdtree_rebuild_all_nodes_every": 10,
         "kdtree_rebuild_all_nodes_min_new_nodes": 5,
         "stall_steps_per_inlet": 10,
-        "merge_check_every_steps": 50,
         "interleaving_strategy": "round_robin",
 
         "tissue_sampling": {
