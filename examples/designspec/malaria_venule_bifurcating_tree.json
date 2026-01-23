@@ -83,7 +83,8 @@
         "jitter_deg": 10,
         "curvature": 0.3,
         "curve_samples": 5,
-        "wall_margin_m": 0.0001,
+        "wall_margin_m": 0.0003,
+        "boundary_extra_m": 0.0001,
         "min_radius": 5e-05,
         "collision_online": {
           "enabled": true,
@@ -155,7 +156,7 @@
       "check_watertight": false,
       "check_components": false,
       "check_min_diameter": false,
-      "check_open_ports": false,
+      "check_open_ports": true,
       "check_bounds": true,
       "check_void_inside_domain": true
     },

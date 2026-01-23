@@ -108,6 +108,7 @@ class ScaffoldTopDownConfig(BackendConfig):
     curvature: float = 0.35
     curve_samples: int = 7
     wall_margin_m: float = 0.0001
+    boundary_extra_m: float = 0.0  # Extra boundary clearance (auto-set to 2*voxel_pitch if known)
     collision_online: CollisionOnlineConfig = field(default_factory=CollisionOnlineConfig)
     collision_postpass: CollisionPostpassConfig = field(default_factory=CollisionPostpassConfig)
 
@@ -209,6 +210,8 @@ class ScaffoldTopDownBackend(GenerationBackend):
             "merges_failed": 0,
             "retries_attempted": 0,
             "retries_succeeded": 0,
+            "boundary_clearance_failures": 0,
+            "min_observed_clearance": float("inf"),
         }
         
         initial_angle = 0.0
@@ -303,6 +306,8 @@ class ScaffoldTopDownBackend(GenerationBackend):
             "merges_failed": 0,
             "retries_attempted": 0,
             "retries_succeeded": 0,
+            "boundary_clearance_failures": 0,
+            "min_observed_clearance": float("inf"),
         }
         
         for i, inlet in enumerate(inlets):
@@ -698,6 +703,9 @@ class ScaffoldTopDownBackend(GenerationBackend):
                         merge_distance=config.collision_online.merge_distance_m,
                         spatial_index=spatial_index,
                         exclude_segment_ids=exclude_segment_ids,
+                        domain=domain,
+                        config=config,
+                        merge_radius=grandchild_radius,
                     )
                     
                     if merge_result is not None:
@@ -1026,9 +1034,14 @@ class ScaffoldTopDownBackend(GenerationBackend):
         merge_distance: float,
         spatial_index: DynamicSpatialIndex,
         exclude_segment_ids: Optional[Set[int]] = None,
+        domain: Optional[DomainSpec] = None,
+        config: Optional[ScaffoldTopDownConfig] = None,
+        merge_radius: float = 0.0,
     ) -> Optional[Tuple[int, np.ndarray, float]]:
         """
         Find the nearest segment within merge_distance of target_pos.
+        
+        Also validates that the merge point maintains tube-aware boundary clearance.
         
         Parameters
         ----------
@@ -1040,6 +1053,12 @@ class ScaffoldTopDownBackend(GenerationBackend):
             Spatial index containing existing segments
         exclude_segment_ids : Optional[Set[int]]
             Segment IDs to exclude from consideration
+        domain : Optional[DomainSpec]
+            Domain for boundary clearance checking
+        config : Optional[ScaffoldTopDownConfig]
+            Configuration with wall_margin_m and boundary_extra_m
+        merge_radius : float
+            Radius of the merging branch for boundary clearance calculation
             
         Returns
         -------
@@ -1100,6 +1119,15 @@ class ScaffoldTopDownBackend(GenerationBackend):
                     closest_on_seg = closest
             
             if min_dist_to_seg < best_dist and min_dist_to_seg < merge_distance:
+                # Check boundary clearance for the merge point
+                if domain is not None and config is not None and closest_on_seg is not None:
+                    point_3d = Point3D(*closest_on_seg)
+                    dist_to_boundary = domain.distance_to_boundary(point_3d)
+                    required_clearance = config.wall_margin_m + merge_radius + config.boundary_extra_m
+                    if dist_to_boundary < required_clearance:
+                        self._stats["boundary_clearance_failures"] += 1
+                        continue  # Reject this merge target
+                
                 best_dist = min_dist_to_seg
                 best_point = closest_on_seg
                 best_seg_id = seg_id
@@ -1405,11 +1433,12 @@ class ScaffoldTopDownBackend(GenerationBackend):
             spatial_index=spatial_index,
             config=config,
             exclude_segment_ids=exclude_segment_ids,
+            domain=domain,
         ):
-            # Collision detected, try alternatives
+            # Collision or boundary violation detected, try alternatives
             self._stats["collisions_detected"] += 1
         else:
-            # No collision on curved path
+            # No collision on curved path and boundary clearance OK
             return target_pos, True
         
         displacement = target_pos - parent_pos
@@ -1447,6 +1476,7 @@ class ScaffoldTopDownBackend(GenerationBackend):
                 spatial_index=spatial_index,
                 config=config,
                 exclude_segment_ids=exclude_segment_ids,
+                domain=domain,
             ):
                 self._stats["rotations_successful"] += 1
                 return new_target, True
@@ -1484,6 +1514,7 @@ class ScaffoldTopDownBackend(GenerationBackend):
                     spatial_index=spatial_index,
                     config=config,
                     exclude_segment_ids=exclude_segment_ids,
+                    domain=domain,
                 ):
                     self._stats["rotations_successful"] += 1
                     return new_target, True
@@ -1501,11 +1532,14 @@ class ScaffoldTopDownBackend(GenerationBackend):
         spatial_index: DynamicSpatialIndex,
         config: ScaffoldTopDownConfig,
         exclude_segment_ids: Optional[Set[int]] = None,
+        domain: Optional[DomainSpec] = None,
     ) -> bool:
         """
-        Check if a candidate curved polyline collides with existing segments.
+        Check if a candidate curved polyline collides with existing segments
+        or violates boundary clearance.
         
-        Computes the curved path first, then validates the entire polyline.
+        Computes the curved path first, then validates the entire polyline
+        for both segment collisions and tube-aware boundary clearance.
         
         Parameters
         ----------
@@ -1513,11 +1547,15 @@ class ScaffoldTopDownBackend(GenerationBackend):
             Segment IDs to exclude from collision checks (e.g., parent segment).
             This is the deterministic ID-based approach instead of coordinate-based
             adjacency exclusion.
+        domain : Optional[DomainSpec]
+            Domain for boundary clearance checking. If provided, validates that
+            all polyline points maintain sufficient clearance from the boundary
+            accounting for tube radius.
         
         Returns
         -------
         bool
-            True if collision detected, False otherwise
+            True if collision detected or boundary violated, False otherwise
         """
         # Compute the candidate curved path
         centerline, _ = self._compute_curved_path(
@@ -1534,6 +1572,17 @@ class ScaffoldTopDownBackend(GenerationBackend):
         polyline_points.extend(centerline)
         polyline_points.append(target_pos)
         
+        # Check boundary clearance for all polyline points (tube-aware)
+        if domain is not None:
+            boundary_violation = self._check_polyline_boundary_clearance(
+                polyline_points=polyline_points,
+                radius=avg_radius,
+                domain=domain,
+                config=config,
+            )
+            if boundary_violation:
+                return True
+        
         # Check collision on the entire polyline using segment ID-based exclusion
         return spatial_index.check_polyline_collision(
             points=polyline_points,
@@ -1541,6 +1590,54 @@ class ScaffoldTopDownBackend(GenerationBackend):
             buffer=buffer,
             exclude_segment_ids=exclude_segment_ids,
         )
+    
+    def _check_polyline_boundary_clearance(
+        self,
+        polyline_points: List[np.ndarray],
+        radius: float,
+        domain: DomainSpec,
+        config: ScaffoldTopDownConfig,
+    ) -> bool:
+        """
+        Check if any point in the polyline violates tube-aware boundary clearance.
+        
+        For each point, requires:
+            distance_to_boundary(p) >= wall_margin_m + radius + boundary_extra_m
+        
+        This ensures the tube surface (not just centerline) stays within the domain.
+        
+        Parameters
+        ----------
+        polyline_points : List[np.ndarray]
+            Points along the polyline centerline
+        radius : float
+            Tube radius at this segment (average of start/end radii)
+        domain : DomainSpec
+            Domain for boundary distance calculation
+        config : ScaffoldTopDownConfig
+            Configuration with wall_margin_m and boundary_extra_m
+        
+        Returns
+        -------
+        bool
+            True if boundary clearance violated, False otherwise
+        """
+        required_clearance = config.wall_margin_m + radius + config.boundary_extra_m
+        
+        for point in polyline_points:
+            point_3d = Point3D(*point)
+            dist_to_boundary = domain.distance_to_boundary(point_3d)
+            
+            # Track minimum observed clearance for reporting
+            effective_clearance = dist_to_boundary - radius
+            if effective_clearance < self._stats.get("min_observed_clearance", float("inf")):
+                self._stats["min_observed_clearance"] = effective_clearance
+            
+            if dist_to_boundary < required_clearance:
+                self._stats["boundary_clearance_failures"] += 1
+                return True
+        
+        return False
     
     def _compute_curved_path(
         self,

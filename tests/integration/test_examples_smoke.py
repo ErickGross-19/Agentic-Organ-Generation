@@ -38,10 +38,12 @@ EXAMPLES_DIR = Path(__file__).parent.parent.parent / "examples" / "designspec"
 FAST_EXAMPLES = [
     "malaria_venule_vertical_channels.json",
     "malaria_venule_fang_hook_channels.json",
+    "malaria_venule_control_ridge_only.json",
 ]
 
 SLOW_EXAMPLES = [
     "malaria_venule_bifurcating_tree.json",
+    "malaria_venule_bifurcating_tree_with_merge.json",
     "malaria_venule_space_colonization.json",
 ]
 
@@ -90,6 +92,25 @@ class TestFastExamplesUnionOnly:
 
         assert isinstance(result, RunnerResult)
         assert_result_json_serializable(result)
+
+    def test_malaria_venule_control_ridge_only(self, tmp_path):
+        """Test malaria_venule_control_ridge_only.json runs full pipeline.
+        
+        This is a control spec with no network generation and no embedding.
+        It should produce a ridged cylinder mesh and complete successfully.
+        """
+        spec = load_example("malaria_venule_control_ridge_only.json")
+        runner = DesignSpecRunner(spec, output_dir=tmp_path)
+        result = runner.run()
+
+        assert isinstance(result, RunnerResult)
+        assert result.success, f"Control spec failed: {result.errors}"
+        assert_result_json_serializable(result)
+        
+        # Verify domain mesh artifact exists
+        domain_mesh_path = tmp_path / "domain_mesh_with_ridge.stl"
+        assert domain_mesh_path.exists() or (tmp_path / "artifacts" / "domain_mesh_with_ridge.stl").exists(), \
+            "domain_mesh_with_ridge.stl artifact not found"
 
 
 class TestFastExamplesFullPipeline:
@@ -157,6 +178,17 @@ class TestSlowExamplesUnionOnly:
     def test_malaria_venule_bifurcating_tree(self, tmp_path):
         """Test malaria_venule_bifurcating_tree.json runs until union_voids."""
         spec = load_example("malaria_venule_bifurcating_tree.json")
+        result = run_example_until_stage(spec, "union_voids", tmp_path)
+
+        assert isinstance(result, RunnerResult)
+        assert_result_json_serializable(result)
+
+    def test_malaria_venule_bifurcating_tree_with_merge(self, tmp_path):
+        """Test malaria_venule_bifurcating_tree_with_merge.json runs until union_voids.
+        
+        This spec enables merge_on_collision for branch reconnections during collision failures.
+        """
+        spec = load_example("malaria_venule_bifurcating_tree_with_merge.json")
         result = run_example_until_stage(spec, "union_voids", tmp_path)
 
         assert isinstance(result, RunnerResult)
