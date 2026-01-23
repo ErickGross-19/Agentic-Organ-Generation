@@ -106,7 +106,7 @@
       "enabled": false
     },
     "validity": {
-      "check_watertight": false,
+      "check_watertight": true,
       "check_components": false,
       "check_min_diameter": false,
       "check_open_ports": false,
@@ -139,7 +139,7 @@
     }
   },
   "validity": {
-    "enable": false,
+    "enable": true,
     "save_report": "validity_report.json"
   },
   "outputs": {

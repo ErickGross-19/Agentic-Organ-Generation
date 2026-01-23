@@ -140,9 +140,9 @@
     "open_port": { "enabled": false },
 
     "validity": {
-      "check_watertight": false,
-      "check_components": false,
-      "check_min_diameter": false,
+      "check_watertight": true,
+      "check_components": true,
+      "check_min_diameter": true,
       "check_open_ports": false,
       "check_bounds": true,
       "check_void_inside_domain": true
@@ -192,7 +192,7 @@
     }
   },
 
-  "validity": { "enable": false, "save_report": "validity_report.json" },
+  "validity": { "enable": true, "save_report": "validity_report.json" },
 
   "outputs": {
     "artifacts_dir": "artifacts",

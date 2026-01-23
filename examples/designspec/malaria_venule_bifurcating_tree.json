@@ -75,7 +75,7 @@
         "splits": 2,
         "levels": 6,
         "ratio": 0.7,
-        "step_length": 0.0005,
+        "step_length": 0.00032,
         "step_decay": 0.95,
         "spread": 0.0009,
         "spread_decay": 0.97,
@@ -153,10 +153,10 @@
       "enabled": false
     },
     "validity": {
-      "check_watertight": false,
-      "check_components": false,
-      "check_min_diameter": false,
-      "check_open_ports": true,
+      "check_watertight": true,
+      "check_components": true,
+      "check_min_diameter": true,
+      "check_open_ports": false,
       "check_bounds": true,
       "check_void_inside_domain": true
     },
@@ -224,7 +224,7 @@
           "splits": 2,
           "levels": 6,
           "ratio": 0.7,
-          "step_length": 0.0005,
+          "step_length": 0.00032,
           "step_decay": 0.95,
           "spread": 0.0009,
           "spread_decay": 0.97,
@@ -274,7 +274,7 @@
     }
   },
   "validity": {
-    "enable": false,
+    "enable": true,
     "save_report": "validity_report.json"
   },
   "outputs": {
