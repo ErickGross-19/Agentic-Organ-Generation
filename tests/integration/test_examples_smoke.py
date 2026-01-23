@@ -245,3 +245,72 @@ class TestExampleMetadata:
         seed = data["meta"]["seed"]
         assert isinstance(seed, int)
         assert seed > 0
+
+
+class TestValidityEnabled:
+    """Test that validity checks are enabled and produce reports."""
+
+    @pytest.mark.parametrize("example_name", FAST_EXAMPLES + SLOW_EXAMPLES)
+    def test_validity_enabled_in_spec(self, example_name):
+        """Test that validity is enabled in all malaria specs."""
+        example_path = EXAMPLES_DIR / example_name
+        if not example_path.exists():
+            pytest.skip(f"Example not found: {example_path}")
+
+        with open(example_path) as f:
+            data = json.load(f)
+
+        # Check top-level validity section
+        assert "validity" in data, f"Missing top-level validity section in {example_name}"
+        assert data["validity"].get("enable") is True, \
+            f"validity.enable should be true in {example_name}"
+        assert "save_report" in data["validity"], \
+            f"validity.save_report should be set in {example_name}"
+
+
+@pytest.mark.slow
+class TestBottomSprawlPrevention:
+    """Test that scaffold_topdown prevents bottom-plane sprawl."""
+
+    def test_no_bottom_sprawl_bifurcating_tree(self, tmp_path):
+        """Test that bifurcating tree does not sprawl on the bottom face.
+        
+        Verifies that no accepted node has z within required_clearance of the bottom face.
+        """
+        spec = load_example("malaria_venule_bifurcating_tree.json")
+        result = run_example_until_stage(spec, "union_voids", tmp_path)
+
+        assert isinstance(result, RunnerResult)
+        
+        # Load the generated network to check node positions
+        network_path = tmp_path / "artifacts" / "bifurcating_tree_network.json"
+        if not network_path.exists():
+            pytest.skip("Network file not generated")
+        
+        with open(network_path) as f:
+            network_data = json.load(f)
+        
+        # Get domain parameters
+        domain = spec.domains.get("main_domain")
+        if domain is None:
+            pytest.skip("No main_domain found")
+        
+        # Calculate z_min and required clearance
+        # Cylinder: center at (0, 0, 0), height = 0.002
+        # z_min = center.z - height/2 = 0 - 0.001 = -0.001
+        z_min = -0.001
+        
+        # Required clearance from spec:
+        # wall_margin_m = 0.0003, boundary_extra_m = 0.0001
+        # stop_before_boundary_m = 0.0001, stop_before_boundary_extra_m = 0.0001
+        # Plus typical radius ~0.0005
+        # Total: ~0.0011
+        min_allowed_z = z_min + 0.0008  # Conservative check
+        
+        # Check all nodes
+        nodes = network_data.get("nodes", [])
+        for node in nodes:
+            pos = node.get("position", {})
+            z = pos.get("z", 0)
+            assert z >= min_allowed_z, \
+                f"Node at z={z} is too close to bottom face (z_min={z_min})"

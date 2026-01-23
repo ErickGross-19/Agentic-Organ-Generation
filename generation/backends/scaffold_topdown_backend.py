@@ -109,6 +109,13 @@ class ScaffoldTopDownConfig(BackendConfig):
     curve_samples: int = 7
     wall_margin_m: float = 0.0001
     boundary_extra_m: float = 0.0  # Extra boundary clearance (auto-set to 2*voxel_pitch if known)
+    # Bottom-zone taper: smoothly reduce spread near bottom boundary
+    bottom_zone_height_m: float = 0.0003  # Height of bottom zone where spread tapers
+    bottom_spread_scale_min: float = 0.2  # Minimum spread scale in bottom zone (20%)
+    # Stop-before-boundary: enforce buffer before domain boundary
+    stop_before_boundary_m: float = 0.0001  # Global buffer to stop before boundary
+    stop_before_boundary_extra_m: float = 0.0001  # Additional safety buffer
+    clamp_mode: str = "shorten_step"  # "terminate" | "shorten_step" | "project_inside"
     collision_online: CollisionOnlineConfig = field(default_factory=CollisionOnlineConfig)
     collision_postpass: CollisionPostpassConfig = field(default_factory=CollisionPostpassConfig)
 
@@ -212,6 +219,10 @@ class ScaffoldTopDownBackend(GenerationBackend):
             "retries_succeeded": 0,
             "boundary_clearance_failures": 0,
             "min_observed_clearance": float("inf"),
+            "bottom_zone_spread_scaled_count": 0,
+            "stop_before_boundary_triggered_count": 0,
+            "min_bottom_clearance_observed": float("inf"),
+            "min_wall_clearance_observed": float("inf"),
         }
         
         initial_angle = 0.0
@@ -308,6 +319,10 @@ class ScaffoldTopDownBackend(GenerationBackend):
             "retries_succeeded": 0,
             "boundary_clearance_failures": 0,
             "min_observed_clearance": float("inf"),
+            "bottom_zone_spread_scaled_count": 0,
+            "stop_before_boundary_triggered_count": 0,
+            "min_bottom_clearance_observed": float("inf"),
+            "min_wall_clearance_observed": float("inf"),
         }
         
         for i, inlet in enumerate(inlets):
@@ -424,11 +439,36 @@ class ScaffoldTopDownBackend(GenerationBackend):
         else:
             target_spread = current_spread
         
+        # Apply bottom-zone taper: smoothly reduce spread near bottom boundary
+        d_bottom = self._get_distance_to_bottom(parent_pos, domain)
+        if d_bottom < config.bottom_zone_height_m and config.bottom_zone_height_m > 0:
+            t = d_bottom / config.bottom_zone_height_m
+            s = t * t * (3 - 2 * t)  # smoothstep
+            zone_scale = config.bottom_spread_scale_min + (1 - config.bottom_spread_scale_min) * s
+            target_spread = target_spread * zone_scale
+            self._stats["bottom_zone_spread_scaled_count"] += 1
+        
         target_pos = (
             parent_pos
             + primary_axis * current_step
             + lateral_dir * target_spread
         )
+        
+        # Apply stop-before-boundary check with buffer
+        target_pos, was_adjusted = self._apply_stop_before_boundary(
+            target_pos=target_pos,
+            parent_pos=parent_pos,
+            radius=child_radius,
+            domain=domain,
+            config=config,
+        )
+        if was_adjusted is None:
+            # clamp_mode == "terminate" and boundary violated
+            self._stats["stop_before_boundary_triggered_count"] += 1
+            parent_node.node_type = "terminal"
+            return
+        if was_adjusted:
+            self._stats["stop_before_boundary_triggered_count"] += 1
         
         target_pos = self._clamp_to_domain(target_pos, domain, config.wall_margin_m)
         
@@ -1119,11 +1159,24 @@ class ScaffoldTopDownBackend(GenerationBackend):
                     closest_on_seg = closest
             
             if min_dist_to_seg < best_dist and min_dist_to_seg < merge_distance:
-                # Check boundary clearance for the merge point (radial only for CylinderDomain)
+                # Check boundary clearance for the merge point (radial + bottom for CylinderDomain)
                 if domain is not None and config is not None and closest_on_seg is not None:
-                    dist_to_boundary = self._get_radial_boundary_distance(closest_on_seg, domain)
-                    required_clearance = config.wall_margin_m + merge_radius + config.boundary_extra_m
-                    if dist_to_boundary < required_clearance:
+                    # Check radial clearance
+                    dist_to_wall = self._get_radial_boundary_distance(closest_on_seg, domain)
+                    required_clearance = (
+                        config.wall_margin_m 
+                        + merge_radius 
+                        + config.boundary_extra_m
+                        + config.stop_before_boundary_m
+                        + config.stop_before_boundary_extra_m
+                    )
+                    if dist_to_wall < required_clearance:
+                        self._stats["boundary_clearance_failures"] += 1
+                        continue  # Reject this merge target
+                    
+                    # Check bottom clearance
+                    dist_to_bottom = self._get_distance_to_bottom(closest_on_seg, domain)
+                    if dist_to_bottom < required_clearance:
                         self._stats["boundary_clearance_failures"] += 1
                         continue  # Reject this merge target
                 
@@ -1676,6 +1729,141 @@ class ScaffoldTopDownBackend(GenerationBackend):
             # Fall back to standard distance_to_boundary for other domain types
             point_3d = Point3D(*point)
             return domain.distance_to_boundary(point_3d)
+    
+    def _get_distance_to_bottom(
+        self,
+        point: np.ndarray,
+        domain: DomainSpec,
+    ) -> float:
+        """
+        Get the distance from a point to the bottom face of the domain.
+        
+        For CylinderDomain, returns distance to the bottom z-face.
+        For other domain types, returns a large value (no bottom-zone taper).
+        """
+        from ..core.domain import CylinderDomain
+        
+        if isinstance(domain, CylinderDomain):
+            half_height = domain.height / 2
+            z_min = domain.center.z - half_height
+            return float(point[2] - z_min)
+        else:
+            return float("inf")
+    
+    def _get_distance_to_wall(
+        self,
+        point: np.ndarray,
+        domain: DomainSpec,
+    ) -> float:
+        """
+        Get the distance from a point to the radial wall of the domain.
+        
+        For CylinderDomain, returns distance to the cylinder wall.
+        For other domain types, falls back to distance_to_boundary.
+        """
+        from ..core.domain import CylinderDomain
+        
+        if isinstance(domain, CylinderDomain):
+            dx = point[0] - domain.center.x
+            dy = point[1] - domain.center.y
+            r_xy = np.sqrt(dx**2 + dy**2)
+            return float(domain.radius - r_xy)
+        else:
+            point_3d = Point3D(*point)
+            return domain.distance_to_boundary(point_3d)
+    
+    def _apply_stop_before_boundary(
+        self,
+        target_pos: np.ndarray,
+        parent_pos: np.ndarray,
+        radius: float,
+        domain: DomainSpec,
+        config: ScaffoldTopDownConfig,
+    ) -> Tuple[np.ndarray, Optional[bool]]:
+        """
+        Apply stop-before-boundary check with buffer.
+        
+        Enforces: distance_to_boundary >= wall_margin_m + radius + boundary_extra_m 
+                  + stop_before_boundary_m + stop_before_boundary_extra_m
+        
+        Returns
+        -------
+        Tuple[np.ndarray, Optional[bool]]
+            (adjusted_target_pos, was_adjusted)
+            - was_adjusted = None means clamp_mode == "terminate" and boundary violated
+            - was_adjusted = True means position was adjusted
+            - was_adjusted = False means no adjustment needed
+        """
+        required_clearance = (
+            config.wall_margin_m 
+            + radius 
+            + config.boundary_extra_m 
+            + config.stop_before_boundary_m 
+            + config.stop_before_boundary_extra_m
+        )
+        
+        from ..core.domain import CylinderDomain
+        
+        adjusted_pos = target_pos.copy()
+        was_adjusted = False
+        
+        if isinstance(domain, CylinderDomain):
+            # Check bottom face clearance
+            half_height = domain.height / 2
+            z_min = domain.center.z - half_height
+            d_bottom = adjusted_pos[2] - z_min
+            
+            # Track min bottom clearance
+            effective_bottom_clearance = d_bottom - radius
+            if effective_bottom_clearance < self._stats.get("min_bottom_clearance_observed", float("inf")):
+                self._stats["min_bottom_clearance_observed"] = effective_bottom_clearance
+            
+            if d_bottom < required_clearance:
+                if config.clamp_mode == "terminate":
+                    return target_pos, None
+                elif config.clamp_mode == "shorten_step":
+                    # Shorten the axial component so endpoint lands at required_clearance
+                    adjusted_pos[2] = z_min + required_clearance
+                    was_adjusted = True
+                elif config.clamp_mode == "project_inside":
+                    adjusted_pos[2] = z_min + required_clearance
+                    was_adjusted = True
+            
+            # Check radial wall clearance
+            dx = adjusted_pos[0] - domain.center.x
+            dy = adjusted_pos[1] - domain.center.y
+            r_xy = np.sqrt(dx**2 + dy**2)
+            d_wall = domain.radius - r_xy
+            
+            # Track min wall clearance
+            effective_wall_clearance = d_wall - radius
+            if effective_wall_clearance < self._stats.get("min_wall_clearance_observed", float("inf")):
+                self._stats["min_wall_clearance_observed"] = effective_wall_clearance
+            
+            if d_wall < required_clearance and r_xy > 1e-9:
+                if config.clamp_mode == "terminate":
+                    return target_pos, None
+                elif config.clamp_mode in ("shorten_step", "project_inside"):
+                    # Scale down radial position to meet clearance
+                    max_r = domain.radius - required_clearance
+                    if max_r > 0:
+                        scale = max_r / r_xy
+                        adjusted_pos[0] = domain.center.x + dx * scale
+                        adjusted_pos[1] = domain.center.y + dy * scale
+                        was_adjusted = True
+                    else:
+                        return target_pos, None
+        else:
+            # For non-cylinder domains, use general distance_to_boundary
+            point_3d = Point3D(*adjusted_pos)
+            d_boundary = domain.distance_to_boundary(point_3d)
+            if d_boundary < required_clearance:
+                if config.clamp_mode == "terminate":
+                    return target_pos, None
+                # For other clamp modes, we can't easily adjust, so just warn
+                was_adjusted = False
+        
+        return adjusted_pos, was_adjusted
     
     def _compute_curved_path(
         self,
