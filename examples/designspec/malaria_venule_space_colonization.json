@@ -1,17 +1,29 @@
 {
-  "schema": { "name": "aog_designspec", "version": "1.0.0", "compatible_with": ["1.0.x"] },
+  "schema": {
+    "name": "aog_designspec",
+    "version": "1.0.0",
+    "compatible_with": [
+      "1.0.x"
+    ]
+  },
   "meta": {
     "name": "malaria_venule_space_colonization_overhaul",
     "description": "Dense multi-inlet space colonization (target 1024 terminals) inside a 5mm radius x 2mm height cylinder with ridge. Inputs in meters.",
     "seed": 42,
     "input_units": "m",
-    "tags": ["malaria", "venule", "space_colonization", "dense", "merge", "meters"]
+    "tags": [
+      "malaria",
+      "venule",
+      "space_colonization",
+      "dense",
+      "merge",
+      "meters"
+    ]
   },
-
   "policies": {
     "resolution": {
       "input_units": "m",
-      "min_channel_diameter": 0.00002,
+      "min_channel_diameter": 2e-05,
       "min_voxels_across_feature": 24,
       "max_voxels": 50000000,
       "min_pitch": 1e-06,
@@ -22,13 +34,17 @@
       "max_voxels_merge": 14000000,
       "max_voxels_repair": 14000000
     },
-
     "domain_meshing": {
       "cache_meshes": true,
       "emit_warnings": true,
       "target_face_count": 140000,
       "voxel_pitch": null,
-      "primitive_policy": { "sections_radial": 160, "sections_axial": 80, "sections_angular": 160, "subdivisions": 2 },
+      "primitive_policy": {
+        "sections_radial": 160,
+        "sections_axial": 80,
+        "sections_angular": 160,
+        "subdivisions": 2
+      },
       "mesh_policy": {
         "validate_watertight": true,
         "repair_if_needed": true,
@@ -38,7 +54,6 @@
         "simplify_target_ratio": 0.6
       }
     },
-
     "ridge": {
       "enabled": true,
       "face": "top",
@@ -48,7 +63,6 @@
       "overlap": 0.00025,
       "resolution": 160
     },
-
     "growth": {
       "enabled": true,
       "backend": "space_colonization",
@@ -57,29 +71,27 @@
       "max_iterations": 2500,
       "step_size": 5e-05,
       "min_segment_length": 5e-05,
-      "max_segment_length": 1.5e-04,
-
-      "min_radius": 1e-04,
-      "max_radius": 5e-04,
-
+      "max_segment_length": 0.00015,
+      "min_radius": 0.0001,
+      "max_radius": 0.0005,
       "backend_params": {
         "num_attraction_points": 150000,
-
-        "influence_radius": 9e-04,
-        "kill_radius": 2.5e-04,
-
-        "branch_enable_after_distance": 1.5e-04,
+        "influence_radius": 0.0009,
+        "kill_radius": 0.00025,
+        "branch_enable_after_distance": 0.00015,
         "min_branch_segment_length": 7.5e-05,
-
         "directional_bias": 0.35,
-        "primary_axis": [0, 0, -1],
+        "primary_axis": [
+          0,
+          0,
+          -1
+        ],
         "max_deviation_deg": 70.0,
         "upward_forbidden": true,
-
         "multi_inlet_mode": "forest_with_merge",
         "collision_merge_distance": 5e-05,
 
-        "progress": false,
+        "progress": true,
         "kdtree_rebuild_tip_every": 1,
         "kdtree_rebuild_all_nodes_every": 10,
         "kdtree_rebuild_all_nodes_min_new_nodes": 5,
@@ -89,45 +101,39 @@
         "tissue_sampling": {
           "enabled": true,
           "mode": "volume_uniform",
-
-          "depth_min": 1.0e-04,
-          "depth_max": 1.8e-03,
-
-          "min_distance_to_walls": 2.0e-04,
-          "min_distance_to_ports": 1.0e-04,
-
+          "depth_min": 0.0001,
+          "depth_max": 0.0018,
+          "min_distance_to_walls": 0.0002,
+          "min_distance_to_ports": 0.0001,
           "ring_r0": 0.0,
           "ring_sigma": 0.0
         }
       }
     },
-
     "radius": {
       "mode": "murray",
       "murray_exponent": 3.0,
-      "min_radius": 1e-04,
-      "max_radius": 5e-04,
-      "terminal_radius": 1e-04
+      "min_radius": 0.0001,
+      "max_radius": 0.0005,
+      "terminal_radius": 0.0001
     },
-
     "collision": {
       "enabled": true,
       "check_collisions": true,
       "collision_clearance": 2e-05
     },
-
-        "composition": {
-          "repair_enabled": false,
-          "union_before_embed": true,
-          "keep_largest_component": false,
-          "merge_policy": { "keep_largest_component": false }
-        },
-
+    "composition": {
+      "repair_enabled": false,
+      "union_before_embed": true,
+      "keep_largest_component": false,
+      "merge_policy": {
+        "keep_largest_component": false
+      }
+    },
     "repair": {
       "voxel_repair_enabled": false,
       "fill_voxels": false
     },
-
     "embedding": {
       "voxel_pitch": 5e-05,
       "shell_thickness": 0.0,
@@ -137,15 +143,14 @@
       "pitch_step_factor": 1.5,
       "max_voxels": 14000000,
       "fallback": "auto",
-
       "preserve_ports_enabled": true,
       "preserve_mode": "recarve",
       "carve_radius_factor": 1.4,
       "carve_depth": 0.001
     },
-
-    "open_port": { "enabled": false },
-
+    "open_port": {
+      "enabled": false
+    },
     "validity": {
       "check_watertight": true,
       "check_components": true,
@@ -154,7 +159,6 @@
       "check_bounds": true,
       "check_void_inside_domain": true
     },
-
     "output": {
       "output_dir": "./out/malaria_venule_space_colonization_overhaul",
       "output_units": "m",
@@ -164,33 +168,106 @@
       "output_json": true
     }
   },
-
   "domains": {
-    "main_domain": { "type": "cylinder", "center": [0.0, 0.0, 0.0], "radius": 0.005, "height": 0.002 }
+    "main_domain": {
+      "type": "cylinder",
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "radius": 0.005,
+      "height": 0.002
+    }
   },
-
   "components": [
     {
       "id": "space_colonization_5in_dense",
       "domain_ref": "main_domain",
       "ports": {
         "inlets": [
-          { "name": "inlet_center", "position": [0.0, 0.0, 0.001], "direction": [0.0, 0.0, -1.0], "radius": 0.0005 },
-          { "name": "inlet_e", "position": [0.003, 0.0, 0.001], "direction": [0.0, 0.0, -1.0], "radius": 0.0005 },
-          { "name": "inlet_w", "position": [-0.003, 0.0, 0.001], "direction": [0.0, 0.0, -1.0], "radius": 0.0005 },
-          { "name": "inlet_n", "position": [0.0, 0.003, 0.001], "direction": [0.0, 0.0, -1.0], "radius": 0.0005 },
-          { "name": "inlet_s", "position": [0.0, -0.003, 0.001], "direction": [0.0, 0.0, -1.0], "radius": 0.0005 }
+          {
+            "name": "inlet_center",
+            "position": [
+              0.0,
+              0.0,
+              0.001
+            ],
+            "direction": [
+              0.0,
+              0.0,
+              -1.0
+            ],
+            "radius": 0.0005
+          },
+          {
+            "name": "inlet_e",
+            "position": [
+              0.003,
+              0.0,
+              0.001
+            ],
+            "direction": [
+              0.0,
+              0.0,
+              -1.0
+            ],
+            "radius": 0.0005
+          },
+          {
+            "name": "inlet_w",
+            "position": [
+              -0.003,
+              0.0,
+              0.001
+            ],
+            "direction": [
+              0.0,
+              0.0,
+              -1.0
+            ],
+            "radius": 0.0005
+          },
+          {
+            "name": "inlet_n",
+            "position": [
+              0.0,
+              0.003,
+              0.001
+            ],
+            "direction": [
+              0.0,
+              0.0,
+              -1.0
+            ],
+            "radius": 0.0005
+          },
+          {
+            "name": "inlet_s",
+            "position": [
+              0.0,
+              -0.003,
+              0.001
+            ],
+            "direction": [
+              0.0,
+              0.0,
+              -1.0
+            ],
+            "radius": 0.0005
+          }
         ],
         "outlets": []
       },
-      "build": { "type": "backend_network" },
+      "build": {
+        "type": "backend_network"
+      },
       "save_artifacts": {
         "network": "artifacts/space_colonization_network.json",
         "void_mesh": "artifacts/space_colonization_void.stl"
       }
     }
   ],
-
   "embedding": {
     "enable": true,
     "outputs": {
@@ -198,9 +275,10 @@
       "void_mesh": "void_union.stl"
     }
   },
-
-  "validity": { "enable": true, "save_report": "validity_report.json" },
-
+  "validity": {
+    "enable": true,
+    "save_report": "validity_report.json"
+  },
   "outputs": {
     "artifacts_dir": "artifacts",
     "named": {
