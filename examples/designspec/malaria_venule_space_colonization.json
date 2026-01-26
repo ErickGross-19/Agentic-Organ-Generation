@@ -63,7 +63,7 @@
       "backend": "space_colonization",
       "target_terminals": 1024,
       "terminal_tolerance": 0.2,
-      "max_iterations": 500,
+      "max_iterations": 100,
       "step_size": 5e-05,
       "min_segment_length": 5e-05,
       "max_segment_length": 1.5e-04,
