@@ -7,8 +7,8 @@
     ]
   },
   "meta": {
-    "name": "malaria_venule_space_colonization_overhaul",
-    "description": "Dense multi-inlet space colonization (target 1024 terminals) inside a 5mm radius x 2mm height cylinder with ridge. Inputs in meters.",
+    "name": "malaria_venule_space_colonization_meshing_fix",
+    "description": "Dense multi-inlet space colonization (target 1024 terminals) inside a 5mm radius x 2mm height cylinder with ridge. Inputs in meters. | Meshing fix: finer voxel pitch + higher budgets; disable snap/merge cleanup; quick 100-iter mode.",
     "seed": 42,
     "input_units": "m",
     "tags": [
@@ -18,27 +18,21 @@
       "dense",
       "merge",
       "meters"
-    ],
-    "notes": [
-      {
-        "date": "2026-01-27",
-        "change": "Quick-iteration tuning: max_iterations=100; reduced branch explosion; increased lateral exploration and merge distance; disabled snap/merge cleanup; rescaled radii/step for better proportions."
-      }
     ]
   },
   "policies": {
     "resolution": {
       "input_units": "m",
-      "min_channel_diameter": 6e-05,
-      "min_voxels_across_feature": 8,
-      "max_voxels": 50000000,
+      "min_channel_diameter": 2e-05,
+      "min_voxels_across_feature": 10,
+      "max_voxels": 120000000,
       "min_pitch": 1e-06,
-      "max_pitch": 0.0001,
+      "max_pitch": 2e-05,
       "auto_relax_pitch": true,
       "pitch_step_factor": 1.5,
-      "max_voxels_embed": 14000000,
-      "max_voxels_merge": 14000000,
-      "max_voxels_repair": 14000000
+      "max_voxels_embed": 60000000,
+      "max_voxels_merge": 60000000,
+      "max_voxels_repair": 60000000
     },
     "domain_meshing": {
       "cache_meshes": true,
@@ -54,7 +48,7 @@
       "mesh_policy": {
         "validate_watertight": true,
         "repair_if_needed": true,
-        "repair_voxel_pitch": 5e-05,
+        "repair_voxel_pitch": 1.5e-05,
         "max_faces": 900000,
         "simplify_if_over_max": true,
         "simplify_target_ratio": 0.6
@@ -71,44 +65,44 @@
     },
     "network_cleanup": {
       "enable_snap": false,
-      "snap_tol": 2e-05,
+      "snap_tol": 0.0001,
       "enable_prune": false,
-      "min_segment_length": 8e-05,
+      "min_segment_length": 5e-05,
       "enable_merge": false,
-      "merge_tol": 2e-05
+      "merge_tol": 0.0001
     },
     "growth": {
       "enabled": true,
       "backend": "space_colonization",
-      "target_terminals": 512,
+      "target_terminals": 1024,
       "terminal_tolerance": 0.2,
       "max_iterations": 100,
-      "step_size": 0.0001,
-      "min_segment_length": 8e-05,
-      "max_segment_length": 0.00025,
-      "min_radius": 3e-05,
-      "max_radius": 0.00012,
+      "step_size": 5e-05,
+      "min_segment_length": 5e-05,
+      "max_segment_length": 0.00015,
+      "min_radius": 6e-05,
+      "max_radius": 0.0005,
       "backend_params": {
-        "num_attraction_points": 40000,
-        "influence_radius": 0.0018,
-        "kill_radius": 0.00035,
-        "branch_enable_after_distance": 0.0003,
-        "min_branch_segment_length": 0.0001,
-        "directional_bias": 0.08,
+        "num_attraction_points": 250000,
+        "influence_radius": 0.0009,
+        "kill_radius": 0.00025,
+        "branch_enable_after_distance": 0.00015,
+        "min_branch_segment_length": 7.5e-05,
+        "directional_bias": 0.35,
         "primary_axis": [
           0,
           0,
           -1
         ],
-        "max_deviation_deg": 85.0,
+        "max_deviation_deg": 70.0,
         "upward_forbidden": true,
         "multi_inlet_mode": "forest_with_merge",
-        "collision_merge_distance": 0.00035,
+        "collision_merge_distance": 5e-05,
         "encourage_bifurcation": true,
         "max_children_per_node": 3,
-        "bifurcation_probability": 0.35,
-        "min_attractions_for_bifurcation": 4,
-        "bifurcation_angle_threshold_deg": 30.0,
+        "bifurcation_probability": 0.97,
+        "min_attractions_for_bifurcation": 1,
+        "bifurcation_angle_threshold_deg": 25.0,
         "progress": true,
         "kdtree_rebuild_tip_every": 1,
         "kdtree_rebuild_all_nodes_every": 10,
@@ -120,8 +114,8 @@
           "mode": "volume_uniform",
           "depth_min": 0.0001,
           "depth_max": 0.0018,
-          "min_distance_to_walls": 0.0001,
-          "min_distance_to_ports": 0.00015,
+          "min_distance_to_walls": 0.0002,
+          "min_distance_to_ports": 0.0001,
           "ring_r0": 0.0,
           "ring_sigma": 0.0
         }
@@ -130,9 +124,9 @@
     "radius": {
       "mode": "murray",
       "murray_exponent": 3.0,
-      "min_radius": 0.0001,
+      "min_radius": 6e-05,
       "max_radius": 0.0005,
-      "terminal_radius": 0.0001
+      "terminal_radius": 6e-05
     },
     "collision": {
       "enabled": true,
@@ -142,9 +136,9 @@
     "composition": {
       "repair_enabled": false,
       "union_before_embed": true,
-      "keep_largest_component": false,
+      "keep_largest_component": true,
       "merge_policy": {
-        "keep_largest_component": false
+        "keep_largest_component": true
       }
     },
     "repair": {
@@ -152,13 +146,13 @@
       "fill_voxels": false
     },
     "embedding": {
-      "voxel_pitch": 0.0001,
+      "voxel_pitch": 1.5e-05,
       "shell_thickness": 0.0,
       "use_resolution_policy": true,
       "auto_adjust_pitch": true,
-      "max_pitch_steps": 3,
-      "pitch_step_factor": 1.6,
-      "max_voxels": 14000000,
+      "max_pitch_steps": 2,
+      "pitch_step_factor": 1.25,
+      "max_voxels": 60000000,
       "fallback": "auto",
       "preserve_ports_enabled": true,
       "preserve_mode": "recarve",
