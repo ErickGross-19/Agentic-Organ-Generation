@@ -38,7 +38,13 @@ class SpaceColonizationConfig(BackendConfig):
     - "blended": Soft, blended weighting of attractors across inlets (recommended for organic growth)
     - "partitioned_xy": Hard XY Voronoi partitioning (legacy behavior, creates cross patterns)
     - "forest": Separate trees per inlet with no merging
-    - "forest_with_merge": Separate trees that merge where they collide
+    - "forest_with_merge": DEPRECATED - now aliases to "blended". Use "blended" instead.
+    
+    Partitioned mode parameters (only used when multi_inlet_mode="partitioned_xy"):
+    - partitioned_directional_bias: Directional bias strength (0.0-1.0, default 1.0)
+    - partitioned_max_deviation_deg: Maximum angle deviation from inlet direction (default 30.0)
+    - partitioned_cone_angle_deg: Cone angle for tissue point filtering (default 30.0)
+    - partitioned_cylinder_radius: Cylinder radius for tissue point filtering in meters (default 0.001 = 1mm)
     """
     
     attraction_distance: float = 0.010  # meters (influence_radius)
@@ -77,6 +83,12 @@ class SpaceColonizationConfig(BackendConfig):
     kdtree_rebuild_all_nodes_min_new_nodes: int = 5  # Rebuild if this many nodes added
     stall_steps_per_inlet: int = 10  # Mark inlet as stalled after N steps with no growth
     interleaving_strategy: str = "round_robin"  # "round_robin" or "weighted"
+    
+    # Partitioned mode parameters (only used when multi_inlet_mode="partitioned_xy" or "forest")
+    partitioned_directional_bias: float = 1.0  # Directional bias for partitioned mode (0.0-1.0)
+    partitioned_max_deviation_deg: float = 30.0  # Max angle deviation from inlet direction
+    partitioned_cone_angle_deg: float = 30.0  # Cone angle for tissue point filtering
+    partitioned_cylinder_radius: float = 0.001  # Cylinder radius in meters (1mm)
 
 
 class SpaceColonizationBackend(GenerationBackend):
@@ -272,7 +284,7 @@ class SpaceColonizationBackend(GenerationBackend):
         - "blended": Soft, blended weighting of attractors across inlets (organic growth)
         - "partitioned_xy": Hard XY Voronoi partitioning (legacy, creates cross patterns)
         - "forest": Separate trees per inlet with no merging
-        - "forest_with_merge": Separate trees that merge where they collide
+        - "forest_with_merge": DEPRECATED - now aliases to "blended"
         
         Parameters
         ----------
@@ -300,10 +312,54 @@ class SpaceColonizationBackend(GenerationBackend):
             Generated vascular network with multiple inlet trees
         """
         import logging
+        import warnings
         logger = logging.getLogger(__name__)
         
         if config is None:
             config = SpaceColonizationConfig()
+        
+        # Defensive alias: forest_with_merge -> blended (in case callers instantiate config directly)
+        if config.multi_inlet_mode == "forest_with_merge":
+            warnings.warn(
+                "multi_inlet_mode='forest_with_merge' is deprecated and will be removed in a future release. "
+                "Use 'blended' instead. The 'forest_with_merge' mode now behaves identically to 'blended'.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            # Create a new config with blended mode (dataclass is immutable by default)
+            config = SpaceColonizationConfig(
+                attraction_distance=config.attraction_distance,
+                kill_distance=config.kill_distance,
+                step_size=config.step_size,
+                num_attractors=config.num_attractors,
+                max_iterations=config.max_iterations,
+                branch_angle_deg=config.branch_angle_deg,
+                multi_inlet_mode="blended",  # Override to blended
+                collision_merge_distance=config.collision_merge_distance,
+                max_inlets=config.max_inlets,
+                multi_inlet_blend_sigma=config.multi_inlet_blend_sigma,
+                directional_bias=config.directional_bias,
+                max_deviation_deg=config.max_deviation_deg,
+                min_radius=config.min_radius,
+                taper_factor=config.taper_factor,
+                encourage_bifurcation=config.encourage_bifurcation,
+                max_children_per_node=config.max_children_per_node,
+                bifurcation_probability=config.bifurcation_probability,
+                min_attractions_for_bifurcation=config.min_attractions_for_bifurcation,
+                bifurcation_angle_threshold_deg=config.bifurcation_angle_threshold_deg,
+                max_steps=config.max_steps,
+                progress=config.progress,
+                kdtree_rebuild_tip_every=config.kdtree_rebuild_tip_every,
+                kdtree_rebuild_all_nodes_every=config.kdtree_rebuild_all_nodes_every,
+                kdtree_rebuild_all_nodes_min_new_nodes=config.kdtree_rebuild_all_nodes_min_new_nodes,
+                stall_steps_per_inlet=config.stall_steps_per_inlet,
+                interleaving_strategy=config.interleaving_strategy,
+                partitioned_directional_bias=config.partitioned_directional_bias,
+                partitioned_max_deviation_deg=config.partitioned_max_deviation_deg,
+                partitioned_cone_angle_deg=config.partitioned_cone_angle_deg,
+                partitioned_cylinder_radius=config.partitioned_cylinder_radius,
+                seed=config.seed,
+            )
         
         if len(inlets) > config.max_inlets:
             inlets = inlets[:config.max_inlets]
@@ -683,8 +739,8 @@ class SpaceColonizationBackend(GenerationBackend):
                 step_size=config.step_size,
                 vessel_type=vessel_type,
                 preferred_direction=tuple(inlet_dir_arr),
-                directional_bias=1.0,
-                max_deviation_deg=30.0,
+                directional_bias=config.partitioned_directional_bias,
+                max_deviation_deg=config.partitioned_max_deviation_deg,
                 min_radius=config.min_radius,
                 taper_factor=config.taper_factor,
                 max_steps=config.max_steps,
@@ -699,14 +755,14 @@ class SpaceColonizationBackend(GenerationBackend):
                 all_tissue_points,
                 inlet_position,
                 inlet_dir_arr,
-                cylinder_radius=1.0,
+                cylinder_radius=config.partitioned_cylinder_radius,
             )
             
             tissue_points = self._filter_tissue_points_by_direction(
                 tissue_points,
                 inlet_position,
                 inlet_dir_arr,
-                cone_angle_deg=30.0,
+                cone_angle_deg=config.partitioned_cone_angle_deg,
             )
             
             inlet_node = Node(
@@ -1186,7 +1242,7 @@ class SpaceColonizationBackend(GenerationBackend):
         tissue_points: np.ndarray,
         inlet_position: np.ndarray,
         direction: np.ndarray,
-        cylinder_radius: float = 1.0,
+        cylinder_radius: float = 0.001,
     ) -> np.ndarray:
         """
         Filter tissue points to only include those within a cylinder below the inlet.
@@ -1199,11 +1255,11 @@ class SpaceColonizationBackend(GenerationBackend):
         tissue_points : np.ndarray
             Array of tissue points (N, 3)
         inlet_position : np.ndarray
-            Position of the inlet
+            Position of the inlet (in meters)
         direction : np.ndarray
             Growth direction (normalized, typically [0, 0, -1] for downward)
         cylinder_radius : float
-            Radius of the cylinder in the XY plane (default 1.0mm)
+            Radius of the cylinder in the XY plane in meters (default 0.001 = 1mm)
             
         Returns
         -------

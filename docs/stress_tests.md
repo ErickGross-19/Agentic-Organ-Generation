@@ -53,7 +53,7 @@ Collision handling uses merge-on-collision with 128 rotation attempts and up to 
 
 **Backend:** `space_colonization`
 
-This test uses the space colonization backend with multi-inlet forest_with_merge mode:
+This test uses the space colonization backend with multi-inlet blended mode:
 
 - 500,000 attraction points
 - 2500 max iterations

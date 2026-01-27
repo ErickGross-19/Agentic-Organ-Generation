@@ -481,7 +481,8 @@ def _generate_space_colonization(
     Multi-inlet support:
     - If multiple inlets are defined and multi_inlet_mode is set, uses
       SpaceColonizationBackend.generate_multi_inlet() method
-    - Supports "forest" mode (separate trees) and "forest_with_merge" mode (default)
+    - Supported modes: "blended" (recommended), "partitioned_xy", "forest"
+    - "forest_with_merge" is deprecated and now aliases to "blended"
     """
     from ..ops import create_network, add_inlet, add_outlet
     from ..ops.space_colonization import SpaceColonizationParams, space_colonization_step_v2
@@ -492,6 +493,16 @@ def _generate_space_colonization(
     inlets = ports.get("inlets", [])
     backend_params = getattr(growth_policy, 'backend_params', None) or {}
     multi_inlet_mode = backend_params.get('multi_inlet_mode')
+    
+    # Deprecation: forest_with_merge is now an alias for blended
+    if multi_inlet_mode == "forest_with_merge":
+        warnings.warn(
+            "multi_inlet_mode='forest_with_merge' is deprecated and will be removed in a future release. "
+            "Use 'blended' instead. The 'forest_with_merge' mode now behaves identically to 'blended'.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        multi_inlet_mode = "blended"
     
     # Validate and fix inlet directions (auto-flip if pointing outward from top face)
     validated_inlets = [_validate_and_fix_inlet_direction(inlet, domain) for inlet in inlets]
@@ -540,6 +551,11 @@ def _generate_space_colonization(
             kdtree_rebuild_all_nodes_min_new_nodes=backend_params.get('kdtree_rebuild_all_nodes_min_new_nodes', 5),
             stall_steps_per_inlet=backend_params.get('stall_steps_per_inlet', 10),
             interleaving_strategy=backend_params.get('interleaving_strategy', 'round_robin'),
+            # Partitioned mode parameters (for partitioned_xy and forest modes)
+            partitioned_directional_bias=backend_params.get('partitioned_directional_bias', 1.0),
+            partitioned_max_deviation_deg=backend_params.get('partitioned_max_deviation_deg', 30.0),
+            partitioned_cone_angle_deg=backend_params.get('partitioned_cone_angle_deg', 30.0),
+            partitioned_cylinder_radius=backend_params.get('partitioned_cylinder_radius', 0.001),
         )
         
         inlet_specs = []
