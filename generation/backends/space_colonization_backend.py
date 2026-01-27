@@ -328,6 +328,14 @@ class SpaceColonizationBackend(GenerationBackend):
             )
             # Create a new config with blended mode (dataclass is immutable by default)
             config = SpaceColonizationConfig(
+                # Inherited from BackendConfig
+                seed=config.seed,
+                min_segment_length=config.min_segment_length,
+                max_segment_length=config.max_segment_length,
+                min_terminal_separation=config.min_terminal_separation,
+                check_collisions=config.check_collisions,
+                collision_clearance=config.collision_clearance,
+                # SpaceColonizationConfig fields
                 attraction_distance=config.attraction_distance,
                 kill_distance=config.kill_distance,
                 step_size=config.step_size,
@@ -358,7 +366,6 @@ class SpaceColonizationBackend(GenerationBackend):
                 partitioned_max_deviation_deg=config.partitioned_max_deviation_deg,
                 partitioned_cone_angle_deg=config.partitioned_cone_angle_deg,
                 partitioned_cylinder_radius=config.partitioned_cylinder_radius,
-                seed=config.seed,
             )
         
         if len(inlets) > config.max_inlets:
