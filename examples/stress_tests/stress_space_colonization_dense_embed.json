@@ -6,10 +6,10 @@
   },
   "meta": {
     "name": "stress_space_colonization_dense_embed",
-    "description": "Stress test: Cylinder R=10mm H=30mm with ridge. 5 inlets (center + 4 @ r=6mm). Space colonization with forest_with_merge, 500k attraction points, dense bifurcation, and embedding at 1um voxel pitch. WARNING: This spec is intentionally extreme and may exceed memory/time limits.",
-    "seed": 42,
-    "input_units": "m",
-    "tags": ["stress_test", "space_colonization", "dense", "forest_with_merge", "multi_inlet", "embed", "extreme"]
+        "description": "Stress test: Cylinder R=10mm H=30mm with ridge. 5 inlets (center + 4 @ r=6mm). Space colonization with blended multi-inlet mode, 500k attraction points, dense bifurcation, and embedding at 1um voxel pitch. WARNING: This spec is intentionally extreme and may exceed memory/time limits.",
+        "seed": 42,
+        "input_units": "m",
+        "tags": ["stress_test", "space_colonization", "dense", "blended", "multi_inlet", "embed", "extreme"]
   },
   "policies": {
     "resolution": {
@@ -71,7 +71,7 @@
       "min_radius": 2.5e-05,
       "step_size": 7.5e-04,
       "backend_params": {
-        "multi_inlet_mode": "forest_with_merge",
+        "multi_inlet_mode": "blended",
         "collision_merge_distance": 5e-04,
         "num_attraction_points": 500000,
         "influence_radius": 0.004,
@@ -199,7 +199,7 @@
         "type": "backend_network",
         "backend": "space_colonization",
         "backend_params": {
-          "multi_inlet_mode": "forest_with_merge",
+          "multi_inlet_mode": "blended",
           "collision_merge_distance": 5e-04,
           "num_attraction_points": 500000,
           "influence_radius": 0.004,

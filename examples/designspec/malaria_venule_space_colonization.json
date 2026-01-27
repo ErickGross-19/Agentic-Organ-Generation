@@ -111,14 +111,12 @@
         "interleaving_strategy": "round_robin",
         "tissue_sampling": {
           "enabled": true,
-          "mode": "volume_uniform",
+          "strategy": "radial_biased",
           "depth_min": 0.0001,
           "depth_max": 0.0018,
-          "min_distance_to_walls": 0.0002,
           "min_distance_to_ports": 0.0003,
           "ring_r0": 0.0,
           "ring_sigma": 0.0,
-          "strategy": "radial_biased",
           "radial_reference": {
             "mode": "face",
             "face": "top",
