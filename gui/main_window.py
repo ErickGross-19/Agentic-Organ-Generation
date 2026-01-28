@@ -19,7 +19,9 @@ from .agent_config import AgentConfigPanel, AgentConfiguration
 from .workflow_manager import WorkflowManager, WorkflowConfig, WorkflowType, WorkflowStatus, WorkflowMessage
 from .stl_viewer import STLViewer
 from .designspec_workflow_manager import DesignSpecWorkflowManager
-from .designspec_panels import SpecPanel, PatchPanel, CompilePanel, RunPanel, ArtifactsPanel
+from .designspec_panels import SpecPanel, PatchPanel, CompilePanel, RunPanel, ArtifactsPanel, LiveSpecViewer
+from .configuration_wizard import ConfigurationWizard, WizardConfiguration
+from .execution_progress_panel import ExecutionProgressPanel
 
 
 class WorkflowSelectionDialog(tk.Toplevel):
@@ -143,6 +145,11 @@ class MainWindow:
         
         self._current_workflow_type: Optional[WorkflowType] = None
         self._agent_config: Optional[AgentConfiguration] = None
+        self._wizard_config: Optional[WizardConfiguration] = None
+        
+        self._live_spec_viewer: Optional[LiveSpecViewer] = None
+        self._execution_progress_panel: Optional[ExecutionProgressPanel] = None
+        self._current_layout_mode: str = "conversation"
         
         self._setup_menu()
         self._setup_ui()
@@ -151,6 +158,8 @@ class MainWindow:
         self._load_window_state()
         
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        
+        self.root.after(100, self._show_configuration_wizard)
     
     def _setup_menu(self):
         """Set up menu bar."""
@@ -408,6 +417,111 @@ class MainWindow:
         self.root.bind("<Control-n>", lambda e: self._show_workflow_selection())
         self.root.bind("<Control-q>", lambda e: self._on_close())
     
+    def _show_configuration_wizard(self):
+        """Show the configuration wizard on startup."""
+        def on_complete(config: WizardConfiguration):
+            self._wizard_config = config
+            self._agent_config = config.agent_config
+            self._append_chat(
+                "system",
+                f"Configuration complete. Provider: {config.agent_config.provider}, "
+                f"Project: {config.project_name}, Mode: {config.workflow_mode}"
+            )
+            if config.workflow_mode == "llm_first":
+                use_legacy = False
+            else:
+                use_legacy = True
+            
+            if config.import_path:
+                self._open_designspec_project(config.import_path, use_legacy_agent=use_legacy)
+            else:
+                self._init_designspec_workflow(
+                    project_root=config.project_location,
+                    project_name=config.project_name,
+                    use_legacy_agent=use_legacy,
+                )
+            self._switch_to_conversation_layout()
+        
+        def on_cancel():
+            self._append_chat("system", "Configuration wizard cancelled. Use File > New Workflow to start.")
+        
+        wizard = ConfigurationWizard(self.root, on_complete=on_complete, on_cancel=on_cancel)
+        self.root.wait_window(wizard)
+    
+    def _switch_to_conversation_layout(self):
+        """Switch to 2-panel conversation layout (chat + live spec viewer)."""
+        self._current_layout_mode = "conversation"
+        
+        if self._live_spec_viewer is None:
+            self._live_spec_viewer = LiveSpecViewer(self.panels_notebook)
+            self.panels_notebook.add(self._live_spec_viewer, text="Live Spec")
+        
+        self.panels_notebook.select(self._live_spec_viewer)
+        
+        if hasattr(self, '_designspec_manager') and self._designspec_manager:
+            spec = self._designspec_manager.get_spec()
+            if spec:
+                self._live_spec_viewer.update_spec(spec)
+    
+    def _switch_to_execution_layout(self):
+        """Switch to execution layout with progress panel."""
+        self._current_layout_mode = "execution"
+        
+        if self._execution_progress_panel is None:
+            self._execution_progress_panel = ExecutionProgressPanel(self.panels_notebook)
+            self.panels_notebook.add(self._execution_progress_panel, text="Progress")
+        
+        self._execution_progress_panel.reset()
+        self.panels_notebook.select(self._execution_progress_panel)
+    
+    def _switch_to_results_layout(self):
+        """Switch to 3-panel results layout after run completes."""
+        self._current_layout_mode = "results"
+        
+        self.panels_notebook.select(self.artifacts_panel)
+        
+        if hasattr(self, '_designspec_manager') and self._designspec_manager:
+            artifacts_dir = self._designspec_manager.get_artifacts_dir()
+            if artifacts_dir:
+                self.artifacts_panel.update_artifacts(artifacts_dir)
+                stl_files = list(Path(artifacts_dir).glob("*.stl"))
+                if stl_files:
+                    self._load_stl(str(stl_files[0]))
+    
+    def _on_run_progress(self, event_data: Dict[str, Any]):
+        """Handle run progress events from the workflow."""
+        if self._execution_progress_panel is None:
+            return
+        
+        stage = event_data.get("stage", "")
+        status = event_data.get("status", "")
+        message = event_data.get("message", "")
+        elapsed = event_data.get("elapsed", 0)
+        stage_index = event_data.get("stage_index", 0)
+        total_stages = event_data.get("total_stages", 11)
+        
+        if status == "starting":
+            self._execution_progress_panel.update_progress(
+                stage=stage,
+                stage_index=stage_index,
+                total_stages=total_stages,
+                status="running",
+                message=message,
+            )
+        elif status == "completed":
+            self._execution_progress_panel.set_stage_completed(stage, elapsed)
+        elif status == "failed":
+            error = event_data.get("error", "Unknown error")
+            self._execution_progress_panel.set_stage_failed(stage, error)
+        
+        if message:
+            self._execution_progress_panel.add_log(message)
+    
+    def _update_live_spec_viewer(self, spec: Dict[str, Any]):
+        """Update the live spec viewer with new spec data."""
+        if self._live_spec_viewer is not None:
+            self._live_spec_viewer.update_spec(spec)
+    
     def _show_workflow_selection(self):
         """Show workflow selection dialog."""
         dialog = WorkflowSelectionDialog(self.root, self._on_workflow_selected)
@@ -634,10 +748,21 @@ class MainWindow:
             if status in (WorkflowStatus.COMPLETED, WorkflowStatus.FAILED, WorkflowStatus.CANCELLED):
                 self.start_btn.config(state="normal")
                 self.stop_btn.config(state="disabled")
-                # Send button stays enabled - _send_input handles the no-workflow case
                 self.progress.stop()
+                
+                if self._current_layout_mode == "execution":
+                    if self._execution_progress_panel:
+                        success = status == WorkflowStatus.COMPLETED
+                        error_msg = message if status == WorkflowStatus.FAILED else None
+                        self._execution_progress_panel.stop(success=success, error=error_msg)
+                    self._switch_to_results_layout()
+                    
             elif status == WorkflowStatus.WAITING_INPUT:
                 self.input_entry.focus_set()
+                if self._current_layout_mode == "execution":
+                    if self._execution_progress_panel:
+                        self._execution_progress_panel.stop(success=True)
+                    self._switch_to_results_layout()
         
         self.root.after(0, update)
     
@@ -1005,6 +1130,7 @@ class MainWindow:
                 spec_callback=self._on_spec_update,
                 patch_callback=self._on_patch_proposal,
                 compile_callback=self._on_compile_status,
+                run_progress_callback=self._on_run_progress,
                 use_legacy_agent=use_legacy_agent,
             )
         else:
@@ -1073,6 +1199,8 @@ class MainWindow:
     
     def _on_spec_update(self, spec: Dict[str, Any]):
         """Handle spec update from DesignSpec workflow."""
+        self._update_live_spec_viewer(spec)
+        
         domains = spec.get("domains", {})
         components = spec.get("components", [])
         features = spec.get("features", {})
@@ -1201,6 +1329,9 @@ class MainWindow:
         """Handle run until request from RunPanel."""
         if hasattr(self, '_designspec_manager') and self._designspec_manager:
             self._append_chat("system", f"Running until stage: {stage}")
+            self._switch_to_execution_layout()
+            if self._execution_progress_panel:
+                self._execution_progress_panel.start()
             if hasattr(self, 'run_panel'):
                 self.run_panel.set_running(True, f"Running until {stage}...")
             self._designspec_manager.run_until(stage)
@@ -1209,6 +1340,9 @@ class MainWindow:
         """Handle full run request from RunPanel."""
         if hasattr(self, '_designspec_manager') and self._designspec_manager:
             self._append_chat("system", "Starting full run...")
+            self._switch_to_execution_layout()
+            if self._execution_progress_panel:
+                self._execution_progress_panel.start()
             if hasattr(self, 'run_panel'):
                 self.run_panel.set_running(True, "Running full pipeline...")
             self._designspec_manager.run_full()
@@ -1217,6 +1351,9 @@ class MainWindow:
         """Handle run approval from RunPanel."""
         if hasattr(self, '_designspec_manager') and self._designspec_manager:
             self._append_chat("system", "Run approved, executing...")
+            self._switch_to_execution_layout()
+            if self._execution_progress_panel:
+                self._execution_progress_panel.start()
             if hasattr(self, 'run_panel'):
                 self.run_panel.set_waiting_approval(False)
                 self.run_panel.set_running(True, "Executing approved run...")

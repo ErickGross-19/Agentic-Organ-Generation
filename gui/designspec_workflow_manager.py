@@ -52,6 +52,7 @@ class DesignSpecWorkflowManager:
         spec_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
         patch_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
         compile_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        run_progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
         use_legacy_agent: bool = False,
     ):
         """
@@ -71,6 +72,8 @@ class DesignSpecWorkflowManager:
             Callback for patch proposals
         compile_callback : Callable, optional
             Callback for compile status updates
+        run_progress_callback : Callable, optional
+            Callback for run progress updates
         use_legacy_agent : bool
             If True, use the legacy rule-based agent instead of the LLM-first agent.
             Default is False (use LLM-first agent, recommended).
@@ -81,6 +84,7 @@ class DesignSpecWorkflowManager:
         self.spec_callback = spec_callback
         self.patch_callback = patch_callback
         self.compile_callback = compile_callback
+        self.run_progress_callback = run_progress_callback
         self._use_legacy_agent = use_legacy_agent
 
         self._status = WorkflowStatus.IDLE
@@ -155,6 +159,11 @@ class DesignSpecWorkflowManager:
         """Send compile status to GUI."""
         if self.compile_callback:
             self.compile_callback(compile_data)
+
+    def _send_run_progress(self, progress_data: Dict[str, Any]):
+        """Send run progress update to GUI."""
+        if self.run_progress_callback:
+            self.run_progress_callback(progress_data)
 
     def _format_run_failure_details(self, result: Dict[str, Any]) -> str:
         """
@@ -436,6 +445,9 @@ class DesignSpecWorkflowManager:
             self._send_message("system", message)
             self._set_status(WorkflowStatus.RUNNING, message)
 
+        elif event_type == WorkflowEventType.RUN_PROGRESS:
+            self._send_run_progress(data)
+
         elif event_type == WorkflowEventType.RUN_COMPLETED:
             result = data.get("result", {})
             success = result.get("success", False)
@@ -683,6 +695,14 @@ class DesignSpecWorkflowManager:
         if self._workflow:
             return self._workflow.get_artifacts()
         return []
+
+    def get_artifacts_dir(self) -> Optional[str]:
+        """Get the artifacts output directory path."""
+        if self._project_dir:
+            output_dir = self._project_dir / "output"
+            if output_dir.exists():
+                return str(output_dir)
+        return None
 
     def get_conversation_history(self) -> List[Dict[str, str]]:
         """Get conversation history."""
