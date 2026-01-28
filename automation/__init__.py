@@ -86,7 +86,7 @@ from .subprocess_runner import (
     print_run_summary,
     DEFAULT_TIMEOUT_SECONDS,
 )
-from .single_agent_organ_generation.v5.controller import RunResult as ControllerRunResult
+from .single_agent_organ_generation._legacy.v5.controller import RunResult as ControllerRunResult
 # Also export RunResult as the controller's enum (the expected type for workflow.run())
 # This replaces the old subprocess_runner.RunResult export to fix the import collision
 RunResult = ControllerRunResult

@@ -19,7 +19,7 @@ from .task_templates import (
     validate_structure_prompt,
     iterate_design_prompt,
 )
-from .single_agent_organ_generation.v5 import SingleAgentOrganGeneratorV5, CLIIOAdapter
+from .single_agent_organ_generation._legacy.v5 import SingleAgentOrganGeneratorV5, CLIIOAdapter
 from .execution_modes import ExecutionMode, parse_execution_mode, DEFAULT_EXECUTION_MODE
 from .llm_healthcheck import (
     assert_llm_ready,
@@ -345,7 +345,7 @@ def run_interactive(agent: AgentRunner, args):
 
 def run_workflow(agent: AgentRunner, args):
     """Run the Single Agent Organ Generator V5 workflow."""
-    from .single_agent_organ_generation.v5.controller import RunResult
+    from .single_agent_organ_generation._legacy.v5.controller import RunResult
     
     io_adapter = CLIIOAdapter()
     

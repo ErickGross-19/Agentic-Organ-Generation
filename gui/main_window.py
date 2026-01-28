@@ -26,6 +26,8 @@ class WorkflowSelectionDialog(tk.Toplevel):
     """
     Dialog for selecting workflow type and configuration.
     
+    Currently only supports DesignSpec workflow.
+    
     Parameters
     ----------
     parent : tk.Widget
@@ -40,8 +42,8 @@ class WorkflowSelectionDialog(tk.Toplevel):
         self.callback = callback
         self.result: Optional[WorkflowType] = None
         
-        self.title("Select Workflow")
-        self.geometry("400x300")
+        self.title("Start DesignSpec Workflow")
+        self.geometry("400x200")
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
@@ -62,46 +64,19 @@ class WorkflowSelectionDialog(tk.Toplevel):
         
         ttk.Label(
             main_frame,
-            text="Select Workflow Type",
+            text="DesignSpec Workflow",
             font=("TkDefaultFont", 14, "bold"),
-        ).pack(pady=(0, 20))
-        
-        self.workflow_var = tk.StringVar(value="single_agent")
-        
-        single_frame = ttk.Frame(main_frame)
-        single_frame.pack(fill="x", pady=5)
-        
-        ttk.Radiobutton(
-            single_frame,
-            text="Single Agent Organ Generator",
-            variable=self.workflow_var,
-            value="single_agent",
-        ).pack(anchor="w")
+        ).pack(pady=(0, 10))
         
         ttk.Label(
-            single_frame,
-            text="Interactive workflow with topology-first questioning.\nBest for guided organ structure design.",
-            foreground="gray",
-        ).pack(anchor="w", padx=20)
-        
-        designspec_frame = ttk.Frame(main_frame)
-        designspec_frame.pack(fill="x", pady=5)
-        
-        ttk.Radiobutton(
-            designspec_frame,
-            text="DesignSpec Project (Recommended)",
-            variable=self.workflow_var,
-            value="designspec",
-        ).pack(anchor="w")
-        
-        ttk.Label(
-            designspec_frame,
+            main_frame,
             text="Conversation-driven spec editing with JSON patches.\nPrimary workflow for DesignSpec-first development.",
             foreground="gray",
-        ).pack(anchor="w", padx=20)
+            justify="center",
+        ).pack(pady=(0, 20))
         
         button_frame = ttk.Frame(main_frame)
-        button_frame.pack(fill="x", pady=(30, 0))
+        button_frame.pack(fill="x", pady=(20, 0))
         
         ttk.Button(
             button_frame,
@@ -117,9 +92,8 @@ class WorkflowSelectionDialog(tk.Toplevel):
     
     def _on_start(self):
         """Handle start button click."""
-        workflow_type = WorkflowType(self.workflow_var.get())
-        self.result = workflow_type
-        self.callback(workflow_type)
+        self.result = WorkflowType.DESIGNSPEC
+        self.callback(WorkflowType.DESIGNSPEC)
         self.destroy()
     
     def _on_cancel(self):
@@ -447,9 +421,7 @@ class MainWindow:
         """Handle workflow selection."""
         self._current_workflow_type = workflow_type
         
-        if workflow_type == WorkflowType.SINGLE_AGENT:
-            self.workflow_label.config(text="Single Agent Organ Generator")
-        elif workflow_type == WorkflowType.DESIGNSPEC:
+        if workflow_type == WorkflowType.DESIGNSPEC:
             self.workflow_label.config(text="DesignSpec Project")
             self._show_designspec_project_dialog()
             return
@@ -498,57 +470,16 @@ class MainWindow:
         self._agent_config = config
     
     def _start_workflow(self):
-        """Start the selected workflow."""
+        """Start the selected workflow.
+        
+        For DesignSpec workflow, redirects to the DesignSpec project dialog.
+        """
         if self._current_workflow_type is None:
-            messagebox.showwarning("Warning", "Please select a workflow first.")
-            return
+            # Default to DesignSpec workflow
+            self._current_workflow_type = WorkflowType.DESIGNSPEC
         
-        if self._agent_config is None:
-            messagebox.showwarning("Warning", "Please configure the agent first.")
-            self._show_agent_config()
-            return
-        
-        is_valid, error = self._validate_agent_config()
-        if not is_valid:
-            messagebox.showerror("Configuration Error", error)
-            return
-        
-        if not self.workflow_manager.initialize_agent(
-            provider=self._agent_config.provider,
-            api_key=self._agent_config.api_key,
-            model=self._agent_config.model,
-            api_base=self._agent_config.api_base,
-            temperature=self._agent_config.temperature,
-            max_tokens=self._agent_config.max_tokens,
-        ):
-            return
-        
-        output_dir = filedialog.askdirectory(
-            title="Select Output Directory",
-            initialdir=os.path.expanduser("~/projects"),
-        )
-        
-        if not output_dir:
-            return
-        
-        config = WorkflowConfig(
-            workflow_type=self._current_workflow_type,
-            output_dir=output_dir,
-            execution_mode="review_then_run",
-            timeout_seconds=300.0,
-            verbose=True,
-            llm_first_mode=True,  # Default to LLM-first mode in GUI
-        )
-        
-        if self.workflow_manager.start_workflow(config):
-            self.start_btn.config(state="disabled")
-            self.stop_btn.config(state="normal")
-            # Send button is always enabled - _send_input handles the no-workflow case
-            self.progress.start()
-            # P3: Enable workspace-related buttons when workflow starts
-            self.view_script_btn.config(state="normal")
-            self.run_history_btn.config(state="normal")
-            self.verification_btn.config(state="normal")
+        # DesignSpec is the only supported workflow
+        self._show_designspec_project_dialog()
     
     def _validate_agent_config(self) -> tuple:
         """Validate agent configuration."""
