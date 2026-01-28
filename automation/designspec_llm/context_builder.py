@@ -248,6 +248,9 @@ class ContextPack:
     mesh_stats: Optional[MeshStats] = None
     network_stats: Optional[NetworkStats] = None
     
+    # Example specs for reference
+    example_specs: Optional[Dict[str, Dict[str, Any]]] = None
+    
     # Context mode
     is_compact: bool = True
     is_debug_compact: bool = False
@@ -267,6 +270,10 @@ class ContextPack:
             result["mesh_stats"] = self.mesh_stats.to_dict()
         if self.network_stats:
             result["network_stats"] = self.network_stats.to_dict()
+        
+        # Include example specs if available
+        if self.example_specs:
+            result["example_specs"] = self.example_specs
         
         if not self.is_compact:
             result["full_spec"] = self.full_spec
@@ -372,6 +379,20 @@ class ContextPack:
             lines.append(spec_json)
             lines.append("```")
             lines.append("")
+        
+        # Example specs (if available)
+        if self.example_specs:
+            lines.append("## Example Specs (for reference)")
+            for name, spec in self.example_specs.items():
+                lines.append(f"### {name}")
+                lines.append("```json")
+                spec_json = json.dumps(spec, indent=2)
+                # Truncate if too long
+                if len(spec_json) > 2000:
+                    spec_json = spec_json[:2000] + "\n... (truncated)"
+                lines.append(spec_json)
+                lines.append("```")
+                lines.append("")
         
         return "\n".join(lines)
 
@@ -1042,6 +1063,61 @@ class ContextBuilder:
             else:
                 logger.warning(f"Requested file not found: {file_path}")
         
+        return context_pack
+    
+    def load_example_specs(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Load example DesignSpec JSON files from the examples/designspec directory.
+        
+        Returns
+        -------
+        dict
+            Dictionary mapping example names to their spec contents
+        """
+        examples_dir = Path(__file__).parent.parent.parent / "examples" / "designspec"
+        example_specs = {}
+        
+        # List of example files to load
+        example_files = [
+            "malaria_venule_space_colonization.json",
+            "malaria_venule_fang_hook_channels.json",
+            "malaria_venule_vertical_channels.json",
+        ]
+        
+        for filename in example_files:
+            file_path = examples_dir / filename
+            if file_path.exists():
+                try:
+                    with open(file_path) as f:
+                        spec_data = json.load(f)
+                    # Use filename without extension as key
+                    key = filename.replace(".json", "")
+                    example_specs[key] = spec_data
+                except Exception as e:
+                    logger.warning(f"Failed to load example spec {filename}: {e}")
+        
+        return example_specs
+    
+    def add_example_specs(self, context_pack: ContextPack) -> ContextPack:
+        """
+        Add example DesignSpec JSON files to a context pack.
+        
+        Includes examples from examples/designspec/ to help the LLM
+        understand proper JSON structure.
+        
+        Parameters
+        ----------
+        context_pack : ContextPack
+            The base context pack
+            
+        Returns
+        -------
+        ContextPack
+            Updated context pack with example specs
+        """
+        example_specs = self.load_example_specs()
+        if example_specs:
+            context_pack.example_specs = example_specs
         return context_pack
     
     def add_extended_history(

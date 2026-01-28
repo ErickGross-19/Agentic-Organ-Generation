@@ -72,7 +72,18 @@ import json
 import time
 import os
 
-from .single_agent_organ_generation.v5 import (
+import warnings
+
+# V5 is deprecated - moved to _legacy folder
+# Use DesignSpec LLM agent instead (automation/designspec_llm/agent.py)
+warnings.warn(
+    "V5 workflow is deprecated and has been moved to _legacy. "
+    "Use the DesignSpec LLM agent (automation/designspec_llm/agent.py) instead.",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
+from .single_agent_organ_generation._legacy.v5 import (
     SingleAgentOrganGeneratorV5,
     ControllerConfig,
     ControllerStatus,
