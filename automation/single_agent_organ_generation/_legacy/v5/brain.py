@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from .world_model import WorldModel
     from .workspace import WorkspaceManager, WorkspaceSummary
-    from ...llm_client import LLMClient
+    from ....llm_client import LLMClient
 
 logger = logging.getLogger(__name__)
 

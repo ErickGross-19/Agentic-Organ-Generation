@@ -26,10 +26,10 @@ from .io.base_io import BaseIOAdapter
 from .workspace import WorkspaceManager, ToolRegistryEntry, RunRecord
 from .brain import Brain, Directive, ObservationPacket, create_initial_master_script
 
-from ...contextual_dialogue import ContextualDialogue, DialogueIntent
+from ....contextual_dialogue import ContextualDialogue, DialogueIntent
 
 if TYPE_CHECKING:
-    from ...llm_client import LLMClient
+    from ....llm_client import LLMClient
 
 
 class RunResult(Enum):
@@ -3104,7 +3104,7 @@ class SingleAgentOrganGeneratorV5:
         summary = self.workspace.get_summary()
         
         # Scan for suspicious patterns
-        from ...script_writer import scan_for_suspicious_patterns
+        from ....script_writer import scan_for_suspicious_patterns
         warnings = scan_for_suspicious_patterns(master_script)
         
         # Get next run version for exact output paths
@@ -3237,7 +3237,7 @@ class SingleAgentOrganGeneratorV5:
         exec_config = self.workspace.get_execution_config()
         
         # Run the script with sandbox environment
-        from ...subprocess_runner import run_script
+        from ....subprocess_runner import run_script
         
         result = run_script(
             script_path=master_script_path,
@@ -3303,7 +3303,7 @@ class SingleAgentOrganGeneratorV5:
         self.io.say_assistant("Verifying generated artifacts...")
         
         # Use artifact verifier
-        from ...artifact_verifier import verify_generation_stage
+        from ....artifact_verifier import verify_generation_stage
         
         # Get spec path
         spec_path = self.workspace.spec_path
