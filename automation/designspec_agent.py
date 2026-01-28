@@ -102,10 +102,10 @@ REQUIRED_SPEC_FIELDS = {
     },
     "meta.input_units": {
         "type": "string",
-        "question": "What units are your measurements in?",
-        "options": ["mm", "m", "um"],
-        "default": "mm",
-        "reason": "Units are needed to correctly interpret all dimensions",
+        "question": "Please confirm your measurements are in meters (m). Only meters is supported for input_units.",
+        "options": ["m"],
+        "default": "m",
+        "reason": "Only meters (m) is supported for input_units to prevent unit conversion errors",
     },
 }
 

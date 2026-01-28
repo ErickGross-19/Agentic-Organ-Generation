@@ -185,6 +185,11 @@ def _get_unit_scale(input_units: str) -> float:
     """
     Get scale factor to convert from input_units to meters.
     
+    Note: While this function supports multiple units for backward compatibility,
+    DesignSpec.from_dict() now enforces that input_units must be "m" (meters).
+    This restriction prevents unit conversion errors that occurred when the
+    LLM agent attempted to convert between unit systems.
+    
     Parameters
     ----------
     input_units : str
@@ -755,6 +760,15 @@ class DesignSpec:
         if "input_units" not in meta:
             warnings.append("meta.input_units not specified, assuming meters")
             spec["meta"]["input_units"] = "m"
+        
+        input_units = spec["meta"].get("input_units", "m")
+        if input_units != "m":
+            raise DesignSpecValidationError(
+                f"Only 'm' (meters) is supported for input_units. "
+                f"Got '{input_units}'. Please specify all dimensions in meters. "
+                f"This restriction prevents unit conversion errors that can occur "
+                f"when the system attempts to convert between unit systems."
+            )
         
         if strict_schema and not allow_unknown_fields:
             known_keys = REQUIRED_TOP_LEVEL_KEYS | {
