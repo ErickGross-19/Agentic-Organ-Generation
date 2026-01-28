@@ -1147,6 +1147,31 @@ When populating a spec, you MUST include sensible default policies based on the 
 - `voxel_pitch` for embedding/merge is small enough to capture terminal branch detail (at least 4 voxels across smallest channel diameter)
 - `min_radius` for terminals matches user's requested terminal size (e.g., 50 microns = 0.00005m)
 
+### Scale-Aware Default Calculation (CRITICAL)
+
+When you receive context about the current spec, pay attention to the **domain_scale** value provided. This tells you the approximate size of the domain in meters. Use this to calculate appropriate policy values:
+
+**Formula for scale-appropriate defaults:**
+- `voxel_pitch` (mesh_merge, embedding): domain_scale / 100
+- `min_segment_length`: domain_scale / 50
+- `max_segment_length`: domain_scale / 10
+- `collision_clearance`: domain_scale / 100
+- `step_size`: domain_scale / 200
+- `influence_radius` (space_colonization): domain_scale / 10
+- `kill_radius` (space_colonization): domain_scale / 30
+
+**Example calculations for a 0.05m (50mm) domain:**
+- voxel_pitch = 0.05 / 100 = 0.0005m = 0.5mm
+- min_segment_length = 0.05 / 50 = 0.001m = 1mm
+- collision_clearance = 0.05 / 100 = 0.0005m = 0.5mm
+
+**PITCH_TOO_LARGE Warning:**
+If you see a warning like "PITCH_TOO_LARGE: domain scale is ~X but voxel_pitch is Y", this means the voxel_pitch is too coarse for the domain. The recommended fix is:
+- Calculate: recommended_pitch = domain_scale / 100
+- Apply patch: {"op": "replace", "path": "/policies/mesh_merge/voxel_pitch", "value": <recommended_pitch>}
+
+Always check the validation warnings in the context and proactively fix scale-related issues.
+
 ### 8) Conversational Question Flow (IMPORTANT)
 
 When you need to ask clarifying questions, ask them ONE AT A TIME in a conversational manner. Do NOT dump a list of 8+ questions at once - this overwhelms the user.

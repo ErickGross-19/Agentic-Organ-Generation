@@ -19,6 +19,7 @@ import logging
 import threading
 import queue
 import time
+import traceback
 
 from ..designspec_session import (
     DesignSpecSession,
@@ -77,6 +78,7 @@ class WorkflowStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     ERROR = "error"
+    CANCELLED = "cancelled"
 
 
 @dataclass
@@ -94,6 +96,266 @@ class WorkflowEvent:
             "message": self.message,
             "timestamp": self.timestamp,
         }
+
+
+PIPELINE_STAGES = [
+    "compile_policies",
+    "compile_domains",
+    "component_ports",
+    "component_build",
+    "component_mesh",
+    "union_voids",
+    "mesh_domain",
+    "embed",
+    "port_recarve",
+    "validity",
+    "export",
+]
+
+
+class AsyncDesignSpecRunner:
+    """
+    Async wrapper for DesignSpec pipeline execution.
+    
+    Runs the pipeline in a background thread with:
+    - Progress callbacks via RUN_PROGRESS events
+    - Cancellation support via threading.Event
+    - Proper error handling and logging
+    """
+    
+    def __init__(
+        self,
+        session: "DesignSpecSession",
+        event_callback: Callable[[WorkflowEvent], None],
+    ):
+        """
+        Initialize the async runner.
+        
+        Parameters
+        ----------
+        session : DesignSpecSession
+            The active design spec session
+        event_callback : callable
+            Callback for emitting workflow events
+        """
+        self._session = session
+        self._event_callback = event_callback
+        self._cancel_flag = threading.Event()
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+        self._result: Optional[Dict[str, Any]] = None
+        self._error: Optional[str] = None
+        self._start_time: Optional[float] = None
+    
+    @property
+    def is_running(self) -> bool:
+        """Check if the runner is currently executing."""
+        return self._running
+    
+    @property
+    def is_cancelled(self) -> bool:
+        """Check if cancellation was requested."""
+        return self._cancel_flag.is_set()
+    
+    def cancel(self) -> None:
+        """Request cancellation of the running pipeline."""
+        self._cancel_flag.set()
+        logger.info("Pipeline cancellation requested")
+    
+    def _emit_progress(
+        self,
+        stage: str,
+        stage_index: int,
+        total_stages: int,
+        status: str = "running",
+        message: str = "",
+        elapsed_time: float = 0.0,
+    ) -> None:
+        """Emit a progress event."""
+        progress_pct = (stage_index / total_stages) * 100 if total_stages > 0 else 0
+        
+        event = WorkflowEvent(
+            event_type=WorkflowEventType.RUN_PROGRESS,
+            data={
+                "stage": stage,
+                "stage_index": stage_index,
+                "total_stages": total_stages,
+                "progress_percent": progress_pct,
+                "status": status,
+                "elapsed_time": elapsed_time,
+                "estimated_remaining": self._estimate_remaining(stage_index, total_stages, elapsed_time),
+            },
+            message=message or f"Stage {stage_index + 1}/{total_stages}: {stage}",
+        )
+        
+        if self._event_callback:
+            try:
+                self._event_callback(event)
+            except Exception as e:
+                logger.warning(f"Progress callback failed: {e}")
+    
+    def _estimate_remaining(
+        self,
+        stage_index: int,
+        total_stages: int,
+        elapsed_time: float,
+    ) -> float:
+        """Estimate remaining time based on elapsed time and progress."""
+        if stage_index <= 0 or elapsed_time <= 0:
+            return 0.0
+        
+        avg_time_per_stage = elapsed_time / stage_index
+        remaining_stages = total_stages - stage_index
+        return avg_time_per_stage * remaining_stages
+    
+    def run_async(
+        self,
+        run_until: Optional[str] = None,
+        full_run: bool = False,
+    ) -> None:
+        """
+        Start the pipeline execution in a background thread.
+        
+        Parameters
+        ----------
+        run_until : str, optional
+            Stage to run until (if not full_run)
+        full_run : bool
+            If True, run all stages
+        """
+        if self._running:
+            logger.warning("Runner is already executing")
+            return
+        
+        self._cancel_flag.clear()
+        self._result = None
+        self._error = None
+        self._running = True
+        self._start_time = time.time()
+        
+        self._thread = threading.Thread(
+            target=self._run_pipeline,
+            args=(run_until, full_run),
+            daemon=True,
+        )
+        self._thread.start()
+    
+    def _run_pipeline(
+        self,
+        run_until: Optional[str],
+        full_run: bool,
+    ) -> None:
+        """
+        Execute the pipeline (runs in background thread).
+        
+        Parameters
+        ----------
+        run_until : str, optional
+            Stage to run until
+        full_run : bool
+            If True, run all stages
+        """
+        try:
+            stages_to_run = PIPELINE_STAGES.copy()
+            
+            if not full_run and run_until:
+                try:
+                    stop_index = stages_to_run.index(run_until) + 1
+                    stages_to_run = stages_to_run[:stop_index]
+                except ValueError:
+                    logger.warning(f"Unknown stage '{run_until}', running all stages")
+            
+            total_stages = len(stages_to_run)
+            
+            if self._cancel_flag.is_set():
+                logger.info("Pipeline cancelled before starting")
+                self._emit_progress(
+                    stage="cancelled",
+                    stage_index=0,
+                    total_stages=total_stages,
+                    status="cancelled",
+                    message="Pipeline cancelled before starting",
+                    elapsed_time=time.time() - self._start_time,
+                )
+                self._error = "Pipeline cancelled by user"
+                return
+            
+            self._emit_progress(
+                stage=stages_to_run[0] if stages_to_run else "starting",
+                stage_index=0,
+                total_stages=total_stages,
+                status="running",
+                message=f"Starting pipeline ({total_stages} stages)...",
+                elapsed_time=time.time() - self._start_time,
+            )
+            
+            if full_run:
+                self._result = self._session.run()
+            else:
+                self._result = self._session.run(run_until=run_until)
+            
+            if self._cancel_flag.is_set():
+                self._emit_progress(
+                    stage="cancelled",
+                    stage_index=total_stages,
+                    total_stages=total_stages,
+                    status="cancelled",
+                    message="Pipeline cancelled",
+                    elapsed_time=time.time() - self._start_time,
+                )
+                return
+            
+            success = self._result.get("success", False) if self._result else False
+            
+            self._emit_progress(
+                stage=stages_to_run[-1] if stages_to_run else "complete",
+                stage_index=total_stages,
+                total_stages=total_stages,
+                status="completed" if success else "failed",
+                message="Pipeline completed" if success else "Pipeline completed with errors",
+                elapsed_time=time.time() - self._start_time,
+            )
+            
+        except Exception as e:
+            logger.exception("Pipeline execution failed")
+            self._error = str(e)
+            self._emit_progress(
+                stage="error",
+                stage_index=0,
+                total_stages=1,
+                status="failed",
+                message=f"Pipeline failed: {str(e)}",
+                elapsed_time=time.time() - self._start_time if self._start_time else 0,
+            )
+        finally:
+            self._running = False
+    
+    def wait(self, timeout: Optional[float] = None) -> bool:
+        """
+        Wait for the pipeline to complete.
+        
+        Parameters
+        ----------
+        timeout : float, optional
+            Maximum time to wait in seconds
+            
+        Returns
+        -------
+        bool
+            True if completed, False if timed out
+        """
+        if self._thread:
+            self._thread.join(timeout=timeout)
+            return not self._thread.is_alive()
+        return True
+    
+    def get_result(self) -> Optional[Dict[str, Any]]:
+        """Get the pipeline result (None if not completed or failed)."""
+        return self._result
+    
+    def get_error(self) -> Optional[str]:
+        """Get the error message if pipeline failed."""
+        return self._error
 
 
 class DesignSpecWorkflow:
@@ -145,6 +407,8 @@ class DesignSpecWorkflow:
         
         self._event_queue: queue.Queue = queue.Queue()
         self._lock = threading.Lock()
+        
+        self._async_runner: Optional[AsyncDesignSpecRunner] = None
     
     @property
     def status(self) -> WorkflowStatus:
@@ -410,6 +674,15 @@ class DesignSpecWorkflow:
             self._handle_cancel_command()
             return True
         
+        defaults_patterns = [
+            "explain defaults", "show defaults", "what are the defaults",
+            "default values", "list defaults", "defaults",
+            "what defaults", "show default values", "policy defaults",
+        ]
+        if any(pattern in text_lower for pattern in defaults_patterns):
+            self._handle_explain_defaults_command()
+            return True
+        
         return False
     
     def _handle_show_spec_command(self) -> None:
@@ -547,21 +820,260 @@ class DesignSpecWorkflow:
     
     def _handle_cancel_command(self) -> None:
         """Handle the 'cancel' / 'stop' command - cancels running process."""
-        if self._status != WorkflowStatus.RUNNING:
+        if not self.is_run_in_progress() and self._status != WorkflowStatus.RUNNING:
             self._emit_event(WorkflowEvent(
                 event_type=WorkflowEventType.MESSAGE,
                 message="No run is currently in progress.",
             ))
             return
         
-        # Set status to cancelled
+        if self.cancel_run():
+            return
+        
         self._set_status(WorkflowStatus.CANCELLED)
         
-        # Emit cancellation confirmation
         self._emit_event(WorkflowEvent(
             event_type=WorkflowEventType.MESSAGE,
             message="Run cancelled. The current operation will stop at the next safe point.",
         ))
+    
+    def _handle_explain_defaults_command(self) -> None:
+        """
+        Handle the 'explain defaults' command.
+        
+        Shows a table of policy parameters with current values, default values,
+        units, and descriptions.
+        """
+        try:
+            from designspec.preflight import DEFAULT_POLICIES
+            
+            spec = self._session.get_spec() if self._session else {}
+            current_policies = spec.get("policies", {})
+            
+            lines = ["## Policy Defaults Comparison", ""]
+            lines.append("The following table shows current spec values vs. recommended defaults:")
+            lines.append("")
+            
+            key_policies = [
+                ("mesh_merge", "voxel_pitch", "m", "Voxel size for mesh union operations"),
+                ("mesh_merge", "keep_largest_component", "", "Keep only largest mesh component"),
+                ("embedding", "voxel_pitch", "m", "Voxel size for embedding operations"),
+                ("embedding", "shell_thickness", "m", "Minimum wall thickness"),
+                ("growth", "min_segment_length", "m", "Minimum vessel segment length"),
+                ("growth", "max_segment_length", "m", "Maximum vessel segment length"),
+                ("growth", "min_radius", "m", "Minimum vessel radius"),
+                ("growth", "step_size", "m", "Growth step size"),
+                ("collision", "collision_clearance", "m", "Minimum clearance between vessels"),
+                ("radius", "min_radius", "m", "Minimum vessel radius"),
+                ("radius", "max_radius", "m", "Maximum vessel radius"),
+                ("resolution", "min_channel_diameter", "m", "Minimum channel diameter"),
+                ("resolution", "min_pitch", "m", "Minimum voxel pitch"),
+                ("resolution", "max_pitch", "m", "Maximum voxel pitch"),
+            ]
+            
+            lines.append("| Policy | Parameter | Current | Default | Units | Description |")
+            lines.append("|--------|-----------|---------|---------|-------|-------------|")
+            
+            for policy_name, param_name, units, description in key_policies:
+                default_policy = DEFAULT_POLICIES.get(policy_name, {})
+                default_value = default_policy.get(param_name, "N/A")
+                
+                current_policy = current_policies.get(policy_name, {})
+                if isinstance(current_policy, dict):
+                    current_value = current_policy.get(param_name, "not set")
+                else:
+                    current_value = "not set"
+                
+                if isinstance(default_value, float):
+                    default_str = f"{default_value:.6f}"
+                else:
+                    default_str = str(default_value)
+                
+                if isinstance(current_value, float):
+                    current_str = f"{current_value:.6f}"
+                elif current_value == "not set":
+                    current_str = "*not set*"
+                else:
+                    current_str = str(current_value)
+                
+                lines.append(
+                    f"| {policy_name} | {param_name} | {current_str} | {default_str} | {units} | {description} |"
+                )
+            
+            lines.append("")
+            lines.append("### Scale-Appropriate Recommendations")
+            lines.append("")
+            
+            domain_scale = self._get_domain_scale_from_spec(spec)
+            if domain_scale:
+                recommended_pitch = domain_scale / 100
+                lines.append(f"Based on your domain scale (~{domain_scale:.4f}m):")
+                lines.append(f"- Recommended voxel_pitch: {recommended_pitch:.6f}m (domain_scale / 100)")
+                lines.append(f"- Recommended min_segment_length: {domain_scale / 50:.6f}m")
+                lines.append(f"- Recommended collision_clearance: {domain_scale / 100:.6f}m")
+            else:
+                lines.append("No domain defined yet. Define a domain to get scale-appropriate recommendations.")
+            
+            message = "\n".join(lines)
+            
+            self._emit_event(WorkflowEvent(
+                event_type=WorkflowEventType.MESSAGE,
+                data={
+                    "defaults": {k: v for k, v in DEFAULT_POLICIES.items()},
+                    "current_policies": current_policies,
+                },
+                message=message,
+            ))
+            
+        except Exception as e:
+            logger.exception("Failed to explain defaults")
+            self._emit_event(WorkflowEvent(
+                event_type=WorkflowEventType.ERROR,
+                data={"error": str(e)},
+                message=f"Failed to explain defaults: {str(e)}",
+            ))
+    
+    def _get_domain_scale_from_spec(self, spec: dict) -> float:
+        """
+        Get the approximate scale of the domain in meters.
+        
+        Parameters
+        ----------
+        spec : dict
+            The spec dictionary
+            
+        Returns
+        -------
+        float
+            Domain scale in meters, or 0.0 if no domain defined
+        """
+        domains = spec.get("domains", {})
+        if not domains:
+            return 0.0
+        
+        domain = next(iter(domains.values()))
+        if not isinstance(domain, dict):
+            return 0.0
+        
+        domain_type = domain.get("type", "").lower()
+        
+        if domain_type == "cylinder":
+            radius = domain.get("radius", 0.0)
+            height = domain.get("height", 0.0)
+            return max(radius * 2, height)
+        elif domain_type == "box":
+            x_size = abs(domain.get("x_max", 0.0) - domain.get("x_min", 0.0))
+            y_size = abs(domain.get("y_max", 0.0) - domain.get("y_min", 0.0))
+            z_size = abs(domain.get("z_max", 0.0) - domain.get("z_min", 0.0))
+            return max(x_size, y_size, z_size)
+        elif domain_type == "ellipsoid":
+            radii = domain.get("radii", [0.0, 0.0, 0.0])
+            if isinstance(radii, list) and len(radii) >= 3:
+                return max(radii) * 2
+            return 0.0
+        
+        return 0.0
+    
+    def _apply_validation_aware_fixes(self, patches: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Apply validation-aware fixes to patches before they are applied.
+        
+        This method checks for validation warnings (like PITCH_TOO_LARGE) and
+        automatically adjusts patch values to resolve them.
+        
+        Parameters
+        ----------
+        patches : list of dict
+            The original JSON Patch operations
+            
+        Returns
+        -------
+        list of dict
+            The adjusted patches with validation-aware fixes
+        """
+        if not self._session:
+            return patches
+        
+        try:
+            from designspec.preflight import run_preflight_checks, _get_domain_scale
+            
+            spec = self._session.get_spec()
+            if not spec:
+                return patches
+            
+            preflight_result = run_preflight_checks(spec)
+            domain_scale = _get_domain_scale(spec)
+            
+            if domain_scale <= 0:
+                return patches
+            
+            pitch_warnings = [
+                w for w in preflight_result.warnings
+                if w.code == "PITCH_TOO_LARGE"
+            ]
+            
+            if not pitch_warnings:
+                return patches
+            
+            recommended_pitch = domain_scale / 100
+            
+            adjusted_patches = []
+            pitch_paths_to_fix = set()
+            
+            for warning in pitch_warnings:
+                if warning.path:
+                    pitch_paths_to_fix.add(warning.path)
+            
+            for patch in patches:
+                adjusted_patch = dict(patch)
+                path = patch.get("path", "")
+                op = patch.get("op", "")
+                
+                if op in ("add", "replace") and "voxel_pitch" in path:
+                    current_value = patch.get("value")
+                    if isinstance(current_value, (int, float)):
+                        if current_value > recommended_pitch * 2:
+                            adjusted_patch["value"] = recommended_pitch
+                            logger.info(
+                                f"Validation-aware fix: Adjusted voxel_pitch from "
+                                f"{current_value} to {recommended_pitch} at {path}"
+                            )
+                
+                adjusted_patches.append(adjusted_patch)
+            
+            for pitch_path in pitch_paths_to_fix:
+                path_already_patched = any(
+                    p.get("path", "").startswith(pitch_path.rsplit(".", 1)[0])
+                    and "voxel_pitch" in p.get("path", "")
+                    for p in adjusted_patches
+                )
+                
+                if not path_already_patched:
+                    parts = pitch_path.split(".")
+                    if len(parts) >= 2:
+                        policy_name = parts[1]
+                        fix_path = f"/policies/{policy_name}/voxel_pitch"
+                        
+                        already_has_fix = any(
+                            p.get("path") == fix_path for p in adjusted_patches
+                        )
+                        
+                        if not already_has_fix:
+                            adjusted_patches.append({
+                                "op": "replace",
+                                "path": fix_path,
+                                "value": recommended_pitch,
+                            })
+                            logger.info(
+                                f"Validation-aware fix: Added patch to fix "
+                                f"PITCH_TOO_LARGE at {fix_path}"
+                            )
+            
+            return adjusted_patches
+            
+        except Exception as e:
+            logger.warning(f"Failed to apply validation-aware fixes: {e}")
+            return patches
     
     def _handle_agent_response(self, response: AgentResponse) -> None:
         """Handle an agent response."""
@@ -665,8 +1177,10 @@ class DesignSpecWorkflow:
         ))
         
         try:
+            adjusted_patches = self._apply_validation_aware_fixes(patch.patches)
+            
             result = self._session.apply_patch(
-                patches=patch.patches,
+                patches=adjusted_patches,
                 author="agent",
                 auto_compile=True,
             )
@@ -820,7 +1334,7 @@ class DesignSpecWorkflow:
         """Get the pending run request if any."""
         return self._pending_run_request
     
-    def run_until(self, stage: str) -> None:
+    def run_until(self, stage: str, async_mode: bool = True) -> None:
         """
         Run the pipeline until a specific stage.
         
@@ -828,11 +1342,20 @@ class DesignSpecWorkflow:
         ----------
         stage : str
             Stage to run until (e.g., "union_voids", "embed", "validity")
+        async_mode : bool
+            If True, run in background thread (default). If False, run synchronously.
         """
         if not self._session:
             self._emit_event(WorkflowEvent(
                 event_type=WorkflowEventType.ERROR,
                 message="No active session",
+            ))
+            return
+        
+        if self._async_runner and self._async_runner.is_running:
+            self._emit_event(WorkflowEvent(
+                event_type=WorkflowEventType.MESSAGE,
+                message="A run is already in progress. Type 'cancel' to stop it.",
             ))
             return
         
@@ -843,32 +1366,53 @@ class DesignSpecWorkflow:
             message=f"Running pipeline until {stage}...",
         ))
         
-        try:
-            result = self._session.run(run_until=stage)
-            
-            self._emit_event(WorkflowEvent(
-                event_type=WorkflowEventType.RUN_COMPLETED,
-                data={"result": result},
-                message="Run completed" if result.get("success") else "Run failed",
-            ))
-            
-            self._set_status(WorkflowStatus.WAITING_INPUT)
-            
-        except Exception as e:
-            logger.exception("Run failed")
-            self._emit_event(WorkflowEvent(
-                event_type=WorkflowEventType.ERROR,
-                data={"error": str(e)},
-                message=f"Run failed: {str(e)}",
-            ))
-            self._set_status(WorkflowStatus.WAITING_INPUT)
+        if async_mode:
+            self._async_runner = AsyncDesignSpecRunner(
+                session=self._session,
+                event_callback=self._on_async_runner_event,
+            )
+            self._async_runner.run_async(run_until=stage, full_run=False)
+        else:
+            try:
+                result = self._session.run(run_until=stage)
+                
+                self._emit_event(WorkflowEvent(
+                    event_type=WorkflowEventType.RUN_COMPLETED,
+                    data={"result": result},
+                    message="Run completed" if result.get("success") else "Run failed",
+                ))
+                
+                self._set_status(WorkflowStatus.WAITING_INPUT)
+                
+            except Exception as e:
+                logger.exception("Run failed")
+                self._emit_event(WorkflowEvent(
+                    event_type=WorkflowEventType.ERROR,
+                    data={"error": str(e)},
+                    message=f"Run failed: {str(e)}",
+                ))
+                self._set_status(WorkflowStatus.WAITING_INPUT)
     
-    def run_full(self) -> None:
-        """Run the full pipeline."""
+    def run_full(self, async_mode: bool = True) -> None:
+        """
+        Run the full pipeline.
+        
+        Parameters
+        ----------
+        async_mode : bool
+            If True, run in background thread (default). If False, run synchronously.
+        """
         if not self._session:
             self._emit_event(WorkflowEvent(
                 event_type=WorkflowEventType.ERROR,
                 message="No active session",
+            ))
+            return
+        
+        if self._async_runner and self._async_runner.is_running:
+            self._emit_event(WorkflowEvent(
+                event_type=WorkflowEventType.MESSAGE,
+                message="A run is already in progress. Type 'cancel' to stop it.",
             ))
             return
         
@@ -879,25 +1423,91 @@ class DesignSpecWorkflow:
             message="Running full pipeline...",
         ))
         
-        try:
-            result = self._session.run()
-            
+        if async_mode:
+            self._async_runner = AsyncDesignSpecRunner(
+                session=self._session,
+                event_callback=self._on_async_runner_event,
+            )
+            self._async_runner.run_async(full_run=True)
+        else:
+            try:
+                result = self._session.run()
+                
+                self._emit_event(WorkflowEvent(
+                    event_type=WorkflowEventType.RUN_COMPLETED,
+                    data={"result": result},
+                    message="Full run completed" if result.get("success") else "Full run failed",
+                ))
+                
+                self._set_status(WorkflowStatus.WAITING_INPUT)
+                
+            except Exception as e:
+                logger.exception("Full run failed")
+                self._emit_event(WorkflowEvent(
+                    event_type=WorkflowEventType.ERROR,
+                    data={"error": str(e)},
+                    message=f"Full run failed: {str(e)}",
+                ))
+                self._set_status(WorkflowStatus.WAITING_INPUT)
+    
+    def _on_async_runner_event(self, event: WorkflowEvent) -> None:
+        """
+        Handle events from the async runner.
+        
+        Parameters
+        ----------
+        event : WorkflowEvent
+            Event from the async runner
+        """
+        self._emit_event(event)
+        
+        if event.event_type == WorkflowEventType.RUN_PROGRESS:
+            status = event.data.get("status", "")
+            if status in ("completed", "failed", "cancelled"):
+                if status == "completed":
+                    result = self._async_runner.get_result() if self._async_runner else None
+                    self._emit_event(WorkflowEvent(
+                        event_type=WorkflowEventType.RUN_COMPLETED,
+                        data={"result": result},
+                        message="Run completed" if result and result.get("success") else "Run completed with issues",
+                    ))
+                    self._set_status(WorkflowStatus.WAITING_INPUT)
+                elif status == "failed":
+                    error = self._async_runner.get_error() if self._async_runner else "Unknown error"
+                    self._emit_event(WorkflowEvent(
+                        event_type=WorkflowEventType.ERROR,
+                        data={"error": error},
+                        message=f"Run failed: {error}",
+                    ))
+                    self._set_status(WorkflowStatus.FAILED)
+                elif status == "cancelled":
+                    self._emit_event(WorkflowEvent(
+                        event_type=WorkflowEventType.MESSAGE,
+                        message="Run cancelled by user",
+                    ))
+                    self._set_status(WorkflowStatus.CANCELLED)
+    
+    def cancel_run(self) -> bool:
+        """
+        Cancel the currently running pipeline.
+        
+        Returns
+        -------
+        bool
+            True if cancellation was requested, False if no run in progress
+        """
+        if self._async_runner and self._async_runner.is_running:
+            self._async_runner.cancel()
             self._emit_event(WorkflowEvent(
-                event_type=WorkflowEventType.RUN_COMPLETED,
-                data={"result": result},
-                message="Full run completed" if result.get("success") else "Full run failed",
+                event_type=WorkflowEventType.MESSAGE,
+                message="Cancellation requested. Waiting for current stage to complete...",
             ))
-            
-            self._set_status(WorkflowStatus.WAITING_INPUT)
-            
-        except Exception as e:
-            logger.exception("Full run failed")
-            self._emit_event(WorkflowEvent(
-                event_type=WorkflowEventType.ERROR,
-                data={"error": str(e)},
-                message=f"Full run failed: {str(e)}",
-            ))
-            self._set_status(WorkflowStatus.WAITING_INPUT)
+            return True
+        return False
+    
+    def is_run_in_progress(self) -> bool:
+        """Check if a pipeline run is currently in progress."""
+        return self._async_runner is not None and self._async_runner.is_running
     
     def get_spec(self) -> Optional[Dict[str, Any]]:
         """Get the current spec."""
@@ -1057,7 +1667,9 @@ class DesignSpecWorkflow:
 
 
 __all__ = [
+    "AsyncDesignSpecRunner",
     "DesignSpecWorkflow",
+    "PIPELINE_STAGES",
     "WorkflowEvent",
     "WorkflowEventType",
     "WorkflowStatus",
