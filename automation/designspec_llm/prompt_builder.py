@@ -491,12 +491,21 @@ Controls how tissue/attractor points are distributed for space colonization.
       "depth_min": <float mm>,
       "depth_max": <float mm> | null,
       "depth_power": <float>,
+      "depth_lambda": <float>,
+      "depth_alpha": <float>,
+      "depth_beta": <float>,
       "radial_reference": {"mode": "face", "face": "top", "center": "face_center"},
       "radial_distribution": "center_heavy" | "edge_heavy" | "ring",
       "r_min": <float mm>,
       "r_max": <float mm> | null,
       "radial_power": <float>,
+      "ring_r0": <float mm>,
+      "ring_sigma": <float mm>,
       "shell_thickness": <float mm>,
+      "shell_mode": "near_boundary" | "near_center",
+      "gaussian_mean": [x, y, z],
+      "gaussian_sigma": [sx, sy, sz],
+      "mixture_components": [{"weight": <float>, "policy": {...}}],
       "min_distance_to_ports": <float mm>,
       "exclude_spheres": [{"center": [x,y,z], "radius": <float>}]
     }
@@ -505,9 +514,10 @@ Controls how tissue/attractor points are distributed for space colonization.
 ```
 
 **Key fields:**
-- `strategy`: Distribution strategy - "uniform", "depth_biased" (more points at depth), "radial_biased", "boundary_shell"
+- `strategy`: Distribution strategy - "uniform", "depth_biased" (more points at depth), "radial_biased", "boundary_shell", "gaussian", "mixture"
 - `n_points`: Number of attractor points to generate
 - `depth_power`: Power for depth-biased distribution (higher = more points deeper)
+- `ring_r0`, `ring_sigma`: Ring center radius and width for ring distribution
 - `min_distance_to_ports`: Minimum distance from ports to place attractors (mm)
 
 ### collision - Collision Detection
@@ -564,6 +574,8 @@ Controls how vascular networks are converted to triangle meshes.
       "voxel_repair_step_factor": <float>,
       "voxel_repair_max_voxels": <int>,
       "segments_per_circle": <int>,
+      "mutate_network_in_place": false,
+      "radius_clamp_mode": "copy" | "mutate",
       "use_resolution_policy": false
     }
   }
@@ -589,6 +601,7 @@ Controls how multiple meshes are combined using voxel-first strategy.
       "min_component_volume": <float mm³>,
       "fill_voxels": true,
       "max_voxels": <int>,
+      "use_resolution_policy": false,
       "min_voxels_per_diameter": <int>,
       "min_channel_diameter": <float mm> | null,
       "detail_loss_threshold": <0-1>,
@@ -623,6 +636,7 @@ Controls the voxelization and carving process for creating domain-with-void mesh
       "preserve_mode": "recarve",
       "carve_radius_factor": <float>,
       "carve_depth": <float mm>,
+      "use_resolution_policy": false,
       "output_shell": false,
       "output_domain_with_void": true,
       "output_void_mesh": true
@@ -705,7 +719,8 @@ Controls output directory, units, and naming conventions.
       "save_intermediates": false,
       "save_reports": true,
       "output_stl": true,
-      "output_json": true
+      "output_json": true,
+      "output_shell": false
     }
   }
 }
