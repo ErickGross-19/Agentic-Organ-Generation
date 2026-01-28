@@ -445,7 +445,12 @@ class MainWindow:
         def on_cancel():
             self._append_chat("system", "Configuration wizard cancelled. Use File > New Workflow to start.")
         
-        wizard = ConfigurationWizard(self.root, on_complete=on_complete, on_cancel=on_cancel)
+        wizard = ConfigurationWizard(
+            self.root,
+            self.secure_config,
+            on_complete=on_complete,
+            on_cancel=on_cancel,
+        )
         self.root.wait_window(wizard)
     
     def _switch_to_conversation_layout(self):
