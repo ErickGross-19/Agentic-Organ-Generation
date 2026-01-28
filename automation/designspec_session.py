@@ -26,6 +26,82 @@ import shutil
 logger = logging.getLogger(__name__)
 
 
+import re
+
+
+def _translate_component_path(path: str, spec: Dict[str, Any]) -> str:
+    """
+    Translate component-name-based paths to array-index-based paths.
+    
+    The LLM often generates paths like /components/main_network/ports/...
+    but components is an array, so the correct path is /components/0/ports/...
+    
+    This function detects when a path uses a component ID instead of an array
+    index and translates it to the correct array index.
+    
+    Parameters
+    ----------
+    path : str
+        The JSON Pointer path (e.g., "/components/main_network/ports/inlets/0")
+    spec : dict
+        The current spec document to look up component indices
+        
+    Returns
+    -------
+    str
+        The translated path with array indices
+    """
+    if not path.startswith("/components/"):
+        return path
+    
+    parts = path.split("/")
+    if len(parts) < 3:
+        return path
+    
+    component_ref = parts[2]
+    
+    if component_ref.isdigit() or component_ref == "-":
+        return path
+    
+    components = spec.get("components", [])
+    if not isinstance(components, list):
+        return path
+    
+    for idx, comp in enumerate(components):
+        if isinstance(comp, dict) and comp.get("id") == component_ref:
+            parts[2] = str(idx)
+            return "/".join(parts)
+    
+    return path
+
+
+def _translate_patch_paths(patches: List[Dict[str, Any]], spec: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Translate all paths in a list of patches to use array indices.
+    
+    Parameters
+    ----------
+    patches : list of dict
+        List of JSON Patch operations
+    spec : dict
+        The current spec document
+        
+    Returns
+    -------
+    list of dict
+        Patches with translated paths
+    """
+    translated = []
+    for patch in patches:
+        new_patch = patch.copy()
+        if "path" in new_patch:
+            new_patch["path"] = _translate_component_path(new_patch["path"], spec)
+        if "from" in new_patch:
+            new_patch["from"] = _translate_component_path(new_patch["from"], spec)
+        translated.append(new_patch)
+    return translated
+
+
 @dataclass
 class ValidationReport:
     """Report from spec validation."""
@@ -318,7 +394,11 @@ def _apply_json_patch(doc: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, A
     return doc
 
 
-def apply_json_patches(doc: Dict[str, Any], patches: List[Dict[str, Any]]) -> Dict[str, Any]:
+def apply_json_patches(
+    doc: Dict[str, Any], 
+    patches: List[Dict[str, Any]],
+    translate_paths: bool = True
+) -> Dict[str, Any]:
     """
     Apply a list of JSON Patch operations to a document.
     
@@ -328,6 +408,10 @@ def apply_json_patches(doc: Dict[str, Any], patches: List[Dict[str, Any]]) -> Di
         The document to patch
     patches : list of dict
         List of patch operations
+    translate_paths : bool
+        If True, translate component-name-based paths to array indices.
+        This allows patches like /components/main_network/... to work
+        even though components is an array.
         
     Returns
     -------
@@ -335,6 +419,10 @@ def apply_json_patches(doc: Dict[str, Any], patches: List[Dict[str, Any]]) -> Di
         The patched document
     """
     result = copy.deepcopy(doc)
+    
+    if translate_paths:
+        patches = _translate_patch_paths(patches, result)
+    
     for patch in patches:
         result = _apply_json_patch(result, patch)
     return result
