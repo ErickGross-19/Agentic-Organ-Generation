@@ -99,7 +99,7 @@ Every run produces deterministic outputs when a seed is specified:
   "meta": {
     "name": "my_design",
     "seed": 42,
-    "input_units": "mm"
+    "input_units": "m"
   }
 }
 ```
