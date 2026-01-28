@@ -118,6 +118,17 @@ class ScaffoldTopDownConfig(BackendConfig):
     clamp_mode: str = "shorten_step"  # "terminate" | "shorten_step" | "project_inside"
     collision_online: CollisionOnlineConfig = field(default_factory=CollisionOnlineConfig)
     collision_postpass: CollisionPostpassConfig = field(default_factory=CollisionPostpassConfig)
+    # Depth-adaptive step length computation
+    depth_adaptive_mode: str = "none"  # "none" | "uniform" | "geometric"
+    # - "none": use fixed step_length with step_decay (current behavior)
+    # - "uniform": compute step lengths so each level contributes equally to vertical travel
+    # - "geometric": maintain step_decay ratio but scale initial step_length to reach target depth
+    # Branch plane orientation mode for 3D branching
+    branch_plane_mode: str = "global"  # "global" | "local" | "hybrid"
+    # - "global": all branches spread in plane perpendicular to primary_axis (current 2D behavior)
+    # - "local": each branch spreads in plane perpendicular to parent_direction (3D)
+    # - "hybrid": blend between global and local based on branch_plane_blend factor
+    branch_plane_blend: float = 0.5  # 0.0 = fully global, 1.0 = fully local (only used in hybrid mode)
 
 
 class ScaffoldTopDownBackend(GenerationBackend):
@@ -227,6 +238,20 @@ class ScaffoldTopDownBackend(GenerationBackend):
         
         initial_angle = 0.0
         
+        # Compute depth-adaptive step length if enabled
+        effective_step = config.step_length
+        if config.depth_adaptive_mode != "none":
+            effective_step = self._compute_depth_adaptive_step(
+                inlet_position=inlet_position,
+                domain=domain,
+                config=config,
+                primary_axis=primary_axis,
+            )
+            logger.info(
+                f"Depth-adaptive mode '{config.depth_adaptive_mode}': "
+                f"adjusted step_length from {config.step_length:.6f} to {effective_step:.6f}"
+            )
+        
         self._branch(
             network=network,
             spatial_index=spatial_index,
@@ -234,7 +259,7 @@ class ScaffoldTopDownBackend(GenerationBackend):
             parent_direction=primary_axis,
             primary_axis=primary_axis,
             current_radius=inlet_radius,
-            current_step=config.step_length,
+            current_step=effective_step,
             current_spread=config.spread,
             remaining_levels=config.levels,
             angle=initial_angle,
@@ -342,6 +367,16 @@ class ScaffoldTopDownBackend(GenerationBackend):
             
             initial_angle = 2 * np.pi * i / len(inlets)
             
+            # Compute depth-adaptive step length if enabled
+            effective_step = config.step_length
+            if config.depth_adaptive_mode != "none":
+                effective_step = self._compute_depth_adaptive_step(
+                    inlet_position=inlet_position,
+                    domain=domain,
+                    config=config,
+                    primary_axis=primary_axis,
+                )
+            
             self._branch(
                 network=network,
                 spatial_index=spatial_index,
@@ -349,7 +384,7 @@ class ScaffoldTopDownBackend(GenerationBackend):
                 parent_direction=primary_axis,
                 primary_axis=primary_axis,
                 current_radius=inlet_radius,
-                current_step=config.step_length,
+                current_step=effective_step,
                 current_spread=config.spread,
                 remaining_levels=config.levels,
                 angle=initial_angle,
@@ -426,7 +461,12 @@ class ScaffoldTopDownBackend(GenerationBackend):
             parent_node.node_type = "terminal"
             return
         
-        perp1, perp2 = self._get_perpendicular_axes(primary_axis)
+        # Compute perpendicular axes based on branch_plane_mode
+        perp1, perp2 = self._get_branch_plane_axes(
+            parent_direction=parent_direction,
+            primary_axis=primary_axis,
+            config=config,
+        )
         
         jitter_rad = np.deg2rad(config.jitter_deg)
         angle_jitter = rng.uniform(-jitter_rad, jitter_rad)
@@ -641,6 +681,14 @@ class ScaffoldTopDownBackend(GenerationBackend):
         collisions are enforced normally.
         """
         parent_pos = parent_node.position.to_array()
+        
+        # Compute perpendicular axes based on branch_plane_mode
+        # This overrides the passed perp1/perp2 if using local or hybrid mode
+        perp1, perp2 = self._get_branch_plane_axes(
+            parent_direction=parent_direction,
+            primary_axis=primary_axis,
+            config=config,
+        )
         
         # Compute grandchild radius (the end radius of sibling segments)
         grandchild_radius = child_radius * config.ratio
@@ -1392,21 +1440,87 @@ class ScaffoldTopDownBackend(GenerationBackend):
     
     def _get_perpendicular_axes(
         self,
-        primary_axis: np.ndarray,
+        axis: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Get two perpendicular axes to the primary axis."""
-        if abs(primary_axis[0]) < 0.9:
+        """Get two perpendicular axes to the given axis."""
+        if abs(axis[0]) < 0.9:
             ref = np.array([1.0, 0.0, 0.0])
         else:
             ref = np.array([0.0, 1.0, 0.0])
         
-        perp1 = np.cross(primary_axis, ref)
-        perp1 = perp1 / np.linalg.norm(perp1)
+        perp1 = np.cross(axis, ref)
+        norm1 = np.linalg.norm(perp1)
+        if norm1 > 1e-9:
+            perp1 = perp1 / norm1
+        else:
+            perp1 = np.array([1.0, 0.0, 0.0])
         
-        perp2 = np.cross(primary_axis, perp1)
-        perp2 = perp2 / np.linalg.norm(perp2)
+        perp2 = np.cross(axis, perp1)
+        norm2 = np.linalg.norm(perp2)
+        if norm2 > 1e-9:
+            perp2 = perp2 / norm2
+        else:
+            perp2 = np.array([0.0, 1.0, 0.0])
         
         return perp1, perp2
+    
+    def _get_branch_plane_axes(
+        self,
+        parent_direction: np.ndarray,
+        primary_axis: np.ndarray,
+        config: ScaffoldTopDownConfig,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Get perpendicular axes for branch spread based on branch_plane_mode.
+        
+        Parameters
+        ----------
+        parent_direction : np.ndarray
+            Direction of the parent branch (normalized)
+        primary_axis : np.ndarray
+            Global primary growth direction (normalized)
+        config : ScaffoldTopDownConfig
+            Backend configuration
+            
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray]
+            Two perpendicular axes (perp1, perp2) for computing lateral spread
+        """
+        if config.branch_plane_mode == "local":
+            # Use parent branch direction for perpendicular plane
+            # This creates 3D branching where each branch's children spread
+            # in a plane perpendicular to that branch's direction
+            return self._get_perpendicular_axes(parent_direction)
+            
+        elif config.branch_plane_mode == "hybrid":
+            # Blend between global and local perpendicular axes
+            perp1_global, perp2_global = self._get_perpendicular_axes(primary_axis)
+            perp1_local, perp2_local = self._get_perpendicular_axes(parent_direction)
+            
+            blend = config.branch_plane_blend
+            
+            # Blend and normalize
+            perp1_blended = blend * perp1_local + (1 - blend) * perp1_global
+            norm1 = np.linalg.norm(perp1_blended)
+            if norm1 > 1e-9:
+                perp1_blended = perp1_blended / norm1
+            else:
+                perp1_blended = perp1_global
+            
+            perp2_blended = blend * perp2_local + (1 - blend) * perp2_global
+            norm2 = np.linalg.norm(perp2_blended)
+            if norm2 > 1e-9:
+                perp2_blended = perp2_blended / norm2
+            else:
+                perp2_blended = perp2_global
+            
+            return perp1_blended, perp2_blended
+            
+        else:  # "global" (default)
+            # Use global primary axis for perpendicular plane
+            # This is the original 2D-like behavior
+            return self._get_perpendicular_axes(primary_axis)
     
     def _clamp_to_domain(
         self,
@@ -1958,6 +2072,128 @@ class ScaffoldTopDownBackend(GenerationBackend):
             child_angles.append(base_angle + jitter)
         
         return child_angles
+    
+    def _compute_depth_adaptive_step(
+        self,
+        inlet_position: np.ndarray,
+        domain: DomainSpec,
+        config: ScaffoldTopDownConfig,
+        primary_axis: np.ndarray,
+    ) -> float:
+        """
+        Compute adjusted step_length so tree naturally reaches target depth.
+        
+        For "uniform" mode: step_length = vertical_distance / levels
+        For "geometric" mode: solve for step_length such that
+            sum(step_length * step_decay^i for i in 0..levels-1) = vertical_distance
+        
+        Parameters
+        ----------
+        inlet_position : np.ndarray
+            Position of the inlet node (x, y, z) in meters
+        domain : DomainSpec
+            Geometric domain for the network
+        config : ScaffoldTopDownConfig
+            Backend configuration
+        primary_axis : np.ndarray
+            Normalized primary growth direction
+            
+        Returns
+        -------
+        float
+            Adjusted step_length in meters
+        """
+        from ..core.domain import CylinderDomain
+        
+        # Calculate vertical distance from inlet to target depth
+        # For cylinder domains, this is the distance to the bottom boundary minus buffer
+        if isinstance(domain, CylinderDomain):
+            half_height = domain.height / 2
+            z_min = domain.center.z - half_height
+            
+            # Calculate required clearance at the bottom
+            required_clearance = (
+                config.wall_margin_m 
+                + config.boundary_extra_m 
+                + config.stop_before_boundary_m 
+                + config.stop_before_boundary_extra_m
+            )
+            
+            # Target z position is the bottom boundary plus clearance
+            target_z = z_min + required_clearance
+            
+            # Vertical distance to travel (along primary_axis direction)
+            # For downward growth (primary_axis = (0,0,-1)), this is inlet_z - target_z
+            inlet_z = inlet_position[2]
+            vertical_distance = abs(inlet_z - target_z)
+        else:
+            # For non-cylinder domains, use the distance from inlet to domain boundary
+            # along the primary axis direction
+            inlet_point = Point3D(*inlet_position)
+            vertical_distance = domain.distance_to_boundary(inlet_point)
+        
+        if vertical_distance <= 0:
+            logger.warning(
+                f"Depth-adaptive: vertical_distance={vertical_distance:.6f} <= 0, "
+                f"using default step_length={config.step_length:.6f}"
+            )
+            return config.step_length
+        
+        levels = config.levels
+        step_decay = config.step_decay
+        
+        if levels <= 0:
+            return config.step_length
+        
+        if config.depth_adaptive_mode == "uniform":
+            # Each level contributes equally to vertical travel
+            # step_length = vertical_distance / levels
+            adjusted_step = vertical_distance / levels
+            
+        elif config.depth_adaptive_mode == "geometric":
+            # Maintain step_decay ratio but scale initial step_length
+            # Total vertical travel with geometric decay:
+            # sum(step_length * step_decay^i for i in 0..levels-1)
+            # = step_length * (1 - step_decay^levels) / (1 - step_decay)  [if step_decay != 1]
+            # = step_length * levels  [if step_decay == 1]
+            
+            if abs(step_decay - 1.0) < 1e-9:
+                # step_decay == 1, all steps are equal
+                geometric_sum_factor = float(levels)
+            else:
+                geometric_sum_factor = (1.0 - step_decay ** levels) / (1.0 - step_decay)
+            
+            if geometric_sum_factor <= 0:
+                logger.warning(
+                    f"Depth-adaptive: geometric_sum_factor={geometric_sum_factor:.6f} <= 0, "
+                    f"using default step_length={config.step_length:.6f}"
+                )
+                return config.step_length
+            
+            adjusted_step = vertical_distance / geometric_sum_factor
+            
+        else:
+            # Unknown mode, return default
+            return config.step_length
+        
+        # Ensure adjusted step is within reasonable bounds
+        min_step = config.min_segment_length
+        max_step = config.max_segment_length if config.max_segment_length > 0 else config.step_length * 3
+        
+        if adjusted_step < min_step:
+            logger.warning(
+                f"Depth-adaptive: adjusted_step={adjusted_step:.6f} < min_segment_length={min_step:.6f}, "
+                f"clamping to min"
+            )
+            adjusted_step = min_step
+        elif adjusted_step > max_step:
+            logger.warning(
+                f"Depth-adaptive: adjusted_step={adjusted_step:.6f} > max_step={max_step:.6f}, "
+                f"clamping to max"
+            )
+            adjusted_step = max_step
+        
+        return adjusted_step
     
     def get_generation_stats(self) -> Dict[str, int]:
         """Return statistics from the last generation run."""
