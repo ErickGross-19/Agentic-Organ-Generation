@@ -26,9 +26,6 @@ import shutil
 logger = logging.getLogger(__name__)
 
 
-import re
-
-
 def _translate_component_path(path: str, spec: Dict[str, Any]) -> str:
     """
     Translate component-name-based paths to array-index-based paths.
