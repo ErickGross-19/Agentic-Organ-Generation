@@ -84,7 +84,7 @@
       "max_radius": 0.0002,
       "backend_params": {
         "num_attraction_points": 250000,
-        "influence_radius": 0.00045,
+        "influence_radius": 0.0005,
         "kill_radius": 0.00018,
         "branch_enable_after_distance": 0.0002,
         "min_branch_segment_length": 0.0001,
@@ -94,7 +94,7 @@
           0,
           -1
         ],
-        "max_deviation_deg": 180.0,
+        "max_deviation_deg": 100.0,
         "upward_forbidden": false,
         "multi_inlet_mode": "blended",
         "collision_merge_distance": 0.0004,
