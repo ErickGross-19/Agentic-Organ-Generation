@@ -134,6 +134,30 @@ class RunSummary:
 
 
 @dataclass
+class ValidationWarningWithFix:
+    """A validation warning with suggested fix."""
+    code: str = ""
+    message: str = ""
+    path: str = ""
+    suggestion: str = ""
+    current_value: Optional[Any] = None
+    recommended_value: Optional[Any] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        result = {
+            "code": self.code,
+            "message": self.message,
+            "path": self.path,
+            "suggestion": self.suggestion,
+        }
+        if self.current_value is not None:
+            result["current_value"] = self.current_value
+        if self.recommended_value is not None:
+            result["recommended_value"] = self.recommended_value
+        return result
+
+
+@dataclass
 class ValidationSummary:
     """Summary of validation results."""
     valid: bool = False
@@ -143,14 +167,16 @@ class ValidationSummary:
     warnings: List[str] = field(default_factory=list)
     spec_hash: str = ""
     
-    # Enhanced validity info for compact context
     failed_checks: int = 0
     failure_names: List[str] = field(default_factory=list)
     failure_reasons: List[str] = field(default_factory=list)
     key_metrics: Dict[str, Any] = field(default_factory=dict)
     
+    warnings_with_fixes: List[ValidationWarningWithFix] = field(default_factory=list)
+    domain_scale: Optional[float] = None
+    
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        result = {
             "valid": self.valid,
             "error_count": self.error_count,
             "warning_count": self.warning_count,
@@ -162,6 +188,11 @@ class ValidationSummary:
             "failure_reasons": self.failure_reasons[:5],
             "key_metrics": self.key_metrics,
         }
+        if self.warnings_with_fixes:
+            result["warnings_with_fixes"] = [w.to_dict() for w in self.warnings_with_fixes[:10]]
+        if self.domain_scale is not None:
+            result["domain_scale"] = self.domain_scale
+        return result
 
 
 @dataclass
@@ -328,6 +359,8 @@ class ContextPack:
             vs = self.validation_summary
             status = "VALID" if vs.valid else "INVALID"
             lines.append(f"## Validation Status: {status}")
+            if vs.domain_scale is not None:
+                lines.append(f"- Domain Scale: {vs.domain_scale:.4f}m")
             if vs.errors:
                 lines.append("Errors:")
                 for err in vs.errors[:5]:
@@ -336,6 +369,17 @@ class ContextPack:
                 lines.append("Warnings:")
                 for warn in vs.warnings[:3]:
                     lines.append(f"  - {warn}")
+            if vs.warnings_with_fixes:
+                lines.append("")
+                lines.append("### Actionable Warnings with Suggested Fixes:")
+                for wf in vs.warnings_with_fixes[:5]:
+                    lines.append(f"  [{wf.code}] {wf.message}")
+                    lines.append(f"    Path: {wf.path}")
+                    if wf.current_value is not None:
+                        lines.append(f"    Current: {wf.current_value}")
+                    if wf.recommended_value is not None:
+                        lines.append(f"    Recommended: {wf.recommended_value}")
+                    lines.append(f"    Fix: {wf.suggestion}")
             lines.append("")
         
         # Last run
@@ -496,7 +540,7 @@ class ContextBuilder:
         """
         try:
             validation = self.session.validate_spec()
-            return ValidationSummary(
+            summary = ValidationSummary(
                 valid=validation.valid,
                 error_count=len(validation.errors),
                 warning_count=len(validation.warnings),
@@ -504,9 +548,135 @@ class ContextBuilder:
                 warnings=validation.warnings,
                 spec_hash=validation.spec_hash or "",
             )
+            
+            preflight_warnings = self._extract_preflight_warnings()
+            if preflight_warnings:
+                summary.warnings_with_fixes = preflight_warnings
+                summary.warning_count += len(preflight_warnings)
+            
+            spec = self.session.get_spec()
+            if spec:
+                summary.domain_scale = self._get_domain_scale(spec)
+            
+            return summary
         except Exception as e:
             logger.warning(f"Failed to get validation: {e}")
             return None
+    
+    def _get_domain_scale(self, spec: Dict[str, Any]) -> float:
+        """
+        Get the approximate scale of the domain in meters.
+        
+        Parameters
+        ----------
+        spec : dict
+            The spec dictionary
+            
+        Returns
+        -------
+        float
+            Domain scale in meters
+        """
+        domains = spec.get("domains", {})
+        if not domains:
+            return 0.01
+        
+        domain = next(iter(domains.values()))
+        if not isinstance(domain, dict):
+            return 0.01
+        
+        domain_type = domain.get("type", "").lower()
+        
+        if domain_type == "cylinder":
+            radius = domain.get("radius", 0.01)
+            height = domain.get("height", 0.01)
+            return max(radius * 2, height)
+        elif domain_type == "box":
+            x_size = abs(domain.get("x_max", 0.01) - domain.get("x_min", -0.01))
+            y_size = abs(domain.get("y_max", 0.01) - domain.get("y_min", -0.01))
+            z_size = abs(domain.get("z_max", 0.01) - domain.get("z_min", -0.01))
+            return max(x_size, y_size, z_size)
+        elif domain_type == "ellipsoid":
+            radii = domain.get("radii", [0.01, 0.01, 0.01])
+            if isinstance(radii, list) and len(radii) >= 3:
+                return max(radii) * 2
+            return 0.01
+        
+        return 0.01
+    
+    def _extract_preflight_warnings(self) -> List[ValidationWarningWithFix]:
+        """
+        Extract preflight validation warnings with suggested fixes.
+        
+        Returns
+        -------
+        list of ValidationWarningWithFix
+            Warnings with actionable fix suggestions
+        """
+        warnings_with_fixes = []
+        
+        try:
+            from designspec.preflight import run_preflight_checks, _get_domain_scale
+            
+            spec = self.session.get_spec()
+            if not spec:
+                return warnings_with_fixes
+            
+            preflight_result = run_preflight_checks(spec)
+            domain_scale = _get_domain_scale(spec)
+            
+            for warning in preflight_result.warnings:
+                fix = ValidationWarningWithFix(
+                    code=warning.code,
+                    message=warning.message,
+                    path=warning.path,
+                    suggestion=warning.suggestion or "",
+                )
+                
+                if warning.code == "PITCH_TOO_LARGE":
+                    recommended_pitch = domain_scale / 100
+                    fix.recommended_value = recommended_pitch
+                    fix.suggestion = (
+                        f"Set voxel_pitch to {recommended_pitch:.6f}m "
+                        f"(domain_scale / 100 = {domain_scale:.4f}m / 100)"
+                    )
+                    
+                    path_parts = warning.path.split(".")
+                    if len(path_parts) >= 2:
+                        policy_name = path_parts[1]
+                        policies = spec.get("policies", {})
+                        policy = policies.get(policy_name, {})
+                        if isinstance(policy, dict):
+                            fix.current_value = policy.get("voxel_pitch")
+                
+                elif warning.code == "DOMAIN_NOT_NORMALIZED":
+                    fix.suggestion = (
+                        "Ensure meta.input_units is set correctly (e.g., 'mm') "
+                        "and the spec is normalized before running"
+                    )
+                
+                elif warning.code == "PORT_RADIUS_NOT_NORMALIZED":
+                    fix.suggestion = (
+                        "Port radius seems too large. Check that input_units is correct "
+                        "and values are in the expected unit system"
+                    )
+                
+                warnings_with_fixes.append(fix)
+            
+            for error in preflight_result.errors:
+                if error.code == "MISSING_REQUIRED_POLICY":
+                    fix = ValidationWarningWithFix(
+                        code=error.code,
+                        message=error.message,
+                        path=error.path,
+                        suggestion=error.suggestion or "Add the required policy",
+                    )
+                    warnings_with_fixes.append(fix)
+            
+        except Exception as e:
+            logger.warning(f"Failed to extract preflight warnings: {e}")
+        
+        return warnings_with_fixes
     
     def build_run_summary(self, run_result: Dict[str, Any]) -> RunSummary:
         """

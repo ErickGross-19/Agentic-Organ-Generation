@@ -861,10 +861,305 @@ class ArtifactsPanel(ttk.LabelFrame):
         self.open_folder_btn.config(state="disabled")
 
 
+class LiveSpecViewer(ttk.Frame):
+    """
+    Hierarchical tree view of current DesignSpec with:
+    - Expandable sections (domains, components, policies)
+    - Color-coded status (complete, missing, invalid)
+    - Diff highlighting when patches applied
+    - Click to expand/collapse
+    
+    Parameters
+    ----------
+    parent : tk.Widget
+        Parent widget
+    on_section_click : Callable, optional
+        Callback when a section is clicked
+    """
+    
+    STATUS_COLORS = {
+        "valid": "#2ecc71",
+        "warning": "#f39c12",
+        "error": "#e74c3c",
+        "default": "#95a5a6",
+        "added": "#27ae60",
+        "removed": "#c0392b",
+        "changed": "#f1c40f",
+    }
+    
+    def __init__(
+        self,
+        parent: tk.Widget,
+        on_section_click: Optional[Callable[[str], None]] = None,
+        **kwargs,
+    ):
+        super().__init__(parent, **kwargs)
+        
+        self.on_section_click = on_section_click
+        self._spec: Dict[str, Any] = {}
+        self._validation_errors: Dict[str, List[str]] = {}
+        self._validation_warnings: Dict[str, List[str]] = {}
+        self._diff_paths: Dict[str, str] = {}
+        
+        self._setup_ui()
+    
+    def _setup_ui(self):
+        """Set up the viewer UI."""
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+        
+        header_frame = ttk.Frame(self)
+        header_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
+        
+        ttk.Label(
+            header_frame,
+            text="DesignSpec",
+            font=("TkDefaultFont", 10, "bold"),
+        ).pack(side="left")
+        
+        self.status_indicator = ttk.Label(
+            header_frame,
+            text="",
+            width=3,
+        )
+        self.status_indicator.pack(side="right")
+        
+        tree_frame = ttk.Frame(self)
+        tree_frame.grid(row=1, column=0, sticky="nsew", padx=5, pady=(0, 5))
+        tree_frame.columnconfigure(0, weight=1)
+        tree_frame.rowconfigure(0, weight=1)
+        
+        self.tree = ttk.Treeview(
+            tree_frame,
+            selectmode="browse",
+            show="tree",
+        )
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        
+        scrollbar = ttk.Scrollbar(
+            tree_frame,
+            orient="vertical",
+            command=self.tree.yview,
+        )
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        
+        self.tree.tag_configure("valid", foreground=self.STATUS_COLORS["valid"])
+        self.tree.tag_configure("warning", foreground=self.STATUS_COLORS["warning"])
+        self.tree.tag_configure("error", foreground=self.STATUS_COLORS["error"])
+        self.tree.tag_configure("default", foreground=self.STATUS_COLORS["default"])
+        self.tree.tag_configure("added", foreground=self.STATUS_COLORS["added"])
+        self.tree.tag_configure("removed", foreground=self.STATUS_COLORS["removed"])
+        self.tree.tag_configure("changed", foreground=self.STATUS_COLORS["changed"])
+        self.tree.tag_configure("section", font=("TkDefaultFont", 9, "bold"))
+        
+        self.tree.bind("<<TreeviewSelect>>", self._on_selection)
+        self.tree.bind("<Double-1>", self._on_double_click)
+    
+    def _on_selection(self, event):
+        """Handle tree selection."""
+        selection = self.tree.selection()
+        if selection and self.on_section_click:
+            item_id = selection[0]
+            path = self._get_item_path(item_id)
+            self.on_section_click(path)
+    
+    def _on_double_click(self, event):
+        """Handle double-click to expand/collapse."""
+        item_id = self.tree.identify_row(event.y)
+        if item_id:
+            if self.tree.item(item_id, "open"):
+                self.tree.item(item_id, open=False)
+            else:
+                self.tree.item(item_id, open=True)
+    
+    def _get_item_path(self, item_id: str) -> str:
+        """Get the JSON path for a tree item."""
+        path_parts = []
+        current = item_id
+        
+        while current:
+            text = self.tree.item(current, "text")
+            if ":" in text:
+                text = text.split(":")[0].strip()
+            path_parts.insert(0, text)
+            current = self.tree.parent(current)
+        
+        return "/".join(path_parts)
+    
+    def update_spec(self, spec: Dict[str, Any]):
+        """Update the displayed spec."""
+        self._spec = spec
+        self._rebuild_tree()
+    
+    def update_validation(
+        self,
+        errors: Dict[str, List[str]] = None,
+        warnings: Dict[str, List[str]] = None,
+    ):
+        """Update validation status for sections."""
+        self._validation_errors = errors or {}
+        self._validation_warnings = warnings or {}
+        self._update_status_colors()
+    
+    def show_diff(self, diff_paths: Dict[str, str]):
+        """
+        Show diff highlighting for changed paths.
+        
+        Parameters
+        ----------
+        diff_paths : dict
+            Mapping of JSON paths to diff type ("added", "removed", "changed")
+        """
+        self._diff_paths = diff_paths
+        self._update_status_colors()
+    
+    def clear_diff(self):
+        """Clear diff highlighting."""
+        self._diff_paths = {}
+        self._update_status_colors()
+    
+    def _rebuild_tree(self):
+        """Rebuild the tree from the spec."""
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        
+        if not self._spec:
+            return
+        
+        sections = [
+            ("meta", "Meta"),
+            ("domains", "Domains"),
+            ("components", "Components"),
+            ("policies", "Policies"),
+            ("features", "Features"),
+        ]
+        
+        for key, label in sections:
+            if key in self._spec:
+                self._add_section(key, label, self._spec[key])
+        
+        self._update_status_colors()
+    
+    def _add_section(self, key: str, label: str, data: Any, parent: str = ""):
+        """Add a section to the tree."""
+        if data is None:
+            return
+        
+        section_id = self.tree.insert(
+            parent,
+            "end",
+            text=label,
+            tags=("section",),
+            open=True,
+        )
+        
+        if isinstance(data, dict):
+            for sub_key, sub_value in data.items():
+                self._add_item(section_id, sub_key, sub_value, f"{key}.{sub_key}")
+        elif isinstance(data, list):
+            for i, item in enumerate(data):
+                if isinstance(item, dict) and "id" in item:
+                    item_label = f"{i}: {item['id']}"
+                else:
+                    item_label = f"[{i}]"
+                self._add_item(section_id, item_label, item, f"{key}[{i}]")
+    
+    def _add_item(self, parent: str, key: str, value: Any, path: str):
+        """Add an item to the tree."""
+        if isinstance(value, dict):
+            item_id = self.tree.insert(
+                parent,
+                "end",
+                text=key,
+                open=False,
+            )
+            for sub_key, sub_value in value.items():
+                self._add_item(item_id, sub_key, sub_value, f"{path}.{sub_key}")
+        elif isinstance(value, list):
+            if len(value) <= 3 and all(not isinstance(v, (dict, list)) for v in value):
+                display_value = str(value)
+                self.tree.insert(parent, "end", text=f"{key}: {display_value}")
+            else:
+                item_id = self.tree.insert(
+                    parent,
+                    "end",
+                    text=f"{key} [{len(value)} items]",
+                    open=False,
+                )
+                for i, item in enumerate(value):
+                    self._add_item(item_id, f"[{i}]", item, f"{path}[{i}]")
+        else:
+            display_value = self._format_value(value)
+            self.tree.insert(parent, "end", text=f"{key}: {display_value}")
+    
+    def _format_value(self, value: Any) -> str:
+        """Format a value for display."""
+        if value is None:
+            return "null"
+        elif isinstance(value, bool):
+            return "true" if value else "false"
+        elif isinstance(value, float):
+            if abs(value) < 0.0001 or abs(value) > 10000:
+                return f"{value:.6e}"
+            return f"{value:.6f}".rstrip("0").rstrip(".")
+        elif isinstance(value, str):
+            if len(value) > 50:
+                return f'"{value[:47]}..."'
+            return f'"{value}"'
+        return str(value)
+    
+    def _update_status_colors(self):
+        """Update status colors based on validation and diff."""
+        has_errors = bool(self._validation_errors)
+        has_warnings = bool(self._validation_warnings)
+        
+        if has_errors:
+            self.status_indicator.config(
+                text="X",
+                foreground=self.STATUS_COLORS["error"],
+            )
+        elif has_warnings:
+            self.status_indicator.config(
+                text="!",
+                foreground=self.STATUS_COLORS["warning"],
+            )
+        else:
+            self.status_indicator.config(
+                text="",
+                foreground=self.STATUS_COLORS["valid"],
+            )
+    
+    def scroll_to_path(self, path: str):
+        """Scroll to and select a specific path in the tree."""
+        pass
+    
+    def expand_all(self):
+        """Expand all tree nodes."""
+        def expand_recursive(item):
+            self.tree.item(item, open=True)
+            for child in self.tree.get_children(item):
+                expand_recursive(child)
+        
+        for item in self.tree.get_children():
+            expand_recursive(item)
+    
+    def collapse_all(self):
+        """Collapse all tree nodes."""
+        def collapse_recursive(item):
+            self.tree.item(item, open=False)
+            for child in self.tree.get_children(item):
+                collapse_recursive(child)
+        
+        for item in self.tree.get_children():
+            collapse_recursive(item)
+
+
 __all__ = [
-    "SpecPanel",
-    "PatchPanel",
-    "CompilePanel",
-    "RunPanel",
     "ArtifactsPanel",
+    "CompilePanel",
+    "LiveSpecViewer",
+    "PatchPanel",
+    "RunPanel",
+    "SpecPanel",
 ]

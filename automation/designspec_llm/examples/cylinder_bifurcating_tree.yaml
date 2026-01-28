@@ -1,0 +1,99 @@
+schema:
+  name: aog_designspec
+  version: "1.0.0"
+
+meta:
+  name: cylinder_bifurcating_tree
+  description: |
+    A cylinder domain with a bifurcating vascular tree.
+    This example demonstrates proper scale-appropriate policy values
+    for a 10mm radius, 50mm height cylinder domain.
+  seed: 42
+  input_units: mm
+
+policies:
+  growth:
+    enabled: true
+    backend: scaffold_topdown
+    target_terminals: 64
+    max_iterations: 500
+    min_segment_length: 1.0
+    max_segment_length: 5.0
+    min_radius: 0.05
+    step_size: 0.5
+    backend_params:
+      branching_angle: 45.0
+      depth: 6
+      radius_decay: 0.8
+
+  collision:
+    enabled: true
+    check_collisions: true
+    collision_clearance: 0.5
+
+  mesh_merge:
+    mode: voxel
+    voxel_pitch: 0.5
+    auto_adjust_pitch: true
+    keep_largest_component: false
+
+  embedding:
+    voxel_pitch: 0.5
+    auto_adjust_pitch: true
+    preserve_ports_enabled: true
+    preserve_mode: recarve
+    carve_radius_factor: 1.15
+    shell_thickness: 0.3
+
+  mesh_synthesis:
+    add_node_spheres: true
+    cap_ends: false
+    voxel_repair_synthesis: false
+
+  validation:
+    check_watertight: true
+    check_components: true
+    max_components: 1
+    allow_open_ports: true
+
+  output:
+    format: stl
+    output_units: mm
+
+domains:
+  cylinder_domain:
+    type: cylinder
+    center: [0, 0, 25]
+    radius: 10.0
+    height: 50.0
+
+components:
+  - id: main_tree
+    domain_ref: cylinder_domain
+    ports:
+      inlets:
+        - name: inlet_top_center
+          position: [0, 0, 50]
+          direction: [0, 0, -1]
+          radius: 0.5
+          vessel_type: arterial
+        - name: inlet_top_left
+          position: [-5, 0, 50]
+          direction: [0, 0, -1]
+          radius: 0.5
+          vessel_type: arterial
+        - name: inlet_top_right
+          position: [5, 0, 50]
+          direction: [0, 0, -1]
+          radius: 0.5
+          vessel_type: arterial
+      outlets: []
+    build:
+      type: backend_network
+      backend: scaffold_topdown
+      backend_params:
+        branching_angle: 45.0
+        depth: 6
+        radius_decay: 0.8
+
+features: {}
