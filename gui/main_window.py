@@ -269,15 +269,15 @@ class MainWindow:
         self.verification_btn.pack(side="right", padx=2)
     
     def _setup_main_panels(self):
-        """Set up three-panel layout with DesignSpec panels in a notebook."""
-        paned = ttk.PanedWindow(self.main_frame, orient="horizontal")
-        paned.grid(row=1, column=0, sticky="nsew")
+        """Set up main panel layout - simplified for conversation phase."""
+        self._main_paned = ttk.PanedWindow(self.main_frame, orient="horizontal")
+        self._main_paned.grid(row=1, column=0, sticky="nsew")
         
-        left_paned = ttk.PanedWindow(paned, orient="vertical")
-        paned.add(left_paned, weight=2)
+        self._left_paned = ttk.PanedWindow(self._main_paned, orient="vertical")
+        self._main_paned.add(self._left_paned, weight=2)
         
-        chat_frame = ttk.LabelFrame(left_paned, text="Chat")
-        left_paned.add(chat_frame, weight=1)
+        chat_frame = ttk.LabelFrame(self._left_paned, text="Chat")
+        self._left_paned.add(chat_frame, weight=1)
         
         chat_frame.columnconfigure(0, weight=1)
         chat_frame.rowconfigure(0, weight=1)
@@ -317,11 +317,9 @@ class MainWindow:
         )
         self.send_btn.grid(row=0, column=1, padx=(5, 0))
         
-        # Create notebook for DesignSpec panels
-        self.panels_notebook = ttk.Notebook(left_paned)
-        left_paned.add(self.panels_notebook, weight=1)
+        self.panels_notebook = ttk.Notebook(self._left_paned)
+        self._left_paned.add(self.panels_notebook, weight=1)
         
-        # Tab 1: Conversation / Log (existing output_text)
         output_frame = ttk.Frame(self.panels_notebook)
         self.panels_notebook.add(output_frame, text="Log")
         
@@ -348,14 +346,12 @@ class MainWindow:
             command=self._open_output_folder,
         ).pack(side="right")
         
-        # Tab 2: Spec panel
         self.spec_panel = SpecPanel(
             self.panels_notebook,
             on_edit_request=self._on_spec_refresh,
         )
         self.panels_notebook.add(self.spec_panel, text="Spec")
         
-        # Tab 3: Patches panel
         self.patch_panel = PatchPanel(
             self.panels_notebook,
             on_approve=self._on_patch_approve,
@@ -363,7 +359,6 @@ class MainWindow:
         )
         self.panels_notebook.add(self.patch_panel, text="Patches")
         
-        # Tab 4: Run panel with approval buttons
         self.run_panel = RunPanel(
             self.panels_notebook,
             on_run_until=self._on_run_until,
@@ -373,7 +368,6 @@ class MainWindow:
         )
         self.panels_notebook.add(self.run_panel, text="Run")
         
-        # Tab 5: Artifacts panel
         self.artifacts_panel = ArtifactsPanel(
             self.panels_notebook,
             on_load_stl=self._load_stl,
@@ -381,19 +375,26 @@ class MainWindow:
         )
         self.panels_notebook.add(self.artifacts_panel, text="Artifacts")
         
-        # Tab 6: Compile / Reports panel
         self.compile_panel = CompilePanel(
             self.panels_notebook,
             on_compile=self._on_compile,
         )
         self.panels_notebook.add(self.compile_panel, text="Reports")
         
-        # STL Viewer panel
-        viewer_frame = ttk.LabelFrame(paned, text="STL Viewer")
-        paned.add(viewer_frame, weight=1)
+        self._viewer_frame = ttk.LabelFrame(self._main_paned, text="STL Viewer")
+        self._main_paned.add(self._viewer_frame, weight=1)
         
-        self.stl_viewer = STLViewer(viewer_frame, width=400, height=400)
+        self.stl_viewer = STLViewer(self._viewer_frame, width=400, height=400)
         self.stl_viewer.pack(fill="both", expand=True, padx=5, pady=5)
+        
+        self._tab_indices = {
+            "Log": 0,
+            "Spec": 1,
+            "Patches": 2,
+            "Run": 3,
+            "Artifacts": 4,
+            "Reports": 5,
+        }
     
     def _setup_status_bar(self):
         """Set up status bar."""
@@ -454,12 +455,26 @@ class MainWindow:
         self.root.wait_window(wizard)
     
     def _switch_to_conversation_layout(self):
-        """Switch to 2-panel conversation layout (chat + live spec viewer)."""
+        """Switch to simplified 2-panel conversation layout (chat + live spec viewer only)."""
         self._current_layout_mode = "conversation"
         
         if self._live_spec_viewer is None:
             self._live_spec_viewer = LiveSpecViewer(self.panels_notebook)
             self.panels_notebook.add(self._live_spec_viewer, text="Live Spec")
+        
+        for tab_name in ["Log", "Spec", "Patches", "Run", "Artifacts", "Reports"]:
+            try:
+                for i in range(self.panels_notebook.index("end")):
+                    if self.panels_notebook.tab(i, "text") == tab_name:
+                        self.panels_notebook.hide(i)
+                        break
+            except Exception:
+                pass
+        
+        try:
+            self._main_paned.forget(self._viewer_frame)
+        except Exception:
+            pass
         
         self.panels_notebook.select(self._live_spec_viewer)
         
@@ -482,6 +497,21 @@ class MainWindow:
     def _switch_to_results_layout(self):
         """Switch to 3-panel results layout after run completes."""
         self._current_layout_mode = "results"
+        
+        for tab_name in ["Log", "Spec", "Patches", "Run", "Artifacts", "Reports"]:
+            try:
+                for i in range(self.panels_notebook.index("end")):
+                    if self.panels_notebook.tab(i, "text") == tab_name:
+                        self.panels_notebook.add(self.panels_notebook.tabs()[i])
+                        break
+            except Exception:
+                pass
+        
+        try:
+            if self._viewer_frame not in self._main_paned.panes():
+                self._main_paned.add(self._viewer_frame, weight=1)
+        except Exception:
+            pass
         
         self.panels_notebook.select(self.artifacts_panel)
         
