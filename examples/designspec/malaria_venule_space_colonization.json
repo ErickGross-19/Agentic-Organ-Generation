@@ -30,9 +30,9 @@
       "max_pitch": 2e-05,
       "auto_relax_pitch": false,
       "pitch_step_factor": 1.5,
-      "max_voxels_embed": 14000000,
-      "max_voxels_merge": 14000000,
-      "max_voxels_repair": 14000000
+      "max_voxels_embed": 40000000,
+      "max_voxels_merge": 40000000,
+      "max_voxels_repair": 40000000
     },
     "domain_meshing": {
       "cache_meshes": true,
@@ -48,7 +48,7 @@
       "mesh_policy": {
         "validate_watertight": true,
         "repair_if_needed": true,
-        "repair_voxel_pitch": 5e-05,
+        "repair_voxel_pitch": 2e-05,
         "max_faces": 900000,
         "simplify_if_over_max": true,
         "simplify_target_ratio": 0.6
@@ -84,25 +84,25 @@
       "max_radius": 0.0002,
       "backend_params": {
         "num_attraction_points": 250000,
-        "influence_radius": 0.0005,
-        "kill_radius": 0.00018,
-        "branch_enable_after_distance": 0.0002,
+        "influence_radius": 0.0012,
+        "kill_radius": 0.00022,
+        "branch_enable_after_distance": 0.0006,
         "min_branch_segment_length": 0.0001,
-        "directional_bias": 0.0,
+        "directional_bias": 0.2,
         "primary_axis": [
           0,
           0,
           -1
         ],
-        "max_deviation_deg": 100.0,
-        "upward_forbidden": false,
+        "max_deviation_deg": 75.0,
+        "upward_forbidden": true,
         "multi_inlet_mode": "blended",
         "collision_merge_distance": 0.0004,
         "encourage_bifurcation": true,
         "max_children_per_node": 3,
-        "bifurcation_probability": 0.85,
-        "min_attractions_for_bifurcation": 6,
-        "bifurcation_angle_threshold_deg": 10.0,
+        "bifurcation_probability": 0.55,
+        "min_attractions_for_bifurcation": 10,
+        "bifurcation_angle_threshold_deg": 20.0,
         "progress": true,
         "kdtree_rebuild_tip_every": 1,
         "kdtree_rebuild_all_nodes_every": 10,
@@ -112,9 +112,9 @@
         "tissue_sampling": {
           "enabled": true,
           "strategy": "radial_biased",
-          "depth_min": 0.0001,
+          "depth_min": 0.00035,
           "depth_max": 0.0018,
-          "min_distance_to_ports": 0.0003,
+          "min_distance_to_ports": 0.0009,
           "ring_r0": 0.0,
           "ring_sigma": 0.0,
           "radial_reference": {
@@ -127,7 +127,7 @@
           "r_max": 0.005,
           "radial_power": 2.2
         },
-        "multi_inlet_blend_sigma": 0.0035
+        "multi_inlet_blend_sigma": 0.0015
       }
     },
     "radius": {
@@ -155,18 +155,18 @@
       "fill_voxels": false
     },
     "embedding": {
-      "voxel_pitch": 5e-05,
+      "voxel_pitch": 2e-05,
       "shell_thickness": 0.0,
       "use_resolution_policy": true,
-      "auto_adjust_pitch": true,
+      "auto_adjust_pitch": false,
       "max_pitch_steps": 4,
       "pitch_step_factor": 1.5,
-      "max_voxels": 14000000,
+      "max_voxels": 40000000,
       "fallback": "auto",
       "preserve_ports_enabled": true,
       "preserve_mode": "recarve",
-      "carve_radius_factor": 1.4,
-      "carve_depth": 0.001
+      "carve_radius_factor": 1.15,
+      "carve_depth": 0.0006
     },
     "open_port": {
       "enabled": false
@@ -218,7 +218,7 @@
               0.0,
               -1.0
             ],
-            "radius": 0.0005
+            "radius": 0.0002
           },
           {
             "name": "inlet_e",
@@ -232,7 +232,7 @@
               0.0,
               -1.0
             ],
-            "radius": 0.0005
+            "radius": 0.0002
           },
           {
             "name": "inlet_w",
@@ -246,7 +246,7 @@
               0.0,
               -1.0
             ],
-            "radius": 0.0005
+            "radius": 0.0002
           },
           {
             "name": "inlet_n",
@@ -260,7 +260,7 @@
               0.0,
               -1.0
             ],
-            "radius": 0.0005
+            "radius": 0.0002
           },
           {
             "name": "inlet_s",
@@ -274,7 +274,7 @@
               0.0,
               -1.0
             ],
-            "radius": 0.0005
+            "radius": 0.0002
           }
         ],
         "outlets": []
