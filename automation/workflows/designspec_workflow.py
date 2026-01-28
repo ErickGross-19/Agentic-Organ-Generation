@@ -266,47 +266,55 @@ class AsyncDesignSpecRunner:
                     logger.warning(f"Unknown stage '{run_until}', running all stages")
             
             total_stages = len(stages_to_run)
-            completed_stages = []
             
-            for i, stage in enumerate(stages_to_run):
-                if self._cancel_flag.is_set():
-                    logger.info(f"Pipeline cancelled at stage {stage}")
-                    self._emit_progress(
-                        stage=stage,
-                        stage_index=i,
-                        total_stages=total_stages,
-                        status="cancelled",
-                        message=f"Pipeline cancelled at stage {stage}",
-                        elapsed_time=time.time() - self._start_time,
-                    )
-                    self._error = "Pipeline cancelled by user"
-                    break
-                
+            if self._cancel_flag.is_set():
+                logger.info("Pipeline cancelled before starting")
                 self._emit_progress(
-                    stage=stage,
-                    stage_index=i,
+                    stage="cancelled",
+                    stage_index=0,
                     total_stages=total_stages,
-                    status="running",
-                    message=f"Running stage: {stage}",
+                    status="cancelled",
+                    message="Pipeline cancelled before starting",
                     elapsed_time=time.time() - self._start_time,
                 )
-                
-                completed_stages.append(stage)
+                self._error = "Pipeline cancelled by user"
+                return
             
-            if not self._cancel_flag.is_set():
-                if full_run:
-                    self._result = self._session.run()
-                else:
-                    self._result = self._session.run(run_until=run_until)
-                
+            self._emit_progress(
+                stage=stages_to_run[0] if stages_to_run else "starting",
+                stage_index=0,
+                total_stages=total_stages,
+                status="running",
+                message=f"Starting pipeline ({total_stages} stages)...",
+                elapsed_time=time.time() - self._start_time,
+            )
+            
+            if full_run:
+                self._result = self._session.run()
+            else:
+                self._result = self._session.run(run_until=run_until)
+            
+            if self._cancel_flag.is_set():
                 self._emit_progress(
-                    stage=stages_to_run[-1] if stages_to_run else "complete",
+                    stage="cancelled",
                     stage_index=total_stages,
                     total_stages=total_stages,
-                    status="completed",
-                    message="Pipeline completed",
+                    status="cancelled",
+                    message="Pipeline cancelled",
                     elapsed_time=time.time() - self._start_time,
                 )
+                return
+            
+            success = self._result.get("success", False) if self._result else False
+            
+            self._emit_progress(
+                stage=stages_to_run[-1] if stages_to_run else "complete",
+                stage_index=total_stages,
+                total_stages=total_stages,
+                status="completed" if success else "failed",
+                message="Pipeline completed" if success else "Pipeline completed with errors",
+                elapsed_time=time.time() - self._start_time,
+            )
             
         except Exception as e:
             logger.exception("Pipeline execution failed")
