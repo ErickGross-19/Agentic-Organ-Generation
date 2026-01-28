@@ -696,6 +696,14 @@ class DesignSpecWorkflowManager:
             return self._workflow.get_artifacts()
         return []
 
+    def get_artifacts_dir(self) -> Optional[str]:
+        """Get the artifacts output directory path."""
+        if self._project_dir:
+            output_dir = self._project_dir / "output"
+            if output_dir.exists():
+                return str(output_dir)
+        return None
+
     def get_conversation_history(self) -> List[Dict[str, str]]:
         """Get conversation history."""
         if self._workflow:

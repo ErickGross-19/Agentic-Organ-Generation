@@ -459,7 +459,7 @@ class MainWindow:
         self.panels_notebook.select(self._live_spec_viewer)
         
         if hasattr(self, '_designspec_manager') and self._designspec_manager:
-            spec = self._designspec_manager.get_current_spec()
+            spec = self._designspec_manager.get_spec()
             if spec:
                 self._live_spec_viewer.update_spec(spec)
     
@@ -497,9 +497,17 @@ class MainWindow:
         status = event_data.get("status", "")
         message = event_data.get("message", "")
         elapsed = event_data.get("elapsed", 0)
+        stage_index = event_data.get("stage_index", 0)
+        total_stages = event_data.get("total_stages", 11)
         
         if status == "starting":
-            self._execution_progress_panel.set_stage_running(stage)
+            self._execution_progress_panel.update_progress(
+                stage=stage,
+                stage_index=stage_index,
+                total_stages=total_stages,
+                status="running",
+                message=message,
+            )
         elif status == "completed":
             self._execution_progress_panel.set_stage_completed(stage, elapsed)
         elif status == "failed":
@@ -507,7 +515,7 @@ class MainWindow:
             self._execution_progress_panel.set_stage_failed(stage, error)
         
         if message:
-            self._execution_progress_panel.append_log(message)
+            self._execution_progress_panel.add_log(message)
     
     def _update_live_spec_viewer(self, spec: Dict[str, Any]):
         """Update the live spec viewer with new spec data."""
