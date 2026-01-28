@@ -518,44 +518,43 @@ class ConfigurationWizard(tk.Toplevel):
             self.import_path_var.set(path)
     
     def _load_saved_config(self):
-        """Load saved configuration."""
-        saved_provider = self.secure_config.get("last_provider")
+        """Load saved configuration into _config (before UI is created)."""
+        saved_provider = self.secure_config.get_config("last_provider")
         if saved_provider:
             self._config.agent_config.provider = saved_provider
-            
-            for i, (name, key, _) in enumerate(SUPPORTED_PROVIDERS):
-                if key == saved_provider:
-                    break
         
-        saved_model = self.secure_config.get("last_model")
+        saved_model = self.secure_config.get_config("last_model")
         if saved_model:
             self._config.agent_config.model = saved_model
         
-        self._load_api_key_for_provider(self._config.agent_config.provider)
+        saved_key = self.secure_config.get_api_key(self._config.agent_config.provider)
+        if saved_key:
+            self._config.agent_config.api_key = saved_key
     
     def _save_current_step(self):
         """Save the current step's configuration."""
         if self._current_step == 0:
-            for name, key, _ in SUPPORTED_PROVIDERS:
-                if name == self.provider_var.get():
-                    self._config.agent_config.provider = key
-                    break
-            
-            self._config.agent_config.model = self.model_var.get()
-            
-            api_key = self.api_key_var.get().strip()
-            if api_key:
-                self._config.agent_config.api_key = api_key
-                self.secure_config.set_api_key(
-                    self._config.agent_config.provider,
-                    api_key,
-                )
-            
-            self._config.agent_config.temperature = self.temp_var.get()
-            self._config.agent_config.max_tokens = self.max_tokens_var.get()
-            
-            self.secure_config.set("last_provider", self._config.agent_config.provider)
-            self.secure_config.set("last_model", self._config.agent_config.model)
+            if hasattr(self, 'provider_var'):
+                for name, key, _ in SUPPORTED_PROVIDERS:
+                    if name == self.provider_var.get():
+                        self._config.agent_config.provider = key
+                        break
+                
+                self._config.agent_config.model = self.model_var.get()
+                
+                api_key = self.api_key_var.get().strip()
+                if api_key:
+                    self._config.agent_config.api_key = api_key
+                    self.secure_config.store_api_key(
+                        self._config.agent_config.provider,
+                        api_key,
+                    )
+                
+                self._config.agent_config.temperature = self.temp_var.get()
+                self._config.agent_config.max_tokens = self.max_tokens_var.get()
+                
+                self.secure_config.store_config("last_provider", self._config.agent_config.provider)
+                self.secure_config.store_config("last_model", self._config.agent_config.model)
             
         elif self._current_step == 1:
             self._config.project_name = self.project_name_var.get().strip()
