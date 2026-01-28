@@ -6037,7 +6037,7 @@ def run_single_agent_workflow(
         Use workflow.get_status() to retrieve outputs and artifacts.
     """
     from .agent_runner import create_agent
-    from .single_agent_organ_generation.v5.controller import RunResult
+    from .single_agent_organ_generation._legacy.v5.controller import RunResult
     
     agent = create_agent(
         provider=provider,
