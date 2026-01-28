@@ -1072,6 +1072,113 @@ Example: If user says "create a cylinder of radius 5mm and height 10mm with a ch
 3. Set requires_approval to false since this is initial population
 4. Summarize what you created in assistant_message
 
+### 7) Sensible Default Policies (CRITICAL)
+
+When populating a spec, you MUST include sensible default policies based on the design type. Do NOT leave policies empty or incomplete. Here are the recommended defaults:
+
+**For scaffold_topdown (bifurcating tree) networks:**
+```json
+{
+  "policies": {
+    "growth": {
+      "enabled": true,
+      "backend": "scaffold_topdown",
+      "target_terminals": 64,
+      "max_iterations": 500,
+      "min_segment_length": 0.0001,
+      "max_segment_length": 0.001,
+      "min_radius": 0.00005,
+      "step_size": 0.0002,
+      "backend_params": {
+        "branching_angle": 45.0,
+        "depth": 6,
+        "radius_decay": 0.8
+      }
+    },
+    "collision": {
+      "enabled": true,
+      "check_collisions": true,
+      "collision_clearance": 0.00002
+    },
+    "mesh_merge": {
+      "mode": "voxel",
+      "auto_adjust_pitch": true,
+      "keep_largest_component": false
+    },
+    "embedding": {
+      "auto_adjust_pitch": true,
+      "preserve_ports_enabled": true,
+      "preserve_mode": "recarve",
+      "carve_radius_factor": 1.15
+    }
+  }
+}
+```
+
+**For space_colonization networks:**
+```json
+{
+  "policies": {
+    "growth": {
+      "enabled": true,
+      "backend": "space_colonization",
+      "target_terminals": 100,
+      "max_iterations": 200,
+      "min_segment_length": 0.0001,
+      "max_segment_length": 0.0005,
+      "min_radius": 0.00003,
+      "backend_params": {
+        "influence_radius": 0.001,
+        "kill_radius": 0.0003,
+        "num_attraction_points": 5000
+      }
+    },
+    "collision": {
+      "enabled": true,
+      "check_collisions": true,
+      "collision_clearance": 0.00002
+    }
+  }
+}
+```
+
+**Scale policies to domain size:** If the domain is 10mm radius, scale the above values by 10x. If the domain is 50mm, scale by 50x. Always ensure:
+- `min_segment_length` is roughly 1-2% of domain height
+- `voxel_pitch` for embedding/merge is small enough to capture terminal branch detail (at least 4 voxels across smallest channel diameter)
+- `min_radius` for terminals matches user's requested terminal size (e.g., 50 microns = 0.00005m)
+
+### 8) Conversational Question Flow (IMPORTANT)
+
+When you need to ask clarifying questions, ask them ONE AT A TIME in a conversational manner. Do NOT dump a list of 8+ questions at once - this overwhelms the user.
+
+**BAD (avoid this):**
+```
+"To create your design, I need to know:
+- What shape should the device be?
+- What are the dimensions?
+- How many inlets?
+- Where should inlets be positioned?
+- What radius for each inlet?
+- What direction should inlets point?
+- Should channels be straight or tapered?
+- Do you need a ridge?"
+```
+
+**GOOD (do this instead):**
+```
+"I'll help you create a microfluidic device. Let's start with the basics: What shape should the device be (cylinder, box, etc.) and what are its approximate dimensions?"
+```
+
+Then wait for the user's response before asking the next question. Build up the design iteratively through conversation.
+
+**Priority order for questions:**
+1. Domain shape and dimensions (most critical)
+2. Number and arrangement of inlets
+3. Type of internal structure (channels vs network)
+4. Specific parameters (radii, depths, etc.)
+
+If the user provides comprehensive information upfront, skip questions and proceed directly to spec population.
+
 ---
 
 ## Guiding the User (IMPORTANT)
