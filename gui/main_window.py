@@ -144,10 +144,6 @@ class MainWindow:
         self._current_workflow_type: Optional[WorkflowType] = None
         self._agent_config: Optional[AgentConfiguration] = None
         
-        # Plan selection state (for in-chat selection)
-        self._awaiting_plan_selection: bool = False
-        self._pending_plan_selection: set = set()
-        
         self._setup_menu()
         self._setup_ui()
         self._setup_bindings()
@@ -555,33 +551,6 @@ class MainWindow:
                 self._append_chat("system", "Please start a workflow first (File > New Workflow or Ctrl+N)")
                 return
             
-            # Handle plan selection validation (in-chat selection)
-            if self._awaiting_plan_selection:
-                # Empty input means use recommended plan
-                if not text:
-                    self._append_chat("user", "(using recommended)")
-                    self.workflow_manager.send_input("")
-                    self._awaiting_plan_selection = False
-                    self._pending_plan_selection = set()
-                # Validate the plan ID
-                elif text in self._pending_plan_selection:
-                    self._append_chat("user", text)
-                    self.workflow_manager.send_input(text)
-                    self._awaiting_plan_selection = False
-                    self._pending_plan_selection = set()
-                else:
-                    # Invalid plan ID - show error and re-prompt without returning to controller
-                    self._append_chat("error", f"Invalid plan ID: '{text}'")
-                    valid_ids = ", ".join(sorted(self._pending_plan_selection))
-                    self._append_chat("system", f"Valid plan IDs are: {valid_ids}")
-                    self._append_chat("system", "Please enter a valid plan ID or press Enter for recommended.")
-                    # Don't clear awaiting state - let user try again
-                
-                # Clear the input field
-                self.input_var.set("")
-                self.input_entry.delete(0, "end")
-                return
-            
             # Normal input handling
             # Provide feedback even if text is empty (never fail silently)
             if not text:
@@ -603,12 +572,8 @@ class MainWindow:
         """
         Handle message from workflow.
         
-        V5 workflows emit structured messages with payloads that require
+        DesignSpec workflows emit structured messages with payloads that require
         special handling:
-        - approval_request: Show modal approval dialog
-        - plan_selection: Show plan selection dialog
-        - generation_ready: Show generation approval card
-        - postprocess_ready: Show postprocess approval card
         - spec_update: Update living spec display (if panel exists)
         - plans: Display proposed plans
         - safe_fix: Show safe fix notification
@@ -618,15 +583,7 @@ class MainWindow:
             content = message.content
             data = message.data
             
-            if msg_type == "approval_request" and data:
-                self._show_approval_dialog(content, data)
-            elif msg_type == "plan_selection" and data:
-                self._show_plan_selection_dialog(data.get("plans", []))
-            elif msg_type == "generation_ready" and data:
-                self._show_generation_ready_card(data)
-            elif msg_type == "postprocess_ready" and data:
-                self._show_postprocess_ready_card(data)
-            elif msg_type == "spec_update" and data:
+            if msg_type == "spec_update" and data:
                 self._update_spec_display(data)
             elif msg_type == "plans" and data:
                 self._display_plans(data.get("plans", []), data.get("recommended_id"))
@@ -636,84 +593,6 @@ class MainWindow:
                 self._append_chat(msg_type, content)
         
         self.root.after(0, handle_message)
-    
-    def _show_approval_dialog(self, prompt: str, data: dict):
-        """Show modal approval dialog for V5 workflows."""
-        result = messagebox.askyesno(
-            "Approval Required",
-            prompt,
-            icon="question"
-        )
-        self.workflow_manager.send_approval(result)
-        self._append_chat("system", f"Approval: {'Approved' if result else 'Rejected'}")
-    
-    def _show_plan_selection_dialog(self, plans: list):
-        """Show plan selection in chat (no popup) for V5 workflows."""
-        if not plans:
-            self.workflow_manager.send_input("")
-            return
-        
-        # Build plan display for chat - use plan_id (not id)
-        valid_plan_ids = set()
-        plan_text = "Please select a plan by typing its ID:\n"
-        
-        for plan in plans:
-            plan_id = plan.get("plan_id", plan.get("id", ""))
-            valid_plan_ids.add(plan_id)
-            name = plan.get("name", "Unknown")
-            interpretation = plan.get("interpretation", "")
-            cost = plan.get("cost_estimate", "")
-            risks = plan.get("risks", [])
-            is_recommended = plan.get("recommended", False)
-            
-            rec_marker = " (RECOMMENDED)" if is_recommended else ""
-            plan_text += f"\n  [{plan_id}]{rec_marker} {name}"
-            if interpretation:
-                plan_text += f"\n    {interpretation}"
-            if cost:
-                plan_text += f"\n    Estimated: {cost}"
-            if risks:
-                plan_text += f"\n    Risks: {', '.join(risks[:2])}"
-                if len(risks) > 2:
-                    plan_text += f" (+{len(risks)-2} more)"
-        
-        plan_text += "\n\nType a plan ID (e.g., 'tree_balanced') or press Enter for recommended:"
-        
-        # Display in chat and store valid IDs for validation
-        self._append_chat("prompt", plan_text)
-        self._pending_plan_selection = valid_plan_ids
-        self._awaiting_plan_selection = True
-    
-    def _show_generation_ready_card(self, data: dict):
-        """Show generation ready notification with approval."""
-        runtime = data.get("runtime_estimate", "unknown")
-        outputs = data.get("expected_outputs", [])
-        assumptions = data.get("assumptions", [])
-        risks = data.get("risk_flags", [])
-        
-        info_text = f"Ready to generate\n\nEstimated runtime: {runtime}"
-        if outputs:
-            info_text += f"\n\nExpected outputs:\n- " + "\n- ".join(outputs)
-        if assumptions:
-            info_text += f"\n\nAssumptions:\n- " + "\n- ".join(assumptions)
-        if risks:
-            info_text += f"\n\nRisk flags:\n- " + "\n- ".join(risks)
-        
-        self._append_chat("generation_ready", info_text)
-    
-    def _show_postprocess_ready_card(self, data: dict):
-        """Show postprocess ready notification."""
-        runtime = data.get("runtime_estimate", "unknown")
-        outputs = data.get("expected_outputs", [])
-        steps = data.get("repair_steps", [])
-        
-        info_text = f"Ready to postprocess\n\nEstimated runtime: {runtime}"
-        if steps:
-            info_text += f"\n\nRepair steps:\n- " + "\n- ".join(steps)
-        if outputs:
-            info_text += f"\n\nExpected outputs:\n- " + "\n- ".join(outputs)
-        
-        self._append_chat("postprocess_ready", info_text)
     
     def _update_spec_display(self, spec_data: dict):
         """Update living spec display panel (if exists)."""
