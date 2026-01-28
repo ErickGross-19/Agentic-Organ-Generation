@@ -71,7 +71,7 @@ class ConfigurationWizard(tk.Toplevel):
         self._steps = ["Agent Configuration", "Project Setup", "Workflow Mode"]
         
         self.title("DesignSpec Workflow Setup")
-        self.geometry("600x500")
+        self.geometry("600x600")
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()

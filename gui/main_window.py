@@ -168,7 +168,7 @@ class MainWindow:
         
         file_menu = tk.Menu(self.menubar, tearoff=0)
         self.menubar.add_cascade(label="File", menu=file_menu)
-        file_menu.add_command(label="New Workflow", command=self._show_workflow_selection)
+        file_menu.add_command(label="New Workflow", command=self._show_configuration_wizard)
         file_menu.add_command(label="Open Project...", command=self._open_project)
         file_menu.add_separator()
         file_menu.add_command(label="Load STL...", command=self._load_stl)
@@ -208,8 +208,8 @@ class MainWindow:
         
         self.workflow_btn = ttk.Button(
             toolbar,
-            text="Select Workflow",
-            command=self._show_workflow_selection,
+            text="New Workflow",
+            command=self._show_configuration_wizard,
         )
         self.workflow_btn.pack(side="left", padx=2)
         
@@ -414,7 +414,7 @@ class MainWindow:
     def _setup_bindings(self):
         """Set up keyboard bindings."""
         self.input_entry.bind("<Return>", lambda e: self._send_input())
-        self.root.bind("<Control-n>", lambda e: self._show_workflow_selection())
+        self.root.bind("<Control-n>", lambda e: self._show_configuration_wizard())
         self.root.bind("<Control-q>", lambda e: self._on_close())
     
     def _show_configuration_wizard(self):
