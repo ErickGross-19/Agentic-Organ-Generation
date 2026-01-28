@@ -455,28 +455,75 @@ class MainWindow:
         self.root.wait_window(wizard)
     
     def _switch_to_conversation_layout(self):
-        """Switch to simplified 2-panel conversation layout (chat + live spec viewer only)."""
+        """Switch to simplified 2-panel conversation layout (chat left, live spec right)."""
         self._current_layout_mode = "conversation"
-        
-        if self._live_spec_viewer is None:
-            self._live_spec_viewer = LiveSpecViewer(self.panels_notebook)
-            self.panels_notebook.add(self._live_spec_viewer, text="Live Spec")
-        
-        for tab_name in ["Log", "Spec", "Patches", "Run", "Artifacts", "Reports"]:
-            try:
-                for i in range(self.panels_notebook.index("end")):
-                    if self.panels_notebook.tab(i, "text") == tab_name:
-                        self.panels_notebook.hide(i)
-                        break
-            except Exception:
-                pass
         
         try:
             self._main_paned.forget(self._viewer_frame)
         except Exception:
             pass
         
-        self.panels_notebook.select(self._live_spec_viewer)
+        try:
+            self._main_paned.forget(self._left_paned)
+        except Exception:
+            pass
+        
+        if not hasattr(self, '_conversation_right_frame') or self._conversation_right_frame is None:
+            self._conversation_right_frame = ttk.LabelFrame(self._main_paned, text="Live Spec")
+            self._live_spec_viewer = LiveSpecViewer(self._conversation_right_frame)
+            self._live_spec_viewer.pack(fill="both", expand=True, padx=5, pady=5)
+        
+        if not hasattr(self, '_conversation_left_frame') or self._conversation_left_frame is None:
+            self._conversation_left_frame = ttk.LabelFrame(self._main_paned, text="Chat")
+            
+            self._conversation_left_frame.columnconfigure(0, weight=1)
+            self._conversation_left_frame.rowconfigure(0, weight=1)
+            
+            self._conv_chat_text = scrolledtext.ScrolledText(
+                self._conversation_left_frame,
+                wrap="word",
+                state="disabled",
+                font=("TkFixedFont", 10),
+            )
+            self._conv_chat_text.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+            
+            self._conv_chat_text.tag_configure("system", foreground="blue")
+            self._conv_chat_text.tag_configure("user", foreground="green")
+            self._conv_chat_text.tag_configure("assistant", foreground="purple")
+            self._conv_chat_text.tag_configure("error", foreground="red")
+            self._conv_chat_text.tag_configure("success", foreground="darkgreen")
+            self._conv_chat_text.tag_configure("prompt", foreground="orange")
+            
+            conv_input_frame = ttk.Frame(self._conversation_left_frame)
+            conv_input_frame.grid(row=1, column=0, sticky="ew", padx=5, pady=5)
+            conv_input_frame.columnconfigure(0, weight=1)
+            
+            self._conv_input_var = tk.StringVar()
+            self._conv_input_entry = ttk.Entry(
+                conv_input_frame,
+                textvariable=self._conv_input_var,
+                font=("TkFixedFont", 10),
+            )
+            self._conv_input_entry.grid(row=0, column=0, sticky="ew")
+            self._conv_input_entry.bind("<Return>", lambda e: self._send_conversation_input())
+            
+            self._conv_send_btn = ttk.Button(
+                conv_input_frame,
+                text="Send",
+                command=self._send_conversation_input,
+                state="normal",
+            )
+            self._conv_send_btn.grid(row=0, column=1, padx=(5, 0))
+        
+        try:
+            self._main_paned.add(self._conversation_left_frame, weight=1)
+        except Exception:
+            pass
+        
+        try:
+            self._main_paned.add(self._conversation_right_frame, weight=1)
+        except Exception:
+            pass
         
         if hasattr(self, '_designspec_manager') and self._designspec_manager:
             spec = self._designspec_manager.get_spec()
@@ -717,6 +764,44 @@ class MainWindow:
         except Exception as e:
             self._append_chat("error", f"Failed to send input: {e}")
     
+    def _send_conversation_input(self):
+        """Send user input from conversation layout chat."""
+        try:
+            text = self._conv_input_entry.get().strip()
+            
+            if hasattr(self, '_designspec_manager') and self._current_workflow_type == WorkflowType.DESIGNSPEC:
+                if not text:
+                    self._append_chat("system", "Please enter some text to send.")
+                    self._conv_input_var.set("")
+                    self._conv_input_entry.delete(0, "end")
+                    return
+                
+                self._append_chat("user", text)
+                
+                if text.lower() == "approve" and hasattr(self, '_pending_patch_id'):
+                    self._designspec_manager.approve_patch(self._pending_patch_id)
+                    delattr(self, '_pending_patch_id')
+                elif text.lower() == "reject" and hasattr(self, '_pending_patch_id'):
+                    self._designspec_manager.reject_patch(self._pending_patch_id, "User rejected")
+                    delattr(self, '_pending_patch_id')
+                else:
+                    self._designspec_manager.send_message(text)
+                
+                self._conv_input_var.set("")
+                self._conv_input_entry.delete(0, "end")
+                return
+            
+            if not text:
+                self._append_chat("system", "Please enter some text to send.")
+                return
+            
+            self._append_chat("user", text)
+            self._conv_input_var.set("")
+            self._conv_input_entry.delete(0, "end")
+            
+        except Exception as e:
+            self._append_chat("error", f"Failed to send input: {e}")
+    
     def _on_workflow_message(self, message: WorkflowMessage):
         """
         Handle message from workflow.
@@ -815,8 +900,6 @@ class MainWindow:
     
     def _append_chat(self, msg_type: str, content: str):
         """Append message to chat display."""
-        self.chat_text.config(state="normal")
-        
         timestamp = datetime.now().strftime("%H:%M:%S")
         prefix = f"[{timestamp}] "
         
@@ -833,10 +916,18 @@ class MainWindow:
         else:
             prefix += f"{msg_type}: "
         
+        self.chat_text.config(state="normal")
         self.chat_text.insert("end", prefix, msg_type)
         self.chat_text.insert("end", content + "\n", msg_type)
         self.chat_text.see("end")
         self.chat_text.config(state="disabled")
+        
+        if self._current_layout_mode == "conversation" and hasattr(self, '_conv_chat_text') and self._conv_chat_text:
+            self._conv_chat_text.config(state="normal")
+            self._conv_chat_text.insert("end", prefix, msg_type)
+            self._conv_chat_text.insert("end", content + "\n", msg_type)
+            self._conv_chat_text.see("end")
+            self._conv_chat_text.config(state="disabled")
     
     def _append_output(self, content: str):
         """Append content to output display."""
