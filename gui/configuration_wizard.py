@@ -30,6 +30,7 @@ class WizardConfiguration:
     workflow_mode: str = "llm_first"
     template: str = "empty"
     import_path: Optional[str] = None
+    open_project_path: Optional[str] = None
 
 
 class ConfigurationWizard(tk.Toplevel):
@@ -325,6 +326,7 @@ class ConfigurationWizard(tk.Toplevel):
             ("cylinder", "Cylinder Domain", "Pre-configured cylinder domain with inlets"),
             ("box", "Box Domain", "Pre-configured box domain"),
             ("import", "Import Existing", "Import an existing DesignSpec file"),
+            ("open_project", "Open Existing Project", "Open a previously created project directory"),
         ]
         
         for value, label, description in templates:
@@ -359,6 +361,24 @@ class ConfigurationWizard(tk.Toplevel):
             self.import_frame,
             text="Browse...",
             command=self._browse_import,
+        ).grid(row=0, column=2, padx=(5, 0))
+        
+        row += 1
+        self.open_project_frame = ttk.Frame(frame)
+        self.open_project_frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=5)
+        self.open_project_frame.columnconfigure(1, weight=1)
+        
+        ttk.Label(self.open_project_frame, text="Project Directory:").grid(row=0, column=0, sticky="w", padx=(20, 0))
+        self.open_project_path_var = tk.StringVar(value=self._config.open_project_path or "")
+        ttk.Entry(
+            self.open_project_frame,
+            textvariable=self.open_project_path_var,
+            width=30,
+        ).grid(row=0, column=1, sticky="ew", padx=(10, 0))
+        ttk.Button(
+            self.open_project_frame,
+            text="Browse...",
+            command=self._browse_open_project,
         ).grid(row=0, column=2, padx=(5, 0))
         
         self._on_template_change()
@@ -486,11 +506,23 @@ class ConfigurationWizard(tk.Toplevel):
     
     def _on_template_change(self):
         """Handle template selection change."""
-        if self.template_var.get() == "import":
+        template = self.template_var.get()
+        
+        if template == "import":
             for child in self.import_frame.winfo_children():
-                child.configure(state="normal")
+                if isinstance(child, (ttk.Entry, ttk.Button)):
+                    child.configure(state="normal")
         else:
             for child in self.import_frame.winfo_children():
+                if isinstance(child, (ttk.Entry, ttk.Button)):
+                    child.configure(state="disabled")
+        
+        if template == "open_project":
+            for child in self.open_project_frame.winfo_children():
+                if isinstance(child, (ttk.Entry, ttk.Button)):
+                    child.configure(state="normal")
+        else:
+            for child in self.open_project_frame.winfo_children():
                 if isinstance(child, (ttk.Entry, ttk.Button)):
                     child.configure(state="disabled")
     
@@ -516,6 +548,22 @@ class ConfigurationWizard(tk.Toplevel):
         )
         if path:
             self.import_path_var.set(path)
+    
+    def _browse_open_project(self):
+        """Browse for existing project directory."""
+        path = filedialog.askdirectory(
+            title="Select Existing Project Directory",
+            initialdir=self.project_location_var.get() or str(Path.home()),
+        )
+        if path:
+            spec_file = Path(path) / "spec.json"
+            if not spec_file.exists():
+                messagebox.showwarning(
+                    "Invalid Project",
+                    f"No spec.json found in {path}.\nPlease select a valid project directory.",
+                )
+                return
+            self.open_project_path_var.set(path)
     
     def _load_saved_config(self):
         """Load saved configuration into _config (before UI is created)."""
@@ -565,6 +613,11 @@ class ConfigurationWizard(tk.Toplevel):
                 self._config.import_path = self.import_path_var.get().strip()
             else:
                 self._config.import_path = None
+            
+            if self._config.template == "open_project":
+                self._config.open_project_path = self.open_project_path_var.get().strip()
+            else:
+                self._config.open_project_path = None
                 
         elif self._current_step == 2:
             self._config.workflow_mode = self.mode_var.get()
@@ -584,6 +637,15 @@ class ConfigurationWizard(tk.Toplevel):
                 return False
             
         elif self._current_step == 1:
+            if self._config.template == "open_project":
+                if not self._config.open_project_path:
+                    messagebox.showwarning(
+                        "Missing Project Directory",
+                        "Please select an existing project directory.",
+                    )
+                    return False
+                return True
+            
             if not self._config.project_name:
                 messagebox.showwarning(
                     "Missing Project Name",
