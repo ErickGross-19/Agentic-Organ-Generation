@@ -67,11 +67,15 @@ hiddenimports = [
     'generation.adapters',
     'validity',
     'gui',
-    'gui.main_window',
+    'gui.app',
+    'gui._legacy',
+    'gui._legacy.main_window',
     'gui.workflow_manager',
     'gui.stl_viewer',
     'gui.agent_config',
     'gui.security',
+    'gui.designspec_workflow_manager',
+    'gui.configuration_wizard',
 ]
 
 a = Analysis(

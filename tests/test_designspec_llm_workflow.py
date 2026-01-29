@@ -210,11 +210,17 @@ class TestGUIWiring:
         assert hasattr(DesignSpecWorkflowManager, 'reject_run')
         assert hasattr(DesignSpecWorkflowManager, 'get_pending_run_request')
     
-    def test_main_window_module_exists(self):
-        """Test that main_window module exists."""
+    def test_main_window_module_exists_in_legacy(self):
+        """Test that main_window module exists in legacy folder."""
         import importlib.util
-        spec = importlib.util.find_spec("gui.main_window")
-        assert spec is not None, "gui.main_window module should exist"
+        spec = importlib.util.find_spec("gui._legacy.main_window")
+        assert spec is not None, "gui._legacy.main_window module should exist"
+    
+    def test_app_module_exists(self):
+        """Test that app module exists as the new entry point."""
+        import importlib.util
+        spec = importlib.util.find_spec("gui.app")
+        assert spec is not None, "gui.app module should exist"
 
 
 class TestCompactContextAutoEscalation:

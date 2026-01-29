@@ -5,10 +5,10 @@ A graphical user interface for the Agentic Organ Generation system.
 Provides workflow selection, agent configuration, and STL visualization.
 
 Main Components:
-    - MainWindow: Primary application window with three-panel layout
     - WorkflowManager: Orchestrates Single Agent workflows
     - STLViewer: 3D visualization of generated STL files
     - SecureConfig: Encrypted API key storage
+    - DesignSpecWorkflowManager: Manages DesignSpec workflow execution
 
 Usage:
     >>> from gui import launch_gui
@@ -21,6 +21,10 @@ Requirements:
     - Python 3.8+ with tkinter support
     - matplotlib (for 3D visualization)
     - trimesh (for STL loading)
+
+Note:
+    The MainWindow class has been deprecated and moved to gui._legacy.
+    Use launch_gui() as the main entry point.
 """
 
 __version__ = "1.0.0"
@@ -30,31 +34,33 @@ from .security import SecureConfig
 _import_error = None
 
 try:
-    from .main_window import MainWindow, launch_gui as _launch_gui
+    from .app import launch_gui
     from .workflow_manager import WorkflowManager
     from .stl_viewer import STLViewer
     from .agent_config import AgentConfigPanel
-    
-    def launch_gui():
-        """Launch the Organ Generator GUI."""
-        _launch_gui()
+    from .designspec_workflow_manager import DesignSpecWorkflowManager
+    from .configuration_wizard import ConfigurationWizard, WizardConfiguration
     
     __all__ = [
-        "MainWindow",
         "launch_gui",
         "WorkflowManager",
         "STLViewer",
         "SecureConfig",
         "AgentConfigPanel",
+        "DesignSpecWorkflowManager",
+        "ConfigurationWizard",
+        "WizardConfiguration",
         "__version__",
     ]
 except ImportError as e:
     _import_error = e
     
-    MainWindow = None
     WorkflowManager = None
     STLViewer = None
     AgentConfigPanel = None
+    DesignSpecWorkflowManager = None
+    ConfigurationWizard = None
+    WizardConfiguration = None
     
     def launch_gui():
         """Fallback launch_gui that raises a clear error."""
