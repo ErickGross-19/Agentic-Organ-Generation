@@ -74,7 +74,7 @@
     "growth": {
       "enabled": true,
       "backend": "space_colonization",
-      "target_terminals": 384,
+      "target_terminals": 500,
       "terminal_tolerance": 0.2,
       "max_iterations": 100,
       "step_size": 0.0001,
@@ -84,7 +84,7 @@
       "max_radius": 0.0002,
       "backend_params": {
         "num_attraction_points": 250000,
-        "influence_radius": 0.001,
+        "influence_radius": 0.002,
         "kill_radius": 0.00022,
         "branch_enable_after_distance": 0.0009,
         "min_branch_segment_length": 0.0001,
