@@ -467,12 +467,64 @@ Controls the generation backend and its parameters for growing vascular networks
 ```json
 {
   "backend_params": {
-    "branching_angle": <float degrees>,
-    "depth": <int>,
-    "radius_decay": <0-1>
+    "primary_axis": [x, y, z],
+    "splits": <int>,
+    "levels": <int>,
+    "ratio": <0-1>,
+    "step_length": <float m>,
+    "step_decay": <0-1>,
+    "spread": <float m>,
+    "spread_decay": <0-1>,
+    "cone_angle_deg": <float degrees>,
+    "jitter_deg": <float degrees>,
+    "curvature": <0-1>,
+    "curve_samples": <int>,
+    "wall_margin_m": <float m>,
+    "boundary_extra_m": <float m>,
+    "min_radius": <float m>,
+    "depth_adaptive_mode": "none" | "uniform" | "geometric",
+    "branch_plane_mode": "global" | "local" | "hybrid",
+    "collision_online": {
+      "enabled": true,
+      "buffer_abs_m": <float m>,
+      "buffer_rel": <0-1>,
+      "cell_size_m": <float m>,
+      "rotation_attempts": <int>,
+      "reduction_factors": [<float>, ...],
+      "max_attempts_per_child": <int>,
+      "on_fail": "terminate_branch",
+      "merge_on_collision": true | false,
+      "merge_distance_m": <float m>,
+      "fail_retry_rounds": <int>,
+      "fail_retry_mode": "shrink_radius" | "increase_step" | "both" | "none",
+      "fail_retry_shrink_factor": <0-1>,
+      "fail_retry_step_boost": <float>
+    },
+    "collision_postpass": {
+      "enabled": true,
+      "min_clearance_m": <float m>,
+      "strategy_order": ["shrink", "terminate"],
+      "shrink_factor": <0-1>,
+      "shrink_max_iterations": <int>
+    }
   }
 }
 ```
+
+**Key scaffold_topdown params:**
+- `primary_axis`: Global growth direction as unit vector, e.g., [0, 0, -1] for downward
+- `splits`: Number of child branches at each bifurcation (default: 3)
+- `levels`: Maximum depth of branching (default: 6) - NOT "depth"!
+- `ratio`: Radius taper factor at each level (default: 0.78)
+- `step_length`: Initial step length in meters (default: 0.002)
+- `step_decay`: Factor to multiply step length at each level (default: 0.92)
+- `spread`: Lateral spread distance in meters (default: 0.0015)
+- `cone_angle_deg`: Maximum cone angle for child branches (default: 70)
+- `jitter_deg`: Random jitter in branch angles (default: 12)
+- `curvature`: Curvature factor for curved branches, 0=straight (default: 0.35)
+- `wall_margin_m`: Minimum distance from domain boundary (default: 0.0001)
+- `depth_adaptive_mode`: How to compute step lengths - "none", "uniform", or "geometric"
+- `branch_plane_mode`: Branch orientation - "global" (2D), "local" (3D), or "hybrid"
 
 ### tissue_sampling - Attractor Point Distribution
 
@@ -1090,9 +1142,20 @@ When populating a spec, you MUST include sensible default policies based on the 
       "min_radius": 0.00005,
       "step_size": 0.0002,
       "backend_params": {
-        "branching_angle": 45.0,
-        "depth": 6,
-        "radius_decay": 0.8
+        "primary_axis": [0, 0, -1],
+        "splits": 2,
+        "levels": 6,
+        "ratio": 0.8,
+        "step_length": 0.0002,
+        "step_decay": 0.95,
+        "spread": 0.0003,
+        "spread_decay": 0.97,
+        "cone_angle_deg": 60,
+        "jitter_deg": 10,
+        "curvature": 0.3,
+        "curve_samples": 5,
+        "wall_margin_m": 0.0001,
+        "branch_plane_mode": "local"
       }
     },
     "collision": {
