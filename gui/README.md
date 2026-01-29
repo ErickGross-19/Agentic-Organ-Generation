@@ -60,14 +60,24 @@ python main.py --cli      # Run CLI mode instead of GUI
 
 ## Components
 
-### MainWindow (`main_window.py`)
+### Application Entry Point (`app.py`)
 
-The primary application window with:
-- Menu bar (File, Workflow, Help)
-- Toolbar with workflow controls
-- Three-panel layout (Chat, Output, STL Viewer)
-- Status bar with progress indicator
-- Keyboard shortcuts (Ctrl+N for new workflow, Ctrl+Q to quit)
+The main entry point for launching the GUI. Provides the `launch_gui()` function that starts the application with the configuration wizard.
+
+### Configuration Wizard (`configuration_wizard.py`)
+
+Initial setup wizard that collects:
+- LLM provider and API key configuration
+- Project name and location
+- Workflow mode selection (LLM-first vs legacy)
+
+### DesignSpec Workflow Manager (`designspec_workflow_manager.py`)
+
+Manages the DesignSpec workflow with:
+- Project creation and loading
+- Patch proposal and approval flow
+- Compile and run controls
+- Event-based communication with GUI
 
 ### WorkflowManager (`workflow_manager.py`)
 
@@ -123,15 +133,22 @@ The `build.spec` file is pre-configured to include all necessary modules and dep
 
 ```
 gui/
-├── __init__.py          # Module exports with graceful fallback
-├── __main__.py          # Entry point for python -m gui
-├── main_window.py       # Primary application window
-├── workflow_manager.py  # Workflow orchestration
-├── stl_viewer.py        # 3D STL visualization
-├── agent_config.py      # LLM configuration panel
-├── security.py          # Encrypted API key storage
-└── README.md            # This file
+├── __init__.py                    # Module exports with graceful fallback
+├── __main__.py                    # Entry point for python -m gui
+├── app.py                         # Main entry point (launch_gui)
+├── configuration_wizard.py        # Initial setup wizard
+├── designspec_workflow_manager.py # DesignSpec workflow orchestration
+├── workflow_manager.py            # Legacy workflow orchestration
+├── stl_viewer.py                  # 3D STL visualization
+├── agent_config.py                # LLM configuration panel
+├── security.py                    # Encrypted API key storage
+├── _legacy/                       # Deprecated components
+│   ├── __init__.py
+│   └── main_window.py             # Deprecated tabbed layout (use app.py instead)
+└── README.md                      # This file
 ```
+
+Note: The `MainWindow` class in `_legacy/main_window.py` is deprecated. Use `launch_gui()` from `gui.app` as the main entry point.
 
 ## Configuration Storage
 
