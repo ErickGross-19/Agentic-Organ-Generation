@@ -282,6 +282,9 @@ class ContextPack:
     # Example specs for reference
     example_specs: Optional[Dict[str, Dict[str, Any]]] = None
     
+    # Policy reference documentation
+    include_policy_reference: bool = True
+    
     # Context mode
     is_compact: bool = True
     is_debug_compact: bool = False
@@ -437,6 +440,16 @@ class ContextPack:
                 lines.append(spec_json)
                 lines.append("```")
                 lines.append("")
+        
+        # Policy reference documentation
+        if self.include_policy_reference:
+            try:
+                from .policy_reference import get_policy_reference_compact
+                lines.append("## Policy Reference")
+                lines.append(get_policy_reference_compact())
+                lines.append("")
+            except ImportError:
+                pass
         
         return "\n".join(lines)
 
