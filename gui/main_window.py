@@ -11,6 +11,7 @@ from tkinter import ttk, messagebox, filedialog, scrolledtext
 from typing import Optional, Dict, Any
 import os
 import sys
+import warnings
 from pathlib import Path
 from datetime import datetime
 
@@ -108,6 +109,11 @@ class MainWindow:
     """
     Main application window for Organ Generator GUI.
     
+    .. deprecated::
+        The tabbed multi-panel layout in this class is deprecated.
+        Use the simplified conversation layout via ConfigurationWizard instead.
+        The old tabbed layout will be removed in a future version.
+    
     Provides:
     - Workflow selection and control
     - Agent configuration panel
@@ -130,6 +136,14 @@ class MainWindow:
         width: int = 1200,
         height: int = 800,
     ):
+        warnings.warn(
+            "The tabbed multi-panel layout in MainWindow is deprecated. "
+            "Use the simplified conversation layout via ConfigurationWizard instead. "
+            "The old tabbed layout will be removed in a future version.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        
         self.root = tk.Tk()
         self.root.title(title)
         self.root.geometry(f"{width}x{height}")
@@ -423,19 +437,31 @@ class MainWindow:
         def on_complete(config: WizardConfiguration):
             self._wizard_config = config
             self._agent_config = config.agent_config
-            self._append_chat(
-                "system",
-                f"Configuration complete. Provider: {config.agent_config.provider}, "
-                f"Project: {config.project_name}, Mode: {config.workflow_mode}"
-            )
+            
             if config.workflow_mode == "llm_first":
                 use_legacy = False
             else:
                 use_legacy = True
             
-            if config.import_path:
+            if config.template == "open_project" and config.open_project_path:
+                self._append_chat(
+                    "system",
+                    f"Opening existing project: {config.open_project_path}, Mode: {config.workflow_mode}"
+                )
+                self._open_designspec_project(config.open_project_path, use_legacy_agent=use_legacy)
+            elif config.import_path:
+                self._append_chat(
+                    "system",
+                    f"Configuration complete. Provider: {config.agent_config.provider}, "
+                    f"Project: {config.project_name}, Mode: {config.workflow_mode}"
+                )
                 self._open_designspec_project(config.import_path, use_legacy_agent=use_legacy)
             else:
+                self._append_chat(
+                    "system",
+                    f"Configuration complete. Provider: {config.agent_config.provider}, "
+                    f"Project: {config.project_name}, Mode: {config.workflow_mode}"
+                )
                 self._init_designspec_workflow(
                     project_root=config.project_location,
                     project_name=config.project_name,
