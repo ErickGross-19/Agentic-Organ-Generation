@@ -555,6 +555,55 @@ class DesignSpecWorkflow:
             self._set_status(WorkflowStatus.FAILED)
             return False
     
+    def load_project(self, project_dir: Union[str, Path]) -> bool:
+        """
+        Load an existing DesignSpec project.
+        
+        This is a convenience method that calls on_start with project_dir.
+        
+        Parameters
+        ----------
+        project_dir : str or Path
+            Path to existing project directory containing spec.json
+            
+        Returns
+        -------
+        bool
+            True if project was loaded successfully
+        """
+        return self.on_start(project_dir=project_dir)
+    
+    def create_project(
+        self,
+        project_root: Union[str, Path],
+        project_name: str,
+        template_spec: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """
+        Create a new DesignSpec project.
+        
+        This is a convenience method that calls on_start with project_root and project_name.
+        
+        Parameters
+        ----------
+        project_root : str or Path
+            Parent directory for new project
+        project_name : str
+            Name for new project
+        template_spec : dict, optional
+            Initial spec template
+            
+        Returns
+        -------
+        bool
+            True if project was created successfully
+        """
+        return self.on_start(
+            project_root=project_root,
+            project_name=project_name,
+            template_spec=template_spec,
+        )
+    
     def on_user_message(self, text: str) -> None:
         """
         Process a user message.
