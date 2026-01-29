@@ -164,12 +164,11 @@ Every DesignSpec MUST have these top-level sections:
     "name": "project_name",
     "description": "Description of the project",
     "seed": 42,
-    "input_units": "mm"
+    "input_units": "m"
   },
   "policies": {},
   "domains": {},
-  "components": [],
-  "features": {}
+  "components": []
 }
 ```
 
@@ -177,8 +176,10 @@ Every DesignSpec MUST have these top-level sections:
 - `schema.name`: MUST be "aog_designspec"
 - `schema.version`: MUST be "1.0.0"
 - `meta.name`: Project name (string)
-- `meta.input_units`: MUST be "mm" (millimeters)
+- `meta.input_units`: MUST be "m" (meters) - millimeters are NOT supported
 - `meta.seed`: Random seed for reproducibility (integer)
+
+**Note:** There is NO top-level `features` section. Ridges are configured in `policies/ridge`.
 
 ### Domain Schema (REQUIRED: `type` field)
 
@@ -822,41 +823,36 @@ Configuration for programmatic network generation with explicit topology.
 
 ---
 
-### Features Schema
+### Ridge Policy (IMPORTANT - NOT in features section!)
 
-**Ridges** (raised edges on domain faces) - supports TWO formats:
+Ridges are configured in `policies/ridge`, NOT in a top-level `features` section.
 
-Format 1 (dictionary with faces array):
 ```json
 {
-  "features": {
-    "ridges": {
-      "faces": ["+z"],
-      "width": 0.5,
-      "height": 0.5,
-      "domain_ref": "cylinder_domain"
+  "policies": {
+    "ridge": {
+      "enabled": true,
+      "face": "top",
+      "height": 0.001,
+      "thickness": 0.001,
+      "inset": 0.0,
+      "overlap": 0.0005,
+      "resolution": 64
     }
   }
 }
 ```
 
-Format 2 (list of individual ridge objects):
-```json
-{
-  "features": {
-    "ridges": [
-      {
-        "face": "+z",
-        "width": 0.5,
-        "height": 0.5,
-        "domain_ref": "cylinder_domain"
-      }
-    ]
-  }
-}
-```
+**Key fields:**
+- `enabled`: Whether to add a ridge (default: false)
+- `face`: Which face to add ridge to - "top", "bottom", "+x", "-x", "+y", "-y"
+- `height`: Ridge height in meters
+- `thickness`: Ridge thickness in meters
+- `inset`: Inset from edge in meters
+- `overlap`: Overlap with domain in meters (default: 0.5 * height)
+- `resolution`: Mesh resolution for ridge (default: 64)
 
-Valid face values: "+x", "-x", "+y", "-y", "+z", "-z", "top" (alias for +z), "bottom" (alias for -z)
+**CRITICAL:** Do NOT use `/features/ridges/...` paths - ridges are at `/policies/ridge/...`
 
 ### Complete Working Example Specs
 
@@ -868,15 +864,15 @@ Valid face values: "+x", "-x", "+y", "-y", "+z", "-z", "top" (alias for +z), "bo
     "name": "minimal_cylinder_network",
     "description": "Cylinder domain with space colonization vascular network",
     "seed": 42,
-    "input_units": "mm"
+    "input_units": "m"
   },
   "policies": {},
   "domains": {
     "cylinder_domain": {
       "type": "cylinder",
       "center": [0, 0, 0],
-      "radius": 5.0,
-      "height": 2.0
+      "radius": 0.005,
+      "height": 0.002
     }
   },
   "components": [
@@ -887,9 +883,9 @@ Valid face values: "+x", "-x", "+y", "-y", "+z", "-z", "top" (alias for +z), "bo
         "inlets": [
           {
             "name": "inlet_center",
-            "position": [0, 0, 1.0],
+            "position": [0, 0, 0.001],
             "direction": [0, 0, -1],
-            "radius": 0.3,
+            "radius": 0.0003,
             "vessel_type": "arterial"
           }
         ],
@@ -899,15 +895,14 @@ Valid face values: "+x", "-x", "+y", "-y", "+z", "-z", "top" (alias for +z), "bo
         "type": "backend_network",
         "backend": "space_colonization",
         "backend_params": {
-          "influence_radius": 2.0,
-          "kill_radius": 0.5,
+          "influence_radius": 0.002,
+          "kill_radius": 0.0005,
           "perception_angle": 90,
           "num_attraction_points": 200
         }
       }
     }
-  ],
-  "features": {}
+  ]
 }
 ```
 
@@ -919,24 +914,24 @@ Valid face values: "+x", "-x", "+y", "-y", "+z", "-z", "top" (alias for +z), "bo
     "name": "cylinder_with_tapered_channels",
     "description": "Cylinder with 5 tapered channels on top face",
     "seed": 42,
-    "input_units": "mm"
+    "input_units": "m"
   },
   "policies": {
     "channels": {
       "enabled": true,
       "profile": "taper",
       "length_mode": "to_depth",
-      "length": 1.3,
+      "length": 0.0013,
       "taper_factor": 0.8,
-      "stop_before_boundary": 0.2
+      "stop_before_boundary": 0.0002
     }
   },
   "domains": {
     "cylinder_domain": {
       "type": "cylinder",
       "center": [0, 0, 0],
-      "radius": 4.875,
-      "height": 2.0
+      "radius": 0.004875,
+      "height": 0.002
     }
   },
   "components": [
@@ -947,37 +942,37 @@ Valid face values: "+x", "-x", "+y", "-y", "+z", "-z", "top" (alias for +z), "bo
         "inlets": [
           {
             "name": "center_inlet",
-            "position": [0, 0, 1.0],
+            "position": [0, 0, 0.001],
             "direction": [0, 0, -1],
-            "radius": 0.5,
+            "radius": 0.0005,
             "vessel_type": "arterial"
           },
           {
             "name": "ring_inlet_1",
-            "position": [2.5, 0, 1.0],
+            "position": [0.0025, 0, 0.001],
             "direction": [0, 0, -1],
-            "radius": 0.5,
+            "radius": 0.0005,
             "vessel_type": "arterial"
           },
           {
             "name": "ring_inlet_2",
-            "position": [0, 2.5, 1.0],
+            "position": [0, 0.0025, 0.001],
             "direction": [0, 0, -1],
-            "radius": 0.5,
+            "radius": 0.0005,
             "vessel_type": "arterial"
           },
           {
             "name": "ring_inlet_3",
-            "position": [-2.5, 0, 1.0],
+            "position": [-0.0025, 0, 0.001],
             "direction": [0, 0, -1],
-            "radius": 0.5,
+            "radius": 0.0005,
             "vessel_type": "arterial"
           },
           {
             "name": "ring_inlet_4",
-            "position": [0, -2.5, 1.0],
+            "position": [0, -0.0025, 0.001],
             "direction": [0, 0, -1],
-            "radius": 0.5,
+            "radius": 0.0005,
             "vessel_type": "arterial"
           }
         ],
@@ -987,28 +982,37 @@ Valid face values: "+x", "-x", "+y", "-y", "+z", "-z", "top" (alias for +z), "bo
         "type": "primitive_channels"
       }
     }
-  ],
-  "features": {}
+  ]
 }
 ```
 
-**EXAMPLE C: Cylinder with Ridges**
+**EXAMPLE C: Cylinder with Ridge (using policies/ridge)**
 ```json
 {
   "schema": {"name": "aog_designspec", "version": "1.0.0"},
   "meta": {
-    "name": "cylinder_with_ridges",
-    "description": "Cylinder domain with ridges on top face",
+    "name": "cylinder_with_ridge",
+    "description": "Cylinder domain with ridge on top face",
     "seed": 42,
-    "input_units": "mm"
+    "input_units": "m"
   },
-  "policies": {},
+  "policies": {
+    "ridge": {
+      "enabled": true,
+      "face": "top",
+      "height": 0.0005,
+      "thickness": 0.0005,
+      "inset": 0.0,
+      "overlap": 0.00025,
+      "resolution": 64
+    }
+  },
   "domains": {
     "cylinder_domain": {
       "type": "cylinder",
       "center": [0, 0, 0],
-      "radius": 4.875,
-      "height": 2.0
+      "radius": 0.004875,
+      "height": 0.002
     }
   },
   "components": [
@@ -1019,9 +1023,9 @@ Valid face values: "+x", "-x", "+y", "-y", "+z", "-z", "top" (alias for +z), "bo
         "inlets": [
           {
             "name": "inlet_top",
-            "position": [0, 0, 1.0],
+            "position": [0, 0, 0.001],
             "direction": [0, 0, -1],
-            "radius": 0.3,
+            "radius": 0.0003,
             "vessel_type": "arterial"
           }
         ],
@@ -1033,15 +1037,7 @@ Valid face values: "+x", "-x", "+y", "-y", "+z", "-z", "top" (alias for +z), "bo
         "backend_params": {}
       }
     }
-  ],
-  "features": {
-    "ridges": {
-      "faces": ["+z"],
-      "width": 0.5,
-      "height": 0.5,
-      "domain_ref": "cylinder_domain"
-    }
-  }
+  ]
 }
 ```
 
@@ -1049,7 +1045,7 @@ Valid face values: "+x", "-x", "+y", "-y", "+z", "-z", "top" (alias for +z), "bo
 
 1. **Missing `type` field in domains** - ALWAYS include `"type": "box"` or `"type": "cylinder"` etc.
 2. **Wrong field names** - Use `radius` not `r`, use `height` not `h`, use `center` not `origin`
-3. **Incorrect units** - All dimensions should be in the spec's `input_units` (typically mm)
+3. **Incorrect units** - All dimensions MUST be in meters (input_units: "m"). Millimeters are NOT supported.
 4. **Missing domain_ref in components** - Components must reference a valid domain by name
 5. **Missing required port fields** - Every port needs: name, position, direction, radius, vessel_type
 6. **Invalid build type** - Only use: "backend_network" or "primitive_channels"
@@ -1058,6 +1054,9 @@ Valid face values: "+x", "-x", "+y", "-y", "+z", "-z", "top" (alias for +z), "bo
 9. **Wrong direction vector** - For inlets on top face (+z), direction should be [0, 0, -1] (pointing down into domain)
 10. **Position outside domain** - Port positions must be on or near the domain boundary
 11. **Missing channels policy for primitive_channels** - When using `build.type: "primitive_channels"`, you MUST include a `channels` policy in the `policies` section with `length_mode` and `length` (if length_mode="explicit" or "to_depth"). Error: `"length_mode='explicit' requires length to be set"`
+12. **Wrong ridge path** - Ridges are at `/policies/ridge/...`, NOT `/features/ridges/...`. There is NO top-level `features` section.
+13. **Using "depth" instead of "levels"** - For scaffold_topdown backend, use `levels` (NOT `depth`) to control branching depth
+14. **Using "branch_plane_mode" without checking it exists** - Only patch fields that already exist in the spec, or use "add" operation for new fields
 
 ---
 

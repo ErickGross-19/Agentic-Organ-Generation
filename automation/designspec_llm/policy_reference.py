@@ -54,8 +54,14 @@ Controls the generation backend and its parameters for growing vascular networks
 | wall_margin_m | float | 0.0001 | Minimum distance from domain boundary (meters) |
 | boundary_extra_m | float | 0.0 | Extra boundary clearance (meters) |
 | min_radius | float | 0.00005 | Minimum vessel radius (meters) |
+| bottom_zone_height_m | float | 0.0003 | Height of bottom zone where spread tapers (meters) |
+| bottom_spread_scale_min | float | 0.2 | Minimum spread scale in bottom zone (0-1) |
+| stop_before_boundary_m | float | 0.0001 | Global buffer to stop before boundary (meters) |
+| stop_before_boundary_extra_m | float | 0.0001 | Additional safety buffer (meters) |
+| clamp_mode | string | "shorten_step" | Boundary handling: "terminate", "shorten_step", "project_inside" |
 | depth_adaptive_mode | string | "none" | Step length computation: "none", "uniform", "geometric" |
 | branch_plane_mode | string | "global" | Branch orientation: "global" (2D), "local" (3D), "hybrid" |
+| branch_plane_blend | float | 0.5 | Blend factor for hybrid mode (0=global, 1=local) |
 | collision_online | object | {} | Online collision avoidance config (see below) |
 | collision_postpass | object | {} | Post-generation collision cleanup config |
 
@@ -73,6 +79,7 @@ Controls the generation backend and its parameters for growing vascular networks
 | on_fail | string | "terminate_branch" | Action on failure: "terminate_branch" |
 | merge_on_collision | bool | false | Connect to nearby branch instead of terminating |
 | merge_distance_m | float | 0.0002 | Max distance to merge target (meters) |
+| merge_prefer_same_inlet | bool | true | Prefer merging to branches from same inlet |
 | fail_retry_rounds | int | 0 | Number of retry rounds (0 = no retry) |
 | fail_retry_mode | string | "both" | Retry mode: "shrink_radius", "increase_step", "both", "none" |
 | fail_retry_shrink_factor | float | 0.85 | Radius shrink factor per retry |
@@ -114,13 +121,23 @@ Controls how tissue/attractor points are distributed for space colonization.
 | depth_min | float | 0.0 | Minimum depth (meters) |
 | depth_max | float | null | Maximum depth (null = full domain) |
 | depth_power | float | 2.0 | Power for depth-biased distribution |
+| depth_lambda | float | 1.0 | Lambda for exponential distribution |
+| depth_alpha | float | 2.0 | Alpha for beta distribution |
+| depth_beta | float | 5.0 | Beta for beta distribution |
+| radial_reference | object | {"mode": "face", "face": "top", "center": "face_center"} | Reference for radial calculation |
 | radial_distribution | string | "center_heavy" | Radial distribution: "center_heavy", "edge_heavy", "ring" |
 | r_min | float | 0.0 | Minimum radius (meters) |
 | r_max | float | null | Maximum radius (null = domain radius) |
+| radial_power | float | 2.0 | Power for radial distribution |
 | ring_r0 | float | 0.0 | Ring center radius (meters) |
 | ring_sigma | float | 0.001 | Ring width (meters) |
 | shell_thickness | float | 0.002 | Boundary shell thickness (meters) |
+| shell_mode | string | "near_boundary" | Shell mode: "near_boundary", "near_center" |
+| gaussian_mean | [x,y,z] | [0,0,0] | Gaussian center (meters) |
+| gaussian_sigma | [sx,sy,sz] | [0.001,0.001,0.001] | Gaussian spread (meters) |
+| mixture_components | [object] | [] | List of weighted sub-policies for mixture |
 | min_distance_to_ports | float | 0.0005 | Minimum distance from ports (meters) |
+| exclude_spheres | [object] | [] | List of {center, radius} spheres to exclude |
 
 ---
 
@@ -184,8 +201,13 @@ Controls how vascular networks are converted to triangle meshes.
 | voxel_repair_synthesis | bool | false | Use voxel-based repair |
 | voxel_repair_pitch | float | 0.0001 | Repair voxel pitch (meters) |
 | voxel_repair_auto_adjust | bool | true | Auto-adjust pitch for budget |
+| voxel_repair_max_steps | int | 4 | Max pitch relaxation steps |
+| voxel_repair_step_factor | float | 1.5 | Pitch increase factor per step |
 | voxel_repair_max_voxels | int | 100000000 | Max voxels for repair |
 | segments_per_circle | int | 16 | Mesh resolution around tubes |
+| mutate_network_in_place | bool | false | Mutate network during synthesis |
+| radius_clamp_mode | string | "copy" | Clamp mode: "copy", "mutate" |
+| use_resolution_policy | bool | false | Use resolution policy for pitch |
 
 ---
 
@@ -203,10 +225,14 @@ Controls how multiple meshes are combined.
 | fallback_boolean | bool | true | Fall back to boolean if voxel fails |
 | keep_largest_component | bool | true | Keep only largest component |
 | min_component_faces | int | 100 | Minimum faces to keep component |
+| min_component_volume | float | 1e-12 | Minimum volume to keep (cubic meters) |
 | fill_voxels | bool | true | Fill interior voxels |
 | max_voxels | int | 100000000 | Max voxels budget |
+| use_resolution_policy | bool | false | Use resolution policy for pitch |
 | min_voxels_per_diameter | int | 4 | Min voxels across smallest channel |
+| min_channel_diameter | float | null | Smallest expected channel diameter (meters) |
 | detail_loss_threshold | float | 0.5 | Warn if volume loss exceeds this |
+| detail_loss_strictness | string | "warn" | Strictness: "warn", "fail" |
 
 ---
 
@@ -222,10 +248,12 @@ Controls the voxelization and carving process for creating domain-with-void mesh
 | max_pitch_steps | int | 4 | Max pitch relaxation steps |
 | pitch_step_factor | float | 1.5 | Pitch increase factor |
 | max_voxels | int | 100000000 | Max voxels budget |
+| fallback | string | "auto" | Fallback: "auto", "voxel_subtraction", "none" |
 | preserve_ports_enabled | bool | true | Preserve port openings |
 | preserve_mode | string | "recarve" | Port preservation mode |
 | carve_radius_factor | float | 1.2 | Port carving radius multiplier |
 | carve_depth | float | 0.002 | Port carving depth (meters) |
+| use_resolution_policy | bool | false | Use resolution policy for pitch |
 | output_shell | bool | false | Output shell mesh |
 | output_domain_with_void | bool | true | Output domain with void |
 | output_void_mesh | bool | true | Output void mesh |
@@ -261,11 +289,18 @@ Controls how ports are checked for connectivity to the outside.
 | probe_radius_factor | float | 1.2 | Probe radius multiplier |
 | probe_length | float | 0.002 | Probe length (meters) |
 | min_connected_volume_voxels | int | 10 | Min connected voxels |
+| mode | string | "voxel_connectivity" | Validation mode |
 | validation_pitch | float | null | Validation pitch (null = adaptive) |
 | local_region_size | float | 0.004 | Local ROI size (meters) |
 | max_voxels_roi | int | 2000000 | Max voxels per port ROI |
+| auto_relax_pitch | bool | true | Relax pitch if ROI exceeds budget |
 | min_voxels_across_radius | int | 8 | Min voxels across port radius |
 | adaptive_pitch | bool | true | Auto-compute pitch from port radius |
+| warn_on_pitch_relaxation | bool | true | Warn when pitch is relaxed |
+| require_port_type | bool | false | Warn if port_type is "unknown" |
+| prefer_fine_pitch | bool | true | Use resolution.target_pitch when available |
+| roi_first_reduction | bool | true | Shrink ROI before increasing pitch |
+| min_local_region_size | float | 0.001 | Minimum ROI size (meters) |
 
 ---
 
@@ -299,11 +334,22 @@ Controls the geometry of individual channel segments.
 | length_mode | string | "explicit" | Length mode: "explicit", "to_center_fraction", "to_depth" |
 | length | float | null | Channel length (meters, required for explicit/to_depth) |
 | length_fraction | float | 0.5 | Fraction toward center (for to_center_fraction) |
+| start_offset | float | 0.0 | Start offset from port (meters) |
+| stop_before_boundary | float | 0.0 | Stop distance before boundary (meters) |
 | taper_factor | float | 0.5 | Taper factor for tapered channels |
+| radius_end | float | null | End radius for taper (meters) |
+| bend_mode | string | "radial_out" | Bend mode: "radial_out", "arbitrary" |
 | hook_depth | float | 0.002 | Hook depth for fang_hook (meters) |
 | hook_strength | float | 0.5 | Hook curve strength |
 | hook_angle_deg | float | 90 | Hook angle (degrees) |
+| straight_fraction | float | 0.3 | Fraction of path that is straight |
+| curve_fraction | float | 0.4 | Fraction of path that is curved |
+| bend_shape | string | "quadratic" | Bend shape: "quadratic", "cubic" |
 | segments_per_curve | int | 16 | Mesh segments per curve |
+| radial_sections | int | 16 | Radial mesh sections |
+| path_samples | int | 32 | Path sample points |
+| enforce_effective_radius | bool | true | Enforce effective radius constraints |
+| constraint_strategy | string | "reduce_depth" | Strategy: "reduce_depth", "rotate", "both" |
 
 ---
 
@@ -316,10 +362,15 @@ Controls how inlet/outlet ports are positioned on domain surfaces.
 | enabled | bool | true | Enable port placement |
 | face | string | "top" | Target face: "top", "bottom", "+x", "-x", "+y", "-y", "+z", "-z" |
 | pattern | string | "circle" | Pattern: "circle", "grid", "center_rings", "explicit" |
+| pattern_params | object | {} | Pattern-specific parameters (e.g., n_rings, points_per_ring) |
+| projection_mode | string | "clamp_to_face" | Projection: "clamp_to_face", "project_to_boundary" |
 | ridge_width | float | 0.0001 | Ridge width (meters) |
 | ridge_clearance | float | 0.0001 | Ridge clearance (meters) |
 | port_margin | float | 0.0005 | Port margin (meters) |
+| disk_constraint_enabled | bool | true | Enable disk constraint for placement |
+| ridge_constraint_enabled | bool | true | Enable ridge constraint for placement |
 | placement_fraction | float | 0.7 | Placement radius fraction |
+| angular_offset | float | 0.0 | Angular offset in radians |
 
 ---
 
@@ -334,6 +385,24 @@ Controls how radii are computed at bifurcations and along paths.
 | taper_factor | float | 0.8 | Taper factor per bifurcation |
 | min_radius | float | 0.0001 | Minimum radius (meters) |
 | max_radius | float | 0.005 | Maximum radius (meters) |
+
+---
+
+## ridge - Ridge Policy (IMPORTANT: NOT in features section!)
+
+Adds raised ridges to domain faces. Configured in `policies/ridge`, NOT in a top-level `features` section.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| enabled | bool | false | Enable ridge creation |
+| face | string | "top" | Target face: "top", "bottom", "+x", "-x", "+y", "-y", "+z", "-z" |
+| height | float | 0.001 | Ridge height (meters) |
+| thickness | float | 0.001 | Ridge thickness (meters) |
+| inset | float | 0.0 | Inset from edge (meters) |
+| overlap | float | null | Overlap with domain (meters, default: 0.5 * height) |
+| resolution | int | 64 | Mesh resolution for ridge |
+
+**CRITICAL:** Ridges are at `/policies/ridge/...`, NOT `/features/ridges/...`. There is NO top-level `features` section.
 
 ---
 
@@ -406,16 +475,27 @@ def get_policy_reference_compact() -> str:
 - splits: int (children per bifurcation)
 - primary_axis: [x,y,z] (growth direction)
 - step_length: float (meters)
+- step_decay: float (decay factor per level)
 - spread: float (meters)
+- spread_decay: float (decay factor per level)
+- ratio: float (radius taper factor)
 - cone_angle_deg: float (degrees)
+- jitter_deg: float (random angle jitter)
+- curvature: float (0=straight, 1=max curve)
+- wall_margin_m: float (boundary clearance, meters)
+- min_radius: float (minimum vessel radius, meters)
 - depth_adaptive_mode: "none" | "uniform" | "geometric" (step length computation)
 - branch_plane_mode: "global" (2D) | "local" (3D) | "hybrid" (branch orientation)
-- collision_online: {enabled, merge_on_collision, merge_distance_m, ...}
+- branch_plane_blend: float (blend factor for hybrid mode)
+- clamp_mode: "terminate" | "shorten_step" | "project_inside" (boundary handling)
+- collision_online: {enabled, merge_on_collision, merge_distance_m, buffer_abs_m, ...}
+- collision_postpass: {enabled, min_clearance_m, strategy_order, ...}
 
 ## embedding - Void Embedding
 - voxel_pitch: float (meters)
 - preserve_ports_enabled: bool
 - carve_depth: float (meters)
+- fallback: "auto" | "voxel_subtraction" | "none"
 
 ## validity - Validation
 - check_watertight: bool
@@ -429,6 +509,26 @@ def get_policy_reference_compact() -> str:
 ## collision - Collision Detection
 - enabled: bool
 - collision_clearance: float (meters)
+
+## channels - Channel Primitives
+- profile: "cylinder" | "taper" | "fang_hook"
+- length_mode: "explicit" | "to_center_fraction" | "to_depth"
+- hook_depth: float (meters, for fang_hook)
+
+## tissue_sampling - Attractor Points
+- strategy: "uniform" | "depth_biased" | "radial_biased" | "boundary_shell" | "gaussian" | "mixture"
+- n_points: int (number of attractor points)
+
+## ridge - Ridge Policy (IMPORTANT!)
+- enabled: bool
+- face: "top" | "bottom" | "+x" | "-x" | "+y" | "-y" | "+z" | "-z"
+- height: float (meters)
+- thickness: float (meters)
+- inset: float (meters)
+- overlap: float (meters)
+- resolution: int
+
+**CRITICAL:** Ridges are at `/policies/ridge/...`, NOT `/features/ridges/...`. There is NO top-level `features` section.
 '''
     return compact
 
