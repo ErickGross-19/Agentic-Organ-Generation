@@ -123,7 +123,7 @@
                   "face": "top"
                 },
                 "depth_distribution": "power",
-                "depth_min": 0.00075,
+                "depth_min": 0.00015,
                 "depth_max": 0.002,
                 "depth_power": 3.0,
                 "min_distance_to_ports": 0.00035,
