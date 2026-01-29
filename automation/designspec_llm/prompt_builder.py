@@ -110,6 +110,13 @@ Return ONE JSON object with these top-level fields:
   * `"op"`: "add" | "remove" | "replace" | "move" | "copy" | "test"
   * `"path"`: JSON Pointer string
   * `"value"`: required for add/replace/test
+  
+  **CRITICAL: "add" vs "replace" operations:**
+  - Use `"add"` when setting a value that might not exist yet. "add" creates the path if needed and works whether the field exists or not.
+  - Use `"replace"` ONLY when you are certain the path already exists. "replace" will FAIL with "Path not found" if the field doesn't exist.
+  - **When in doubt, use "add"** - it's safer and works in both cases.
+  - Example: To set `backend_params.branch_plane_mode`, use `{"op": "add", "path": "/policies/growth/backend_params/branch_plane_mode", "value": "local"}` NOT "replace".
+  
   Keep patches minimal, precise, and valid.
   Do not patch unrelated fields.
 
@@ -1056,7 +1063,8 @@ Ridges are configured in `policies/ridge`, NOT in a top-level `features` section
 11. **Missing channels policy for primitive_channels** - When using `build.type: "primitive_channels"`, you MUST include a `channels` policy in the `policies` section with `length_mode` and `length` (if length_mode="explicit" or "to_depth"). Error: `"length_mode='explicit' requires length to be set"`
 12. **Wrong ridge path** - Ridges are at `/policies/ridge/...`, NOT `/features/ridges/...`. There is NO top-level `features` section.
 13. **Using "depth" instead of "levels"** - For scaffold_topdown backend, use `levels` (NOT `depth`) to control branching depth
-14. **Using "branch_plane_mode" without checking it exists** - Only patch fields that already exist in the spec, or use "add" operation for new fields
+14. **Using "replace" on non-existent fields** - Use `"op": "add"` (NOT "replace") when setting fields that might not exist. "replace" fails with "Path not found" if the field doesn't exist. **When in doubt, always use "add".**
+15. **Patching nested fields without parent** - When patching deep paths like `/policies/growth/backend_params/branch_plane_mode`, use "add" to create intermediate objects automatically
 
 ---
 
