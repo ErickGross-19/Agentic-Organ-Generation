@@ -299,7 +299,7 @@ class TestPipelineConfiguration:
                 "height": 10.0,
                 "center": {"x": 0.0, "y": 0.0, "z": 0.0},
             },
-            "input_units": "mm",
+            "input_units": "m",
             "port_placement": {
                 "enabled": True,
                 "face": "top",

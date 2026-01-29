@@ -18,10 +18,10 @@ def make_space_colonization_spec(tmp_path, seed=42):
     """Create a minimal spec with space_colonization backend."""
     return {
         "schema": {"name": "aog_designspec", "version": "1.0.0"},
-        "meta": {"name": "space_colonization_test", "seed": seed, "input_units": "mm"},
+        "meta": {"name": "space_colonization_test", "seed": seed, "input_units": "m"},
         "policies": {
             "resolution": {
-                "input_units": "mm",
+                "input_units": "m",
                 "min_channel_diameter": 0.1,
                 "min_voxels_across_feature": 4,
                 "max_voxels": 1000000,
@@ -72,10 +72,10 @@ def make_kary_tree_spec(tmp_path, seed=42):
     """Create a minimal spec with kary_tree backend."""
     return {
         "schema": {"name": "aog_designspec", "version": "1.0.0"},
-        "meta": {"name": "kary_tree_test", "seed": seed, "input_units": "mm"},
+        "meta": {"name": "kary_tree_test", "seed": seed, "input_units": "m"},
         "policies": {
             "resolution": {
-                "input_units": "mm",
+                "input_units": "m",
                 "min_channel_diameter": 0.1,
                 "min_voxels_across_feature": 4,
                 "max_voxels": 1000000,
@@ -126,10 +126,10 @@ def make_scaffold_topdown_spec(tmp_path, seed=42):
     """Create a minimal spec with scaffold_topdown backend."""
     return {
         "schema": {"name": "aog_designspec", "version": "1.0.0"},
-        "meta": {"name": "scaffold_topdown_test", "seed": seed, "input_units": "mm"},
+        "meta": {"name": "scaffold_topdown_test", "seed": seed, "input_units": "m"},
         "policies": {
             "resolution": {
-                "input_units": "mm",
+                "input_units": "m",
                 "min_channel_diameter": 0.1,
                 "min_voxels_across_feature": 4,
                 "max_voxels": 1000000,
@@ -241,10 +241,10 @@ def make_scaffold_topdown_cylinder_spec(tmp_path, seed=42):
     """
     return {
         "schema": {"name": "aog_designspec", "version": "1.0.0"},
-        "meta": {"name": "scaffold_topdown_cylinder_test", "seed": seed, "input_units": "mm"},
+        "meta": {"name": "scaffold_topdown_cylinder_test", "seed": seed, "input_units": "m"},
         "policies": {
             "resolution": {
-                "input_units": "mm",
+                "input_units": "m",
                 "min_channel_diameter": 0.1,
                 "min_voxels_across_feature": 4,
                 "max_voxels": 1000000,
@@ -500,10 +500,10 @@ class TestScaffoldTopdownBifurcation:
         """
         spec_dict = {
             "schema": {"name": "aog_designspec", "version": "1.0.0"},
-            "meta": {"name": "bifurcation_test", "seed": 42, "input_units": "mm"},
+            "meta": {"name": "bifurcation_test", "seed": 42, "input_units": "m"},
             "policies": {
                 "resolution": {
-                    "input_units": "mm",
+                    "input_units": "m",
                     "min_channel_diameter": 0.1,
                     "min_voxels_across_feature": 4,
                     "max_voxels": 1000000,
@@ -632,10 +632,10 @@ class TestScaffoldTopdownBifurcation:
         """
         spec_dict = {
             "schema": {"name": "aog_designspec", "version": "1.0.0"},
-            "meta": {"name": "bifurcation_deterministic", "seed": 12345, "input_units": "mm"},
+            "meta": {"name": "bifurcation_deterministic", "seed": 12345, "input_units": "m"},
             "policies": {
                 "resolution": {
-                    "input_units": "mm",
+                    "input_units": "m",
                     "min_channel_diameter": 0.1,
                     "min_voxels_across_feature": 4,
                     "max_voxels": 1000000,
@@ -770,10 +770,10 @@ class TestScaffoldTopdownDeeperBifurcation:
         """
         spec_dict = {
             "schema": {"name": "aog_designspec", "version": "1.0.0"},
-            "meta": {"name": "deeper_bifurcation_test", "seed": 42, "input_units": "mm"},
+            "meta": {"name": "deeper_bifurcation_test", "seed": 42, "input_units": "m"},
             "policies": {
                 "resolution": {
-                    "input_units": "mm",
+                    "input_units": "m",
                     "min_channel_diameter": 0.1,
                     "min_voxels_across_feature": 4,
                     "max_voxels": 1000000,
