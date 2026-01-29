@@ -30,9 +30,9 @@
       "max_pitch": 2e-05,
       "auto_relax_pitch": false,
       "pitch_step_factor": 1.5,
-      "max_voxels_embed": 40000000,
-      "max_voxels_merge": 40000000,
-      "max_voxels_repair": 40000000
+      "max_voxels_embed": 60000000,
+      "max_voxels_merge": 60000000,
+      "max_voxels_repair": 60000000
     },
     "domain_meshing": {
       "cache_meshes": true,
@@ -84,25 +84,25 @@
       "max_radius": 0.0002,
       "backend_params": {
         "num_attraction_points": 250000,
-        "influence_radius": 0.0012,
+        "influence_radius": 0.001,
         "kill_radius": 0.00022,
-        "branch_enable_after_distance": 0.0006,
+        "branch_enable_after_distance": 0.0009,
         "min_branch_segment_length": 0.0001,
-        "directional_bias": 0.2,
+        "directional_bias": 0.28,
         "primary_axis": [
           0,
           0,
           -1
         ],
-        "max_deviation_deg": 75.0,
+        "max_deviation_deg": 65.0,
         "upward_forbidden": true,
         "multi_inlet_mode": "blended",
         "collision_merge_distance": 0.0004,
         "encourage_bifurcation": true,
-        "max_children_per_node": 3,
-        "bifurcation_probability": 0.55,
-        "min_attractions_for_bifurcation": 10,
-        "bifurcation_angle_threshold_deg": 20.0,
+        "max_children_per_node": 2,
+        "bifurcation_probability": 0.45,
+        "min_attractions_for_bifurcation": 14,
+        "bifurcation_angle_threshold_deg": 25.0,
         "progress": true,
         "kdtree_rebuild_tip_every": 1,
         "kdtree_rebuild_all_nodes_every": 10,
@@ -111,21 +111,169 @@
         "interleaving_strategy": "round_robin",
         "tissue_sampling": {
           "enabled": true,
-          "strategy": "radial_biased",
-          "depth_min": 0.00035,
-          "depth_max": 0.0018,
-          "min_distance_to_ports": 0.0009,
-          "ring_r0": 0.0,
-          "ring_sigma": 0.0,
-          "radial_reference": {
-            "mode": "face",
-            "face": "top",
-            "center": "face_center"
-          },
-          "radial_distribution": "center_heavy",
-          "r_min": 0.0,
-          "r_max": 0.005,
-          "radial_power": 2.2
+          "strategy": "mixture",
+          "n_points": 12000,
+          "mixture_components": [
+            {
+              "weight": 0.85,
+              "policy": {
+                "strategy": "depth_biased",
+                "depth_reference": {
+                  "mode": "face",
+                  "face": "top"
+                },
+                "depth_distribution": "power",
+                "depth_min": 0.00075,
+                "depth_max": 0.002,
+                "depth_power": 3.0,
+                "min_distance_to_ports": 0.0012,
+                "exclude_spheres": [
+                  {
+                    "center": [
+                      0.0,
+                      0.0,
+                      0.001
+                    ],
+                    "radius": 0.0015
+                  },
+                  {
+                    "center": [
+                      0.003,
+                      0.0,
+                      0.001
+                    ],
+                    "radius": 0.0015
+                  },
+                  {
+                    "center": [
+                      -0.003,
+                      0.0,
+                      0.001
+                    ],
+                    "radius": 0.0015
+                  },
+                  {
+                    "center": [
+                      0.0,
+                      0.003,
+                      0.001
+                    ],
+                    "radius": 0.0015
+                  },
+                  {
+                    "center": [
+                      0.0,
+                      -0.003,
+                      0.001
+                    ],
+                    "radius": 0.0015
+                  }
+                ]
+              }
+            },
+            {
+              "weight": 0.15,
+              "policy": {
+                "strategy": "gaussian",
+                "gaussian_mean": [
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                "gaussian_sigma": [
+                  0.0016,
+                  0.0016,
+                  0.00055
+                ],
+                "min_distance_to_ports": 0.0012,
+                "exclude_spheres": [
+                  {
+                    "center": [
+                      0.0,
+                      0.0,
+                      0.001
+                    ],
+                    "radius": 0.0015
+                  },
+                  {
+                    "center": [
+                      0.003,
+                      0.0,
+                      0.001
+                    ],
+                    "radius": 0.0015
+                  },
+                  {
+                    "center": [
+                      -0.003,
+                      0.0,
+                      0.001
+                    ],
+                    "radius": 0.0015
+                  },
+                  {
+                    "center": [
+                      0.0,
+                      0.003,
+                      0.001
+                    ],
+                    "radius": 0.0015
+                  },
+                  {
+                    "center": [
+                      0.0,
+                      -0.003,
+                      0.001
+                    ],
+                    "radius": 0.0015
+                  }
+                ]
+              }
+            }
+          ],
+          "min_distance_to_ports": 0.0012,
+          "exclude_spheres": [
+            {
+              "center": [
+                0.0,
+                0.0,
+                0.001
+              ],
+              "radius": 0.0015
+            },
+            {
+              "center": [
+                0.003,
+                0.0,
+                0.001
+              ],
+              "radius": 0.0015
+            },
+            {
+              "center": [
+                -0.003,
+                0.0,
+                0.001
+              ],
+              "radius": 0.0015
+            },
+            {
+              "center": [
+                0.0,
+                0.003,
+                0.001
+              ],
+              "radius": 0.0015
+            },
+            {
+              "center": [
+                0.0,
+                -0.003,
+                0.001
+              ],
+              "radius": 0.0015
+            }
+          ]
         },
         "multi_inlet_blend_sigma": 0.0015
       }
@@ -143,11 +291,21 @@
       "collision_clearance": 2e-05
     },
     "composition": {
-      "repair_enabled": false,
+      "repair_enabled": true,
       "union_before_embed": true,
       "keep_largest_component": false,
       "merge_policy": {
         "keep_largest_component": false
+      },
+      "repair_policy": {
+        "voxel_repair_enabled": false,
+        "fill_voxels": false,
+        "remove_small_components_enabled": true,
+        "min_component_faces": 2000,
+        "fill_holes_enabled": false,
+        "smooth_enabled": false,
+        "voxel_pitch": 2e-05,
+        "auto_adjust_pitch": false
       }
     },
     "repair": {
@@ -161,7 +319,7 @@
       "auto_adjust_pitch": false,
       "max_pitch_steps": 4,
       "pitch_step_factor": 1.5,
-      "max_voxels": 40000000,
+      "max_voxels": 60000000,
       "fallback": "auto",
       "preserve_ports_enabled": true,
       "preserve_mode": "recarve",
