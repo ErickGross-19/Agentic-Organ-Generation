@@ -223,7 +223,7 @@ class TestComponentPolicyOverridesNormalization:
             "meta": {
                 "name": "test_policy_overrides_normalization",
                 "version": "1.0",
-                "input_units": "mm"
+                "input_units": "m"
             },
             "domains": {
                 "test_domain": {
@@ -297,7 +297,7 @@ class TestBackendParamsNormalization:
             "meta": {
                 "name": "test_backend_params_normalization",
                 "version": "1.0",
-                "input_units": "mm"
+                "input_units": "m"
             },
             "domains": {
                 "test_domain": {

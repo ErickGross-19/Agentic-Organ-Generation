@@ -596,7 +596,7 @@ class DesignSpecSession:
             },
             "meta": {
                 "name": "New Project",
-                "input_units": "mm",
+                "input_units": "m",
                 "seed": 42,
             },
             "policies": {},

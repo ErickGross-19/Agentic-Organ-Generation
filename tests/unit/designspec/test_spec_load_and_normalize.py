@@ -147,22 +147,21 @@ class TestDesignSpecFromDict:
         with pytest.raises(DesignSpecValidationError, match="meta"):
             DesignSpec.from_dict(spec_dict)
     
-    def test_mm_units_normalized_to_meters(self):
+    def test_mm_units_rejected(self):
+        """Test that input_units='mm' is rejected with a clear error message."""
         spec_dict = {
             "schema": {"name": "aog_designspec", "version": "1.0.0"},
-            "meta": {"seed": 42, "input_units": "mm"},
+            "meta": {"seed": 42, "input_units": "m"},
             "policies": {
-                "resolution": {"min_channel_diameter": 0.02}
+                "resolution": {"min_channel_diameter": 0.00002}
             },
             "domains": {
-                "main": {"type": "box", "x_min": -15, "x_max": 15, "y_min": -15, "y_max": 15, "z_min": -10, "z_max": 10}
+                "main": {"type": "box", "x_min": -0.015, "x_max": 0.015, "y_min": -0.015, "y_max": 0.015, "z_min": -0.01, "z_max": 0.01}
             },
             "components": [],
         }
-        spec = DesignSpec.from_dict(spec_dict)
-        
-        assert spec.domains["main"]["x_min"] == pytest.approx(-0.015)
-        assert spec.policies["resolution"]["min_channel_diameter"] == pytest.approx(0.00002)
+        with pytest.raises(DesignSpecValidationError, match="Only 'm' \\(meters\\) is supported"):
+            DesignSpec.from_dict(spec_dict)
     
     def test_warnings_recorded_for_aliases(self):
         spec_dict = {
@@ -234,14 +233,14 @@ class TestDesignSpecProperties:
     def test_input_units_property(self):
         spec_dict = {
             "schema": {"name": "aog_designspec", "version": "1.0.0"},
-            "meta": {"seed": 42, "input_units": "mm"},
+            "meta": {"seed": 42, "input_units": "m"},
             "policies": {},
             "domains": {"main": {"type": "box", "x_min": -1, "x_max": 1, "y_min": -1, "y_max": 1, "z_min": -1, "z_max": 1}},
             "components": [],
         }
         spec = DesignSpec.from_dict(spec_dict)
         
-        assert spec.input_units == "mm"
+        assert spec.input_units == "m"
 
 
 class TestPolicyLengthFieldsRegistry:
@@ -261,43 +260,42 @@ class TestPolicyLengthFieldsRegistry:
 
 
 class TestBackendParamsNormalization:
-    """Tests for backend_params unit conversion in growth policy.
+    """Tests for backend_params handling in growth policy.
     
-    Regression tests for the issue where wall_margin_m in backend_params
-    was not being converted from mm to meters, causing the k-ary tree
-    algorithm to be too restrictive.
+    Note: With input_units now restricted to meters only, these tests verify
+    that values in meters are preserved correctly (no conversion needed).
     """
     
-    def test_growth_policy_backend_params_wall_margin_normalized(self):
-        """wall_margin_m in growth.backend_params should be converted from mm to m."""
+    def test_growth_policy_backend_params_wall_margin_preserved(self):
+        """wall_margin_m in growth.backend_params should be preserved when input_units is 'm'."""
         spec_dict = {
             "schema": {"name": "aog_designspec", "version": "1.0.0"},
-            "meta": {"seed": 42, "input_units": "mm"},
+            "meta": {"seed": 42, "input_units": "m"},
             "policies": {
                 "growth": {
                     "backend_params": {
-                        "wall_margin_m": 0.5,  # 0.5mm
-                        "K": 2,  # Not a length field, should not be converted
+                        "wall_margin_m": 0.0005,  # 0.5mm in meters
+                        "K": 2,  # Not a length field
                     }
                 }
             },
-            "domains": {"main": {"type": "box", "x_min": -1, "x_max": 1, "y_min": -1, "y_max": 1, "z_min": -1, "z_max": 1}},
+            "domains": {"main": {"type": "box", "x_min": -0.001, "x_max": 0.001, "y_min": -0.001, "y_max": 0.001, "z_min": -0.001, "z_max": 0.001}},
             "components": [],
         }
         spec = DesignSpec.from_dict(spec_dict)
         
-        # wall_margin_m should be converted from 0.5mm to 0.0005m
+        # wall_margin_m should be preserved as-is (already in meters)
         assert spec.policies["growth"]["backend_params"]["wall_margin_m"] == pytest.approx(0.0005)
-        # K should remain unchanged (not a length field)
+        # K should remain unchanged
         assert spec.policies["growth"]["backend_params"]["K"] == 2
     
-    def test_component_build_backend_params_wall_margin_normalized(self):
-        """wall_margin_m in component.build.backend_params should be converted from mm to m."""
+    def test_component_build_backend_params_wall_margin_preserved(self):
+        """wall_margin_m in component.build.backend_params should be preserved when input_units is 'm'."""
         spec_dict = {
             "schema": {"name": "aog_designspec", "version": "1.0.0"},
-            "meta": {"seed": 42, "input_units": "mm"},
+            "meta": {"seed": 42, "input_units": "m"},
             "policies": {},
-            "domains": {"main": {"type": "box", "x_min": -1, "x_max": 1, "y_min": -1, "y_max": 1, "z_min": -1, "z_max": 1}},
+            "domains": {"main": {"type": "box", "x_min": -0.001, "x_max": 0.001, "y_min": -0.001, "y_max": 0.001, "z_min": -0.001, "z_max": 0.001}},
             "components": [
                 {
                     "id": "tree_1",
@@ -306,8 +304,8 @@ class TestBackendParamsNormalization:
                     "build": {
                         "type": "backend_network",
                         "backend_params": {
-                            "wall_margin_m": 0.5,  # 0.5mm
-                            "terminal_radius": 0.1,  # 0.1mm
+                            "wall_margin_m": 0.0005,  # 0.5mm in meters
+                            "terminal_radius": 0.0001,  # 0.1mm in meters
                             "num_levels": 7,  # Not a length field
                         }
                     }
@@ -317,107 +315,107 @@ class TestBackendParamsNormalization:
         spec = DesignSpec.from_dict(spec_dict)
         
         backend_params = spec.components[0]["build"]["backend_params"]
-        # wall_margin_m should be converted from 0.5mm to 0.0005m
+        # wall_margin_m should be preserved as-is (already in meters)
         assert backend_params["wall_margin_m"] == pytest.approx(0.0005)
-        # terminal_radius should be converted from 0.1mm to 0.0001m
+        # terminal_radius should be preserved as-is (already in meters)
         assert backend_params["terminal_radius"] == pytest.approx(0.0001)
         # num_levels should remain unchanged (not a length field)
         assert backend_params["num_levels"] == 7
     
-    def test_scaffold_topdown_backend_params_normalized(self):
-        """scaffold_topdown backend_params length fields should be converted from mm to m."""
+    def test_scaffold_topdown_backend_params_preserved(self):
+        """scaffold_topdown backend_params length fields should be preserved when input_units is 'm'."""
         spec_dict = {
             "schema": {"name": "aog_designspec", "version": "1.0.0"},
-            "meta": {"seed": 42, "input_units": "mm"},
+            "meta": {"seed": 42, "input_units": "m"},
             "policies": {
                 "growth": {
                     "backend": "scaffold_topdown",
                     "backend_params": {
-                        "step_length": 2.0,  # 2.0mm
-                        "spread": 1.5,  # 1.5mm
-                        "wall_margin_m": 0.1,  # 0.1mm
+                        "step_length": 0.002,  # 2.0mm in meters
+                        "spread": 0.0015,  # 1.5mm in meters
+                        "wall_margin_m": 0.0001,  # 0.1mm in meters
                         "splits": 3,  # Not a length field
                         "levels": 5,  # Not a length field
                         "ratio": 0.78,  # Not a length field
                     }
                 }
             },
-            "domains": {"main": {"type": "box", "x_min": -5, "x_max": 5, "y_min": -5, "y_max": 5, "z_min": -3, "z_max": 3}},
+            "domains": {"main": {"type": "box", "x_min": -0.005, "x_max": 0.005, "y_min": -0.005, "y_max": 0.005, "z_min": -0.003, "z_max": 0.003}},
             "components": [],
         }
         spec = DesignSpec.from_dict(spec_dict)
         
         backend_params = spec.policies["growth"]["backend_params"]
-        # step_length should be converted from 2.0mm to 0.002m
+        # step_length should be preserved as-is (already in meters)
         assert backend_params["step_length"] == pytest.approx(0.002)
-        # spread should be converted from 1.5mm to 0.0015m
+        # spread should be preserved as-is (already in meters)
         assert backend_params["spread"] == pytest.approx(0.0015)
-        # wall_margin_m should be converted from 0.1mm to 0.0001m
+        # wall_margin_m should be preserved as-is (already in meters)
         assert backend_params["wall_margin_m"] == pytest.approx(0.0001)
         # Non-length fields should remain unchanged
         assert backend_params["splits"] == 3
         assert backend_params["levels"] == 5
         assert backend_params["ratio"] == 0.78
     
-    def test_scaffold_topdown_collision_online_params_normalized(self):
-        """scaffold_topdown collision_online nested dict length fields should be converted."""
+    def test_scaffold_topdown_collision_online_params_preserved(self):
+        """scaffold_topdown collision_online nested dict length fields should be preserved when input_units is 'm'."""
         spec_dict = {
             "schema": {"name": "aog_designspec", "version": "1.0.0"},
-            "meta": {"seed": 42, "input_units": "mm"},
+            "meta": {"seed": 42, "input_units": "m"},
             "policies": {
                 "growth": {
                     "backend": "scaffold_topdown",
                     "backend_params": {
                         "collision_online": {
                             "enabled": True,
-                            "buffer_abs_m": 0.02,  # 0.02mm
-                            "cell_size_m": 0.5,  # 0.5mm
+                            "buffer_abs_m": 0.00002,  # 0.02mm in meters
+                            "cell_size_m": 0.0005,  # 0.5mm in meters
                             "buffer_rel": 0.05,  # Not a length field (relative)
                             "rotation_attempts": 14,  # Not a length field
                         }
                     }
                 }
             },
-            "domains": {"main": {"type": "box", "x_min": -5, "x_max": 5, "y_min": -5, "y_max": 5, "z_min": -3, "z_max": 3}},
+            "domains": {"main": {"type": "box", "x_min": -0.005, "x_max": 0.005, "y_min": -0.005, "y_max": 0.005, "z_min": -0.003, "z_max": 0.003}},
             "components": [],
         }
         spec = DesignSpec.from_dict(spec_dict)
         
         collision_online = spec.policies["growth"]["backend_params"]["collision_online"]
-        # buffer_abs_m should be converted from 0.02mm to 0.00002m
+        # buffer_abs_m should be preserved as-is (already in meters)
         assert collision_online["buffer_abs_m"] == pytest.approx(0.00002)
-        # cell_size_m should be converted from 0.5mm to 0.0005m
+        # cell_size_m should be preserved as-is (already in meters)
         assert collision_online["cell_size_m"] == pytest.approx(0.0005)
         # Non-length fields should remain unchanged
         assert collision_online["enabled"] is True
         assert collision_online["buffer_rel"] == 0.05
         assert collision_online["rotation_attempts"] == 14
     
-    def test_scaffold_topdown_collision_postpass_params_normalized(self):
-        """scaffold_topdown collision_postpass nested dict length fields should be converted."""
+    def test_scaffold_topdown_collision_postpass_params_preserved(self):
+        """scaffold_topdown collision_postpass nested dict length fields should be preserved when input_units is 'm'."""
         spec_dict = {
             "schema": {"name": "aog_designspec", "version": "1.0.0"},
-            "meta": {"seed": 42, "input_units": "mm"},
+            "meta": {"seed": 42, "input_units": "m"},
             "policies": {
                 "growth": {
                     "backend": "scaffold_topdown",
                     "backend_params": {
                         "collision_postpass": {
                             "enabled": True,
-                            "min_clearance_m": 0.02,  # 0.02mm
+                            "min_clearance_m": 0.00002,  # 0.02mm in meters
                             "shrink_factor": 0.9,  # Not a length field
                             "shrink_max_iterations": 6,  # Not a length field
                         }
                     }
                 }
             },
-            "domains": {"main": {"type": "box", "x_min": -5, "x_max": 5, "y_min": -5, "y_max": 5, "z_min": -3, "z_max": 3}},
+            "domains": {"main": {"type": "box", "x_min": -0.005, "x_max": 0.005, "y_min": -0.005, "y_max": 0.005, "z_min": -0.003, "z_max": 0.003}},
             "components": [],
         }
         spec = DesignSpec.from_dict(spec_dict)
         
         collision_postpass = spec.policies["growth"]["backend_params"]["collision_postpass"]
-        # min_clearance_m should be converted from 0.02mm to 0.00002m
+        # min_clearance_m should be preserved as-is (already in meters)
         assert collision_postpass["min_clearance_m"] == pytest.approx(0.00002)
         # Non-length fields should remain unchanged
         assert collision_postpass["enabled"] is True
@@ -437,7 +435,7 @@ class TestNestedPolicyNormalization:
         """composition.merge_policy.voxel_pitch should be converted from mm to m."""
         spec_dict = {
             "schema": {"name": "aog_designspec", "version": "1.0.0"},
-            "meta": {"seed": 42, "input_units": "mm"},
+            "meta": {"seed": 42, "input_units": "m"},
             "policies": {
                 "composition": {
                     "merge_policy": {
@@ -461,7 +459,7 @@ class TestNestedPolicyNormalization:
         """composition.repair_policy.voxel_pitch should be converted from mm to m."""
         spec_dict = {
             "schema": {"name": "aog_designspec", "version": "1.0.0"},
-            "meta": {"seed": 42, "input_units": "mm"},
+            "meta": {"seed": 42, "input_units": "m"},
             "policies": {
                 "composition": {
                     "repair_policy": {
@@ -485,7 +483,7 @@ class TestNestedPolicyNormalization:
         """domain_meshing sub-policies should have their pitches normalized."""
         spec_dict = {
             "schema": {"name": "aog_designspec", "version": "1.0.0"},
-            "meta": {"seed": 42, "input_units": "mm"},
+            "meta": {"seed": 42, "input_units": "m"},
             "policies": {
                 "domain_meshing": {
                     "voxel_pitch": 0.05,  # 0.05mm
@@ -520,7 +518,7 @@ class TestNestedPolicyNormalization:
         """
         spec_dict = {
             "schema": {"name": "aog_designspec", "version": "1.0.0"},
-            "meta": {"seed": 42, "input_units": "mm"},
+            "meta": {"seed": 42, "input_units": "m"},
             "policies": {
                 "composition": {
                     "merge_policy": {
@@ -553,7 +551,7 @@ class TestNestedPolicyNormalization:
         """Volume fields should be scaled by scale³, not scale."""
         spec_dict = {
             "schema": {"name": "aog_designspec", "version": "1.0.0"},
-            "meta": {"seed": 42, "input_units": "mm"},
+            "meta": {"seed": 42, "input_units": "m"},
             "policies": {
                 "repair": {
                     "min_component_volume": 1.0,  # 1 mm³
@@ -577,30 +575,27 @@ class TestNestedPolicyNormalization:
 
 
 class TestCentimeterUnits:
-    """Tests for centimeter unit support."""
+    """Tests for centimeter unit support (now rejected)."""
     
     def test_centimeters_scale(self):
-        """cm units should have scale factor of 0.01."""
+        """cm units should have scale factor of 0.01 (for backward compatibility)."""
         assert _get_unit_scale("cm") == 0.01
     
-    def test_cm_units_normalized_to_meters(self):
-        """Spec with cm units should normalize correctly."""
+    def test_cm_units_rejected(self):
+        """Spec with cm units should be rejected with a clear error message."""
         spec_dict = {
             "schema": {"name": "aog_designspec", "version": "1.0.0"},
             "meta": {"seed": 42, "input_units": "cm"},
             "policies": {
-                "resolution": {"min_channel_diameter": 0.02}  # 0.02cm = 0.2mm
+                "resolution": {"min_channel_diameter": 0.0002}
             },
             "domains": {
-                "main": {"type": "cylinder", "center": [0, 0, 0], "radius": 0.5, "height": 0.2}  # 5mm radius, 2mm height
+                "main": {"type": "cylinder", "center": [0, 0, 0], "radius": 0.005, "height": 0.002}
             },
             "components": [],
         }
-        spec = DesignSpec.from_dict(spec_dict)
-        
-        assert spec.domains["main"]["radius"] == pytest.approx(0.005)  # 0.5cm = 0.005m
-        assert spec.domains["main"]["height"] == pytest.approx(0.002)  # 0.2cm = 0.002m
-        assert spec.policies["resolution"]["min_channel_diameter"] == pytest.approx(0.0002)  # 0.02cm = 0.0002m
+        with pytest.raises(DesignSpecValidationError, match="Only 'm' \\(meters\\) is supported"):
+            DesignSpec.from_dict(spec_dict)
 
 
 class TestPreflightValidation:
@@ -851,7 +846,7 @@ class TestUnitAuditReport:
         try:
             spec_dict = {
                 "schema": {"name": "aog_designspec", "version": "1.0.0"},
-                "meta": {"seed": 42, "input_units": "mm"},
+                "meta": {"seed": 42, "input_units": "m"},
                 "policies": {
                     "embedding": {"voxel_pitch": 0.05}
                 },
@@ -873,7 +868,7 @@ class TestUnitAuditReport:
         
         spec_dict = {
             "schema": {"name": "aog_designspec", "version": "1.0.0"},
-            "meta": {"seed": 42, "input_units": "mm"},
+            "meta": {"seed": 42, "input_units": "m"},
             "policies": {},
             "domains": {"main": {"type": "box", "x_min": -5, "x_max": 5, "y_min": -5, "y_max": 5, "z_min": -1, "z_max": 1}},
             "components": [],
