@@ -453,12 +453,23 @@ class DesignSpecWorkflowManager:
             success = result.get("success", False)
             if success:
                 self._send_message("success", message)
+                stl_files_sent = set()
                 artifacts = result.get("artifacts", {})
                 for name, artifact in artifacts.items():
                     if isinstance(artifact, dict):
                         path = artifact.get("path")
                         if path and str(path).endswith(".stl"):
                             self._send_output("stl_file", path)
+                            stl_files_sent.add(path)
+                output_dir = result.get("output_dir")
+                if output_dir:
+                    from pathlib import Path
+                    output_path = Path(output_dir)
+                    if output_path.exists():
+                        for stl_file in output_path.glob("*.stl"):
+                            stl_path = str(stl_file)
+                            if stl_path not in stl_files_sent:
+                                self._send_output("stl_file", stl_path)
             else:
                 error_details = self._format_run_failure_details(result)
                 self._send_message("error", error_details)
