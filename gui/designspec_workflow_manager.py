@@ -453,10 +453,12 @@ class DesignSpecWorkflowManager:
             success = result.get("success", False)
             if success:
                 self._send_message("success", message)
-                artifacts = result.get("artifacts", [])
-                for artifact in artifacts:
-                    if artifact.get("type") == "stl":
-                        self._send_output("stl_file", artifact.get("path"))
+                artifacts = result.get("artifacts", {})
+                for name, artifact in artifacts.items():
+                    if isinstance(artifact, dict):
+                        path = artifact.get("path")
+                        if path and str(path).endswith(".stl"):
+                            self._send_output("stl_file", path)
             else:
                 error_details = self._format_run_failure_details(result)
                 self._send_message("error", error_details)
