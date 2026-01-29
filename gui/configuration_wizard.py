@@ -72,7 +72,7 @@ class ConfigurationWizard(tk.Toplevel):
         self._steps = ["Agent Configuration", "Project Setup", "Workflow Mode"]
         
         self.title("DesignSpec Workflow Setup")
-        self.geometry("600x600")
+        self.geometry("600x700")
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
@@ -322,11 +322,11 @@ class ConfigurationWizard(tk.Toplevel):
         self.template_var = tk.StringVar(value=self._config.template)
         
         templates = [
+            ("open_project", "Open Existing Project", "Open a previously created project directory"),
             ("empty", "Empty Project", "Start with a blank DesignSpec"),
             ("cylinder", "Cylinder Domain", "Pre-configured cylinder domain with inlets"),
             ("box", "Box Domain", "Pre-configured box domain"),
             ("import", "Import Existing", "Import an existing DesignSpec file"),
-            ("open_project", "Open Existing Project", "Open a previously created project directory"),
         ]
         
         for value, label, description in templates:
@@ -346,24 +346,6 @@ class ConfigurationWizard(tk.Toplevel):
             ).pack(anchor="w", padx=(20, 0), pady=(0, 5))
         
         row += 1
-        self.import_frame = ttk.Frame(frame)
-        self.import_frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=5)
-        self.import_frame.columnconfigure(1, weight=1)
-        
-        ttk.Label(self.import_frame, text="Import File:").grid(row=0, column=0, sticky="w", padx=(20, 0))
-        self.import_path_var = tk.StringVar(value=self._config.import_path or "")
-        ttk.Entry(
-            self.import_frame,
-            textvariable=self.import_path_var,
-            width=30,
-        ).grid(row=0, column=1, sticky="ew", padx=(10, 0))
-        ttk.Button(
-            self.import_frame,
-            text="Browse...",
-            command=self._browse_import,
-        ).grid(row=0, column=2, padx=(5, 0))
-        
-        row += 1
         self.open_project_frame = ttk.Frame(frame)
         self.open_project_frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=5)
         self.open_project_frame.columnconfigure(1, weight=1)
@@ -379,6 +361,24 @@ class ConfigurationWizard(tk.Toplevel):
             self.open_project_frame,
             text="Browse...",
             command=self._browse_open_project,
+        ).grid(row=0, column=2, padx=(5, 0))
+        
+        row += 1
+        self.import_frame = ttk.Frame(frame)
+        self.import_frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=5)
+        self.import_frame.columnconfigure(1, weight=1)
+        
+        ttk.Label(self.import_frame, text="Import File:").grid(row=0, column=0, sticky="w", padx=(20, 0))
+        self.import_path_var = tk.StringVar(value=self._config.import_path or "")
+        ttk.Entry(
+            self.import_frame,
+            textvariable=self.import_path_var,
+            width=30,
+        ).grid(row=0, column=1, sticky="ew", padx=(10, 0))
+        ttk.Button(
+            self.import_frame,
+            text="Browse...",
+            command=self._browse_import,
         ).grid(row=0, column=2, padx=(5, 0))
         
         self._on_template_change()
