@@ -917,6 +917,9 @@ class MainWindow:
                     if self._execution_progress_panel:
                         self._execution_progress_panel.stop(success=True)
                     self._switch_to_results_layout()
+                elif self._current_layout_mode == "conversation":
+                    # When run completes in conversation mode, load STL files
+                    self._load_stl_after_run()
         
         self.root.after(0, update)
     
@@ -1556,6 +1559,24 @@ class MainWindow:
             if hasattr(self, 'compile_panel'):
                 self.compile_panel.update_status("running", "Compiling...")
             self._designspec_manager.compile_spec()
+    
+    def _load_stl_after_run(self):
+        """Load STL files after a run completes in conversation mode."""
+        if not hasattr(self, '_designspec_manager') or not self._designspec_manager:
+            return
+        
+        artifacts_dir = self._designspec_manager.get_artifacts_dir()
+        if artifacts_dir:
+            stl_files = list(Path(artifacts_dir).glob("*.stl"))
+            if stl_files:
+                # Load the first STL file found
+                stl_path = str(stl_files[0])
+                self.stl_viewer.load_stl(stl_path)
+                self.current_file_var.set(os.path.basename(stl_path))
+                self._append_chat("success", f"Loaded STL: {os.path.basename(stl_path)}")
+                
+                # Show the STL viewer panel by switching to results layout
+                self._switch_to_results_layout()
     
     def _load_stl(self, file_path: str = None):
         """Load STL file directly or via file dialog."""

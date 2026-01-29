@@ -408,7 +408,8 @@ def get_policy_reference_compact() -> str:
 - step_length: float (meters)
 - spread: float (meters)
 - cone_angle_deg: float (degrees)
-- branch_plane_mode: "global" | "local" | "hybrid"
+- depth_adaptive_mode: "none" | "uniform" | "geometric" (step length computation)
+- branch_plane_mode: "global" (2D) | "local" (3D) | "hybrid" (branch orientation)
 - collision_online: {enabled, merge_on_collision, merge_distance_m, ...}
 
 ## embedding - Void Embedding
