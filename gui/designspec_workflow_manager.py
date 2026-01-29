@@ -447,6 +447,18 @@ class DesignSpecWorkflowManager:
 
         elif event_type == WorkflowEventType.RUN_PROGRESS:
             self._send_run_progress(data)
+            stage = data.get("stage", "")
+            status = data.get("status", "")
+            stage_index = data.get("stage_index", 0)
+            total_stages = data.get("total_stages", 1)
+            progress_pct = data.get("progress_percent", 0)
+            if status == "running" and stage:
+                progress_msg = f"[{stage_index + 1}/{total_stages}] Running: {stage} ({progress_pct:.0f}%)"
+                self._send_message("system", progress_msg)
+            elif status == "completed" and stage:
+                self._send_message("success", f"Stage completed: {stage}")
+            elif status == "failed" and stage:
+                self._send_message("error", f"Stage failed: {stage}")
 
         elif event_type == WorkflowEventType.RUN_COMPLETED:
             result = data.get("result", {})

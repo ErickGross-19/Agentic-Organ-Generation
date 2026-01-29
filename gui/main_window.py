@@ -540,6 +540,14 @@ class MainWindow:
                 state="normal",
             )
             self._conv_send_btn.grid(row=0, column=1, padx=(5, 0))
+            
+            self._conv_run_btn = ttk.Button(
+                conv_input_frame,
+                text="Run",
+                command=self._on_run_button_click,
+                state="normal",
+            )
+            self._conv_run_btn.grid(row=0, column=2, padx=(5, 0))
         
         try:
             self._main_paned.add(self._conversation_left_frame, weight=1)
@@ -1498,6 +1506,15 @@ class MainWindow:
             if hasattr(self, 'run_panel'):
                 self.run_panel.set_running(True, "Running full pipeline...")
             self._designspec_manager.run_full()
+    
+    def _on_run_button_click(self):
+        """Handle Run button click from conversation layout."""
+        if hasattr(self, '_designspec_manager') and self._designspec_manager:
+            self._append_chat("user", "run")
+            self._append_chat("system", "Starting full run...")
+            self._designspec_manager.run_full()
+        else:
+            self._append_chat("error", "No project loaded. Create or open a project first.")
     
     def _on_approve_run(self):
         """Handle run approval from RunPanel."""
