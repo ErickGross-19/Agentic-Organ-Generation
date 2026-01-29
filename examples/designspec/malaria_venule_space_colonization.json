@@ -84,7 +84,7 @@
       "max_radius": 0.0002,
       "backend_params": {
         "num_attraction_points": 250000,
-        "influence_radius": 0.002,
+        "influence_radius": 0.001,
         "kill_radius": 0.00022,
         "branch_enable_after_distance": 0.0009,
         "min_branch_segment_length": 0.0001,
@@ -126,7 +126,7 @@
                 "depth_min": 0.00075,
                 "depth_max": 0.002,
                 "depth_power": 3.0,
-                "min_distance_to_ports": 0.0012,
+                "min_distance_to_ports": 0.00035,
                 "exclude_spheres": [
                   {
                     "center": [
@@ -185,7 +185,7 @@
                   0.0016,
                   0.00055
                 ],
-                "min_distance_to_ports": 0.0012,
+                "min_distance_to_ports": 0.0003,
                 "exclude_spheres": [
                   {
                     "center": [
