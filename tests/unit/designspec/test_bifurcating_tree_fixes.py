@@ -26,7 +26,7 @@ class TestPortFieldNormalization:
         
         spec_dict = {
             "schema": {"name": "aog_designspec", "version": "1.0.0"},
-            "meta": {"name": "test", "input_units": "mm"},
+            "meta": {"name": "test", "input_units": "m"},
             "policies": {},
             "domains": {
                 "main": {"type": "cylinder", "center": [0, 0, 0], "radius": 5.0, "height": 2.0}
@@ -66,7 +66,7 @@ class TestPortFieldNormalization:
         
         spec_dict = {
             "schema": {"name": "aog_designspec", "version": "1.0.0"},
-            "meta": {"name": "test", "input_units": "mm"},
+            "meta": {"name": "test", "input_units": "m"},
             "policies": {},
             "domains": {
                 "main": {"type": "cylinder", "center": [0, 0, 0], "radius": 5.0, "height": 2.0}
@@ -159,7 +159,7 @@ class TestFaceProjection:
         
         spec_dict = {
             "schema": {"name": "aog_designspec", "version": "1.0.0"},
-            "meta": {"name": "test", "input_units": "mm"},
+            "meta": {"name": "test", "input_units": "m"},
             "policies": {
                 "ports": {
                     "face": "top",
@@ -544,7 +544,7 @@ class TestSurfaceOpeningSemantics:
         
         spec_dict = {
             "schema": {"name": "aog_designspec", "version": "1.0.0"},
-            "meta": {"name": "test", "input_units": "mm"},
+            "meta": {"name": "test", "input_units": "m"},
             "policies": {},
             "domains": {
                 "main": {"type": "cylinder", "center": [0, 0, 0], "radius": 5.0, "height": 2.0}
@@ -826,7 +826,7 @@ class TestUnitNormalization:
         
         spec_dict = {
             "schema": {"name": "aog_designspec", "version": "1.0.0"},
-            "meta": {"name": "test", "input_units": "mm"},
+            "meta": {"name": "test", "input_units": "m"},
             "policies": {
                 "validity": {
                     "surface_opening_tolerance": 1.0  # 1mm
@@ -850,7 +850,7 @@ class TestUnitNormalization:
         
         spec_dict = {
             "schema": {"name": "aog_designspec", "version": "1.0.0"},
-            "meta": {"name": "test", "input_units": "mm"},
+            "meta": {"name": "test", "input_units": "m"},
             "policies": {
                 "mesh_merge": {
                     "min_channel_diameter": 0.1  # 0.1mm = 100um

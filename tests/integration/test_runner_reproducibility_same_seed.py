@@ -18,10 +18,10 @@ def make_deterministic_spec(tmp_path, seed=42):
     """Create a minimal spec for reproducibility testing."""
     return {
         "schema": {"name": "aog_designspec", "version": "1.0.0"},
-        "meta": {"name": "reproducibility_test", "seed": seed, "input_units": "mm"},
+        "meta": {"name": "reproducibility_test", "seed": seed, "input_units": "m"},
         "policies": {
             "resolution": {
-                "input_units": "mm",
+                "input_units": "m",
                 "min_channel_diameter": 0.1,
                 "min_voxels_across_feature": 4,
                 "max_voxels": 1000000,

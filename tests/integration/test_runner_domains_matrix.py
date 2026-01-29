@@ -18,10 +18,10 @@ def make_box_spec(tmp_path):
     """Create a minimal spec with a box domain."""
     return {
         "schema": {"name": "aog_designspec", "version": "1.0.0"},
-        "meta": {"name": "box_domain_test", "seed": 42, "input_units": "mm"},
+        "meta": {"name": "box_domain_test", "seed": 42, "input_units": "m"},
         "policies": {
             "resolution": {
-                "input_units": "mm",
+                "input_units": "m",
                 "min_channel_diameter": 0.1,
                 "min_voxels_across_feature": 4,
                 "max_voxels": 1000000,
@@ -72,10 +72,10 @@ def make_cylinder_spec(tmp_path):
     """Create a minimal spec with a cylinder domain."""
     return {
         "schema": {"name": "aog_designspec", "version": "1.0.0"},
-        "meta": {"name": "cylinder_domain_test", "seed": 42, "input_units": "mm"},
+        "meta": {"name": "cylinder_domain_test", "seed": 42, "input_units": "m"},
         "policies": {
             "resolution": {
-                "input_units": "mm",
+                "input_units": "m",
                 "min_channel_diameter": 0.1,
                 "min_voxels_across_feature": 4,
                 "max_voxels": 1000000,
@@ -127,10 +127,10 @@ def make_sphere_spec(tmp_path):
     """Create a minimal spec with a sphere domain."""
     return {
         "schema": {"name": "aog_designspec", "version": "1.0.0"},
-        "meta": {"name": "sphere_domain_test", "seed": 42, "input_units": "mm"},
+        "meta": {"name": "sphere_domain_test", "seed": 42, "input_units": "m"},
         "policies": {
             "resolution": {
-                "input_units": "mm",
+                "input_units": "m",
                 "min_channel_diameter": 0.1,
                 "min_voxels_across_feature": 4,
                 "max_voxels": 1000000,

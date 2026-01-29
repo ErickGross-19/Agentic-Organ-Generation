@@ -402,7 +402,7 @@ class TestEnableFlags:
         """Test that validity.enable=false skips validity stage."""
         test_spec = {
             "schema": {"name": "aog_designspec", "version": "1.0.0"},
-            "meta": {"name": "test_enable_flags", "input_units": "mm"},
+            "meta": {"name": "test_enable_flags", "input_units": "m"},
             "policies": {},
             "domains": {
                 "test_domain": {
@@ -427,7 +427,7 @@ class TestEnableFlags:
         """Test that embedding.enable=false skips embedding stage."""
         test_spec = {
             "schema": {"name": "aog_designspec", "version": "1.0.0"},
-            "meta": {"name": "test_enable_flags", "input_units": "mm"},
+            "meta": {"name": "test_enable_flags", "input_units": "m"},
             "policies": {},
             "domains": {
                 "test_domain": {
