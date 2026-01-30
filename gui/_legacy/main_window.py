@@ -15,14 +15,14 @@ import warnings
 from pathlib import Path
 from datetime import datetime
 
-from .security import SecureConfig
-from .agent_config import AgentConfigPanel, AgentConfiguration
-from .workflow_manager import WorkflowManager, WorkflowConfig, WorkflowType, WorkflowStatus, WorkflowMessage
-from .stl_viewer import STLViewer
-from .designspec_workflow_manager import DesignSpecWorkflowManager
-from .designspec_panels import SpecPanel, PatchPanel, CompilePanel, RunPanel, ArtifactsPanel, LiveSpecViewer
-from .configuration_wizard import ConfigurationWizard, WizardConfiguration
-from .execution_progress_panel import ExecutionProgressPanel
+from gui.security import SecureConfig
+from gui.agent_config import AgentConfigPanel, AgentConfiguration
+from gui.workflow_manager import WorkflowManager, WorkflowConfig, WorkflowType, WorkflowStatus, WorkflowMessage
+from gui.stl_viewer import STLViewer
+from gui.designspec_workflow_manager import DesignSpecWorkflowManager
+from gui.designspec_panels import SpecPanel, PatchPanel, CompilePanel, RunPanel, ArtifactsPanel, LiveSpecViewer
+from gui.configuration_wizard import ConfigurationWizard, WizardConfiguration
+from gui.execution_progress_panel import ExecutionProgressPanel
 
 
 class WorkflowSelectionDialog(tk.Toplevel):
