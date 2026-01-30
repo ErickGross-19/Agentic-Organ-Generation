@@ -237,8 +237,8 @@
           "wall_margin_m": 0.0003,
           "boundary_extra_m": 0.0001,
           "min_radius": 5e-05,
-          "depth_adaptive_mode": "geometric",
-          "branch_plane_mode": "local",
+          "depth_adaptive_mode": "none",
+          "branch_plane_mode": "global",
           "collision_online": {
             "enabled": true,
             "buffer_abs_m": 2e-05,
