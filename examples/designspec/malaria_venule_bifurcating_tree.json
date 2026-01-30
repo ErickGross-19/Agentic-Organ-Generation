@@ -86,7 +86,7 @@
         "wall_margin_m": 0.0003,
         "boundary_extra_m": 0.0001,
         "min_radius": 5e-05,
-        "depth_adaptive_mode": "geometric",
+        "depth_adaptive_mode": "none",
         "branch_plane_mode": "global",
         "collision_online": {
           "enabled": true,
@@ -97,7 +97,7 @@
           "reduction_factors": [0.75, 0.55, 0.35, 0.2],
           "max_attempts_per_child": 60,
           "on_fail": "terminate_branch",
-          "merge_on_collision": true,
+          "merge_on_collision": false,
           "merge_distance_m": 2e-04,
           "fail_retry_rounds": 2,
           "fail_retry_mode": "both",
