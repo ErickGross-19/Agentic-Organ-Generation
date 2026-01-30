@@ -161,7 +161,7 @@ class TubeGeometry:
             "end": self.end.to_dict(),
             "radius_start": self.radius_start,
             "radius_end": self.radius_end,
-            "centerline_points": [p.to_dict() for p in self.centerline_points],
+            "centerline_points": [p.to_dict() for p in self.centerline_points] if self.centerline_points else [],
         }
     
     @classmethod
