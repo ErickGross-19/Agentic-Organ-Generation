@@ -2,23 +2,14 @@
   "schema": {
     "name": "aog_designspec",
     "version": "1.0.0",
-    "compatible_with": [
-      "1.0.x"
-    ]
+    "compatible_with": ["1.0.x"]
   },
   "meta": {
-    "name": "malaria_venule_space_colonization_overhaul",
-    "description": "Dense multi-inlet space colonization (target 1024 terminals) inside a 5mm radius x 2mm height cylinder with ridge. Inputs in meters.",
+    "name": "malaria_venule_space_colonization_mesh_fixed",
+    "description": "Fixed mesh synthesis to prevent voxel islands during component_mesh step. Addresses the REAL problem: too many short segments creating disconnected tiny meshes.",
     "seed": 42,
     "input_units": "m",
-    "tags": [
-      "malaria",
-      "venule",
-      "space_colonization",
-      "dense",
-      "merge",
-      "meters"
-    ]
+    "tags": ["malaria", "venule", "space_colonization", "mesh_fix"]
   },
   "policies": {
     "resolution": {
@@ -37,21 +28,21 @@
     "domain_meshing": {
       "cache_meshes": true,
       "emit_warnings": true,
-      "target_face_count": 140000,
+      "target_face_count": 80000,
       "voxel_pitch": null,
       "primitive_policy": {
-        "sections_radial": 160,
-        "sections_axial": 80,
-        "sections_angular": 160,
+        "sections_radial": 100,
+        "sections_axial": 50,
+        "sections_angular": 100,
         "subdivisions": 2
       },
       "mesh_policy": {
         "validate_watertight": true,
         "repair_if_needed": true,
         "repair_voxel_pitch": 2e-05,
-        "max_faces": 900000,
+        "max_faces": 500000,
         "simplify_if_over_max": true,
-        "simplify_target_ratio": 0.6
+        "simplify_target_ratio": 0.7
       }
     },
     "ridge": {
@@ -61,179 +52,104 @@
       "thickness": 0.0005,
       "inset": 0.0,
       "overlap": 0.00025,
-      "resolution": 160
+      "resolution": 100
     },
     "network_cleanup": {
-      "enable_snap": false,
-      "snap_tol": 2e-05,
-      "enable_prune": false,
-      "min_segment_length": 0.0001,
-      "enable_merge": false,
-      "merge_tol": 2e-05
+      "enable_snap": true,
+      "snap_tol": 8e-05,
+      "enable_prune": true,
+      "min_segment_length": 8e-05,
+      "enable_merge": true,
+      "merge_tol": 8e-05
     },
     "growth": {
       "enabled": true,
       "backend": "space_colonization",
       "target_terminals": 384,
       "terminal_tolerance": 0.2,
-      "max_iterations": 100,
-      "step_size": 0.0001,
-      "min_segment_length": 0.0001,
-      "max_segment_length": 0.00025,
+      "max_iterations": 150,
+      "step_size": 0.00012,
+      "min_segment_length": 0.00012,
+      "max_segment_length": 0.0004,
       "min_radius": 3e-05,
       "max_radius": 0.0002,
       "backend_params": {
-        "num_attraction_points": 250000,
-        "influence_radius": 0.001,
-        "kill_radius": 0.00022,
-        "branch_enable_after_distance": 0.0009,
-        "min_branch_segment_length": 0.0001,
-        "directional_bias": 0.28,
-        "primary_axis": [
-          0,
-          0,
-          -1
-        ],
-        "max_deviation_deg": 65.0,
+        "num_attraction_points": 160000,
+        "influence_radius": 0.0012,
+        "kill_radius": 0.00028,
+        "branch_enable_after_distance": 0.0012,
+        "min_branch_segment_length": 0.00012,
+        "directional_bias": 0.3,
+        "primary_axis": [0, 0, -1],
+        "max_deviation_deg": 70.0,
         "upward_forbidden": true,
         "multi_inlet_mode": "blended",
-        "collision_merge_distance": 0.0004,
+        "collision_merge_distance": 0.0006,
         "encourage_bifurcation": true,
         "max_children_per_node": 2,
-        "bifurcation_probability": 0.45,
-        "min_attractions_for_bifurcation": 14,
-        "bifurcation_angle_threshold_deg": 25.0,
+        "bifurcation_probability": 0.35,
+        "min_attractions_for_bifurcation": 12,
+        "bifurcation_angle_threshold_deg": 30.0,
         "progress": true,
         "kdtree_rebuild_tip_every": 1,
-        "kdtree_rebuild_all_nodes_every": 10,
-        "kdtree_rebuild_all_nodes_min_new_nodes": 5,
-        "stall_steps_per_inlet": 10,
+        "kdtree_rebuild_all_nodes_every": 12,
+        "kdtree_rebuild_all_nodes_min_new_nodes": 8,
+        "stall_steps_per_inlet": 15,
         "interleaving_strategy": "round_robin",
         "tissue_sampling": {
           "enabled": true,
           "strategy": "mixture",
-          "n_points": 12000,
+          "n_points": 10000,
           "mixture_components": [
             {
-              "weight": 0.85,
+              "weight": 0.8,
               "policy": {
                 "strategy": "depth_biased",
-                "depth_reference": {
-                  "mode": "face",
-                  "face": "top"
-                },
+                "depth_reference": {"mode": "face", "face": "top"},
                 "depth_distribution": "power",
-                "depth_min": 0.00045,
+                "depth_min": 0.0005,
                 "depth_max": 0.002,
-                "depth_power": 3.0,
-                "min_distance_to_ports": 0.00035,
+                "depth_power": 2.5,
+                "min_distance_to_ports": 0.0004,
                 "exclude_spheres": [
-                  {
-                    "center": [
-                      0.0,
-                      0.0,
-                      0.001
-                    ],
-                    "radius": 0.0001
-                  },
-                  {
-                    "center": [
-                      0.003,
-                      0.0,
-                      0.001
-                    ],
-                    "radius": 0.0001
-                  },
-                  {
-                    "center": [
-                      -0.003,
-                      0.0,
-                      0.001
-                    ],
-                    "radius": 0.0001
-                  },
-                  {
-                    "center": [
-                      0.0,
-                      0.003,
-                      0.001
-                    ],
-                    "radius": 0.0001
-                  },
-                  {
-                    "center": [
-                      0.0,
-                      -0.003,
-                      0.001
-                    ],
-                    "radius": 0.0001
-                  }
+                  {"center": [0.0, 0.0, 0.001], "radius": 0.0002},
+                  {"center": [0.003, 0.0, 0.001], "radius": 0.0002},
+                  {"center": [-0.003, 0.0, 0.001], "radius": 0.0002},
+                  {"center": [0.0, 0.003, 0.001], "radius": 0.0002},
+                  {"center": [0.0, -0.003, 0.001], "radius": 0.0002}
                 ]
               }
             },
             {
-              "weight": 0.15,
+              "weight": 0.2,
               "policy": {
                 "strategy": "gaussian",
-                "gaussian_mean": [
-                  0.0,
-                  0.0,
-                  0.0
-                ],
-                "gaussian_sigma": [
-                  0.0016,
-                  0.0016,
-                  0.00055
-                ],
-                "min_distance_to_ports": 0.00045,
+                "gaussian_mean": [0.0, 0.0, 0.0],
+                "gaussian_sigma": [0.0018, 0.0018, 0.0006],
+                "min_distance_to_ports": 0.0005,
                 "exclude_spheres": [
-                  {
-                    "center": [
-                      0.0,
-                      0.0,
-                      0.001
-                    ],
-                    "radius": 0.0007
-                  },
-                  {
-                    "center": [
-                      0.003,
-                      0.0,
-                      0.001
-                    ],
-                    "radius": 0.0007
-                  },
-                  {
-                    "center": [
-                      -0.003,
-                      0.0,
-                      0.001
-                    ],
-                    "radius": 0.0007
-                  },
-                  {
-                    "center": [
-                      0.0,
-                      0.003,
-                      0.001
-                    ],
-                    "radius": 0.0007
-                  },
-                  {
-                    "center": [
-                      0.0,
-                      -0.003,
-                      0.001
-                    ],
-                    "radius": 0.0007
-                  }
+                  {"center": [0.0, 0.0, 0.001], "radius": 0.0008},
+                  {"center": [0.003, 0.0, 0.001], "radius": 0.0008},
+                  {"center": [-0.003, 0.0, 0.001], "radius": 0.0008},
+                  {"center": [0.0, 0.003, 0.001], "radius": 0.0008},
+                  {"center": [0.0, -0.003, 0.001], "radius": 0.0008}
                 ]
               }
             }
           ],
-          "min_distance_to_ports": 0.00045
+          "min_distance_to_ports": 0.0005
         },
-        "multi_inlet_blend_sigma": 0.0015
+        "multi_inlet_blend_sigma": 0.0018
+      }
+    },
+    "meshing": {
+      "void_mesh_policy": {
+        "radial_sections": 8,
+        "min_radial_sections": 6,
+        "max_radial_sections": 12,
+        "adaptive_resolution": true,
+        "resolution_scale_with_radius": true,
+        "min_radius_for_max_sections": 0.0001
       }
     },
     "radius": {
@@ -246,7 +162,7 @@
     "collision": {
       "enabled": true,
       "check_collisions": true,
-      "collision_clearance": 2e-05
+      "collision_clearance": 3e-05
     },
     "composition": {
       "repair_enabled": true,
@@ -256,33 +172,45 @@
         "keep_largest_component": false
       },
       "repair_policy": {
-        "voxel_repair_enabled": false,
-        "fill_voxels": false,
+        "voxel_repair_enabled": true,
+        "voxel_pitch": 3e-05,
+        "auto_adjust_pitch": true,
+        "max_pitch_steps": 5,
+        "pitch_step_factor": 1.5,
+        "fill_voxels": true,
         "remove_small_components_enabled": true,
-        "min_component_faces": 2000,
-        "fill_holes_enabled": false,
-        "smooth_enabled": false,
-        "voxel_pitch": 2e-05,
-        "auto_adjust_pitch": false
+        "min_component_faces": 50,
+        "min_component_volume": 5e-14,
+        "fill_holes_enabled": true,
+        "smooth_enabled": false
       }
     },
     "repair": {
-      "voxel_repair_enabled": false,
-      "fill_voxels": false
+      "voxel_repair_enabled": true,
+      "voxel_pitch": 3e-05,
+      "auto_adjust_pitch": true,
+      "max_pitch_steps": 5,
+      "pitch_step_factor": 1.5,
+      "fill_voxels": true,
+      "remove_small_components_enabled": true,
+      "min_component_faces": 50,
+      "min_component_volume": 5e-14,
+      "fill_holes_enabled": true,
+      "smooth_enabled": false
     },
     "embedding": {
       "voxel_pitch": 2e-05,
       "shell_thickness": 0.0,
       "use_resolution_policy": true,
-      "auto_adjust_pitch": false,
+      "auto_adjust_pitch": true,
       "max_pitch_steps": 4,
       "pitch_step_factor": 1.5,
       "max_voxels": 60000000,
       "fallback": "auto",
       "preserve_ports_enabled": true,
       "preserve_mode": "recarve",
-      "carve_radius_factor": 1.15,
-      "carve_depth": 0.0006
+      "carve_radius_factor": 1.2,
+      "carve_depth": 0.0008
     },
     "open_port": {
       "enabled": false
@@ -293,10 +221,12 @@
       "check_min_diameter": true,
       "check_open_ports": false,
       "check_bounds": true,
-      "check_void_inside_domain": true
+      "check_void_inside_domain": true,
+      "min_diameter_threshold": 5e-05,
+      "max_components": 10
     },
     "output": {
-      "output_dir": "./out/malaria_venule_space_colonization_overhaul",
+      "output_dir": "./out/malaria_venule_space_colonization_mesh_fixed",
       "output_units": "m",
       "save_intermediates": true,
       "save_reports": true,
@@ -307,91 +237,22 @@
   "domains": {
     "main_domain": {
       "type": "cylinder",
-      "center": [
-        0.0,
-        0.0,
-        0.0
-      ],
+      "center": [0.0, 0.0, 0.0],
       "radius": 0.005,
       "height": 0.002
     }
   },
   "components": [
     {
-      "id": "space_colonization_5in_dense",
+      "id": "space_colonization_5in",
       "domain_ref": "main_domain",
       "ports": {
         "inlets": [
-          {
-            "name": "inlet_center",
-            "position": [
-              0.0,
-              0.0,
-              0.001
-            ],
-            "direction": [
-              0.0,
-              0.0,
-              -1.0
-            ],
-            "radius": 0.0002
-          },
-          {
-            "name": "inlet_e",
-            "position": [
-              0.003,
-              0.0,
-              0.001
-            ],
-            "direction": [
-              0.0,
-              0.0,
-              -1.0
-            ],
-            "radius": 0.0002
-          },
-          {
-            "name": "inlet_w",
-            "position": [
-              -0.003,
-              0.0,
-              0.001
-            ],
-            "direction": [
-              0.0,
-              0.0,
-              -1.0
-            ],
-            "radius": 0.0002
-          },
-          {
-            "name": "inlet_n",
-            "position": [
-              0.0,
-              0.003,
-              0.001
-            ],
-            "direction": [
-              0.0,
-              0.0,
-              -1.0
-            ],
-            "radius": 0.0002
-          },
-          {
-            "name": "inlet_s",
-            "position": [
-              0.0,
-              -0.003,
-              0.001
-            ],
-            "direction": [
-              0.0,
-              0.0,
-              -1.0
-            ],
-            "radius": 0.0002
-          }
+          {"name": "inlet_center", "position": [0.0, 0.0, 0.001], "direction": [0.0, 0.0, -1.0], "radius": 0.0002},
+          {"name": "inlet_e", "position": [0.003, 0.0, 0.001], "direction": [0.0, 0.0, -1.0], "radius": 0.0002},
+          {"name": "inlet_w", "position": [-0.003, 0.0, 0.001], "direction": [0.0, 0.0, -1.0], "radius": 0.0002},
+          {"name": "inlet_n", "position": [0.0, 0.003, 0.001], "direction": [0.0, 0.0, -1.0], "radius": 0.0002},
+          {"name": "inlet_s", "position": [0.0, -0.003, 0.001], "direction": [0.0, 0.0, -1.0], "radius": 0.0002}
         ],
         "outlets": []
       },
@@ -412,7 +273,7 @@
     }
   },
   "validity": {
-    "enable": false,
+    "enable": true,
     "save_report": "validity_report.json"
   },
   "outputs": {
