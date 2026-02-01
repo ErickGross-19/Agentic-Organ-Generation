@@ -5,44 +5,44 @@
     "compatible_with": ["1.0.x"]
   },
   "meta": {
-    "name": "malaria_venule_space_colonization_mesh_fixed",
-    "description": "Fixed mesh synthesis to prevent voxel islands during component_mesh step. Addresses the REAL problem: too many short segments creating disconnected tiny meshes.",
+    "name": "malaria_venule_space_colonization_FIXED",
+    "description": "FIXES 4,589 component fragmentation by: (1) longer min segments, (2) aggressive network cleanup, (3) lower mesh resolution, (4) proper repair thresholds",
     "seed": 42,
     "input_units": "m",
-    "tags": ["malaria", "venule", "space_colonization", "mesh_fix"]
+    "tags": ["malaria", "venule", "space_colonization", "fragmentation_fix"]
   },
   "policies": {
     "resolution": {
       "input_units": "m",
       "min_channel_diameter": 2e-05,
       "min_voxels_across_feature": 12,
-      "max_voxels": 80000000,
+      "max_voxels": 100000000,
       "min_pitch": 1e-06,
       "max_pitch": 2e-05,
-      "auto_relax_pitch": false,
+      "auto_relax_pitch": true,
       "pitch_step_factor": 1.5,
-      "max_voxels_embed": 60000000,
-      "max_voxels_merge": 60000000,
-      "max_voxels_repair": 60000000
+      "max_voxels_embed": 80000000,
+      "max_voxels_merge": 80000000,
+      "max_voxels_repair": 80000000
     },
     "domain_meshing": {
       "cache_meshes": true,
       "emit_warnings": true,
-      "target_face_count": 80000,
+      "target_face_count": 60000,
       "voxel_pitch": null,
       "primitive_policy": {
-        "sections_radial": 100,
-        "sections_axial": 50,
-        "sections_angular": 100,
-        "subdivisions": 2
+        "sections_radial": 80,
+        "sections_axial": 40,
+        "sections_angular": 80,
+        "subdivisions": 1
       },
       "mesh_policy": {
         "validate_watertight": true,
         "repair_if_needed": true,
-        "repair_voxel_pitch": 2e-05,
-        "max_faces": 500000,
+        "repair_voxel_pitch": 3e-05,
+        "max_faces": 400000,
         "simplify_if_over_max": true,
-        "simplify_target_ratio": 0.7
+        "simplify_target_ratio": 0.75
       }
     },
     "ridge": {
@@ -52,104 +52,105 @@
       "thickness": 0.0005,
       "inset": 0.0,
       "overlap": 0.00025,
-      "resolution": 100
+      "resolution": 80
     },
     "network_cleanup": {
       "enable_snap": true,
-      "snap_tol": 8e-05,
+      "snap_tol": 0.0001,
       "enable_prune": true,
-      "min_segment_length": 8e-05,
+      "min_segment_length": 0.0001,
       "enable_merge": true,
-      "merge_tol": 8e-05
+      "merge_tol": 0.0001
     },
     "growth": {
       "enabled": true,
       "backend": "space_colonization",
-      "target_terminals": 384,
-      "terminal_tolerance": 0.2,
-      "max_iterations": 150,
-      "step_size": 0.00012,
-      "min_segment_length": 0.00012,
-      "max_segment_length": 0.0004,
+      "target_terminals": 350,
+      "terminal_tolerance": 0.25,
+      "max_iterations": 200,
+      "step_size": 0.00015,
+      "min_segment_length": 0.00015,
+      "max_segment_length": 0.0005,
       "min_radius": 3e-05,
       "max_radius": 0.0002,
       "backend_params": {
-        "num_attraction_points": 160000,
-        "influence_radius": 0.0012,
-        "kill_radius": 0.00028,
-        "branch_enable_after_distance": 0.0012,
-        "min_branch_segment_length": 0.00012,
-        "directional_bias": 0.3,
+        "num_attraction_points": 140000,
+        "influence_radius": 0.0014,
+        "kill_radius": 0.0003,
+        "branch_enable_after_distance": 0.0015,
+        "min_branch_segment_length": 0.00015,
+        "directional_bias": 0.32,
         "primary_axis": [0, 0, -1],
-        "max_deviation_deg": 70.0,
+        "max_deviation_deg": 68.0,
         "upward_forbidden": true,
         "multi_inlet_mode": "blended",
-        "collision_merge_distance": 0.0006,
+        "collision_merge_distance": 0.0007,
         "encourage_bifurcation": true,
         "max_children_per_node": 2,
-        "bifurcation_probability": 0.35,
-        "min_attractions_for_bifurcation": 12,
-        "bifurcation_angle_threshold_deg": 30.0,
+        "bifurcation_probability": 0.3,
+        "min_attractions_for_bifurcation": 10,
+        "bifurcation_angle_threshold_deg": 32.0,
         "progress": true,
         "kdtree_rebuild_tip_every": 1,
-        "kdtree_rebuild_all_nodes_every": 12,
-        "kdtree_rebuild_all_nodes_min_new_nodes": 8,
-        "stall_steps_per_inlet": 15,
+        "kdtree_rebuild_all_nodes_every": 15,
+        "kdtree_rebuild_all_nodes_min_new_nodes": 10,
+        "stall_steps_per_inlet": 18,
         "interleaving_strategy": "round_robin",
         "tissue_sampling": {
           "enabled": true,
           "strategy": "mixture",
-          "n_points": 10000,
+          "n_points": 9000,
           "mixture_components": [
             {
-              "weight": 0.8,
+              "weight": 0.75,
               "policy": {
                 "strategy": "depth_biased",
                 "depth_reference": {"mode": "face", "face": "top"},
                 "depth_distribution": "power",
-                "depth_min": 0.0005,
+                "depth_min": 0.0006,
                 "depth_max": 0.002,
-                "depth_power": 2.5,
-                "min_distance_to_ports": 0.0004,
+                "depth_power": 2.2,
+                "min_distance_to_ports": 0.0005,
                 "exclude_spheres": [
-                  {"center": [0.0, 0.0, 0.001], "radius": 0.0002},
-                  {"center": [0.003, 0.0, 0.001], "radius": 0.0002},
-                  {"center": [-0.003, 0.0, 0.001], "radius": 0.0002},
-                  {"center": [0.0, 0.003, 0.001], "radius": 0.0002},
-                  {"center": [0.0, -0.003, 0.001], "radius": 0.0002}
+                  {"center": [0.0, 0.0, 0.001], "radius": 0.00025},
+                  {"center": [0.003, 0.0, 0.001], "radius": 0.00025},
+                  {"center": [-0.003, 0.0, 0.001], "radius": 0.00025},
+                  {"center": [0.0, 0.003, 0.001], "radius": 0.00025},
+                  {"center": [0.0, -0.003, 0.001], "radius": 0.00025}
                 ]
               }
             },
             {
-              "weight": 0.2,
+              "weight": 0.25,
               "policy": {
                 "strategy": "gaussian",
                 "gaussian_mean": [0.0, 0.0, 0.0],
-                "gaussian_sigma": [0.0018, 0.0018, 0.0006],
-                "min_distance_to_ports": 0.0005,
+                "gaussian_sigma": [0.002, 0.002, 0.0007],
+                "min_distance_to_ports": 0.0006,
                 "exclude_spheres": [
-                  {"center": [0.0, 0.0, 0.001], "radius": 0.0008},
-                  {"center": [0.003, 0.0, 0.001], "radius": 0.0008},
-                  {"center": [-0.003, 0.0, 0.001], "radius": 0.0008},
-                  {"center": [0.0, 0.003, 0.001], "radius": 0.0008},
-                  {"center": [0.0, -0.003, 0.001], "radius": 0.0008}
+                  {"center": [0.0, 0.0, 0.001], "radius": 0.001},
+                  {"center": [0.003, 0.0, 0.001], "radius": 0.001},
+                  {"center": [-0.003, 0.0, 0.001], "radius": 0.001},
+                  {"center": [0.0, 0.003, 0.001], "radius": 0.001},
+                  {"center": [0.0, -0.003, 0.001], "radius": 0.001}
                 ]
               }
             }
           ],
-          "min_distance_to_ports": 0.0005
+          "min_distance_to_ports": 0.0006
         },
-        "multi_inlet_blend_sigma": 0.0018
+        "multi_inlet_blend_sigma": 0.002
       }
     },
     "meshing": {
       "void_mesh_policy": {
-        "radial_sections": 8,
+        "radial_sections": 6,
         "min_radial_sections": 6,
-        "max_radial_sections": 12,
+        "max_radial_sections": 10,
         "adaptive_resolution": true,
         "resolution_scale_with_radius": true,
-        "min_radius_for_max_sections": 0.0001
+        "min_radius_for_max_sections": 0.00015,
+        "merge_threshold": 1e-07
       }
     },
     "radius": {
@@ -162,39 +163,41 @@
     "collision": {
       "enabled": true,
       "check_collisions": true,
-      "collision_clearance": 3e-05
+      "collision_clearance": 4e-05
     },
     "composition": {
       "repair_enabled": true,
       "union_before_embed": true,
       "keep_largest_component": false,
       "merge_policy": {
-        "keep_largest_component": false
+        "keep_largest_component": false,
+        "merge_distance": 1e-06,
+        "merge_before_repair": true
       },
       "repair_policy": {
         "voxel_repair_enabled": true,
-        "voxel_pitch": 3e-05,
+        "voxel_pitch": 4e-05,
         "auto_adjust_pitch": true,
-        "max_pitch_steps": 5,
-        "pitch_step_factor": 1.5,
+        "max_pitch_steps": 6,
+        "pitch_step_factor": 1.4,
         "fill_voxels": true,
         "remove_small_components_enabled": true,
-        "min_component_faces": 50,
-        "min_component_volume": 5e-14,
+        "min_component_faces": 30,
+        "min_component_volume": 1e-14,
         "fill_holes_enabled": true,
         "smooth_enabled": false
       }
     },
     "repair": {
       "voxel_repair_enabled": true,
-      "voxel_pitch": 3e-05,
+      "voxel_pitch": 4e-05,
       "auto_adjust_pitch": true,
-      "max_pitch_steps": 5,
-      "pitch_step_factor": 1.5,
+      "max_pitch_steps": 6,
+      "pitch_step_factor": 1.4,
       "fill_voxels": true,
       "remove_small_components_enabled": true,
-      "min_component_faces": 50,
-      "min_component_volume": 5e-14,
+      "min_component_faces": 30,
+      "min_component_volume": 1e-14,
       "fill_holes_enabled": true,
       "smooth_enabled": false
     },
@@ -203,13 +206,13 @@
       "shell_thickness": 0.0,
       "use_resolution_policy": true,
       "auto_adjust_pitch": true,
-      "max_pitch_steps": 4,
-      "pitch_step_factor": 1.5,
-      "max_voxels": 60000000,
+      "max_pitch_steps": 5,
+      "pitch_step_factor": 1.4,
+      "max_voxels": 80000000,
       "fallback": "auto",
       "preserve_ports_enabled": true,
       "preserve_mode": "recarve",
-      "carve_radius_factor": 1.2,
+      "carve_radius_factor": 1.15,
       "carve_depth": 0.0008
     },
     "open_port": {
@@ -222,11 +225,11 @@
       "check_open_ports": false,
       "check_bounds": true,
       "check_void_inside_domain": true,
-      "min_diameter_threshold": 5e-05,
-      "max_components": 10
+      "min_diameter_threshold": 6e-05,
+      "max_components": 15
     },
     "output": {
-      "output_dir": "./out/malaria_venule_space_colonization_mesh_fixed",
+      "output_dir": "./out/malaria_venule_space_colonization_FIXED",
       "output_units": "m",
       "save_intermediates": true,
       "save_reports": true,
