@@ -578,7 +578,25 @@ class MainWindow:
     def _switch_to_results_layout(self):
         """Switch to 3-panel results layout after run completes."""
         self._current_layout_mode = "results"
-        
+
+        # Remove conversation layout frames first
+        try:
+            self._main_paned.forget(self._conversation_left_frame)
+        except Exception:
+            pass
+
+        try:
+            self._main_paned.forget(self._conversation_right_frame)
+        except Exception:
+            pass
+
+        # Restore original left paned (chat + panels notebook)
+        try:
+            if self._left_paned not in self._main_paned.panes():
+                self._main_paned.add(self._left_paned, weight=2)
+        except Exception:
+            pass
+
         for tab_name in ["Log", "Spec", "Patches", "Run", "Artifacts", "Reports"]:
             try:
                 for i in range(self.panels_notebook.index("end")):
@@ -587,7 +605,7 @@ class MainWindow:
                         break
             except Exception:
                 pass
-        
+
         try:
             if self._viewer_frame not in self._main_paned.panes():
                 self._main_paned.add(self._viewer_frame, weight=1)
