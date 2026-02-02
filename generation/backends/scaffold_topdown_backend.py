@@ -467,18 +467,34 @@ class ScaffoldTopDownBackend(GenerationBackend):
             primary_axis=primary_axis,
             config=config,
         )
-        
+
+        # Compute axial direction based on branch_plane_mode
+        # This ensures children continue in parent's direction for "local" mode
+        if config.branch_plane_mode == "local":
+            axial_dir = parent_direction
+        elif config.branch_plane_mode == "hybrid":
+            # Blend parent direction with primary axis
+            blend = config.branch_plane_blend
+            blended = blend * parent_direction + (1 - blend) * primary_axis
+            norm = np.linalg.norm(blended)
+            if norm > 1e-9:
+                axial_dir = blended / norm
+            else:
+                axial_dir = primary_axis
+        else:  # "global"
+            axial_dir = primary_axis
+
         jitter_rad = np.deg2rad(config.jitter_deg)
         angle_jitter = rng.uniform(-jitter_rad, jitter_rad)
         effective_angle = angle + angle_jitter
-        
+
         lateral_dir = np.cos(effective_angle) * perp1 + np.sin(effective_angle) * perp2
-        
+
         if remaining_levels == config.levels:
             target_spread = 0.0
         else:
             target_spread = current_spread
-        
+
         # Apply bottom-zone taper: smoothly reduce spread near bottom boundary
         d_bottom = self._get_distance_to_bottom(parent_pos, domain)
         if d_bottom < config.bottom_zone_height_m and config.bottom_zone_height_m > 0:
@@ -487,10 +503,10 @@ class ScaffoldTopDownBackend(GenerationBackend):
             zone_scale = config.bottom_spread_scale_min + (1 - config.bottom_spread_scale_min) * s
             target_spread = target_spread * zone_scale
             self._stats["bottom_zone_spread_scaled_count"] += 1
-        
+
         target_pos = (
             parent_pos
-            + primary_axis * current_step
+            + axial_dir * current_step
             + lateral_dir * target_spread
         )
         
@@ -689,19 +705,34 @@ class ScaffoldTopDownBackend(GenerationBackend):
             primary_axis=primary_axis,
             config=config,
         )
-        
+
+        # Compute axial direction based on branch_plane_mode (same logic as in _branch())
+        if config.branch_plane_mode == "local":
+            axial_dir = parent_direction
+        elif config.branch_plane_mode == "hybrid":
+            # Blend parent direction with primary axis
+            blend = config.branch_plane_blend
+            blended = blend * parent_direction + (1 - blend) * primary_axis
+            norm = np.linalg.norm(blended)
+            if norm > 1e-9:
+                axial_dir = blended / norm
+            else:
+                axial_dir = primary_axis
+        else:  # "global"
+            axial_dir = primary_axis
+
         # Compute grandchild radius (the end radius of sibling segments)
         grandchild_radius = child_radius * config.ratio
-        
+
         # avg_radius is the average of start and end radius for the sibling segments
         # This matches the calculation in _branch(): avg_radius = (current_radius + child_radius) / 2
         avg_radius = (child_radius + grandchild_radius) / 2
-        
+
         buffer = max(
             config.collision_online.buffer_abs_m,
             config.collision_online.buffer_rel * avg_radius,
         )
-        
+
         # Compute junction ignore radius based on local scale
         # Per task spec: junction_ignore = max(2 * current_radius, 2 * child_radius, 3 * buffer_abs_m)
         # Here, child_radius is the "current_radius" for siblings, grandchild_radius is their "child_radius"
@@ -710,24 +741,24 @@ class ScaffoldTopDownBackend(GenerationBackend):
             2 * grandchild_radius,
             3 * config.collision_online.buffer_abs_m,
         )
-        
+
         # Build exclude_segment_ids set from parent_seg_id
         exclude_segment_ids = {parent_seg_id}
-        
+
         # Collect accepted sibling candidates before committing to spatial index
         accepted_siblings: List[Dict[str, Any]] = []
-        
+
         for child_angle in child_angles:
             # Compute target position for this child
             jitter_rad = np.deg2rad(config.jitter_deg)
             angle_jitter = rng.uniform(-jitter_rad, jitter_rad)
             effective_angle = child_angle + angle_jitter
-            
+
             lateral_dir = np.cos(effective_angle) * perp1 + np.sin(effective_angle) * perp2
-            
+
             target_pos = (
                 parent_pos
-                + primary_axis * child_step
+                + axial_dir * child_step
                 + lateral_dir * child_spread
             )
             target_pos = self._clamp_to_domain(target_pos, domain, config.wall_margin_m)

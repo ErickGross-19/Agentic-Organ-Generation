@@ -578,7 +578,25 @@ class MainWindow:
     def _switch_to_results_layout(self):
         """Switch to 3-panel results layout after run completes."""
         self._current_layout_mode = "results"
-        
+
+        # Remove conversation layout frames first
+        try:
+            self._main_paned.forget(self._conversation_left_frame)
+        except Exception:
+            pass
+
+        try:
+            self._main_paned.forget(self._conversation_right_frame)
+        except Exception:
+            pass
+
+        # Restore original left paned (chat + panels notebook)
+        try:
+            if self._left_paned not in self._main_paned.panes():
+                self._main_paned.add(self._left_paned, weight=2)
+        except Exception:
+            pass
+
         for tab_name in ["Log", "Spec", "Patches", "Run", "Artifacts", "Reports"]:
             try:
                 for i in range(self.panels_notebook.index("end")):
@@ -587,7 +605,7 @@ class MainWindow:
                         break
             except Exception:
                 pass
-        
+
         try:
             if self._viewer_frame not in self._main_paned.panes():
                 self._main_paned.add(self._viewer_frame, weight=1)
@@ -939,7 +957,7 @@ class MainWindow:
         """Append message to chat display."""
         timestamp = datetime.now().strftime("%H:%M:%S")
         prefix = f"[{timestamp}] "
-        
+
         if msg_type == "user":
             prefix += "You: "
         elif msg_type == "system":
@@ -952,19 +970,21 @@ class MainWindow:
             prefix += "Success: "
         else:
             prefix += f"{msg_type}: "
-        
-        self.chat_text.config(state="normal")
-        self.chat_text.insert("end", prefix, msg_type)
-        self.chat_text.insert("end", content + "\n", msg_type)
-        self.chat_text.see("end")
-        self.chat_text.config(state="disabled")
-        
+
+        # Choose correct chat widget based on layout mode
         if self._current_layout_mode == "conversation" and hasattr(self, '_conv_chat_text') and self._conv_chat_text:
-            self._conv_chat_text.config(state="normal")
-            self._conv_chat_text.insert("end", prefix, msg_type)
-            self._conv_chat_text.insert("end", content + "\n", msg_type)
-            self._conv_chat_text.see("end")
-            self._conv_chat_text.config(state="disabled")
+            # Conversation mode: use conversation chat
+            chat_widget = self._conv_chat_text
+        else:
+            # Tabbed/results/execution mode: use main chat
+            chat_widget = self.chat_text
+
+        # Append to selected chat widget only
+        chat_widget.config(state="normal")
+        chat_widget.insert("end", prefix, msg_type)
+        chat_widget.insert("end", content + "\n", msg_type)
+        chat_widget.see("end")
+        chat_widget.config(state="disabled")
     
     def _append_output(self, content: str):
         """Append content to output display."""
