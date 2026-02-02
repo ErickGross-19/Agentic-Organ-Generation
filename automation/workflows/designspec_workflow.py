@@ -39,6 +39,7 @@ from ..designspec_llm import (
     DesignSpecLLMAgent,
     create_llm_agent,
 )
+from ..designspec_llm.run_analyzer import RunAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,7 @@ class WorkflowEventType(str, Enum):
     RUN_APPROVAL_REQUIRED = "run_approval_required"
     RUN_APPROVED = "run_approved"
     RUN_REJECTED = "run_rejected"
+    AUTO_FIX_PROPOSED = "auto_fix_proposed"
     SPEC_UPDATED = "spec_updated"
     VALIDATION_RESULT = "validation_result"
     ERROR = "error"
@@ -400,15 +402,17 @@ class DesignSpecWorkflow:
         self._session: Optional[DesignSpecSession] = None
         self._agent: Optional[DesignSpecAgent] = None
         self._llm_agent: Optional[DesignSpecLLMAgent] = None
+        self._run_analyzer = RunAnalyzer()
         self._status = WorkflowStatus.IDLE
-        
+
         self._pending_patches: Dict[str, PatchProposal] = {}
         self._pending_run_request: Optional[RunRequest] = None
-        
+
         self._event_queue: queue.Queue = queue.Queue()
         self._lock = threading.Lock()
-        
+
         self._async_runner: Optional[AsyncDesignSpecRunner] = None
+        self._auto_analyze_enabled: bool = True  # Enable auto-analysis by default
     
     @property
     def status(self) -> WorkflowStatus:
@@ -1124,8 +1128,17 @@ class DesignSpecWorkflow:
             logger.warning(f"Failed to apply validation-aware fixes: {e}")
             return patches
     
-    def _handle_agent_response(self, response: AgentResponse) -> None:
-        """Handle an agent response."""
+    def _handle_agent_response(self, response: AgentResponse, is_auto_fix: bool = False) -> None:
+        """
+        Handle an agent response.
+
+        Parameters
+        ----------
+        response : AgentResponse
+            The agent response
+        is_auto_fix : bool
+            Whether this response is from auto-fix analysis
+        """
         self._agent.add_assistant_message(response.message)
         
         if response.response_type == AgentResponseType.QUESTION:
@@ -1520,7 +1533,13 @@ class DesignSpecWorkflow:
                         data={"result": result},
                         message="Run completed" if result and result.get("success") else "Run completed with issues",
                     ))
-                    self._set_status(WorkflowStatus.WAITING_INPUT)
+
+                    # Trigger auto-analysis if run failed
+                    if result and not result.get("success") and self._auto_analyze_enabled:
+                        self._trigger_auto_analysis(result)
+                    else:
+                        self._set_status(WorkflowStatus.WAITING_INPUT)
+
                 elif status == "failed":
                     error = self._async_runner.get_error() if self._async_runner else "Unknown error"
                     self._emit_event(WorkflowEvent(
@@ -1535,7 +1554,111 @@ class DesignSpecWorkflow:
                         message="Run cancelled by user",
                     ))
                     self._set_status(WorkflowStatus.CANCELLED)
-    
+
+    def _trigger_auto_analysis(self, run_result: Dict[str, Any]) -> None:
+        """
+        Trigger automatic analysis of a failed run.
+
+        Analyzes the failure and proposes fixes through the agent.
+
+        Parameters
+        ----------
+        run_result : dict
+            The failed run result
+        """
+        try:
+            # Emit status message
+            self._emit_event(WorkflowEvent(
+                event_type=WorkflowEventType.MESSAGE,
+                message="Analyzing run failure...",
+            ))
+
+            # Analyze the failure
+            spec = self._session.get_spec() if self._session else {}
+            analysis = self._run_analyzer.analyze_run_failure(run_result, spec)
+
+            if analysis and analysis.confidence > 0.5:
+                # Generate auto-fix prompt for the agent
+                errors_str = "\n".join(f"  - {err}" for err in analysis.error_messages[:3])
+                auto_fix_prompt = (
+                    f"The run failed with the following error(s):\n{errors_str}\n\n"
+                    f"Root cause: {analysis.root_cause}\n\n"
+                    f"Please propose patches to fix this issue. {analysis.reasoning}"
+                )
+
+                # Call agent with auto-fix prompt
+                if self._use_legacy_agent and self._agent:
+                    # Legacy agent doesn't support auto-analysis well
+                    self._emit_event(WorkflowEvent(
+                        event_type=WorkflowEventType.MESSAGE,
+                        message=f"Run failed: {analysis.root_cause}",
+                    ))
+                elif self._llm_agent:
+                    # Use LLM agent for auto-analysis
+                    response = self._llm_agent.process_message(
+                        auto_fix_prompt,
+                        use_full_context=True,
+                    )
+
+                    # Emit the auto-fix proposal
+                    self._emit_event(WorkflowEvent(
+                        event_type=WorkflowEventType.AUTO_FIX_PROPOSED,
+                        data={
+                            "analysis": analysis.to_dict(),
+                            "agent_response": response,
+                        },
+                        message=f"Auto-analysis: {analysis.root_cause}",
+                    ))
+
+                    # Handle the agent response normally
+                    self._handle_agent_response(response, is_auto_fix=True)
+                else:
+                    # No agent available
+                    self._emit_event(WorkflowEvent(
+                        event_type=WorkflowEventType.MESSAGE,
+                        message=f"Run failed: {analysis.root_cause}. No agent available for auto-fix.",
+                    ))
+            else:
+                # Could not analyze or low confidence
+                error_msg = run_result.get("errors", ["Unknown error"])[0] if run_result.get("errors") else "Unknown error"
+                self._emit_event(WorkflowEvent(
+                    event_type=WorkflowEventType.MESSAGE,
+                    message=f"Run failed: {error_msg}",
+                ))
+
+        except Exception as e:
+            logger.exception(f"Auto-analysis failed: {e}")
+            self._emit_event(WorkflowEvent(
+                event_type=WorkflowEventType.ERROR,
+                data={"error": str(e)},
+                message=f"Auto-analysis failed: {e}",
+            ))
+        finally:
+            self._set_status(WorkflowStatus.WAITING_INPUT)
+
+    def set_auto_analyze(self, enabled: bool) -> None:
+        """
+        Enable or disable automatic failure analysis.
+
+        Parameters
+        ----------
+        enabled : bool
+            Whether to enable auto-analysis
+        """
+        self._auto_analyze_enabled = enabled
+        logger.info(f"Auto-analysis {'enabled' if enabled else 'disabled'}")
+
+    def is_auto_analyze_enabled(self) -> bool:
+        """
+        Check if auto-analysis is enabled.
+
+        Returns
+        -------
+        bool
+            True if auto-analysis is enabled
+        """
+        return self._auto_analyze_enabled
+
     def cancel_run(self) -> bool:
         """
         Cancel the currently running pipeline.

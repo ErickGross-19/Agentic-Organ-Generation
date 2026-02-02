@@ -23,6 +23,9 @@ import hashlib
 import logging
 import shutil
 
+from .designspec_llm.task_context import TaskContext
+from .designspec_llm.session_memory import SessionMemory
+
 logger = logging.getLogger(__name__)
 
 
@@ -486,13 +489,15 @@ class DesignSpecSession:
     def __init__(self, project_dir: Path):
         """
         Initialize a session for an existing project.
-        
+
         Use create_project() or load_project() class methods instead.
         """
         self.project_dir = Path(project_dir)
         self._spec: Optional[Dict[str, Any]] = None
         self._spec_hash: Optional[str] = None
         self._loaded: bool = False
+        self._current_task: Optional[TaskContext] = None
+        self._session_memory: Optional[SessionMemory] = None
     
     @classmethod
     def create_project(
@@ -530,6 +535,7 @@ class DesignSpecSession:
         (project_dir / "reports").mkdir()
         (project_dir / "artifacts").mkdir()
         (project_dir / "logs").mkdir()
+        (project_dir / "session").mkdir()
         
         if template_spec is None:
             template_spec = cls._create_minimal_spec()
@@ -1029,6 +1035,207 @@ class DesignSpecSession:
             with open(report_path, "r") as f:
                 return json.load(f)
         return None
+
+    def get_task_context(self) -> Optional[TaskContext]:
+        """
+        Get the current task context.
+
+        Returns
+        -------
+        TaskContext or None
+            Current task context if it exists
+        """
+        if self._current_task is None:
+            # Try to load from disk
+            task_context_path = self.project_dir / "session" / "task_context.json"
+            if task_context_path.exists():
+                try:
+                    with open(task_context_path, "r") as f:
+                        data = json.load(f)
+                    self._current_task = TaskContext.from_dict(data)
+                except Exception as e:
+                    logger.warning(f"Failed to load task context: {e}")
+                    return None
+
+        return self._current_task
+
+    def update_task_context(
+        self,
+        goal: Optional[str] = None,
+        current_sub_task: Optional[str] = None,
+        completed_sub_task: Optional[str] = None,
+        new_blocker: Optional[str] = None,
+        clear_blockers: bool = False,
+        clear_task: bool = False,
+    ) -> None:
+        """
+        Update or create the current task context.
+
+        Parameters
+        ----------
+        goal : str, optional
+            New goal (creates new task context if provided)
+        current_sub_task : str, optional
+            Set the current sub-task
+        completed_sub_task : str, optional
+            Mark a sub-task as completed
+        new_blocker : str, optional
+            Add a new blocker
+        clear_blockers : bool
+            Clear all blockers
+        clear_task : bool
+            Clear the current task context entirely
+        """
+        if clear_task:
+            self._current_task = None
+            task_context_path = self.project_dir / "session" / "task_context.json"
+            if task_context_path.exists():
+                task_context_path.unlink()
+            return
+
+        if goal is not None:
+            # Create new task context
+            self._current_task = TaskContext.create_new(goal)
+        else:
+            # Update existing task context
+            if self._current_task is None:
+                # Try to load from disk
+                self.get_task_context()
+
+            if self._current_task is None:
+                logger.warning("No task context to update")
+                return
+
+            self._current_task.update(
+                current_sub_task=current_sub_task,
+                completed_sub_task=completed_sub_task,
+                new_blocker=new_blocker,
+                clear_blockers=clear_blockers,
+            )
+
+        # Persist to disk
+        self._save_task_context()
+
+    def _save_task_context(self) -> None:
+        """Save the current task context to disk."""
+        if self._current_task is None:
+            return
+
+        session_dir = self.project_dir / "session"
+        session_dir.mkdir(exist_ok=True)
+
+        task_context_path = session_dir / "task_context.json"
+        try:
+            with open(task_context_path, "w") as f:
+                json.dump(self._current_task.to_dict(), f, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to save task context: {e}")
+
+    def get_session_memory(self) -> SessionMemory:
+        """
+        Get the session memory, creating if necessary.
+
+        Returns
+        -------
+        SessionMemory
+            The session memory instance
+        """
+        if self._session_memory is None:
+            # Try to load from disk
+            memory_path = self.project_dir / "session" / "memory.json"
+            if memory_path.exists():
+                try:
+                    with open(memory_path, "r") as f:
+                        data = json.load(f)
+                    self._session_memory = SessionMemory.from_dict(data)
+                except Exception as e:
+                    logger.warning(f"Failed to load session memory: {e}")
+                    # Create new memory if load fails
+                    session_id = self.project_dir.name
+                    self._session_memory = SessionMemory.create_new(session_id)
+            else:
+                # Create new memory
+                session_id = self.project_dir.name
+                self._session_memory = SessionMemory.create_new(session_id)
+
+        return self._session_memory
+
+    def add_decision(
+        self,
+        turn_number: int,
+        decision: str,
+        reasoning: str = "",
+    ) -> None:
+        """
+        Add a decision to session memory.
+
+        Parameters
+        ----------
+        turn_number : int
+            The conversation turn number
+        decision : str
+            Description of the decision
+        reasoning : str, optional
+            Why the decision was made
+        """
+        memory = self.get_session_memory()
+        memory.add_decision(turn_number, decision, reasoning)
+        self._save_session_memory()
+
+    def add_error_resolution(
+        self,
+        error_pattern: str,
+        error_message: str,
+        resolution: str,
+        success: bool = True,
+    ) -> None:
+        """
+        Add an error resolution to session memory.
+
+        Parameters
+        ----------
+        error_pattern : str
+            Type/pattern of error
+        error_message : str
+            Full error message
+        resolution : str
+            How the error was resolved
+        success : bool
+            Whether the resolution worked
+        """
+        memory = self.get_session_memory()
+        memory.add_error_resolution(error_pattern, error_message, resolution, success)
+        self._save_session_memory()
+
+    def set_user_preference(self, key: str, value: Any) -> None:
+        """
+        Set a user preference in session memory.
+
+        Parameters
+        ----------
+        key : str
+            Preference key
+        value : Any
+            Preference value
+        """
+        memory = self.get_session_memory()
+        memory.set_preference(key, value)
+        self._save_session_memory()
+
+    def _save_session_memory(self) -> None:
+        """Save the session memory to disk."""
+        if self._session_memory is None:
+            return
+
+        session_dir = self.project_dir / "session"
+        session_dir.mkdir(exist_ok=True)
+
+        memory_path = session_dir / "memory.json"
+        try:
+            with open(memory_path, "w") as f:
+                json.dump(self._session_memory.to_dict(), f, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to save session memory: {e}")
 
 
 __all__ = [

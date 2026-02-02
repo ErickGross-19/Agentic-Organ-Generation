@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
+from .artifact_indexer import ArtifactIndexer
+
 if TYPE_CHECKING:
     from ..designspec_session import DesignSpecSession
 
@@ -274,17 +276,23 @@ class ContextPack:
     
     # Additional artifacts
     artifact_index: Optional[Dict[str, Any]] = None
-    
+
     # Mesh and network stats for compact context
     mesh_stats: Optional[MeshStats] = None
     network_stats: Optional[NetworkStats] = None
-    
+
+    # Task tracking
+    task_context: Optional[Dict[str, Any]] = None
+
+    # Session memory
+    session_memory: Optional[Dict[str, Any]] = None
+
     # Example specs for reference
     example_specs: Optional[Dict[str, Dict[str, Any]]] = None
-    
+
     # Policy reference documentation
     include_policy_reference: bool = True
-    
+
     # Context mode
     is_compact: bool = True
     is_debug_compact: bool = False
@@ -304,11 +312,23 @@ class ContextPack:
             result["mesh_stats"] = self.mesh_stats.to_dict()
         if self.network_stats:
             result["network_stats"] = self.network_stats.to_dict()
-        
+
+        # Include artifact summary in compact context
+        if self.artifact_index:
+            result["artifact_summary"] = self.artifact_index
+
+        # Include task context
+        if self.task_context:
+            result["task_context"] = self.task_context
+
+        # Include session memory
+        if self.session_memory:
+            result["session_memory"] = self.session_memory
+
         # Include example specs if available
         if self.example_specs:
             result["example_specs"] = self.example_specs
-        
+
         if not self.is_compact:
             result["full_spec"] = self.full_spec
             result["recent_runs"] = [r.to_dict() for r in self.recent_runs]
@@ -414,7 +434,84 @@ class ContextPack:
             for err in self.compile_errors[:3]:
                 lines.append(f"  - {err}")
         lines.append("")
-        
+
+        # Artifact summary
+        if self.artifact_index:
+            ai = self.artifact_index
+            lines.append("## Available Artifacts")
+            lines.append(f"- Total runs: {ai.get('total_runs', 0)}")
+
+            if ai.get('last_run'):
+                lr = ai['last_run']
+                lines.append(f"- Last run: {lr.get('run_id', 'unknown')}")
+                lines.append(f"  - Success: {lr.get('success', False)}")
+                if lr.get('mesh_faces') is not None:
+                    lines.append(f"  - Mesh: {lr['mesh_faces']} faces")
+                if lr.get('network_nodes') is not None:
+                    lines.append(f"  - Network: {lr['network_nodes']} nodes")
+                if lr.get('validity_passed') is not None:
+                    lines.append(f"  - Validity: {'passed' if lr['validity_passed'] else 'failed'}")
+                if lr.get('available_files'):
+                    lines.append(f"  - Files: {', '.join(lr['available_files'][:5])}")
+
+            if ai.get('last_successful_run'):
+                lsr = ai['last_successful_run']
+                lines.append(f"- Last successful run: {lsr.get('run_id', 'unknown')}")
+                if lsr.get('mesh_faces') is not None:
+                    lines.append(f"  - Mesh: {lsr['mesh_faces']} faces")
+                if lsr.get('network_nodes') is not None:
+                    lines.append(f"  - Network: {lsr['network_nodes']} nodes")
+
+            lines.append("")
+
+        # Task context
+        if self.task_context:
+            tc = self.task_context
+            lines.append("## Current Task")
+            lines.append(f"Goal: {tc.get('goal', 'Unknown')}")
+
+            if tc.get('current_sub_task'):
+                lines.append(f"Current sub-task: {tc['current_sub_task']}")
+
+            if tc.get('sub_tasks_completed'):
+                lines.append("Completed sub-tasks:")
+                for task in tc['sub_tasks_completed']:
+                    lines.append(f"  - {task}")
+
+            if tc.get('blockers'):
+                lines.append("Current blockers:")
+                for blocker in tc['blockers']:
+                    lines.append(f"  - {blocker}")
+
+            lines.append("")
+
+        # Session memory
+        if self.session_memory:
+            sm = self.session_memory
+
+            # Recent decisions
+            if sm.get('recent_decisions'):
+                lines.append("## Recent Decisions")
+                for decision in sm['recent_decisions']:
+                    lines.append(f"- Turn {decision.get('turn_number', '?')}: {decision.get('decision', '')}")
+                    if decision.get('reasoning'):
+                        lines.append(f"  Reasoning: {decision['reasoning']}")
+                lines.append("")
+
+            # Successful error resolutions
+            if sm.get('successful_error_resolutions'):
+                lines.append("## Successful Error Resolutions")
+                for resolution in sm['successful_error_resolutions']:
+                    lines.append(f"- {resolution.get('error_pattern', 'Unknown')}: {resolution.get('resolution', '')}")
+                lines.append("")
+
+            # User preferences
+            if sm.get('user_preferences'):
+                lines.append("## User Preferences")
+                for key, value in sm['user_preferences'].items():
+                    lines.append(f"- {key}: {value}")
+                lines.append("")
+
         # Full spec (if not compact)
         if not self.is_compact and self.full_spec:
             lines.append("## Full Spec JSON")
@@ -903,7 +1000,18 @@ class ContextBuilder:
         # Build mesh and network stats for compact context
         mesh_stats = self._build_mesh_stats()
         network_stats = self._build_network_stats()
-        
+
+        # Build artifact summary for compact context
+        artifact_summary = self._build_artifact_summary()
+
+        # Get task context from session
+        task_context = self.session.get_task_context()
+        task_context_dict = task_context.to_dict() if task_context else None
+
+        # Get session memory summary
+        session_memory = self.session.get_session_memory()
+        memory_summary = session_memory.to_summary_dict() if session_memory else None
+
         return ContextPack(
             spec_summary=self.build_spec_summary(spec),
             validation_summary=validation_summary,
@@ -912,6 +1020,9 @@ class ContextBuilder:
             compile_errors=compile_errors,
             mesh_stats=mesh_stats,
             network_stats=network_stats,
+            artifact_index=artifact_summary,
+            task_context=task_context_dict,
+            session_memory=memory_summary,
             is_compact=True,
             is_debug_compact=needs_debug,
         )
@@ -1049,7 +1160,78 @@ class ContextBuilder:
         except Exception as e:
             logger.warning(f"Failed to build network stats: {e}")
             return None
-    
+
+    def _build_artifact_summary(self) -> Dict[str, Any]:
+        """
+        Build summary of available artifacts from index.
+
+        This provides the agent with knowledge of what artifacts exist
+        from previous runs without needing to run the pipeline first.
+
+        Returns
+        -------
+        dict
+            Summary of artifacts including run counts, metrics, and file lists
+        """
+        indexer = ArtifactIndexer(self.session.project_dir)
+        index = indexer.load_index()
+
+        if not index.runs:
+            return {
+                "total_runs": 0,
+                "available_artifacts": [],
+                "has_successful_run": False,
+            }
+
+        last_run = index.get_last_run()
+        last_successful = index.get_last_successful_run()
+
+        summary = {
+            "total_runs": len(index.runs),
+            "has_successful_run": last_successful is not None,
+        }
+
+        # Add last run info
+        if last_run:
+            summary["last_run"] = {
+                "run_id": last_run.run_id,
+                "timestamp": last_run.timestamp,
+                "success": last_run.success,
+                "stages_completed": last_run.stages_completed,
+                "available_files": list(last_run.files.keys()),
+            }
+
+            # Add metrics if available
+            if last_run.mesh_faces is not None:
+                summary["last_run"]["mesh_faces"] = last_run.mesh_faces
+                summary["last_run"]["mesh_vertices"] = last_run.mesh_vertices
+                summary["last_run"]["mesh_watertight"] = last_run.mesh_watertight
+
+            if last_run.network_nodes is not None:
+                summary["last_run"]["network_nodes"] = last_run.network_nodes
+                summary["last_run"]["network_segments"] = last_run.network_segments
+
+            if last_run.validity_passed is not None:
+                summary["last_run"]["validity_passed"] = last_run.validity_passed
+                if last_run.validity_errors:
+                    summary["last_run"]["validity_errors"] = last_run.validity_errors[:3]  # Limit errors
+
+        # Add last successful run info if different from last run
+        if last_successful and (not last_run or last_successful.run_id != last_run.run_id):
+            summary["last_successful_run"] = {
+                "run_id": last_successful.run_id,
+                "timestamp": last_successful.timestamp,
+                "available_files": list(last_successful.files.keys()),
+            }
+
+            # Add key metrics
+            if last_successful.mesh_faces is not None:
+                summary["last_successful_run"]["mesh_faces"] = last_successful.mesh_faces
+            if last_successful.network_nodes is not None:
+                summary["last_successful_run"]["network_nodes"] = last_successful.network_nodes
+
+        return summary
+
     def build_full(self) -> ContextPack:
         """
         Build a full context pack (complete information).
