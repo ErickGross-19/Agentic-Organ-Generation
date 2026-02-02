@@ -735,6 +735,144 @@ class DesignSpecWorkflowManager:
             return self._workflow.get_conversation_history()
         return self._conversation_history.copy()
 
+    # === Auto-Analysis Control ===
+
+    def set_auto_analyze(self, enabled: bool):
+        """
+        Enable or disable automatic failure analysis.
+
+        When enabled, the system will automatically analyze run failures
+        and propose fixes without requiring the user to ask.
+
+        Parameters
+        ----------
+        enabled : bool
+            Whether to enable auto-analysis
+        """
+        if self._workflow:
+            self._workflow.set_auto_analyze(enabled)
+            status = "enabled" if enabled else "disabled"
+            self._send_message("system", f"Auto-analysis {status}")
+        else:
+            self._send_message("error", "No project loaded")
+
+    def is_auto_analyze_enabled(self) -> bool:
+        """
+        Check if auto-analysis is enabled.
+
+        Returns
+        -------
+        bool
+            True if auto-analysis is enabled
+        """
+        if self._workflow:
+            return self._workflow.is_auto_analyze_enabled()
+        return True  # Default is enabled
+
+    # === Task Context Management ===
+
+    def get_task_context(self) -> Optional[Dict[str, Any]]:
+        """
+        Get the current task context.
+
+        Returns
+        -------
+        dict or None
+            Current task context with goal, sub-tasks, and blockers
+        """
+        if self._workflow and hasattr(self._workflow, 'session') and self._workflow.session:
+            task_context = self._workflow.session.get_task_context()
+            return task_context.to_dict() if task_context else None
+        return None
+
+    def update_task_context(
+        self,
+        goal: Optional[str] = None,
+        current_sub_task: Optional[str] = None,
+        completed_sub_task: Optional[str] = None,
+        new_blocker: Optional[str] = None,
+        clear_blockers: bool = False,
+        clear_task: bool = False,
+    ):
+        """
+        Update the current task context.
+
+        Parameters
+        ----------
+        goal : str, optional
+            New goal (creates new task)
+        current_sub_task : str, optional
+            Set current sub-task
+        completed_sub_task : str, optional
+            Mark sub-task as completed
+        new_blocker : str, optional
+            Add a blocker
+        clear_blockers : bool
+            Clear all blockers
+        clear_task : bool
+            Clear the task context
+        """
+        if self._workflow and hasattr(self._workflow, 'session') and self._workflow.session:
+            self._workflow.session.update_task_context(
+                goal=goal,
+                current_sub_task=current_sub_task,
+                completed_sub_task=completed_sub_task,
+                new_blocker=new_blocker,
+                clear_blockers=clear_blockers,
+                clear_task=clear_task,
+            )
+            if clear_task:
+                self._send_message("system", "Task context cleared")
+            elif goal:
+                self._send_message("system", f"New task: {goal}")
+
+    # === Session Memory Management ===
+
+    def get_session_memory(self) -> Optional[Dict[str, Any]]:
+        """
+        Get session memory summary.
+
+        Returns
+        -------
+        dict or None
+            Session memory with recent decisions and error resolutions
+        """
+        if self._workflow and hasattr(self._workflow, 'session') and self._workflow.session:
+            memory = self._workflow.session.get_session_memory()
+            return memory.to_summary_dict() if memory else None
+        return None
+
+    def add_decision(self, turn_number: int, decision: str, reasoning: str = ""):
+        """
+        Add a decision to session memory.
+
+        Parameters
+        ----------
+        turn_number : int
+            Conversation turn number
+        decision : str
+            Description of the decision
+        reasoning : str, optional
+            Reasoning behind the decision
+        """
+        if self._workflow and hasattr(self._workflow, 'session') and self._workflow.session:
+            self._workflow.session.add_decision(turn_number, decision, reasoning)
+
+    def set_user_preference(self, key: str, value: Any):
+        """
+        Set a user preference in session memory.
+
+        Parameters
+        ----------
+        key : str
+            Preference key
+        value : Any
+            Preference value
+        """
+        if self._workflow and hasattr(self._workflow, 'session') and self._workflow.session:
+            self._workflow.session.set_user_preference(key, value)
+            self._send_message("system", f"Preference set: {key} = {value}")
+
     def stop(self):
         """Stop the workflow."""
         self._stop_event.set()
