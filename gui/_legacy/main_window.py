@@ -957,7 +957,7 @@ class MainWindow:
         """Append message to chat display."""
         timestamp = datetime.now().strftime("%H:%M:%S")
         prefix = f"[{timestamp}] "
-        
+
         if msg_type == "user":
             prefix += "You: "
         elif msg_type == "system":
@@ -970,19 +970,21 @@ class MainWindow:
             prefix += "Success: "
         else:
             prefix += f"{msg_type}: "
-        
-        self.chat_text.config(state="normal")
-        self.chat_text.insert("end", prefix, msg_type)
-        self.chat_text.insert("end", content + "\n", msg_type)
-        self.chat_text.see("end")
-        self.chat_text.config(state="disabled")
-        
+
+        # Choose correct chat widget based on layout mode
         if self._current_layout_mode == "conversation" and hasattr(self, '_conv_chat_text') and self._conv_chat_text:
-            self._conv_chat_text.config(state="normal")
-            self._conv_chat_text.insert("end", prefix, msg_type)
-            self._conv_chat_text.insert("end", content + "\n", msg_type)
-            self._conv_chat_text.see("end")
-            self._conv_chat_text.config(state="disabled")
+            # Conversation mode: use conversation chat
+            chat_widget = self._conv_chat_text
+        else:
+            # Tabbed/results/execution mode: use main chat
+            chat_widget = self.chat_text
+
+        # Append to selected chat widget only
+        chat_widget.config(state="normal")
+        chat_widget.insert("end", prefix, msg_type)
+        chat_widget.insert("end", content + "\n", msg_type)
+        chat_widget.see("end")
+        chat_widget.config(state="disabled")
     
     def _append_output(self, content: str):
         """Append content to output display."""
