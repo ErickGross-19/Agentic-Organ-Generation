@@ -274,24 +274,72 @@ class ConfigurationWizard(tk.Toplevel):
         """Set up the project configuration step."""
         frame = ttk.LabelFrame(self.content_frame, text="Project Setup", padding=15)
         frame.pack(fill="both", expand=True)
-        
+
         frame.columnconfigure(1, weight=1)
-        
+
+        # Project Type Selection (New vs Existing)
         row = 0
-        ttk.Label(frame, text="Project Name:").grid(row=row, column=0, sticky="w", pady=5)
+        ttk.Label(frame, text="Project Type:").grid(row=row, column=0, sticky="nw", pady=5)
+
+        project_type_frame = ttk.Frame(frame)
+        project_type_frame.grid(row=row, column=1, sticky="ew", pady=5, padx=(10, 0))
+
+        self.project_type_var = tk.StringVar(value="new" if self._config.template != "open_project" else "existing")
+
+        ttk.Radiobutton(
+            project_type_frame,
+            text="Create New Project",
+            value="new",
+            variable=self.project_type_var,
+            command=self._on_project_type_change,
+        ).pack(anchor="w")
+        ttk.Label(
+            project_type_frame,
+            text="Start a new DesignSpec project from scratch or a template",
+            foreground="gray",
+            font=("TkDefaultFont", 9),
+        ).pack(anchor="w", padx=(20, 0), pady=(0, 5))
+
+        ttk.Radiobutton(
+            project_type_frame,
+            text="Open Existing Project",
+            value="existing",
+            variable=self.project_type_var,
+            command=self._on_project_type_change,
+        ).pack(anchor="w")
+        ttk.Label(
+            project_type_frame,
+            text="Open a previously created project directory",
+            foreground="gray",
+            font=("TkDefaultFont", 9),
+        ).pack(anchor="w", padx=(20, 0), pady=(0, 5))
+
+        row += 1
+        ttk.Separator(frame, orient="horizontal").grid(
+            row=row, column=0, columnspan=2, sticky="ew", pady=15
+        )
+
+        # New Project Configuration
+        row += 1
+        self.new_project_frame = ttk.Frame(frame)
+        self.new_project_frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=5)
+        self.new_project_frame.columnconfigure(1, weight=1)
+
+        new_row = 0
+        ttk.Label(self.new_project_frame, text="Project Name:").grid(row=new_row, column=0, sticky="w", pady=5)
         self.project_name_var = tk.StringVar(value=self._config.project_name)
         ttk.Entry(
-            frame,
+            self.new_project_frame,
             textvariable=self.project_name_var,
             width=40,
-        ).grid(row=row, column=1, sticky="ew", pady=5, padx=(10, 0))
-        
-        row += 1
-        ttk.Label(frame, text="Location:").grid(row=row, column=0, sticky="w", pady=5)
-        loc_frame = ttk.Frame(frame)
-        loc_frame.grid(row=row, column=1, sticky="ew", pady=5, padx=(10, 0))
+        ).grid(row=new_row, column=1, sticky="ew", pady=5, padx=(10, 0))
+
+        new_row += 1
+        ttk.Label(self.new_project_frame, text="Location:").grid(row=new_row, column=0, sticky="w", pady=5)
+        loc_frame = ttk.Frame(self.new_project_frame)
+        loc_frame.grid(row=new_row, column=1, sticky="ew", pady=5, padx=(10, 0))
         loc_frame.columnconfigure(0, weight=1)
-        
+
         default_location = str(Path.home() / "designspec_projects")
         self.project_location_var = tk.StringVar(
             value=self._config.project_location or default_location
@@ -301,34 +349,28 @@ class ConfigurationWizard(tk.Toplevel):
             textvariable=self.project_location_var,
             width=30,
         ).grid(row=0, column=0, sticky="ew")
-        
+
         ttk.Button(
             loc_frame,
             text="Browse...",
             command=self._browse_location,
         ).grid(row=0, column=1, padx=(5, 0))
-        
-        row += 1
-        ttk.Separator(frame, orient="horizontal").grid(
-            row=row, column=0, columnspan=2, sticky="ew", pady=15
-        )
-        
-        row += 1
-        ttk.Label(frame, text="Template:").grid(row=row, column=0, sticky="nw", pady=5)
-        
-        template_frame = ttk.Frame(frame)
-        template_frame.grid(row=row, column=1, sticky="ew", pady=5, padx=(10, 0))
-        
-        self.template_var = tk.StringVar(value=self._config.template)
-        
+
+        new_row += 1
+        ttk.Label(self.new_project_frame, text="Template:").grid(row=new_row, column=0, sticky="nw", pady=5)
+
+        template_frame = ttk.Frame(self.new_project_frame)
+        template_frame.grid(row=new_row, column=1, sticky="ew", pady=5, padx=(10, 0))
+
+        self.template_var = tk.StringVar(value=self._config.template if self._config.template != "open_project" else "empty")
+
         templates = [
-            ("open_project", "Open Existing Project", "Open a previously created project directory"),
             ("empty", "Empty Project", "Start with a blank DesignSpec"),
             ("cylinder", "Cylinder Domain", "Pre-configured cylinder domain with inlets"),
             ("box", "Box Domain", "Pre-configured box domain"),
             ("import", "Import Existing", "Import an existing DesignSpec file"),
         ]
-        
+
         for value, label, description in templates:
             rb = ttk.Radiobutton(
                 template_frame,
@@ -344,30 +386,12 @@ class ConfigurationWizard(tk.Toplevel):
                 foreground="gray",
                 font=("TkDefaultFont", 9),
             ).pack(anchor="w", padx=(20, 0), pady=(0, 5))
-        
-        row += 1
-        self.open_project_frame = ttk.Frame(frame)
-        self.open_project_frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=5)
-        self.open_project_frame.columnconfigure(1, weight=1)
-        
-        ttk.Label(self.open_project_frame, text="Project Directory:").grid(row=0, column=0, sticky="w", padx=(20, 0))
-        self.open_project_path_var = tk.StringVar(value=self._config.open_project_path or "")
-        ttk.Entry(
-            self.open_project_frame,
-            textvariable=self.open_project_path_var,
-            width=30,
-        ).grid(row=0, column=1, sticky="ew", padx=(10, 0))
-        ttk.Button(
-            self.open_project_frame,
-            text="Browse...",
-            command=self._browse_open_project,
-        ).grid(row=0, column=2, padx=(5, 0))
-        
-        row += 1
-        self.import_frame = ttk.Frame(frame)
-        self.import_frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=5)
+
+        new_row += 1
+        self.import_frame = ttk.Frame(self.new_project_frame)
+        self.import_frame.grid(row=new_row, column=0, columnspan=2, sticky="ew", pady=5)
         self.import_frame.columnconfigure(1, weight=1)
-        
+
         ttk.Label(self.import_frame, text="Import File:").grid(row=0, column=0, sticky="w", padx=(20, 0))
         self.import_path_var = tk.StringVar(value=self._config.import_path or "")
         ttk.Entry(
@@ -380,8 +404,28 @@ class ConfigurationWizard(tk.Toplevel):
             text="Browse...",
             command=self._browse_import,
         ).grid(row=0, column=2, padx=(5, 0))
-        
-        self._on_template_change()
+
+        # Existing Project Configuration
+        row += 1
+        self.existing_project_frame = ttk.Frame(frame)
+        self.existing_project_frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=5)
+        self.existing_project_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(self.existing_project_frame, text="Project Directory:").grid(row=0, column=0, sticky="w", pady=5)
+        self.open_project_path_var = tk.StringVar(value=self._config.open_project_path or "")
+        ttk.Entry(
+            self.existing_project_frame,
+            textvariable=self.open_project_path_var,
+            width=30,
+        ).grid(row=0, column=1, sticky="ew", pady=5, padx=(10, 0))
+        ttk.Button(
+            self.existing_project_frame,
+            text="Browse...",
+            command=self._browse_open_project,
+        ).grid(row=0, column=2, padx=(5, 0))
+
+        # Initialize visibility based on project type
+        self._on_project_type_change()
     
     def _setup_mode_step(self):
         """Set up the workflow mode selection step."""
@@ -504,25 +548,39 @@ class ConfigurationWizard(tk.Toplevel):
         """Handle temperature change."""
         self.temp_label.config(text=f"{self.temp_var.get():.2f}")
     
+    def _on_project_type_change(self):
+        """Handle project type selection change."""
+        project_type = self.project_type_var.get()
+
+        if project_type == "new":
+            # Show new project frame, hide existing project frame
+            for child in self.new_project_frame.winfo_children():
+                child.configure(state="normal" if not isinstance(child, ttk.Label) else "normal")
+            for child in self.existing_project_frame.winfo_children():
+                if isinstance(child, (ttk.Entry, ttk.Button)):
+                    child.configure(state="disabled")
+
+            # Update template visibility
+            self._on_template_change()
+        else:
+            # Show existing project frame, hide new project frame
+            for child in self.new_project_frame.winfo_children():
+                if isinstance(child, (ttk.Entry, ttk.Button, ttk.Combobox, ttk.Radiobutton)):
+                    child.configure(state="disabled")
+            for child in self.existing_project_frame.winfo_children():
+                if isinstance(child, (ttk.Entry, ttk.Button)):
+                    child.configure(state="normal")
+
     def _on_template_change(self):
         """Handle template selection change."""
         template = self.template_var.get()
-        
+
         if template == "import":
             for child in self.import_frame.winfo_children():
                 if isinstance(child, (ttk.Entry, ttk.Button)):
                     child.configure(state="normal")
         else:
             for child in self.import_frame.winfo_children():
-                if isinstance(child, (ttk.Entry, ttk.Button)):
-                    child.configure(state="disabled")
-        
-        if template == "open_project":
-            for child in self.open_project_frame.winfo_children():
-                if isinstance(child, (ttk.Entry, ttk.Button)):
-                    child.configure(state="normal")
-        else:
-            for child in self.open_project_frame.winfo_children():
                 if isinstance(child, (ttk.Entry, ttk.Button)):
                     child.configure(state="disabled")
     
@@ -605,19 +663,26 @@ class ConfigurationWizard(tk.Toplevel):
                 self.secure_config.store_config("last_model", self._config.agent_config.model)
             
         elif self._current_step == 1:
-            self._config.project_name = self.project_name_var.get().strip()
-            self._config.project_location = self.project_location_var.get().strip()
-            self._config.template = self.template_var.get()
-            
-            if self._config.template == "import":
-                self._config.import_path = self.import_path_var.get().strip()
-            else:
-                self._config.import_path = None
-            
-            if self._config.template == "open_project":
+            project_type = self.project_type_var.get()
+
+            if project_type == "existing":
+                # Opening an existing project
+                self._config.template = "open_project"
                 self._config.open_project_path = self.open_project_path_var.get().strip()
+                self._config.import_path = None
+                self._config.project_name = ""
+                self._config.project_location = ""
             else:
+                # Creating a new project
+                self._config.project_name = self.project_name_var.get().strip()
+                self._config.project_location = self.project_location_var.get().strip()
+                self._config.template = self.template_var.get()
                 self._config.open_project_path = None
+
+                if self._config.template == "import":
+                    self._config.import_path = self.import_path_var.get().strip()
+                else:
+                    self._config.import_path = None
                 
         elif self._current_step == 2:
             self._config.workflow_mode = self.mode_var.get()
@@ -637,35 +702,41 @@ class ConfigurationWizard(tk.Toplevel):
                 return False
             
         elif self._current_step == 1:
-            if self._config.template == "open_project":
-                if not self._config.open_project_path:
+            project_type = self.project_type_var.get()
+
+            if project_type == "existing":
+                # Validate existing project
+                open_path = self.open_project_path_var.get().strip()
+                if not open_path:
                     messagebox.showwarning(
                         "Missing Project Directory",
                         "Please select an existing project directory.",
                     )
                     return False
                 return True
-            
-            if not self._config.project_name:
-                messagebox.showwarning(
-                    "Missing Project Name",
-                    "Please enter a project name.",
-                )
-                return False
-            
-            if not self._config.project_location:
-                messagebox.showwarning(
-                    "Missing Location",
-                    "Please select a project location.",
-                )
-                return False
-            
-            if self._config.template == "import" and not self._config.import_path:
-                messagebox.showwarning(
-                    "Missing Import File",
-                    "Please select a DesignSpec file to import.",
-                )
-                return False
+            else:
+                # Validate new project
+                if not self.project_name_var.get().strip():
+                    messagebox.showwarning(
+                        "Missing Project Name",
+                        "Please enter a project name.",
+                    )
+                    return False
+
+                if not self.project_location_var.get().strip():
+                    messagebox.showwarning(
+                        "Missing Location",
+                        "Please select a project location.",
+                    )
+                    return False
+
+                template = self.template_var.get()
+                if template == "import" and not self.import_path_var.get().strip():
+                    messagebox.showwarning(
+                        "Missing Import File",
+                        "Please select a DesignSpec file to import.",
+                    )
+                    return False
         
         return True
     
