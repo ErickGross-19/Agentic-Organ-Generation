@@ -308,7 +308,11 @@ class DesignSpecApp:
             return
 
         self._append_chat("user", "run")
-        self._append_chat("system", "Starting full pipeline run...")
+        self._append_chat("system", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        self._append_chat("system", "🚀 Starting Full Pipeline Run")
+        self._append_chat("system", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        self._append_chat("system", "Pipeline stages: domain → ports → policies → build → mesh → union → validity → artifacts")
+        self._append_chat("system", "This may take several minutes depending on complexity...")
         self._designspec_manager.run_full()
 
     def _on_workflow_message(self, message: WorkflowMessage):
@@ -318,15 +322,29 @@ class DesignSpecApp:
     def _on_status_change(self, status: WorkflowStatus, message: str):
         """Handle workflow status change."""
         def update():
-            status_text = f"{status.value}"
-            if message:
-                status_text += f": {message}"
-            self.status_var.set(status_text)
-
+            # Show more detailed status during runs
             if status == WorkflowStatus.RUNNING:
+                status_text = f"⚙️ {status.value}"
+                if message:
+                    status_text += f": {message}"
                 self.progress.start()
-            else:
+            elif status == WorkflowStatus.COMPLETED:
+                status_text = f"✓ {status.value}"
+                if message:
+                    status_text += f": {message}"
                 self.progress.stop()
+            elif status == WorkflowStatus.FAILED:
+                status_text = f"✗ {status.value}"
+                if message:
+                    status_text += f": {message}"
+                self.progress.stop()
+            else:
+                status_text = f"{status.value}"
+                if message:
+                    status_text += f": {message}"
+                self.progress.stop()
+
+            self.status_var.set(status_text)
 
         self.root.after(0, update)
 
@@ -369,14 +387,50 @@ class DesignSpecApp:
             self.root.after(0, lambda: self._append_chat("error", f"Compile failed: {message}"))
 
     def _on_run_progress(self, progress_data: Dict[str, Any]):
-        """Handle run progress updates."""
+        """Handle run progress updates with verbose details."""
         stage = progress_data.get("stage", "")
         status = progress_data.get("status", "")
+        message = progress_data.get("message", "")
+        stage_index = progress_data.get("stage_index", 0)
+        total_stages = progress_data.get("total_stages", 11)
+        progress_pct = progress_data.get("progress_percent", 0)
+        elapsed = progress_data.get("elapsed", 0)
 
-        if status == "completed":
-            self.root.after(0, lambda: self._append_chat("success", f"Stage completed: {stage}"))
-        elif status == "failed":
-            self.root.after(0, lambda: self._append_chat("error", f"Stage failed: {stage}"))
+        def show_progress():
+            if status == "starting" or status == "running":
+                # Show detailed progress for running stage
+                progress_msg = f"━━━ Stage {stage_index + 1}/{total_stages}: {stage} ━━━\n"
+                progress_msg += f"Progress: {progress_pct:.1f}% overall"
+                if elapsed > 0:
+                    progress_msg += f" | Elapsed: {elapsed:.1f}s"
+                if message:
+                    progress_msg += f"\n{message}"
+                self._append_chat("system", progress_msg)
+
+            elif status == "completed":
+                # Show completion with timing
+                completion_msg = f"✓ Completed: {stage}"
+                if elapsed > 0:
+                    completion_msg += f" ({elapsed:.1f}s)"
+                self._append_chat("success", completion_msg)
+
+                # Show progress bar
+                progress_bar = self._make_progress_bar(stage_index + 1, total_stages)
+                self._append_chat("system", f"Overall: {progress_bar} {((stage_index + 1) / total_stages * 100):.0f}%")
+
+            elif status == "failed":
+                error_msg = f"✗ Failed: {stage}"
+                if message:
+                    error_msg += f"\n{message}"
+                self._append_chat("error", error_msg)
+
+        self.root.after(0, show_progress)
+
+    def _make_progress_bar(self, current: int, total: int, width: int = 20) -> str:
+        """Create a text-based progress bar."""
+        filled = int(width * current / total)
+        bar = "█" * filled + "░" * (width - filled)
+        return f"[{bar}]"
 
     def _append_chat(self, msg_type: str, content: str):
         """Append message to chat."""
