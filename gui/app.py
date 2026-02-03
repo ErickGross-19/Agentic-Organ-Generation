@@ -44,6 +44,7 @@ class DesignSpecApp:
         self.secure_config = SecureConfig()
         self._designspec_manager: Optional[DesignSpecWorkflowManager] = None
         self._wizard_config: Optional[WizardConfiguration] = None
+        self._pending_patch_id: Optional[str] = None
 
         self._setup_ui()
 
@@ -298,7 +299,20 @@ class DesignSpecApp:
         self.input_var.set("")
         self.input_entry.delete(0, "end")
 
-        # Send to workflow manager
+        # Handle patch approval/rejection commands
+        text_lower = text.lower()
+        if text_lower == "approve" and self._pending_patch_id:
+            self._append_chat("system", f"Approving patch {self._pending_patch_id}...")
+            self._designspec_manager.approve_patch(self._pending_patch_id)
+            self._pending_patch_id = None
+            return
+        elif text_lower == "reject" and self._pending_patch_id:
+            self._append_chat("system", f"Rejecting patch {self._pending_patch_id}...")
+            self._designspec_manager.reject_patch(self._pending_patch_id, "User rejected")
+            self._pending_patch_id = None
+            return
+
+        # Send to workflow manager for normal processing
         self._designspec_manager.send_message(text)
 
     def _run_pipeline(self):
@@ -363,6 +377,9 @@ class DesignSpecApp:
             explanation = patch_data.get("explanation", "")
             patches = patch_data.get("patches", [])
 
+            # Store the pending patch ID for approval/rejection
+            self._pending_patch_id = patch_id
+
             msg = f"Proposed patch ({patch_id}):\n{explanation}\n"
             for i, patch in enumerate(patches[:3]):
                 op = patch.get("op", "")
@@ -370,7 +387,7 @@ class DesignSpecApp:
                 msg += f"  {i+1}. {op} {path}\n"
             if len(patches) > 3:
                 msg += f"  ... and {len(patches) - 3} more\n"
-            msg += "\nType 'approve' to apply or 'reject' to discard."
+            msg += "\n⚠️ Type 'approve' to apply or 'reject' to discard."
 
             self._append_chat("assistant", msg)
 

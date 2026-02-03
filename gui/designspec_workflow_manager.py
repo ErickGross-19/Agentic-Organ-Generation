@@ -424,10 +424,16 @@ class DesignSpecWorkflowManager:
             # Don't send separate message - it's included in the patch proposal
 
         elif event_type == WorkflowEventType.PATCH_APPLIED:
-            self._send_message("success", message)
+            patch_id = data.get("patch_id", "")
+            self._send_message("success", f"✓ Patch applied: {patch_id}")
+            if message and message != f"Patch {patch_id} applied":
+                self._send_message("success", message)
 
         elif event_type == WorkflowEventType.PATCH_REJECTED:
-            self._send_message("system", message)
+            patch_id = data.get("patch_id", "")
+            self._send_message("system", f"✗ Patch rejected: {patch_id}")
+            if message:
+                self._send_message("system", message)
 
         elif event_type == WorkflowEventType.COMPILE_STARTED:
             self._send_compile_status({"status": "running", "message": message})
