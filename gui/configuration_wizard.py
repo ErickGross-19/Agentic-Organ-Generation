@@ -553,23 +553,33 @@ class ConfigurationWizard(tk.Toplevel):
         project_type = self.project_type_var.get()
 
         if project_type == "new":
-            # Show new project frame, hide existing project frame
-            for child in self.new_project_frame.winfo_children():
-                child.configure(state="normal" if not isinstance(child, ttk.Label) else "normal")
-            for child in self.existing_project_frame.winfo_children():
-                if isinstance(child, (ttk.Entry, ttk.Button)):
-                    child.configure(state="disabled")
-
+            # Enable new project frame
+            self._set_widget_state(self.new_project_frame, "normal")
+            # Disable existing project frame
+            self._set_widget_state(self.existing_project_frame, "disabled")
             # Update template visibility
             self._on_template_change()
         else:
-            # Show existing project frame, hide new project frame
-            for child in self.new_project_frame.winfo_children():
-                if isinstance(child, (ttk.Entry, ttk.Button, ttk.Combobox, ttk.Radiobutton)):
-                    child.configure(state="disabled")
-            for child in self.existing_project_frame.winfo_children():
-                if isinstance(child, (ttk.Entry, ttk.Button)):
-                    child.configure(state="normal")
+            # Disable new project frame (including templates)
+            self._set_widget_state(self.new_project_frame, "disabled")
+            # Enable existing project frame
+            self._set_widget_state(self.existing_project_frame, "normal")
+
+    def _set_widget_state(self, widget, state: str):
+        """Recursively set state for all interactive widgets in a container."""
+        try:
+            # Try to set state on this widget if it supports it
+            if isinstance(widget, (ttk.Entry, ttk.Button, ttk.Combobox, ttk.Radiobutton, ttk.Checkbutton)):
+                widget.configure(state=state)
+        except:
+            pass
+
+        # Recursively process children
+        try:
+            for child in widget.winfo_children():
+                self._set_widget_state(child, state)
+        except:
+            pass
 
     def _on_template_change(self):
         """Handle template selection change."""

@@ -54,9 +54,15 @@ class DesignSpecApp:
 
     def _setup_ui(self):
         """Set up the main UI."""
+        # Menu bar
+        self._setup_menu()
+
         # Main container
         self.main_frame = ttk.Frame(self.root, padding=5)
         self.main_frame.pack(fill="both", expand=True)
+
+        # Toolbar
+        self._setup_toolbar()
 
         # Paned window for chat and spec viewer
         self.paned_window = ttk.PanedWindow(self.main_frame, orient="horizontal")
@@ -70,6 +76,51 @@ class DesignSpecApp:
 
         # Status bar
         self._setup_status_bar()
+
+    def _setup_menu(self):
+        """Set up the menu bar."""
+        menubar = tk.Menu(self.root)
+        self.root.config(menu=menubar)
+
+        # File menu
+        file_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="File", menu=file_menu)
+        file_menu.add_command(label="New Project", command=self._show_configuration_wizard)
+        file_menu.add_separator()
+        file_menu.add_command(label="Exit", command=self._on_close)
+
+        # Agent menu
+        agent_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Agent", menu=agent_menu)
+        agent_menu.add_command(label="Reconfigure Agent...", command=self._reconfigure_agent)
+        agent_menu.add_separator()
+        agent_menu.add_checkbutton(
+            label="Enable Auto-Analysis",
+            command=self._toggle_auto_analysis,
+            variable=tk.BooleanVar(value=True),
+        )
+
+        # Help menu
+        help_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Help", menu=help_menu)
+        help_menu.add_command(label="About", command=self._show_about)
+
+    def _setup_toolbar(self):
+        """Set up the toolbar."""
+        toolbar = ttk.Frame(self.main_frame)
+        toolbar.pack(fill="x", pady=(0, 5))
+
+        self.reconfigure_btn = ttk.Button(
+            toolbar,
+            text="⚙️ Reconfigure Agent",
+            command=self._reconfigure_agent,
+        )
+        self.reconfigure_btn.pack(side="left", padx=2)
+
+        ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=10)
+
+        self.project_label = ttk.Label(toolbar, text="No project loaded", foreground="gray")
+        self.project_label.pack(side="left", padx=5)
 
     def _setup_chat_panel(self):
         """Set up the chat panel."""
@@ -222,6 +273,13 @@ class DesignSpecApp:
             self._append_chat("success", f"Project ready! Mode: {mode_str}")
             self._append_chat("system", "Describe what you want to create, or type 'run' to execute the pipeline.")
             self.status_var.set("Project loaded - Ready")
+
+            # Update project label
+            if config.template == "open_project":
+                project_name = os.path.basename(config.open_project_path) if config.open_project_path else "Unknown"
+            else:
+                project_name = config.project_name
+            self.project_label.config(text=f"Project: {project_name}", foreground="black")
         else:
             self._append_chat("error", "Failed to initialize project")
             self.status_var.set("Project initialization failed")
@@ -343,6 +401,85 @@ class DesignSpecApp:
         self.chat_text.insert("end", content + "\n", msg_type)
         self.chat_text.see("end")
         self.chat_text.config(state="disabled")
+
+    def _reconfigure_agent(self):
+        """Reconfigure and reconnect the agent."""
+        if not self._wizard_config:
+            self._append_chat("error", "No configuration available. Please restart the application.")
+            return
+
+        # Ask user to confirm
+        if self._designspec_manager and self._designspec_manager.is_running:
+            if not messagebox.askyesno(
+                "Reconfigure Agent",
+                "A workflow is running. Reconfiguring will stop it. Continue?"
+            ):
+                return
+            self._designspec_manager.stop()
+
+        self._append_chat("system", "Reconfiguring agent...")
+
+        # Reinitialize the workflow with current config
+        use_legacy = (self._wizard_config.workflow_mode == "legacy")
+
+        if not use_legacy:
+            if not self._designspec_manager:
+                self._append_chat("error", "No workflow manager available.")
+                return
+
+            llm_success = self._designspec_manager.initialize_llm(
+                provider=self._wizard_config.agent_config.provider,
+                api_key=self._wizard_config.agent_config.api_key,
+                model=self._wizard_config.agent_config.model,
+                api_base=self._wizard_config.agent_config.api_base,
+                temperature=self._wizard_config.agent_config.temperature,
+                max_tokens=self._wizard_config.agent_config.max_tokens,
+            )
+
+            if llm_success:
+                self._append_chat("success", "Agent reconnected successfully!")
+                self.status_var.set("Agent reconnected - Ready")
+            else:
+                error_msg = self._designspec_manager.last_llm_init_error or "Unknown error"
+                self._append_chat("error", f"Failed to reconnect: {error_msg}")
+                self.status_var.set("Agent connection failed")
+
+                # Offer to reconfigure
+                if messagebox.askyesno(
+                    "Connection Failed",
+                    "Failed to reconnect the agent. Would you like to update your configuration?"
+                ):
+                    self._show_configuration_wizard()
+        else:
+            self._append_chat("success", "Agent is in legacy mode (no LLM connection required)")
+
+    def _toggle_auto_analysis(self):
+        """Toggle auto-analysis feature."""
+        if not self._designspec_manager:
+            messagebox.showwarning("No Project", "Please load a project first.")
+            return
+
+        current = self._designspec_manager.is_auto_analyze_enabled()
+        new_state = not current
+        self._designspec_manager.set_auto_analyze(new_state)
+
+        status = "enabled" if new_state else "disabled"
+        self._append_chat("system", f"Auto-analysis {status}")
+
+    def _show_about(self):
+        """Show about dialog."""
+        messagebox.showinfo(
+            "About Organ Generator",
+            "Organ Generator - DesignSpec Workflow\n\n"
+            "A conversational GUI for creating 3D vascular organ structures.\n\n"
+            "Features:\n"
+            "• LLM-powered natural language interaction\n"
+            "• Automatic failure analysis and fixes\n"
+            "• Live spec viewer\n"
+            "• Session memory and task tracking\n\n"
+            "Version 1.0.0\n"
+            "https://github.com/ErickGross-19/Agentic-Organ-Generation"
+        )
 
     def _on_close(self):
         """Handle window close."""
