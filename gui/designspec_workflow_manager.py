@@ -421,7 +421,7 @@ class DesignSpecWorkflowManager:
 
         elif event_type == WorkflowEventType.PATCH_PROPOSAL:
             self._send_patch_proposal(data)
-            self._send_message("assistant", message)
+            # Don't send separate message - it's included in the patch proposal
 
         elif event_type == WorkflowEventType.PATCH_APPLIED:
             self._send_message("success", message)
