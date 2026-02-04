@@ -2,8 +2,18 @@
 
 import { useCallback, useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { Viewport } from '@/components/viewer';
+import dynamic from 'next/dynamic';
 import { ParameterPanel } from '@/components/controls';
+
+// Dynamically import Viewport to avoid SSR issues with Three.js
+const Viewport = dynamic(() => import('@/components/viewer').then(mod => ({ default: mod.Viewport })), {
+  ssr: false,
+  loading: () => (
+    <div className="w-full h-full flex items-center justify-center bg-slate-900/50 rounded-lg border border-slate-700">
+      <div className="text-slate-400">Loading 3D viewport...</div>
+    </div>
+  ),
+});
 import { ChatPanel } from '@/components/chat';
 import { ExportPanel } from '@/components/export';
 import { useScaffoldStore, useChatStore } from '@/lib/store';
