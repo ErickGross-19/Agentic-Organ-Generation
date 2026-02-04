@@ -2,6 +2,9 @@
 const nextConfig = {
   reactStrictMode: true,
 
+  // Transpile Three.js packages for better compatibility
+  transpilePackages: ['three', '@react-three/fiber', '@react-three/drei'],
+
   async headers() {
     return [
       {

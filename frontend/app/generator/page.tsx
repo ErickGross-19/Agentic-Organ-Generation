@@ -6,7 +6,8 @@ import dynamic from 'next/dynamic';
 import { ParameterPanel } from '@/components/controls';
 
 // Dynamically import Viewport to avoid SSR issues with Three.js
-const Viewport = dynamic(() => import('@/components/viewer').then(mod => ({ default: mod.Viewport })), {
+// Import directly from Viewport file, not from index.ts to avoid module evaluation
+const Viewport = dynamic(() => import('@/components/viewer/Viewport').then(mod => ({ default: mod.Viewport })), {
   ssr: false,
   loading: () => (
     <div className="w-full h-full flex items-center justify-center bg-slate-900/50 rounded-lg border border-slate-700">
