@@ -2,19 +2,8 @@
 
 import { useCallback, useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import dynamic from 'next/dynamic';
+import { ViewportClient } from '@/components/viewer/ViewportClient';
 import { ParameterPanel } from '@/components/controls';
-
-// Dynamically import Viewport to avoid SSR issues with Three.js
-// Import directly from Viewport file, not from index.ts to avoid module evaluation
-const Viewport = dynamic(() => import('@/components/viewer/Viewport').then(mod => ({ default: mod.Viewport })), {
-  ssr: false,
-  loading: () => (
-    <div className="w-full h-full flex items-center justify-center bg-slate-900/50 rounded-lg border border-slate-700">
-      <div className="text-slate-400">Loading 3D viewport...</div>
-    </div>
-  ),
-});
 import { ChatPanel } from '@/components/chat';
 import { ExportPanel } from '@/components/export';
 import { useScaffoldStore, useChatStore } from '@/lib/store';
@@ -217,7 +206,7 @@ export default function GeneratorPage() {
         <div className="flex-1 flex flex-col overflow-hidden p-4 gap-4 bg-gradient-to-br from-slate-950 via-slate-900 to-emerald-950">
           {/* 3D Viewport */}
           <div className="flex-1 min-h-0">
-            <Viewport
+            <ViewportClient
               meshData={meshData || undefined}
               isLoading={isGenerating}
             />
