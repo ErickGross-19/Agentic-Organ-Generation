@@ -1,8 +1,8 @@
 'use client';
 
+import React, { Suspense, useState } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Grid, Center, Environment } from '@react-three/drei';
-import { Suspense, useState } from 'react';
 import { ScaffoldMesh } from './ScaffoldMesh';
 import { ViewControls } from './ViewControls';
 import { VascularOverlay } from './VascularOverlay';
