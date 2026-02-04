@@ -24,8 +24,21 @@ export default function RegisterPage() {
       return;
     }
 
-    if (password.length < 6) {
-      setLocalError('Password must be at least 6 characters');
+    // Validate password strength to match backend requirements
+    if (password.length < 8) {
+      setLocalError('Password must be at least 8 characters');
+      return;
+    }
+    if (!/[A-Z]/.test(password)) {
+      setLocalError('Password must contain at least one uppercase letter');
+      return;
+    }
+    if (!/[a-z]/.test(password)) {
+      setLocalError('Password must contain at least one lowercase letter');
+      return;
+    }
+    if (!/[0-9]/.test(password)) {
+      setLocalError('Password must contain at least one number');
       return;
     }
 
@@ -98,10 +111,13 @@ export default function RegisterPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
-              minLength={6}
+              minLength={8}
               className="mt-1 w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              placeholder="Min. 6 characters"
+              placeholder="8+ chars, uppercase, lowercase, number"
             />
+            <p className="mt-1 text-xs text-slate-500">
+              Must be 8+ characters with uppercase, lowercase, and number
+            </p>
           </div>
 
           <div>
