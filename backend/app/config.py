@@ -7,6 +7,8 @@ import sys
 class Settings(BaseSettings):
     app_name: str = "MorphoStruct API"
     debug: bool = False
+    env: str = "development"  # Environment: development, staging, production
+    allowed_origins: str = "http://localhost:3000,http://127.0.0.1:3000"  # CORS origins
 
     # LLM provider settings
     llm_provider: str = "anthropic"  # "anthropic" or "openai"
@@ -47,7 +49,7 @@ def get_settings() -> Settings:
     settings = Settings()
 
     # Validate secrets on load
-    ENV = os.getenv("ENV", "development")
+    ENV = settings.env
 
     # Check JWT secret
     if ENV != "development":
