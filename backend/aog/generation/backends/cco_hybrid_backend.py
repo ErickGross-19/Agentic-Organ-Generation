@@ -1,0 +1,1998 @@
+"""
+Accelerated CCO (Constrained Constructive Optimization) hybrid backend.
+
+Based on Sexton et al.'s "rapid model-guided design" pipeline for organ-scale
+synthetic vascular generation. Implements four major accelerators:
+1. Partial binding optimization
+2. Partial implicit volumes (fast domain queries)
+3. Collision avoidance triage
+4. Closed-loop (A-V) vasculature generation
+
+Note: The library uses METERS internally for all geometry.
+"""
+
+from dataclasses import dataclass
+import logging
+from typing import Optional, Dict, List, Tuple, Set
+
+import numpy as np
+
+from .base import GenerationBackend, BackendConfig, GenerationState, GenerationAction
+from ..core.network import VascularNetwork, Node, VesselSegment
+from ..core.domain import DomainSpec
+from ..core.types import Point3D, TubeGeometry
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class CCOConfig(BackendConfig):
+    """Configuration for CCO hybrid backend.
+    
+    All spatial parameters are in METERS (SI units) unless otherwise noted.
+    
+    Attributes
+    ----------
+    murray_exponent : float
+        Exponent for Murray's law radius calculations (default: 3.0)
+    cost_length_weight : float
+        Weight for length term in insertion cost function (default: 1.0)
+    cost_radius_weight : float
+        Weight for radius term in insertion cost function (default: 1.0)
+    boundary_penalty_weight : float
+        Weight for boundary proximity penalty (default: 10.0)
+    optimization_grid_resolution : int
+        Grid resolution for bifurcation point optimization (default: 10)
+    candidate_edges_k : int
+        Maximum number of candidate edges to consider for insertion (default: 50)
+    use_partial_binding : bool
+        Enable partial binding optimization for faster cost evaluation (default: True)
+    use_collision_triage : bool
+        Enable collision triage for faster candidate selection (default: True)
+    collision_clearance : float
+        Minimum clearance between vessels in meters (default: 0.0001 = 0.1mm)
+    collision_check_enabled : bool
+        Enable collision prevention during insertion (default: True)
+    
+    Geometry Parameters (extracted from hardcoded values)
+    ----------------------------------------------------
+    candidate_search_radius : float
+        Search radius for finding nearby segments during candidate selection (default: 0.05m = 50mm)
+    boundary_penalty_threshold : float
+        Distance threshold for boundary penalty in cost calculation (default: 0.002m = 2mm)
+    initial_radius_taper : float
+        Taper ratio for initial segment radius (default: 0.8)
+    fallback_murray_split_ratio : float
+        Fallback ratio for Murray split when demand is zero (default: 0.8)
+    outlet_end_radius_taper : float
+        Taper ratio for outlet segment end radius (default: 0.9)
+    single_child_taper : float
+        Taper ratio for single child in radius rescaling (default: 0.9)
+    anastomosis_max_length : float
+        Maximum length for anastomosis connections in meters (default: 0.015m = 15mm)
+    
+    Dual-tree Parameters
+    --------------------
+    min_terminal_separation_same_type : float, optional
+        Minimum separation between terminals of same vessel type.
+        If None, uses min_terminal_separation from base config.
+    min_terminal_separation_cross_type : float, optional
+        Minimum separation between arterial and venous terminals.
+        If None, no cross-type separation check is performed.
+    encourage_av_proximity : bool
+        If True, prefer outlets near opposite vessel type terminals (default: False)
+    """
+    
+    murray_exponent: float = 3.0
+    cost_length_weight: float = 1.0
+    cost_radius_weight: float = 1.0
+    boundary_penalty_weight: float = 10.0
+    optimization_grid_resolution: int = 10
+    candidate_edges_k: int = 50
+    use_partial_binding: bool = True
+    use_collision_triage: bool = True
+    
+    # Collision avoidance parameters
+    collision_clearance: float = 0.0001  # 0.1mm minimum clearance between vessels
+    collision_check_enabled: bool = True  # Enable actual collision prevention during insertion
+    
+    # Geometry parameters (previously hardcoded)
+    candidate_search_radius: float = 0.05  # 50mm search radius for candidate selection
+    boundary_penalty_threshold: float = 0.002  # 2mm threshold for boundary penalty
+    initial_radius_taper: float = 0.8  # Taper ratio for initial segment
+    fallback_murray_split_ratio: float = 0.8  # Fallback ratio when demand is zero
+    outlet_end_radius_taper: float = 0.9  # Taper ratio for outlet segment end
+    single_child_taper: float = 0.9  # Taper ratio for single child in rescaling
+    anastomosis_max_length: float = 0.015  # 15mm max length for anastomoses
+    
+    # Dual-tree outlet validation parameters
+    min_terminal_separation_same_type: Optional[float] = None  # If None, uses min_terminal_separation
+    min_terminal_separation_cross_type: Optional[float] = None  # A-V separation (if None, no cross-type check)
+    encourage_av_proximity: bool = False  # If True, prefer outlets near opposite vessel type terminals
+    
+    # NLP (Non-Linear Programming) optimization parameters
+    # When enabled, uses gradient-based optimization instead of grid search for bifurcation points
+    use_nlp_optimization: bool = False  # Enable NLP-based bifurcation point optimization
+    nlp_solver: str = "SLSQP"  # Solver method: "SLSQP", "trust-constr", or "L-BFGS-B"
+    nlp_tolerance: float = 1e-6  # Convergence tolerance for NLP solver
+    max_nlp_iterations: int = 100  # Maximum iterations for NLP solver
+    nlp_use_grid_initial_guess: bool = True  # Use coarse grid search for initial guess
+    nlp_grid_resolution_for_guess: int = 5  # Grid resolution for initial guess (if enabled)
+    
+    # Trifurcation support (3-way splits)
+    enable_trifurcation: bool = False  # Enable 3-way splits during insertion
+    trifurcation_cost_threshold: float = 0.8  # Cost ratio threshold to prefer trifurcation
+    
+    # Generation control parameters
+    max_consecutive_failures: int = 50  # Max consecutive failed outlet placements before stopping
+    default_inlet_radius: float = 0.002  # Default inlet radius (2mm) for step() method
+    
+    # Documented heuristic values:
+    # - Bifurcation parameter defaults (t=0.5, s=0.5): These are mathematically reasonable
+    #   starting points representing the midpoint of the segment and midpoint toward the outlet.
+    # - Volume feasibility multiplier (0.1): A conservative heuristic that warns when domain
+    #   volume may be too small. The factor accounts for vessel spacing and branching overhead.
+    
+    def validate(self) -> None:
+        """
+        Validate configuration parameters.
+        
+        Raises
+        ------
+        ValueError
+            If any parameter is out of valid range
+        """
+        # Validate positive parameters
+        if self.murray_exponent <= 0:
+            raise ValueError(f"murray_exponent must be positive, got {self.murray_exponent}")
+        if self.cost_length_weight < 0:
+            raise ValueError(f"cost_length_weight must be non-negative, got {self.cost_length_weight}")
+        if self.cost_radius_weight < 0:
+            raise ValueError(f"cost_radius_weight must be non-negative, got {self.cost_radius_weight}")
+        if self.boundary_penalty_weight < 0:
+            raise ValueError(f"boundary_penalty_weight must be non-negative, got {self.boundary_penalty_weight}")
+        if self.optimization_grid_resolution < 1:
+            raise ValueError(f"optimization_grid_resolution must be at least 1, got {self.optimization_grid_resolution}")
+        if self.candidate_edges_k < 1:
+            raise ValueError(f"candidate_edges_k must be at least 1, got {self.candidate_edges_k}")
+        
+        # Validate collision parameters
+        if self.collision_clearance < 0:
+            raise ValueError(f"collision_clearance must be non-negative, got {self.collision_clearance}")
+        
+        # Validate geometry parameters
+        if self.candidate_search_radius <= 0:
+            raise ValueError(f"candidate_search_radius must be positive, got {self.candidate_search_radius}")
+        if self.boundary_penalty_threshold <= 0:
+            raise ValueError(f"boundary_penalty_threshold must be positive, got {self.boundary_penalty_threshold}")
+        
+        # Validate taper ratios (should be between 0 and 1)
+        if not 0 < self.initial_radius_taper <= 1:
+            raise ValueError(f"initial_radius_taper must be in (0, 1], got {self.initial_radius_taper}")
+        if not 0 < self.fallback_murray_split_ratio <= 1:
+            raise ValueError(f"fallback_murray_split_ratio must be in (0, 1], got {self.fallback_murray_split_ratio}")
+        if not 0 < self.outlet_end_radius_taper <= 1:
+            raise ValueError(f"outlet_end_radius_taper must be in (0, 1], got {self.outlet_end_radius_taper}")
+        if not 0 < self.single_child_taper <= 1:
+            raise ValueError(f"single_child_taper must be in (0, 1], got {self.single_child_taper}")
+        
+        # Validate anastomosis parameters
+        if self.anastomosis_max_length <= 0:
+            raise ValueError(f"anastomosis_max_length must be positive, got {self.anastomosis_max_length}")
+        
+        # Validate base class parameters
+        if self.min_segment_length <= 0:
+            raise ValueError(f"min_segment_length must be positive, got {self.min_segment_length}")
+        if self.max_segment_length <= self.min_segment_length:
+            raise ValueError(
+                f"max_segment_length ({self.max_segment_length}) must be greater than "
+                f"min_segment_length ({self.min_segment_length})"
+            )
+        if self.min_radius <= 0:
+            raise ValueError(f"min_radius must be positive, got {self.min_radius}")
+        if self.min_terminal_separation < 0:
+            raise ValueError(f"min_terminal_separation must be non-negative, got {self.min_terminal_separation}")
+        
+        # Validate NLP optimization parameters
+        valid_nlp_solvers = {"SLSQP", "trust-constr", "L-BFGS-B"}
+        if self.nlp_solver not in valid_nlp_solvers:
+            raise ValueError(
+                f"nlp_solver must be one of {valid_nlp_solvers}, got '{self.nlp_solver}'"
+            )
+        if self.nlp_tolerance <= 0:
+            raise ValueError(f"nlp_tolerance must be positive, got {self.nlp_tolerance}")
+        if self.max_nlp_iterations < 1:
+            raise ValueError(f"max_nlp_iterations must be at least 1, got {self.max_nlp_iterations}")
+        if self.nlp_grid_resolution_for_guess < 1:
+            raise ValueError(
+                f"nlp_grid_resolution_for_guess must be at least 1, got {self.nlp_grid_resolution_for_guess}"
+            )
+        
+        # Validate trifurcation parameters
+        if not 0 < self.trifurcation_cost_threshold <= 1:
+            raise ValueError(
+                f"trifurcation_cost_threshold must be in (0, 1], got {self.trifurcation_cost_threshold}"
+            )
+        
+        # Validate generation control parameters
+        if self.max_consecutive_failures < 1:
+            raise ValueError(
+                f"max_consecutive_failures must be at least 1, got {self.max_consecutive_failures}"
+            )
+        if self.default_inlet_radius <= 0:
+            raise ValueError(
+                f"default_inlet_radius must be positive, got {self.default_inlet_radius}"
+            )
+
+
+@dataclass
+class SegmentRecord:
+    """Array-friendly segment record for CCO optimization cache."""
+    
+    segment_id: int
+    start_node_id: int
+    end_node_id: int
+    parent_segment_id: Optional[int]
+    child_segment_ids: List[int]
+    length: float
+    radius: float
+    resistance: float
+    subtree_terminal_count: int
+    subtree_equivalent_resistance: float
+    path_to_root_resistance: float
+
+
+class ArrayTreeView:
+    """
+    Array-based view of vascular tree for fast CCO operations.
+    
+    This is an optimization cache that maintains contiguous arrays of segment
+    properties for efficient traversal and update during CCO insertion.
+    The authoritative geometry lives in VascularNetwork.
+    """
+    
+    def __init__(self, network: VascularNetwork, root_node_id: int):
+        """
+        Initialize ArrayTreeView from a VascularNetwork.
+        
+        Parameters
+        ----------
+        network : VascularNetwork
+            Source network
+        root_node_id : int
+            ID of the root (inlet) node
+        """
+        self.network = network
+        self.root_node_id = root_node_id
+        self.segments: Dict[int, SegmentRecord] = {}
+        self._segment_id_to_idx: Dict[int, int] = {}
+        self._rebuild_from_network()
+    
+    def _rebuild_from_network(self) -> None:
+        """Rebuild cache from network."""
+        self.segments.clear()
+        self._segment_id_to_idx.clear()
+        
+        parent_map = self._compute_parent_map()
+        
+        for idx, (seg_id, seg) in enumerate(self.network.segments.items()):
+            parent_seg_id = parent_map.get(seg_id)
+            child_ids = self._get_child_segment_ids(seg_id, parent_map)
+            
+            radius = seg.geometry.mean_radius()
+            length = seg.length
+            resistance = self._compute_resistance(length, radius)
+            
+            record = SegmentRecord(
+                segment_id=seg_id,
+                start_node_id=seg.start_node_id,
+                end_node_id=seg.end_node_id,
+                parent_segment_id=parent_seg_id,
+                child_segment_ids=child_ids,
+                length=length,
+                radius=radius,
+                resistance=resistance,
+                subtree_terminal_count=0,
+                subtree_equivalent_resistance=0.0,
+                path_to_root_resistance=0.0,
+            )
+            self.segments[seg_id] = record
+            self._segment_id_to_idx[seg_id] = idx
+        
+        self._compute_subtree_aggregates()
+        self._compute_path_to_root_aggregates()
+    
+    def _compute_parent_map(self) -> Dict[int, Optional[int]]:
+        """
+        Compute parent segment for each segment based on tree structure.
+        
+        P0-8: Uses proper BFS/DFS traversal from root_node_id to build directed
+        tree structure. Tracks incoming segment at each node to correctly identify
+        parent-child relationships even at junctions with multiple branches.
+        """
+        parent_map: Dict[int, Optional[int]] = {}
+        
+        visited_nodes: Set[int] = {self.root_node_id}
+        # Queue contains (node_id, incoming_seg_id) tuples
+        # incoming_seg_id is None for root, otherwise the segment we arrived from
+        queue: List[Tuple[int, Optional[int]]] = [(self.root_node_id, None)]
+        
+        while queue:
+            node_id, incoming_seg_id = queue.pop(0)
+            connected_segs = self.network.get_connected_segment_ids(node_id)
+            
+            for seg_id in connected_segs:
+                # Skip the segment we arrived from (it's already processed)
+                if seg_id == incoming_seg_id:
+                    continue
+                    
+                seg = self.network.segments[seg_id]
+                other_node = seg.end_node_id if seg.start_node_id == node_id else seg.start_node_id
+                
+                if other_node not in visited_nodes:
+                    # P0-8: Parent is the incoming segment at this node
+                    parent_map[seg_id] = incoming_seg_id
+                    visited_nodes.add(other_node)
+                    # Continue BFS with this segment as the incoming segment for other_node
+                    queue.append((other_node, seg_id))
+        
+        return parent_map
+    
+    def _find_parent_segment(self, parent_node_id: int, current_seg_id: int) -> Optional[int]:
+        """
+        Find the parent segment of a given segment.
+        
+        Note: This method is kept for backward compatibility but the main
+        parent mapping logic is now in _compute_parent_map using proper BFS.
+        """
+        connected = self.network.get_connected_segment_ids(parent_node_id)
+        for seg_id in connected:
+            if seg_id != current_seg_id:
+                return seg_id
+        return None
+    
+    def _get_child_segment_ids(self, seg_id: int, parent_map: Dict[int, Optional[int]]) -> List[int]:
+        """Get child segment IDs for a segment."""
+        children = []
+        for other_id, parent_id in parent_map.items():
+            if parent_id == seg_id:
+                children.append(other_id)
+        return children
+    
+    def _compute_resistance(self, length: float, radius: float, mu: float = 1e-3) -> float:
+        """Compute Poiseuille resistance: R = 8*mu*L/(pi*r^4)."""
+        if radius < 1e-10:
+            return float('inf')
+        return 8.0 * mu * length / (np.pi * radius**4)
+    
+    def _compute_subtree_aggregates(self) -> None:
+        """Compute subtree terminal counts and equivalent resistances."""
+        terminal_node_ids = {
+            n.id for n in self.network.nodes.values()
+            if n.node_type == "terminal"
+        }
+        
+        def compute_subtree(seg_id: int) -> Tuple[int, float]:
+            record = self.segments[seg_id]
+            
+            if not record.child_segment_ids:
+                end_node = self.network.nodes[record.end_node_id]
+                is_terminal = end_node.id in terminal_node_ids
+                record.subtree_terminal_count = 1 if is_terminal else 0
+                record.subtree_equivalent_resistance = record.resistance
+                return record.subtree_terminal_count, record.subtree_equivalent_resistance
+            
+            total_terminals = 0
+            child_resistances = []
+            
+            for child_id in record.child_segment_ids:
+                child_terminals, child_eq_res = compute_subtree(child_id)
+                total_terminals += child_terminals
+                if child_eq_res > 0:
+                    child_resistances.append(child_eq_res)
+            
+            if child_resistances:
+                parallel_inv = sum(1.0 / r for r in child_resistances if r > 0)
+                parallel_res = 1.0 / parallel_inv if parallel_inv > 0 else float('inf')
+                eq_resistance = record.resistance + parallel_res
+            else:
+                eq_resistance = record.resistance
+            
+            record.subtree_terminal_count = total_terminals
+            record.subtree_equivalent_resistance = eq_resistance
+            return total_terminals, eq_resistance
+        
+        root_segments = [
+            seg_id for seg_id, rec in self.segments.items()
+            if rec.parent_segment_id is None
+        ]
+        for seg_id in root_segments:
+            compute_subtree(seg_id)
+    
+    def _compute_path_to_root_aggregates(self) -> None:
+        """Compute path-to-root resistance for each segment."""
+        for seg_id, record in self.segments.items():
+            path_resistance = 0.0
+            current_id = record.parent_segment_id
+            
+            while current_id is not None:
+                parent_record = self.segments.get(current_id)
+                if parent_record:
+                    path_resistance += parent_record.resistance
+                    current_id = parent_record.parent_segment_id
+                else:
+                    break
+            
+            record.path_to_root_resistance = path_resistance
+    
+    def get_segment_endpoints(self, seg_id: int) -> Tuple[np.ndarray, np.ndarray]:
+        """Get segment endpoints as numpy arrays."""
+        seg = self.network.segments[seg_id]
+        start_node = self.network.nodes[seg.start_node_id]
+        end_node = self.network.nodes[seg.end_node_id]
+        return start_node.position.to_array(), end_node.position.to_array()
+    
+    def update_after_insertion(
+        self,
+        split_seg_id: int,
+        new_seg_ids: List[int],
+        bifurcation_node_id: int,
+    ) -> None:
+        """
+        Update cache after inserting a new outlet.
+        
+        Uses partial binding to only update affected path to root.
+        """
+        self._rebuild_from_network()
+
+
+class CCOHybridBackend(GenerationBackend):
+    """
+    Accelerated CCO hybrid backend for vascular network generation.
+    
+    Implements Sexton-style accelerators for organ-scale generation:
+    - Partial binding optimization for fast bifurcation optimization
+    - Partial implicit volumes for fast domain queries
+    - Collision avoidance triage (cheap filter then expensive test)
+    - Closed-loop (A-V) vasculature generation
+    """
+    
+    @property
+    def supports_dual_tree(self) -> bool:
+        return True
+    
+    @property
+    def supports_closed_loop(self) -> bool:
+        return True
+    
+    def _validate_generate_inputs(
+        self,
+        domain: DomainSpec,
+        num_outlets: int,
+        inlet_position: np.ndarray,
+        inlet_radius: float,
+        vessel_type: str,
+    ) -> None:
+        """
+        Validate inputs for generate method.
+        
+        Parameters
+        ----------
+        domain : DomainSpec
+            Geometric domain for the network
+        num_outlets : int
+            Target number of terminal outlets
+        inlet_position : np.ndarray
+            Position of the inlet node (x, y, z) in meters
+        inlet_radius : float
+            Radius of the inlet vessel in meters
+        vessel_type : str
+            Type of vessels ("arterial" or "venous")
+            
+        Raises
+        ------
+        ValueError
+            If any input parameter is invalid
+        """
+        # Validate num_outlets
+        if num_outlets < 1:
+            raise ValueError(f"num_outlets must be at least 1, got {num_outlets}")
+        
+        # Validate inlet_position
+        if inlet_position is None:
+            raise ValueError("inlet_position cannot be None")
+        inlet_position = np.asarray(inlet_position)
+        if inlet_position.shape != (3,):
+            raise ValueError(f"inlet_position must be a 3D point, got shape {inlet_position.shape}")
+        
+        # Validate inlet_radius
+        if inlet_radius <= 0:
+            raise ValueError(f"inlet_radius must be positive, got {inlet_radius}")
+        
+        # Validate vessel_type
+        valid_vessel_types = {"arterial", "venous"}
+        if vessel_type not in valid_vessel_types:
+            raise ValueError(f"vessel_type must be one of {valid_vessel_types}, got '{vessel_type}'")
+        
+        # Validate domain bounds
+        inlet_point = Point3D.from_array(inlet_position)
+        if not domain.contains(inlet_point):
+            bounds = domain.get_bounds()
+            raise ValueError(
+                f"inlet_position {inlet_position} is outside domain bounds. "
+                f"Domain bounds: x=[{bounds[0]:.4f}, {bounds[1]:.4f}], "
+                f"y=[{bounds[2]:.4f}, {bounds[3]:.4f}], z=[{bounds[4]:.4f}, {bounds[5]:.4f}]"
+            )
+        
+        # Check for infeasible geometry (domain too small for requested outlets)
+        domain_bounds = domain.get_bounds()
+        domain_volume = (
+            (domain_bounds[1] - domain_bounds[0]) *
+            (domain_bounds[3] - domain_bounds[2]) *
+            (domain_bounds[5] - domain_bounds[4])
+        )
+        # Rough estimate: each outlet needs some minimum volume
+        min_volume_per_outlet = (inlet_radius * 10) ** 3  # Very rough estimate
+        if domain_volume < num_outlets * min_volume_per_outlet * 0.1:
+            import warnings
+            warnings.warn(
+                f"Domain volume ({domain_volume:.6f} m³) may be too small for "
+                f"{num_outlets} outlets. Generation may not achieve target outlet count."
+            )
+    
+    def generate(
+        self,
+        domain: DomainSpec,
+        num_outlets: int,
+        inlet_position: np.ndarray,
+        inlet_radius: float,
+        vessel_type: str = "arterial",
+        config: Optional[CCOConfig] = None,
+        rng_seed: Optional[int] = None,
+    ) -> VascularNetwork:
+        """
+        Generate a vascular network using accelerated CCO.
+        
+        Parameters
+        ----------
+        domain : DomainSpec
+            Geometric domain for the network
+        num_outlets : int
+            Target number of terminal outlets
+        inlet_position : np.ndarray
+            Position of the inlet node (x, y, z) in meters
+        inlet_radius : float
+            Radius of the inlet vessel in meters
+        vessel_type : str
+            Type of vessels ("arterial" or "venous")
+        config : CCOConfig, optional
+            CCO configuration
+        rng_seed : int, optional
+            Random seed for reproducibility
+            
+        Returns
+        -------
+        VascularNetwork
+            Generated vascular network
+            
+        Raises
+        ------
+        ValueError
+            If input parameters are invalid or infeasible
+        """
+        if config is None:
+            config = CCOConfig()
+        
+        # Validate configuration parameters
+        config.validate()
+        
+        # Validate input parameters
+        self._validate_generate_inputs(domain, num_outlets, inlet_position, inlet_radius, vessel_type)
+        
+        rng = np.random.default_rng(rng_seed if rng_seed is not None else config.seed)
+        
+        network = VascularNetwork(domain=domain, seed=rng_seed)
+        
+        inlet_point = Point3D.from_array(inlet_position)
+        inlet_node = Node(
+            id=network.id_gen.next_id(),
+            position=inlet_point,
+            node_type="inlet",
+            vessel_type=vessel_type,
+            attributes={"radius": inlet_radius, "branch_order": 0},
+        )
+        network.add_node(inlet_node)
+        
+        first_outlet = self._sample_outlet_point(domain, rng, config)
+        self._add_initial_segment(network, inlet_node, first_outlet, inlet_radius, vessel_type, config)
+        
+        tree_view = ArrayTreeView(network, inlet_node.id)
+        
+        # Graceful degradation: track failed attempts and retry with different samples
+        consecutive_failures = 0
+        successful_outlets = 1  # Already have the first outlet
+        
+        for i in range(num_outlets - 1):
+            outlet_point = self._sample_outlet_point(domain, rng, config)
+            
+            if not self._is_valid_outlet(outlet_point, network, config):
+                consecutive_failures += 1
+                if consecutive_failures >= config.max_consecutive_failures:
+                    import warnings
+                    warnings.warn(
+                        f"Could not place outlet after {config.max_consecutive_failures} consecutive attempts. "
+                        f"Achieved {successful_outlets}/{num_outlets} outlets. "
+                        f"Consider increasing domain size or reducing num_outlets."
+                    )
+                    break
+                continue
+            
+            insertion_success = self._insert_outlet(
+                network, tree_view, outlet_point, inlet_radius, vessel_type, config, rng
+            )
+            
+            if insertion_success:
+                successful_outlets += 1
+                consecutive_failures = 0  # Reset on success
+            else:
+                consecutive_failures += 1
+                if consecutive_failures >= config.max_consecutive_failures:
+                    import warnings
+                    warnings.warn(
+                        f"Could not insert outlet after {config.max_consecutive_failures} consecutive attempts. "
+                        f"Achieved {successful_outlets}/{num_outlets} outlets. "
+                        f"Consider adjusting collision parameters or domain size."
+                    )
+                    break
+        
+        self._rescale_radii(network, inlet_node.id, inlet_radius, config)
+        
+        return network
+    
+    def step(
+        self,
+        state: GenerationState,
+        action: GenerationAction,
+    ) -> GenerationState:
+        """
+        Perform a single CCO generation step.
+        
+        Supports actions:
+        - "add_outlet": Sample and add a new outlet
+        - "force_outlet": Add outlet at specific location
+        """
+        if action.action_type == "add_outlet":
+            config = state.metadata.get("config", CCOConfig())
+            rng = state.metadata.get("rng", np.random.default_rng())
+            
+            outlet_point = self._sample_outlet_point(state.network.domain, rng, config)
+            
+            if self._is_valid_outlet(outlet_point, state.network, config):
+                tree_view = state.metadata.get("tree_view")
+                if tree_view is None:
+                    root_id = state.metadata.get("root_node_id")
+                    tree_view = ArrayTreeView(state.network, root_id)
+                
+                inlet_radius = state.metadata.get("inlet_radius", config.default_inlet_radius)
+                vessel_type = state.metadata.get("vessel_type", "arterial")
+                
+                self._insert_outlet(
+                    state.network, tree_view, outlet_point,
+                    inlet_radius, vessel_type, config, rng
+                )
+                
+                state.remaining_outlets -= 1
+            
+            state.iteration += 1
+            
+        elif action.action_type == "force_outlet":
+            target = action.parameters.get("target_point")
+            if target is not None:
+                target_point = Point3D.from_array(np.array(target))
+                config = state.metadata.get("config", CCOConfig())
+                rng = state.metadata.get("rng", np.random.default_rng())
+                
+                tree_view = state.metadata.get("tree_view")
+                if tree_view is None:
+                    root_id = state.metadata.get("root_node_id")
+                    tree_view = ArrayTreeView(state.network, root_id)
+                
+                inlet_radius = state.metadata.get("inlet_radius", config.default_inlet_radius)
+                vessel_type = state.metadata.get("vessel_type", "arterial")
+                
+                self._insert_outlet(
+                    state.network, tree_view, target_point,
+                    inlet_radius, vessel_type, config, rng
+                )
+                
+                state.remaining_outlets -= 1
+            
+            state.iteration += 1
+        
+        return state
+    
+    def generate_dual_tree(
+        self,
+        domain: DomainSpec,
+        arterial_outlets: int,
+        venous_outlets: int,
+        arterial_inlet: np.ndarray,
+        venous_outlet: np.ndarray,
+        arterial_radius: float,
+        venous_radius: float,
+        config: Optional[CCOConfig] = None,
+        rng_seed: Optional[int] = None,
+        create_anastomoses: bool = False,
+        num_anastomoses: int = 0,
+    ) -> VascularNetwork:
+        """
+        Generate a dual arterial-venous network with optional anastomoses.
+        
+        Raises
+        ------
+        ValueError
+            If input parameters are invalid or infeasible
+        """
+        if config is None:
+            config = CCOConfig()
+        
+        # Validate configuration parameters
+        config.validate()
+        
+        # Validate arterial inputs
+        self._validate_generate_inputs(domain, arterial_outlets, arterial_inlet, arterial_radius, "arterial")
+        
+        # Validate venous inputs
+        self._validate_generate_inputs(domain, venous_outlets, venous_outlet, venous_radius, "venous")
+        
+        # Validate anastomosis parameters
+        if create_anastomoses and num_anastomoses < 0:
+            raise ValueError(f"num_anastomoses must be non-negative, got {num_anastomoses}")
+        
+        rng = np.random.default_rng(rng_seed if rng_seed is not None else config.seed)
+        
+        network = VascularNetwork(domain=domain, seed=rng_seed)
+        
+        arterial_inlet_point = Point3D.from_array(arterial_inlet)
+        arterial_inlet_node = Node(
+            id=network.id_gen.next_id(),
+            position=arterial_inlet_point,
+            node_type="inlet",
+            vessel_type="arterial",
+            attributes={"radius": arterial_radius, "branch_order": 0},
+        )
+        network.add_node(arterial_inlet_node)
+        
+        first_arterial = self._sample_outlet_point(domain, rng, config)
+        self._add_initial_segment(network, arterial_inlet_node, first_arterial, arterial_radius, "arterial", config)
+        
+        arterial_tree_view = ArrayTreeView(network, arterial_inlet_node.id)
+        
+        consecutive_failures = 0
+        successful_arterial = 1
+        
+        for i in range(arterial_outlets - 1):
+            outlet_point = self._sample_outlet_point(domain, rng, config)
+            if not self._is_valid_outlet(outlet_point, network, config, vessel_type="arterial"):
+                consecutive_failures += 1
+                if consecutive_failures >= config.max_consecutive_failures:
+                    import warnings
+                    warnings.warn(
+                        f"Could not place arterial outlet after {config.max_consecutive_failures} consecutive attempts. "
+                        f"Achieved {successful_arterial}/{arterial_outlets} arterial outlets."
+                    )
+                    break
+                continue
+            
+            insertion_success = self._insert_outlet(
+                network, arterial_tree_view, outlet_point,
+                arterial_radius, "arterial", config, rng
+            )
+            
+            if insertion_success:
+                successful_arterial += 1
+                consecutive_failures = 0
+            else:
+                consecutive_failures += 1
+                if consecutive_failures >= config.max_consecutive_failures:
+                    import warnings
+                    warnings.warn(
+                        f"Could not insert arterial outlet after {config.max_consecutive_failures} consecutive attempts. "
+                        f"Achieved {successful_arterial}/{arterial_outlets} arterial outlets."
+                    )
+                    break
+        
+        venous_outlet_point = Point3D.from_array(venous_outlet)
+        venous_outlet_node = Node(
+            id=network.id_gen.next_id(),
+            position=venous_outlet_point,
+            node_type="outlet",
+            vessel_type="venous",
+            attributes={"radius": venous_radius, "branch_order": 0},
+        )
+        network.add_node(venous_outlet_node)
+        
+        first_venous = self._sample_outlet_point(domain, rng, config)
+        self._add_initial_segment(network, venous_outlet_node, first_venous, venous_radius, "venous", config)
+        
+        venous_tree_view = ArrayTreeView(network, venous_outlet_node.id)
+        
+        consecutive_failures = 0
+        successful_venous = 1
+        
+        for i in range(venous_outlets - 1):
+            outlet_point = self._sample_outlet_point(domain, rng, config)
+            if not self._is_valid_outlet(outlet_point, network, config, vessel_type="venous"):
+                consecutive_failures += 1
+                if consecutive_failures >= config.max_consecutive_failures:
+                    import warnings
+                    warnings.warn(
+                        f"Could not place venous outlet after {config.max_consecutive_failures} consecutive attempts. "
+                        f"Achieved {successful_venous}/{venous_outlets} venous outlets."
+                    )
+                    break
+                continue
+            
+            insertion_success = self._insert_outlet(
+                network, venous_tree_view, outlet_point,
+                venous_radius, "venous", config, rng
+            )
+            
+            if insertion_success:
+                successful_venous += 1
+                consecutive_failures = 0
+            else:
+                consecutive_failures += 1
+                if consecutive_failures >= config.max_consecutive_failures:
+                    import warnings
+                    warnings.warn(
+                        f"Could not insert venous outlet after {config.max_consecutive_failures} consecutive attempts. "
+                        f"Achieved {successful_venous}/{venous_outlets} venous outlets."
+                    )
+                    break
+        
+        self._rescale_radii(network, arterial_inlet_node.id, arterial_radius, config)
+        self._rescale_radii(network, venous_outlet_node.id, venous_radius, config)
+        
+        if create_anastomoses and num_anastomoses > 0:
+            self._create_anastomoses(network, num_anastomoses, config)
+        
+        return network
+    
+    def _sample_outlet_point(
+        self,
+        domain: DomainSpec,
+        rng: np.random.Generator,
+        config: CCOConfig,
+    ) -> Point3D:
+        """Sample a random outlet point inside the domain."""
+        points = domain.sample_points(1, seed=int(rng.integers(0, 2**31)))
+        return Point3D.from_array(points[0])
+    
+    def _is_valid_outlet(
+        self,
+        point: Point3D,
+        network: VascularNetwork,
+        config: CCOConfig,
+        vessel_type: Optional[str] = None,
+    ) -> bool:
+        """
+        Check if outlet point satisfies constraints.
+        
+        Supports vessel-type-aware validation for dual-tree generation:
+        - Enforces min separation against same vessel_type terminals
+        - Optionally enforces different (smaller) separation across A-V
+        - Can optionally encourage A-V proximity for better perfusion
+        
+        Parameters
+        ----------
+        point : Point3D
+            Proposed outlet point
+        network : VascularNetwork
+            Current network
+        config : CCOConfig
+            Configuration with separation thresholds
+        vessel_type : str, optional
+            Vessel type of the proposed outlet ("arterial" or "venous").
+            If None, uses legacy behavior (check against all terminals).
+        """
+        if not network.domain.contains(point):
+            return False
+        
+        # Determine separation thresholds
+        same_type_sep = config.min_terminal_separation_same_type
+        if same_type_sep is None:
+            same_type_sep = config.min_terminal_separation
+        
+        cross_type_sep = config.min_terminal_separation_cross_type
+        # If cross_type_sep is None, we don't enforce cross-type separation
+        
+        for node in network.nodes.values():
+            if node.node_type == "terminal":
+                dist = point.distance_to(node.position)
+                
+                if vessel_type is None:
+                    # Legacy behavior: check against all terminals
+                    if dist < config.min_terminal_separation:
+                        return False
+                else:
+                    # Vessel-type-aware validation
+                    if node.vessel_type == vessel_type:
+                        # Same vessel type: enforce same_type_sep
+                        if dist < same_type_sep:
+                            return False
+                    else:
+                        # Different vessel type (A-V): enforce cross_type_sep if set
+                        if cross_type_sep is not None and dist < cross_type_sep:
+                            return False
+        
+        return True
+    
+    def _add_initial_segment(
+        self,
+        network: VascularNetwork,
+        inlet_node: Node,
+        outlet_point: Point3D,
+        radius: float,
+        vessel_type: str,
+        config: CCOConfig,
+    ) -> None:
+        """Add the first segment from inlet to first outlet."""
+        end_radius = radius * config.initial_radius_taper
+        outlet_node = Node(
+            id=network.id_gen.next_id(),
+            position=outlet_point,
+            node_type="terminal",
+            vessel_type=vessel_type,
+            attributes={"radius": end_radius, "branch_order": 1},
+        )
+        network.add_node(outlet_node)
+        
+        geometry = TubeGeometry(
+            start=inlet_node.position,
+            end=outlet_point,
+            radius_start=radius,
+            radius_end=end_radius,
+        )
+        
+        segment = VesselSegment(
+            id=network.id_gen.next_id(),
+            start_node_id=inlet_node.id,
+            end_node_id=outlet_node.id,
+            geometry=geometry,
+            vessel_type=vessel_type,
+        )
+        network.add_segment(segment)
+    
+    def _insert_outlet(
+        self,
+        network: VascularNetwork,
+        tree_view: ArrayTreeView,
+        outlet_point: Point3D,
+        inlet_radius: float,
+        vessel_type: str,
+        config: CCOConfig,
+        rng: np.random.Generator,
+    ) -> bool:
+        """
+        Insert a new outlet into the tree by splitting an existing edge.
+        
+        Uses partial binding optimization for efficient cost evaluation.
+        
+        When config.enable_trifurcation is True, also considers inserting at
+        existing junction nodes to create 3-way splits (trifurcations) instead
+        of always creating new bifurcation points.
+        """
+        candidate_edges = self._select_candidate_edges(
+            network, tree_view, outlet_point, config
+        )
+        
+        if not candidate_edges:
+            return False
+        
+        best_edge = None
+        best_cost = float('inf')
+        best_bifurcation = None
+        
+        for seg_id in candidate_edges:
+            bifurcation, cost = self._optimize_bifurcation_point(
+                network, tree_view, seg_id, outlet_point, config
+            )
+            
+            if cost < best_cost:
+                best_cost = cost
+                best_edge = seg_id
+                best_bifurcation = bifurcation
+        
+        if best_edge is None or best_bifurcation is None:
+            return False
+        
+        best_trifurcation_node = None
+        best_trifurcation_cost = float('inf')
+        
+        if config.enable_trifurcation:
+            trifurcation_node, trifurcation_cost = self._find_best_trifurcation_point(
+                network, tree_view, outlet_point, config
+            )
+            if trifurcation_node is not None:
+                best_trifurcation_node = trifurcation_node
+                best_trifurcation_cost = trifurcation_cost
+        
+        use_trifurcation = (
+            config.enable_trifurcation and
+            best_trifurcation_node is not None and
+            best_trifurcation_cost < best_cost * config.trifurcation_cost_threshold
+        )
+        
+        if use_trifurcation:
+            self._perform_trifurcation_insertion(
+                network, tree_view, best_trifurcation_node,
+                outlet_point, vessel_type, config
+            )
+        else:
+            self._perform_insertion(
+                network, tree_view, best_edge, best_bifurcation,
+                outlet_point, vessel_type, config
+            )
+        
+        return True
+    
+    def _find_best_trifurcation_point(
+        self,
+        network: VascularNetwork,
+        tree_view: ArrayTreeView,
+        outlet_point: Point3D,
+        config: CCOConfig,
+    ) -> Tuple[Optional[int], float]:
+        """
+        Find the best existing junction node for creating a trifurcation.
+        
+        Searches for junction nodes that are close to the outlet point and
+        would result in a low-cost trifurcation (3-way split).
+        
+        Returns
+        -------
+        tuple
+            (node_id, cost) of best trifurcation point, or (None, inf) if none found
+        """
+        best_node_id = None
+        best_cost = float('inf')
+        
+        junction_nodes = [
+            n for n in network.nodes.values()
+            if n.node_type == "junction"
+        ]
+        
+        for node in junction_nodes:
+            connected_segs = network.get_connected_segment_ids(node.id)
+            if len(connected_segs) != 2:
+                continue
+            
+            dist = outlet_point.distance_to(node.position)
+            
+            if dist > config.candidate_search_radius:
+                continue
+            
+            if dist < config.min_segment_length:
+                continue
+            
+            node_radius = node.attributes.get("radius", config.min_radius)
+            gamma = config.murray_exponent
+            
+            existing_radii = []
+            for seg_id in connected_segs:
+                seg = network.segments[seg_id]
+                if seg.start_node_id == node.id:
+                    existing_radii.append(seg.geometry.radius_start)
+                else:
+                    existing_radii.append(seg.geometry.radius_end)
+            
+            seg_record = tree_view.segments.get(connected_segs[0])
+            existing_demand = seg_record.subtree_terminal_count if seg_record else 1
+            new_demand = 1
+            total_demand = existing_demand + new_demand
+            
+            if total_demand > 0:
+                f_new = new_demand / total_demand
+                r_new = node_radius * (f_new ** (1.0 / gamma))
+            else:
+                r_new = node_radius * config.fallback_murray_split_ratio
+            
+            cost = (
+                config.cost_radius_weight * (r_new ** gamma * dist) +
+                config.cost_length_weight * dist
+            )
+            
+            boundary_dist = network.domain.distance_to_boundary(node.position)
+            if boundary_dist < config.boundary_penalty_threshold:
+                cost += config.boundary_penalty_weight * (config.boundary_penalty_threshold - boundary_dist)
+            
+            if config.collision_check_enabled:
+                T = outlet_point.to_array()
+                X = node.position.to_array()
+                
+                has_collision = False
+                for seg in network.segments.values():
+                    if seg.start_node_id == node.id or seg.end_node_id == node.id:
+                        continue
+                    
+                    seg_start = network.nodes[seg.start_node_id].position.to_array()
+                    seg_end = network.nodes[seg.end_node_id].position.to_array()
+                    
+                    min_dist = self._segment_to_polyline_distance(
+                        X, T, seg_start, seg_end
+                    )
+                    
+                    clearance = r_new + seg.geometry.mean_radius() + config.collision_clearance
+                    if min_dist < clearance:
+                        has_collision = True
+                        break
+                
+                if has_collision:
+                    continue
+            
+            if cost < best_cost:
+                best_cost = cost
+                best_node_id = node.id
+        
+        return best_node_id, best_cost
+    
+    def _perform_trifurcation_insertion(
+        self,
+        network: VascularNetwork,
+        tree_view: ArrayTreeView,
+        junction_node_id: int,
+        outlet_point: Point3D,
+        vessel_type: str,
+        config: CCOConfig,
+    ) -> None:
+        """
+        Perform insertion by adding a new outlet to an existing junction node.
+        
+        This creates a trifurcation (3-way split) at the junction node.
+        """
+        junction_node = network.nodes[junction_node_id]
+        
+        node_radius = junction_node.attributes.get("radius", config.min_radius)
+        gamma = config.murray_exponent
+        
+        connected_segs = network.get_connected_segment_ids(junction_node_id)
+        seg_record = tree_view.segments.get(connected_segs[0]) if connected_segs else None
+        existing_demand = seg_record.subtree_terminal_count if seg_record else 1
+        new_demand = 1
+        total_demand = existing_demand + new_demand
+        
+        if total_demand > 0:
+            f_new = new_demand / total_demand
+            r_new = node_radius * (f_new ** (1.0 / gamma))
+        else:
+            r_new = node_radius * config.fallback_murray_split_ratio
+        
+        outlet_node = Node(
+            id=network.id_gen.next_id(),
+            position=outlet_point,
+            node_type="terminal",
+            vessel_type=vessel_type,
+            attributes={
+                "radius": r_new,
+                "branch_order": junction_node.attributes.get("branch_order", 0) + 1,
+            },
+        )
+        network.add_node(outlet_node)
+        
+        seg_geometry = TubeGeometry(
+            start=junction_node.position,
+            end=outlet_point,
+            radius_start=r_new,
+            radius_end=r_new * config.outlet_end_radius_taper,
+        )
+        new_segment = VesselSegment(
+            id=network.id_gen.next_id(),
+            start_node_id=junction_node_id,
+            end_node_id=outlet_node.id,
+            geometry=seg_geometry,
+            vessel_type=vessel_type,
+        )
+        network.add_segment(new_segment)
+        
+        tree_view.update_after_insertion(-1, [new_segment.id], junction_node_id)
+    
+    def _select_candidate_edges(
+        self,
+        network: VascularNetwork,
+        tree_view: ArrayTreeView,
+        outlet_point: Point3D,
+        config: CCOConfig,
+    ) -> List[int]:
+        """
+        Select candidate edges for insertion using collision triage.
+        
+        Uses cheap spatial filter before expensive evaluation.
+        """
+        if config.use_collision_triage:
+            spatial_index = network.get_spatial_index()
+            nearby_segments = spatial_index.query_nearby_segments(
+                outlet_point, config.candidate_search_radius
+            )
+            
+            if nearby_segments:
+                candidates = [seg.id for seg in nearby_segments]
+            else:
+                candidates = list(network.segments.keys())
+        else:
+            candidates = list(network.segments.keys())
+        
+        scored_candidates = []
+        for seg_id in candidates:
+            seg = network.segments[seg_id]
+            start_node = network.nodes[seg.start_node_id]
+            end_node = network.nodes[seg.end_node_id]
+            
+            midpoint = Point3D(
+                (start_node.position.x + end_node.position.x) / 2,
+                (start_node.position.y + end_node.position.y) / 2,
+                (start_node.position.z + end_node.position.z) / 2,
+            )
+            dist = outlet_point.distance_to(midpoint)
+            scored_candidates.append((seg_id, dist))
+        
+        scored_candidates.sort(key=lambda x: x[1])
+        return [seg_id for seg_id, _ in scored_candidates[:config.candidate_edges_k]]
+    
+    def _optimize_bifurcation_point(
+        self,
+        network: VascularNetwork,
+        tree_view: ArrayTreeView,
+        seg_id: int,
+        outlet_point: Point3D,
+        config: CCOConfig,
+    ) -> Tuple[Point3D, float]:
+        """
+        Optimize bifurcation point for inserting outlet into edge.
+        
+        Constrains bifurcation to the plane of triangle (A, B, T) where
+        A and B are edge endpoints and T is the outlet point.
+        
+        Uses partial binding cache for efficient cost evaluation.
+        
+        When config.use_nlp_optimization is True, uses gradient-based NLP
+        optimization (scipy.optimize) instead of grid search for more
+        natural, organic branching patterns and faster convergence.
+        """
+        seg = network.segments[seg_id]
+        A = network.nodes[seg.start_node_id].position.to_array()
+        B = network.nodes[seg.end_node_id].position.to_array()
+        T = outlet_point.to_array()
+        
+        AB = B - A
+        AT = T - A
+        
+        normal = np.cross(AB, AT)
+        normal_len = np.linalg.norm(normal)
+        
+        if normal_len < 1e-10:
+            t_opt = 0.5
+            X_opt = A + t_opt * AB
+            return Point3D.from_array(X_opt), self._compute_insertion_cost(
+                network, tree_view, seg_id, Point3D.from_array(X_opt), outlet_point, config
+            )
+        
+        if config.use_nlp_optimization:
+            logger.debug(
+                "Using NLP optimization for bifurcation point (solver=%s, tol=%g, max_iter=%d)",
+                config.nlp_solver, config.nlp_tolerance, config.max_nlp_iterations
+            )
+            return self._optimize_bifurcation_point_nlp(
+                network, tree_view, seg_id, outlet_point, config, A, B, T, AB
+            )
+        else:
+            logger.debug(
+                "Using grid search optimization for bifurcation point (resolution=%d)",
+                config.optimization_grid_resolution
+            )
+            return self._optimize_bifurcation_point_grid(
+                network, tree_view, seg_id, outlet_point, config, A, B, T, AB
+            )
+    
+    def _optimize_bifurcation_point_nlp(
+        self,
+        network: VascularNetwork,
+        tree_view: ArrayTreeView,
+        seg_id: int,
+        outlet_point: Point3D,
+        config: CCOConfig,
+        A: np.ndarray,
+        B: np.ndarray,
+        T: np.ndarray,
+        AB: np.ndarray,
+    ) -> Tuple[Point3D, float]:
+        """
+        NLP-based bifurcation point optimization using shared solver utilities.
+        
+        Uses gradient-based optimization to find the optimal bifurcation point
+        in the 2D parameter space (t, s) where:
+        - t: position along segment AB (0 to 1)
+        - s: position from point on AB toward outlet T (0 to 1)
+        
+        The bifurcation point X is computed as:
+        X = A + t * AB + s * (T - (A + t * AB))
+        
+        This enables more natural, organic branching patterns compared to
+        discrete grid search. Supports IPOPT (if available) in addition to
+        scipy solvers (SLSQP, trust-constr, L-BFGS-B).
+        """
+        from ..optimization.solvers import solve_bounded_optimization
+        
+        def params_to_point(params: np.ndarray) -> np.ndarray:
+            t, s = params[0], params[1]
+            X_on_AB = A + t * AB
+            return X_on_AB + s * (T - X_on_AB)
+        
+        def objective(params: np.ndarray) -> float:
+            X = params_to_point(params)
+            X_point = Point3D.from_array(X)
+            
+            if not network.domain.contains(X_point):
+                return 1e10
+            
+            cost = self._compute_insertion_cost(
+                network, tree_view, seg_id, X_point, outlet_point, config
+            )
+            return cost if cost < float('inf') else 1e10
+        
+        initial_guess = np.array([0.5, 0.5])
+        
+        if config.nlp_use_grid_initial_guess:
+            best_cost = float('inf')
+            n_grid = config.nlp_grid_resolution_for_guess
+            for i in range(n_grid + 1):
+                t = i / n_grid
+                for j in range(n_grid + 1):
+                    s = j / n_grid
+                    cost = objective(np.array([t, s]))
+                    if cost < best_cost:
+                        best_cost = cost
+                        initial_guess = np.array([t, s])
+        
+        result = solve_bounded_optimization(
+            objective=objective,
+            x0=initial_guess,
+            lower_bounds=np.array([0.0, 0.0]),
+            upper_bounds=np.array([1.0, 1.0]),
+            method=config.nlp_solver,
+            tolerance=config.nlp_tolerance,
+            max_iterations=config.max_nlp_iterations,
+        )
+        
+        if result.success or result.objective_value < 1e9:
+            X_opt = params_to_point(result.x)
+            X_point = Point3D.from_array(X_opt)
+            final_cost = self._compute_insertion_cost(
+                network, tree_view, seg_id, X_point, outlet_point, config
+            )
+            logger.debug(
+                "NLP optimization succeeded (iterations=%d, cost=%g)",
+                result.iterations, final_cost
+            )
+            return X_point, final_cost
+        else:
+            logger.debug(
+                "NLP optimization failed (message=%s), falling back to grid search",
+                result.message
+            )
+            return self._optimize_bifurcation_point_grid(
+                network, tree_view, seg_id, outlet_point, config, A, B, T, AB
+            )
+    
+    def _optimize_bifurcation_point_grid(
+        self,
+        network: VascularNetwork,
+        tree_view: ArrayTreeView,
+        seg_id: int,
+        outlet_point: Point3D,
+        config: CCOConfig,
+        A: np.ndarray,
+        B: np.ndarray,
+        T: np.ndarray,
+        AB: np.ndarray,
+    ) -> Tuple[Point3D, float]:
+        """
+        Grid search-based bifurcation point optimization (original method).
+        
+        Uses discrete grid search with adaptive refinement to find the
+        optimal bifurcation point.
+        """
+        best_X = None
+        best_cost = float('inf')
+        
+        n_grid = config.optimization_grid_resolution
+        best_t, best_s = 0.5, 0.5
+        
+        for i in range(n_grid + 1):
+            t = i / n_grid
+            X_on_AB = A + t * AB
+            
+            for j in range(n_grid + 1):
+                s = j / n_grid
+                X = X_on_AB + s * (T - X_on_AB)
+                
+                X_point = Point3D.from_array(X)
+                
+                if not network.domain.contains(X_point):
+                    continue
+                
+                cost = self._compute_insertion_cost(
+                    network, tree_view, seg_id, X_point, outlet_point, config
+                )
+                
+                if cost < best_cost:
+                    best_cost = cost
+                    best_X = X_point
+                    best_t, best_s = t, s
+        
+        if best_X is not None and n_grid >= 2:
+            step = 1.0 / n_grid
+            refine_steps = 3
+            
+            for _ in range(refine_steps):
+                step /= 2
+                improved = False
+                
+                for dt in [-step, 0, step]:
+                    for ds in [-step, 0, step]:
+                        if dt == 0 and ds == 0:
+                            continue
+                        
+                        t_new = max(0, min(1, best_t + dt))
+                        s_new = max(0, min(1, best_s + ds))
+                        
+                        X_on_AB = A + t_new * AB
+                        X = X_on_AB + s_new * (T - X_on_AB)
+                        X_point = Point3D.from_array(X)
+                        
+                        if not network.domain.contains(X_point):
+                            continue
+                        
+                        cost = self._compute_insertion_cost(
+                            network, tree_view, seg_id, X_point, outlet_point, config
+                        )
+                        
+                        if cost < best_cost:
+                            best_cost = cost
+                            best_X = X_point
+                            best_t, best_s = t_new, s_new
+                            improved = True
+                
+                if not improved:
+                    break
+        
+        if best_X is None:
+            t_opt = 0.5
+            best_X = Point3D.from_array(A + t_opt * AB)
+            best_cost = self._compute_insertion_cost(
+                network, tree_view, seg_id, best_X, outlet_point, config
+            )
+        
+        return best_X, best_cost
+    
+    def _compute_insertion_cost(
+        self,
+        network: VascularNetwork,
+        tree_view: ArrayTreeView,
+        seg_id: int,
+        bifurcation_point: Point3D,
+        outlet_point: Point3D,
+        config: CCOConfig,
+    ) -> float:
+        """
+        Compute cost of inserting outlet at bifurcation point.
+        
+        Cost = sum over affected segments of (radius^alpha * length)
+        Plus penalty for domain boundary proximity.
+        
+        Also performs collision checks if config.collision_check_enabled is True.
+        Returns inf if the proposed insertion would cause collisions.
+        """
+        seg = network.segments[seg_id]
+        A = network.nodes[seg.start_node_id].position
+        B = network.nodes[seg.end_node_id].position
+        X = bifurcation_point
+        T = outlet_point
+        
+        len_AX = A.distance_to(X)
+        len_XB = X.distance_to(B)
+        len_XT = X.distance_to(T)
+        
+        if len_AX < config.min_segment_length or len_XB < config.min_segment_length:
+            return float('inf')
+        if len_XT < config.min_segment_length:
+            return float('inf')
+        
+        r_parent = seg.geometry.mean_radius()
+        
+        # Demand-based Murray splitting: use subtree terminal counts as demand proxy
+        # r_i = r_parent * (f_i)^(1/gamma) where f_i = demand_i / sum(demand)
+        gamma = config.murray_exponent
+        
+        # Get subtree terminal count for the segment being split
+        seg_record = tree_view.segments.get(seg_id)
+        existing_demand = seg_record.subtree_terminal_count if seg_record else 1
+        new_demand = 1  # New outlet adds 1 terminal
+        total_demand = existing_demand + new_demand
+        
+        if total_demand > 0:
+            f_existing = existing_demand / total_demand
+            f_new = new_demand / total_demand
+            r_child1 = r_parent * (f_existing ** (1.0 / gamma))  # Existing subtree
+            r_child2 = r_parent * (f_new ** (1.0 / gamma))  # New outlet
+        else:
+            # Fallback to configurable split ratio
+            r_child1 = r_parent * config.fallback_murray_split_ratio
+            r_child2 = r_parent * config.fallback_murray_split_ratio
+        
+        # Collision check: verify proposed new segments don't collide with existing segments
+        if config.collision_check_enabled:
+            if self._check_insertion_collision(
+                network, seg_id, X, T, r_child1, r_child2, config.collision_clearance
+            ):
+                return float('inf')
+        
+        alpha = config.murray_exponent
+        
+        cost = (
+            config.cost_radius_weight * (r_child1**alpha * len_XB + r_child2**alpha * len_XT) +
+            config.cost_length_weight * (len_AX + len_XB + len_XT)
+        )
+        
+        boundary_dist = network.domain.distance_to_boundary(X)
+        if boundary_dist < config.boundary_penalty_threshold:
+            cost += config.boundary_penalty_weight * (config.boundary_penalty_threshold - boundary_dist)
+        
+        return cost
+    
+    def _check_insertion_collision(
+        self,
+        network: VascularNetwork,
+        split_seg_id: int,
+        bifurcation_point: Point3D,
+        outlet_point: Point3D,
+        r_child1: float,
+        r_child2: float,
+        clearance: float,
+    ) -> bool:
+        """
+        Check if proposed insertion would cause collisions with existing segments.
+        
+        P0-7: Tests all three new segments (A→X, X→B, X→T) for collisions,
+        not assuming segment orientation.
+        
+        Uses optimized 2-stage hierarchical method:
+        1. Cheap spatial query to find nearby segments (broad-phase)
+        2. Exact segment-segment distance check for candidates (narrow-phase)
+        3. Early termination on first collision detected
+        
+        Parameters
+        ----------
+        network : VascularNetwork
+            Current network
+        split_seg_id : int
+            ID of segment being split (excluded from collision check)
+        bifurcation_point : Point3D
+            Proposed bifurcation point X
+        outlet_point : Point3D
+            Target outlet point T
+        r_child1 : float
+            Radius of child segment X→B
+        r_child2 : float
+            Radius of new outlet segment X→T
+        clearance : float
+            Minimum required clearance between vessels
+            
+        Returns
+        -------
+        bool
+            True if collision detected, False if safe
+        """
+        from ..spatial.grid_index import segment_segment_distance_exact
+        
+        X = bifurcation_point.to_array()
+        T = outlet_point.to_array()
+        
+        # P0-7: Define endpoints from geometry, not assuming orientation
+        split_seg = network.segments[split_seg_id]
+        A = network.nodes[split_seg.start_node_id].position.to_array()
+        B = network.nodes[split_seg.end_node_id].position.to_array()
+        
+        # Estimate radius for A→X segment (interpolated from parent)
+        t = np.linalg.norm(X - A) / max(np.linalg.norm(B - A), 1e-10)
+        r_at_X = split_seg.geometry.radius_start + t * (split_seg.geometry.radius_end - split_seg.geometry.radius_start)
+        r_AX = (split_seg.geometry.radius_start + r_at_X) / 2  # Average radius for A→X
+        
+        # Stage 1: Cheap spatial query to find nearby segments
+        spatial_index = network.get_spatial_index()
+        
+        # Search radius should cover all three new segments plus clearance
+        search_radius = max(
+            np.linalg.norm(X - A),
+            np.linalg.norm(X - B),
+            np.linalg.norm(X - T),
+        ) + clearance + max(r_child1, r_child2, r_AX) * 2
+        
+        nearby_segments = spatial_index.query_nearby_segments(bifurcation_point, search_radius)
+        
+        # Stage 2: Exact collision check for candidates
+        for seg in nearby_segments:
+            # Skip the segment being split and its connected segments
+            if seg.id == split_seg_id:
+                continue
+            if (seg.start_node_id == split_seg.start_node_id or
+                seg.start_node_id == split_seg.end_node_id or
+                seg.end_node_id == split_seg.start_node_id or
+                seg.end_node_id == split_seg.end_node_id):
+                continue
+            
+            seg_radius = seg.geometry.mean_radius()
+            
+            # P0-NEW-4 / P2-NEW-2: Build polyline for existing segment if it has centerline_points
+            if seg.geometry.centerline_points:
+                seg_start_node = network.nodes[seg.start_node_id]
+                seg_end_node = network.nodes[seg.end_node_id]
+                seg_polyline = [seg_start_node.position.to_array()]
+                seg_polyline.extend([p.to_array() for p in seg.geometry.centerline_points])
+                seg_polyline.append(seg_end_node.position.to_array())
+                
+                # Check collision with proposed A→X segment against polyline
+                dist_AX = self._segment_to_polyline_distance(A, X, seg_polyline)
+                required_clearance_AX = r_AX + seg_radius + clearance
+                if dist_AX < required_clearance_AX:
+                    return True
+                
+                # Check collision with proposed X→B segment against polyline
+                dist_XB = self._segment_to_polyline_distance(X, B, seg_polyline)
+                required_clearance_XB = r_child1 + seg_radius + clearance
+                if dist_XB < required_clearance_XB:
+                    return True
+                
+                # Check collision with proposed X→T segment against polyline
+                dist_XT = self._segment_to_polyline_distance(X, T, seg_polyline)
+                required_clearance_XT = r_child2 + seg_radius + clearance
+                if dist_XT < required_clearance_XT:
+                    return True
+            else:
+                # Simple straight segment - use fast path
+                seg_start = network.nodes[seg.start_node_id].position.to_array()
+                seg_end = network.nodes[seg.end_node_id].position.to_array()
+                
+                # P0-7: Check collision with proposed A→X segment
+                dist_AX = segment_segment_distance_exact(A, X, seg_start, seg_end)
+                required_clearance_AX = r_AX + seg_radius + clearance
+                if dist_AX < required_clearance_AX:
+                    return True
+                
+                # Check collision with proposed X→B segment
+                dist_XB = segment_segment_distance_exact(X, B, seg_start, seg_end)
+                required_clearance_XB = r_child1 + seg_radius + clearance
+                if dist_XB < required_clearance_XB:
+                    return True
+                
+                # Check collision with proposed X→T segment
+                dist_XT = segment_segment_distance_exact(X, T, seg_start, seg_end)
+                required_clearance_XT = r_child2 + seg_radius + clearance
+                if dist_XT < required_clearance_XT:
+                    return True
+        
+        return False
+    
+    def _segment_to_polyline_distance(
+        self,
+        p1: np.ndarray,
+        p2: np.ndarray,
+        polyline: List[np.ndarray],
+    ) -> float:
+        """
+        Compute minimum distance from a straight segment to a polyline.
+        
+        P0-NEW-4 / P2-NEW-2: Helper for collision checking against polyline segments.
+        
+        Parameters
+        ----------
+        p1, p2 : np.ndarray
+            Endpoints of the straight segment
+        polyline : list of np.ndarray
+            List of polyline vertices
+            
+        Returns
+        -------
+        float
+            Minimum distance between the segment and polyline
+        """
+        from ..spatial.grid_index import segment_segment_distance_exact
+        
+        min_dist = float('inf')
+        for i in range(len(polyline) - 1):
+            dist = segment_segment_distance_exact(p1, p2, polyline[i], polyline[i + 1])
+            min_dist = min(min_dist, dist)
+        return min_dist
+    
+    def _perform_insertion(
+        self,
+        network: VascularNetwork,
+        tree_view: ArrayTreeView,
+        seg_id: int,
+        bifurcation_point: Point3D,
+        outlet_point: Point3D,
+        vessel_type: str,
+        config: CCOConfig,
+    ) -> None:
+        """
+        Perform the actual insertion by splitting edge and adding new outlet.
+        
+        P1-1: Uses local radius-at-split computed via linear interpolation
+        instead of mean radius for correct Murray behavior.
+        """
+        seg = network.segments[seg_id]
+        start_node = network.nodes[seg.start_node_id]
+        end_node = network.nodes[seg.end_node_id]
+        
+        # P1-1: Compute local radius at split point using linear interpolation
+        # t = |A→X| / |A→B|, rX = lerp(r_start, r_end, t)
+        A = start_node.position.to_array()
+        B = end_node.position.to_array()
+        X = bifurcation_point.to_array()
+        
+        seg_length = np.linalg.norm(B - A)
+        if seg_length > 1e-10:
+            t = np.linalg.norm(X - A) / seg_length
+        else:
+            t = 0.5
+        
+        # Linear interpolation for radius at split point
+        r_at_split = seg.geometry.radius_start + t * (seg.geometry.radius_end - seg.geometry.radius_start)
+        
+        bifurcation_node = Node(
+            id=network.id_gen.next_id(),
+            position=bifurcation_point,
+            node_type="junction",
+            vessel_type=vessel_type,
+            attributes={
+                "radius": r_at_split,
+                "branch_order": start_node.attributes.get("branch_order", 0) + 1,
+            },
+        )
+        network.add_node(bifurcation_node)
+        
+        # P1-1: Use local radius at split for Murray calculations
+        r_parent = r_at_split
+        
+        # Demand-based Murray splitting: use subtree terminal counts as demand proxy
+        gamma = config.murray_exponent
+        seg_record = tree_view.segments.get(seg_id)
+        existing_demand = seg_record.subtree_terminal_count if seg_record else 1
+        new_demand = 1  # New outlet adds 1 terminal
+        total_demand = existing_demand + new_demand
+        
+        if total_demand > 0:
+            f_existing = existing_demand / total_demand
+            f_new = new_demand / total_demand
+            r_child_existing = r_parent * (f_existing ** (1.0 / gamma))  # Existing subtree
+            r_child_new = r_parent * (f_new ** (1.0 / gamma))  # New outlet
+        else:
+            # Fallback to configurable split ratio
+            r_child_existing = r_parent * config.fallback_murray_split_ratio
+            r_child_new = r_parent * config.fallback_murray_split_ratio
+        
+        outlet_node = Node(
+            id=network.id_gen.next_id(),
+            position=outlet_point,
+            node_type="terminal",
+            vessel_type=vessel_type,
+            attributes={
+                "radius": r_child_new,
+                "branch_order": bifurcation_node.attributes.get("branch_order", 0) + 1,
+            },
+        )
+        network.add_node(outlet_node)
+        
+        seg1_geometry = TubeGeometry(
+            start=start_node.position,
+            end=bifurcation_point,
+            radius_start=seg.geometry.radius_start,
+            radius_end=r_parent,
+        )
+        seg1 = VesselSegment(
+            id=network.id_gen.next_id(),
+            start_node_id=start_node.id,
+            end_node_id=bifurcation_node.id,
+            geometry=seg1_geometry,
+            vessel_type=vessel_type,
+        )
+        
+        seg2_geometry = TubeGeometry(
+            start=bifurcation_point,
+            end=end_node.position,
+            radius_start=r_child_existing,
+            radius_end=seg.geometry.radius_end,
+        )
+        seg2 = VesselSegment(
+            id=network.id_gen.next_id(),
+            start_node_id=bifurcation_node.id,
+            end_node_id=end_node.id,
+            geometry=seg2_geometry,
+            vessel_type=vessel_type,
+        )
+        
+        seg3_geometry = TubeGeometry(
+            start=bifurcation_point,
+            end=outlet_point,
+            radius_start=r_child_new,
+            radius_end=r_child_new * config.outlet_end_radius_taper,
+        )
+        seg3 = VesselSegment(
+            id=network.id_gen.next_id(),
+            start_node_id=bifurcation_node.id,
+            end_node_id=outlet_node.id,
+            geometry=seg3_geometry,
+            vessel_type=vessel_type,
+        )
+        
+        network.remove_segment(seg_id)
+        network.add_segment(seg1)
+        network.add_segment(seg2)
+        network.add_segment(seg3)
+        
+        tree_view.update_after_insertion(seg_id, [seg1.id, seg2.id, seg3.id], bifurcation_node.id)
+    
+    def _rescale_radii(
+        self,
+        network: VascularNetwork,
+        root_node_id: int,
+        root_radius: float,
+        config: CCOConfig,
+    ) -> None:
+        """
+        Rescale radii from root using Murray's law with demand-based splitting.
+        
+        P1-2: Uses terminal counts as demand proxy for Murray splitting instead
+        of equal splitting across children. This produces more physiologically
+        realistic radii where branches with more terminals get larger radii.
+        
+        For each branching node:
+        - demand(child) = terminal count in child subtree
+        - f_i = demand_i / sum(demands)
+        - r_i = r_parent * (f_i)^(1/gamma)
+        
+        This satisfies Murray's law: r_parent^gamma = sum(r_i^gamma)
+        """
+        gamma = config.murray_exponent
+        
+        def count_terminals(node_id: int, visited: Set[int]) -> int:
+            if node_id in visited:
+                return 0
+            visited.add(node_id)
+            
+            node = network.nodes[node_id]
+            if node.node_type == "terminal":
+                return 1
+            
+            total = 0
+            for seg_id in network.get_connected_segment_ids(node_id):
+                seg = network.segments[seg_id]
+                other_id = seg.end_node_id if seg.start_node_id == node_id else seg.start_node_id
+                total += count_terminals(other_id, visited)
+            
+            return total
+        
+        total_terminals = count_terminals(root_node_id, set())
+        if total_terminals == 0:
+            return
+        
+        def rescale_subtree(node_id: int, parent_radius: float, visited: Set[int]) -> None:
+            if node_id in visited:
+                return
+            visited.add(node_id)
+            
+            connected_segs = network.get_connected_segment_ids(node_id)
+            child_segs = []
+            
+            for seg_id in connected_segs:
+                seg = network.segments[seg_id]
+                other_id = seg.end_node_id if seg.start_node_id == node_id else seg.start_node_id
+                if other_id not in visited:
+                    child_segs.append((seg_id, other_id))
+            
+            if not child_segs:
+                return
+            
+            n_children = len(child_segs)
+            if n_children == 1:
+                # Single child: configurable taper
+                child_radius = parent_radius * config.single_child_taper
+                seg_id, child_node_id = child_segs[0]
+                seg = network.segments[seg_id]
+                
+                if seg.start_node_id == node_id:
+                    seg.geometry.radius_start = parent_radius
+                    seg.geometry.radius_end = child_radius
+                else:
+                    seg.geometry.radius_start = child_radius
+                    seg.geometry.radius_end = parent_radius
+                
+                network.nodes[child_node_id].attributes["radius"] = child_radius
+                rescale_subtree(child_node_id, child_radius, visited)
+            else:
+                # P1-2: Demand-based Murray splitting for multiple children
+                # Compute demand (terminal count) for each child subtree
+                child_demands = []
+                for seg_id, child_node_id in child_segs:
+                    # Count terminals in this child's subtree
+                    demand = count_terminals(child_node_id, visited.copy())
+                    child_demands.append((seg_id, child_node_id, max(demand, 1)))
+                
+                total_demand = sum(d for _, _, d in child_demands)
+                
+                for seg_id, child_node_id, demand in child_demands:
+                    # f_i = demand_i / total_demand
+                    f_i = demand / total_demand
+                    # r_i = r_parent * (f_i)^(1/gamma)
+                    child_radius = parent_radius * (f_i ** (1.0 / gamma))
+                    
+                    seg = network.segments[seg_id]
+                    if seg.start_node_id == node_id:
+                        seg.geometry.radius_start = parent_radius
+                        seg.geometry.radius_end = child_radius
+                    else:
+                        seg.geometry.radius_start = child_radius
+                        seg.geometry.radius_end = parent_radius
+                    
+                    network.nodes[child_node_id].attributes["radius"] = child_radius
+                    rescale_subtree(child_node_id, child_radius, visited)
+        
+        network.nodes[root_node_id].attributes["radius"] = root_radius
+        rescale_subtree(root_node_id, root_radius, set())
+    
+    def _create_anastomoses(
+        self,
+        network: VascularNetwork,
+        num_anastomoses: int,
+        config: CCOConfig,
+    ) -> None:
+        """
+        Create anastomoses between arterial and venous terminals.
+        """
+        from ..ops.anastomosis import create_anastomosis
+        
+        arterial_terminals = [
+            n for n in network.nodes.values()
+            if n.vessel_type == "arterial" and n.node_type == "terminal"
+        ]
+        venous_terminals = [
+            n for n in network.nodes.values()
+            if n.vessel_type == "venous" and n.node_type == "terminal"
+        ]
+        
+        if not arterial_terminals or not venous_terminals:
+            return
+        
+        pairs = []
+        for a_node in arterial_terminals:
+            for v_node in venous_terminals:
+                dist = a_node.position.distance_to(v_node.position)
+                pairs.append((a_node.id, v_node.id, dist))
+        
+        pairs.sort(key=lambda x: x[2])
+        
+        created = 0
+        used_arterial = set()
+        used_venous = set()
+        
+        for a_id, v_id, dist in pairs:
+            if created >= num_anastomoses:
+                break
+            if a_id in used_arterial or v_id in used_venous:
+                continue
+            
+            result = create_anastomosis(network, a_id, v_id, max_length=config.anastomosis_max_length)
+            if result.is_success():
+                created += 1
+                used_arterial.add(a_id)
+                used_venous.add(v_id)

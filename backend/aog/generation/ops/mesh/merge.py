@@ -1,0 +1,540 @@
+"""
+Mesh merging operations with voxel-first strategy.
+
+This module provides functions for merging multiple meshes using
+voxelization with automatic pitch adjustment.
+
+UNIT CONVENTIONS
+----------------
+All geometric values are in METERS internally.
+"""
+
+from dataclasses import dataclass
+from typing import Optional, Tuple, Dict, Any, List, TYPE_CHECKING
+import numpy as np
+import logging
+
+from ...policies import MeshMergePolicy, OperationReport
+from ...utils.resolution_resolver import resolve_pitch, ResolutionResult
+from aog_policies.resolution import ResolutionPolicy
+
+if TYPE_CHECKING:
+    import trimesh
+
+logger = logging.getLogger(__name__)
+
+
+def merge_meshes(
+    meshes: List["trimesh.Trimesh"],
+    policy: Optional[MeshMergePolicy] = None,
+    resolution_policy: Optional[ResolutionPolicy] = None,
+) -> Tuple["trimesh.Trimesh", OperationReport]:
+    """
+    Merge multiple meshes using voxel-first strategy.
+    
+    Parameters
+    ----------
+    meshes : List[trimesh.Trimesh]
+        Meshes to merge
+    policy : MeshMergePolicy, optional
+        Policy controlling merge behavior
+    resolution_policy : ResolutionPolicy, optional
+        Resolution policy for pitch derivation when use_resolution_policy=True.
+        If None and use_resolution_policy=True, uses default ResolutionPolicy.
+        
+    Returns
+    -------
+    merged : trimesh.Trimesh
+        Merged mesh
+    report : OperationReport
+        Report with merge statistics
+    """
+    import trimesh
+    
+    if policy is None:
+        policy = MeshMergePolicy()
+    
+    if not meshes:
+        raise ValueError("No meshes to merge")
+    
+    if len(meshes) == 1:
+        result_mesh = meshes[0].copy()
+        # Apply component filtering even for single mesh
+        if policy.keep_largest_component:
+            result_mesh, comp_meta = _filter_components(result_mesh, policy)
+        report = OperationReport(
+            operation="merge_meshes",
+            success=True,
+            requested_policy=policy.to_dict(),
+            effective_policy=policy.to_dict(),
+            warnings=[],
+            metadata={"meshes_merged": 1, "mode_used": "single"},
+        )
+        return result_mesh, report
+    
+    warnings = []
+    metadata = {
+        "meshes_merged": len(meshes),
+        "requested_mode": policy.mode,
+        "pitch_adjustments": [],
+        "voxel_estimate": None,
+        "pitch_auto_adjusted": False,
+        "resolution_policy_used": False,
+    }
+    
+    # Compute combined bounding box for resolution policy
+    all_min = np.array([m.bounds[0] for m in meshes]).min(axis=0)
+    all_max = np.array([m.bounds[1] for m in meshes]).max(axis=0)
+    bbox = (all_min[0], all_max[0], all_min[1], all_max[1], all_min[2], all_max[2])
+    
+    # Determine effective pitch using resolution resolver if enabled
+    effective_pitch = policy.voxel_pitch
+    resolution_result: Optional[ResolutionResult] = None
+    
+    # PATCH 8: Compute pitch from minimum channel diameter if specified
+    if policy.min_channel_diameter is not None and policy.min_channel_diameter > 0:
+        diameter_based_pitch = compute_pitch_from_diameter(
+            policy.min_channel_diameter,
+            policy.min_voxels_per_diameter,
+        )
+        # Use the finer pitch (smaller value) to preserve detail
+        if effective_pitch is None or diameter_based_pitch < effective_pitch:
+            effective_pitch = diameter_based_pitch
+            metadata["pitch_from_diameter"] = True
+            metadata["min_channel_diameter"] = policy.min_channel_diameter
+            metadata["min_voxels_per_diameter"] = policy.min_voxels_per_diameter
+    
+    if policy.use_resolution_policy and (policy.voxel_pitch is None or resolution_policy is not None):
+        # Use resolution resolver to derive pitch
+        if resolution_policy is None:
+            resolution_policy = ResolutionPolicy()
+        
+        resolution_result = resolve_pitch(
+            op_name="merge",
+            requested_pitch=policy.voxel_pitch,
+            bbox=bbox,
+            resolution_policy=resolution_policy,
+            max_voxels_override=policy.max_voxels,
+        )
+        
+        effective_pitch = resolution_result.effective_pitch
+        metadata["resolution_policy_used"] = True
+        metadata["resolution_result"] = resolution_result.to_dict()
+        warnings.extend(resolution_result.warnings)
+        
+        if resolution_result.was_relaxed:
+            metadata["pitch_auto_adjusted"] = True
+    
+    elif policy.mode in ("voxel", "auto") and policy.auto_adjust_pitch:
+        # Legacy preflight voxel estimate
+        estimated_voxels, adjusted_pitch = _preflight_voxel_estimate(meshes, policy)
+        metadata["voxel_estimate"] = estimated_voxels
+        
+        if adjusted_pitch != policy.voxel_pitch:
+            metadata["pitch_auto_adjusted"] = True
+            effective_pitch = adjusted_pitch
+            warnings.append(
+                f"Pitch auto-adjusted from {policy.voxel_pitch:.6f} to {adjusted_pitch:.6f} "
+                f"to stay within {policy.max_voxels} voxel budget (estimated {estimated_voxels})"
+            )
+    
+    # Select merge strategy
+    if policy.mode == "voxel" or policy.mode == "auto":
+        merged, mode_used, pitch_adjustments = _voxel_merge(meshes, policy, effective_pitch)
+        metadata["mode_used"] = mode_used
+        metadata["pitch_adjustments"] = pitch_adjustments
+        
+        if pitch_adjustments:
+            warnings.append(
+                f"Voxel pitch adjusted {len(pitch_adjustments)} times: "
+                f"{effective_pitch:.6f} -> {pitch_adjustments[-1]:.6f}"
+            )
+        
+        if mode_used == "boolean_fallback":
+            warnings.append("Voxel merge failed, fell back to boolean union")
+    
+    elif policy.mode == "boolean":
+        merged = _boolean_merge(meshes)
+        metadata["mode_used"] = "boolean"
+    
+    else:
+        raise ValueError(f"Unknown merge mode: {policy.mode}")
+    
+    # Apply component filtering
+    if policy.keep_largest_component:
+        merged, comp_meta = _filter_components(merged, policy)
+        metadata["component_filtering"] = comp_meta
+        if comp_meta.get("components_removed", 0) > 0:
+            warnings.append(
+                f"Removed {comp_meta['components_removed']} small components "
+                f"(kept {comp_meta['components_kept']})"
+            )
+    
+    # Compute final statistics
+    metadata["vertex_count"] = len(merged.vertices)
+    metadata["face_count"] = len(merged.faces)
+    metadata["is_watertight"] = merged.is_watertight
+    
+    # PATCH 8: Detect detail loss
+    detail_lost, detail_report = detect_detail_loss(meshes, merged, policy)
+    metadata["detail_loss_report"] = detail_report
+    
+    if detail_lost:
+        detail_msg = (
+            f"Significant detail loss detected during merge: "
+            f"volume ratio={detail_report['volume_ratio']:.2%}, "
+            f"face ratio={detail_report['face_ratio']:.2%} "
+            f"(input: {detail_report['input_faces']} faces, output: {detail_report['output_faces']} faces). "
+            f"Consider reducing voxel_pitch or increasing min_voxels_per_diameter."
+        )
+        
+        if policy.detail_loss_strictness == "fail":
+            raise ValueError(detail_msg)
+        else:
+            warnings.append(detail_msg)
+    
+    # Build effective policy
+    effective_policy = policy.to_dict()
+    if metadata["pitch_adjustments"]:
+        effective_policy["voxel_pitch"] = metadata["pitch_adjustments"][-1]
+    elif metadata["pitch_auto_adjusted"]:
+        effective_policy["voxel_pitch"] = effective_pitch
+    
+    report = OperationReport(
+        operation="merge_meshes",
+        success=True,
+        requested_policy=policy.to_dict(),
+        effective_policy=effective_policy,
+        warnings=warnings,
+        metadata=metadata,
+    )
+    
+    return merged, report
+
+
+def _preflight_voxel_estimate(
+    meshes: List["trimesh.Trimesh"],
+    policy: MeshMergePolicy,
+) -> Tuple[int, float]:
+    """
+    Estimate voxel count and auto-adjust pitch if needed.
+    
+    Returns (estimated_voxels, adjusted_pitch).
+    """
+    import trimesh
+    
+    # Compute combined bounding box
+    all_bounds = np.vstack([m.bounds for m in meshes])
+    min_bounds = all_bounds[:, 0].min(axis=0) if len(all_bounds) > 0 else np.zeros(3)
+    max_bounds = all_bounds[:, 1].max(axis=0) if len(all_bounds) > 0 else np.zeros(3)
+    
+    # Handle case where bounds are from individual meshes
+    min_bounds = np.array([m.bounds[0] for m in meshes]).min(axis=0)
+    max_bounds = np.array([m.bounds[1] for m in meshes]).max(axis=0)
+    
+    extents = max_bounds - min_bounds
+    
+    pitch = policy.voxel_pitch
+    
+    # Estimate voxel count
+    voxels_per_dim = extents / pitch
+    estimated_voxels = int(np.prod(voxels_per_dim))
+    
+    # Auto-adjust pitch if over budget
+    if estimated_voxels > policy.max_voxels and policy.auto_adjust_pitch:
+        # Calculate required pitch to stay within budget
+        # V = (ex/p) * (ey/p) * (ez/p) = ex*ey*ez / p^3
+        # p^3 = ex*ey*ez / V
+        # p = (ex*ey*ez / V)^(1/3)
+        volume = np.prod(extents)
+        required_pitch = (volume / policy.max_voxels) ** (1/3)
+        
+        # Round up to next step factor multiple
+        steps_needed = int(np.ceil(np.log(required_pitch / policy.voxel_pitch) / np.log(policy.pitch_step_factor)))
+        pitch = policy.voxel_pitch * (policy.pitch_step_factor ** steps_needed)
+        
+        # Recalculate estimate
+        voxels_per_dim = extents / pitch
+        estimated_voxels = int(np.prod(voxels_per_dim))
+    
+    return estimated_voxels, pitch
+
+
+def _filter_components(
+    mesh: "trimesh.Trimesh",
+    policy: MeshMergePolicy,
+) -> Tuple["trimesh.Trimesh", Dict[str, Any]]:
+    """
+    Filter mesh components based on policy criteria.
+    
+    Returns (filtered_mesh, metadata).
+    """
+    import trimesh
+    
+    meta = {
+        "components_total": 0,
+        "components_kept": 0,
+        "components_removed": 0,
+        "largest_component_faces": 0,
+        "largest_component_volume": 0.0,
+    }
+    
+    # Split into connected components
+    try:
+        components = mesh.split(only_watertight=False)
+    except Exception:
+        # If split fails, return original mesh
+        meta["components_total"] = 1
+        meta["components_kept"] = 1
+        return mesh, meta
+    
+    if len(components) == 0:
+        return mesh, meta
+    
+    meta["components_total"] = len(components)
+    
+    if len(components) == 1:
+        meta["components_kept"] = 1
+        meta["largest_component_faces"] = len(components[0].faces)
+        try:
+            meta["largest_component_volume"] = abs(components[0].volume)
+        except Exception:
+            meta["largest_component_volume"] = 0.0
+        return components[0], meta
+    
+    # Filter components based on criteria
+    kept_components = []
+    for comp in components:
+        face_count = len(comp.faces)
+        try:
+            volume = abs(comp.volume)
+        except Exception:
+            volume = 0.0
+        
+        # Check minimum criteria
+        if face_count >= policy.min_component_faces and volume >= policy.min_component_volume:
+            kept_components.append((comp, face_count, volume))
+    
+    if not kept_components:
+        # If all components filtered out, keep the largest by face count
+        largest = max(components, key=lambda c: len(c.faces))
+        meta["components_kept"] = 1
+        meta["components_removed"] = len(components) - 1
+        meta["largest_component_faces"] = len(largest.faces)
+        try:
+            meta["largest_component_volume"] = abs(largest.volume)
+        except Exception:
+            meta["largest_component_volume"] = 0.0
+        return largest, meta
+    
+    # Sort by volume (largest first)
+    kept_components.sort(key=lambda x: x[2], reverse=True)
+    
+    meta["components_kept"] = len(kept_components)
+    meta["components_removed"] = len(components) - len(kept_components)
+    meta["largest_component_faces"] = kept_components[0][1]
+    meta["largest_component_volume"] = kept_components[0][2]
+    
+    # If keep_largest_component is True, only keep the largest
+    if policy.keep_largest_component:
+        return kept_components[0][0], meta
+    
+    # Otherwise, combine all kept components
+    if len(kept_components) == 1:
+        return kept_components[0][0], meta
+    
+    combined = trimesh.util.concatenate([c[0] for c in kept_components])
+    return combined, meta
+
+
+def _voxel_merge(
+    meshes: List["trimesh.Trimesh"],
+    policy: MeshMergePolicy,
+    effective_pitch: Optional[float] = None,
+) -> Tuple["trimesh.Trimesh", str, List[float]]:
+    """
+    Merge meshes using voxelization with automatic pitch adjustment.
+    
+    Parameters
+    ----------
+    meshes : List[trimesh.Trimesh]
+        Meshes to merge
+    policy : MeshMergePolicy
+        Policy controlling merge behavior
+    effective_pitch : float, optional
+        Pre-computed effective pitch (from preflight estimate).
+        If None, uses policy.voxel_pitch.
+    
+    Returns (merged_mesh, mode_used, pitch_adjustments).
+    """
+    import trimesh
+    from validity.mesh.voxel_utils import voxel_union_meshes
+    
+    pitch = effective_pitch if effective_pitch is not None else policy.voxel_pitch
+    pitch_adjustments = []
+    
+    for attempt in range(policy.max_pitch_steps):
+        try:
+            merged = voxel_union_meshes(
+                meshes,
+                pitch=pitch,
+                fill=policy.fill_voxels,
+                max_attempts=1,  # We handle retries ourselves
+                log_prefix="[merge] ",
+            )
+            return merged, "voxel", pitch_adjustments
+            
+        except (MemoryError, RuntimeError) as e:
+            if attempt < policy.max_pitch_steps - 1:
+                pitch *= policy.pitch_step_factor
+                pitch_adjustments.append(pitch)
+                logger.warning(f"Voxel merge failed, increasing pitch to {pitch:.6f}")
+            else:
+                logger.error(f"Voxel merge failed after {policy.max_pitch_steps} attempts")
+                
+                if policy.fallback_boolean:
+                    logger.info("Falling back to boolean merge")
+                    merged = _boolean_merge(meshes)
+                    return merged, "boolean_fallback", pitch_adjustments
+                else:
+                    raise
+    
+    # Should not reach here
+    raise RuntimeError("Voxel merge failed")
+
+
+def _boolean_merge(meshes: List["trimesh.Trimesh"]) -> "trimesh.Trimesh":
+    """Merge meshes using boolean union."""
+    import trimesh
+    
+    if len(meshes) == 1:
+        return meshes[0].copy()
+    
+    # Simple concatenation as fallback
+    # Note: True boolean union requires manifold meshes and is expensive
+    merged = trimesh.util.concatenate(meshes)
+    
+    # Clean up
+    merged.merge_vertices()
+    merged.remove_unreferenced_vertices()
+    
+    # Try to fill holes
+    trimesh.repair.fill_holes(merged)
+    
+    if merged.volume < 0:
+        merged.invert()
+    trimesh.repair.fix_normals(merged)
+    
+    return merged
+
+
+def detect_detail_loss(
+    input_meshes: List["trimesh.Trimesh"],
+    output_mesh: "trimesh.Trimesh",
+    policy: MeshMergePolicy,
+) -> Tuple[bool, Dict[str, Any]]:
+    """
+    Detect if significant detail was lost during merge operation.
+    
+    Compares the union result volume and face count to the component mesh
+    aggregates. If volume loss exceeds the threshold, returns True.
+    
+    Parameters
+    ----------
+    input_meshes : List[trimesh.Trimesh]
+        Original input meshes before merge
+    output_mesh : trimesh.Trimesh
+        Merged output mesh
+    policy : MeshMergePolicy
+        Policy with detail loss settings
+        
+    Returns
+    -------
+    detail_lost : bool
+        True if significant detail was lost
+    report : dict
+        Detailed report with metrics
+    """
+    # Calculate aggregate input metrics
+    total_input_volume = 0.0
+    total_input_faces = 0
+    total_input_vertices = 0
+    
+    for mesh in input_meshes:
+        try:
+            total_input_volume += abs(mesh.volume)
+        except Exception:
+            pass
+        total_input_faces += len(mesh.faces)
+        total_input_vertices += len(mesh.vertices)
+    
+    # Calculate output metrics
+    try:
+        output_volume = abs(output_mesh.volume)
+    except Exception:
+        output_volume = 0.0
+    output_faces = len(output_mesh.faces)
+    output_vertices = len(output_mesh.vertices)
+    
+    # Calculate ratios
+    volume_ratio = output_volume / total_input_volume if total_input_volume > 0 else 1.0
+    face_ratio = output_faces / total_input_faces if total_input_faces > 0 else 1.0
+    
+    # Volume loss is 1 - ratio (e.g., 0.5 means 50% volume retained, 50% lost)
+    volume_loss = 1.0 - volume_ratio
+    face_loss = 1.0 - face_ratio
+    
+    # Determine if detail was lost
+    # Note: Some volume loss is expected due to overlap, but face count collapse
+    # by orders of magnitude indicates resolution issues
+    detail_lost = (
+        volume_loss > policy.detail_loss_threshold or
+        face_ratio < 0.01  # Face count collapsed by more than 100x
+    )
+    
+    report = {
+        "input_volume": total_input_volume,
+        "input_faces": total_input_faces,
+        "input_vertices": total_input_vertices,
+        "output_volume": output_volume,
+        "output_faces": output_faces,
+        "output_vertices": output_vertices,
+        "volume_ratio": volume_ratio,
+        "face_ratio": face_ratio,
+        "volume_loss": volume_loss,
+        "face_loss": face_loss,
+        "detail_lost": detail_lost,
+        "threshold": policy.detail_loss_threshold,
+    }
+    
+    return detail_lost, report
+
+
+def compute_pitch_from_diameter(
+    min_channel_diameter: float,
+    min_voxels_per_diameter: int,
+) -> float:
+    """
+    Compute voxel pitch to ensure minimum voxels across smallest channel.
+    
+    Parameters
+    ----------
+    min_channel_diameter : float
+        Smallest expected channel diameter in meters
+    min_voxels_per_diameter : int
+        Minimum number of voxels across the diameter
+        
+    Returns
+    -------
+    pitch : float
+        Recommended voxel pitch in meters
+    """
+    return min_channel_diameter / min_voxels_per_diameter
+
+
+__all__ = [
+    "merge_meshes",
+    "MeshMergePolicy",
+    "detect_detail_loss",
+    "compute_pitch_from_diameter",
+]

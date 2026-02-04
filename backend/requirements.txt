@@ -1,0 +1,31 @@
+# FastAPI and server
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.6
+
+# Core dependencies
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+manifold3d>=2.3.0
+numpy>=1.24.0
+scikit-image>=0.21.0
+
+# Vascular generation (AOG dependencies)
+trimesh>=4.0.0
+scipy>=1.11.0
+scikit-learn>=1.3.0
+
+# AOG local package (relative path)
+-e ./aog
+
+# Authentication
+sqlalchemy>=2.0.0
+passlib[bcrypt]>=1.7.4
+python-jose[cryptography]>=3.3.0
+cryptography>=41.0.0
+PyJWT>=2.8.0
+
+# LLM providers
+anthropic>=0.18.0
+openai>=1.0.0
+python-dotenv>=1.0.0

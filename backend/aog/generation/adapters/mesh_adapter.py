@@ -1,0 +1,1279 @@
+"""
+Adapter for converting VascularNetwork to trimesh.Trimesh.
+
+Provides STL mesh export with fast and robust modes, including hollow tube generation.
+"""
+
+import numpy as np
+import trimesh
+from dataclasses import dataclass, field
+from typing import Optional, Literal, Dict, Any, Tuple
+from ..core.network import VascularNetwork
+from ..core.result import OperationResult, OperationStatus, ErrorCode
+
+
+@dataclass
+class JunctionGeometryPolicy:
+    """
+    Configuration for how junction geometry is generated in mesh conversion.
+    
+    This policy controls the generation of node spheres, inlet/outlet geometry,
+    caps, and handling of degenerate segments. The defaults are optimized for
+    microfluidic void generation where bulb artifacts should be minimized.
+    
+    Attributes
+    ----------
+    node_mode : str
+        How to handle junction nodes: "none", "sphere", or "fillet"
+        Default "none" to avoid bulb artifacts.
+    node_radius_scale : float
+        Scale factor for node sphere/fillet radius relative to max attached segment radius.
+        Only used if node_mode is "sphere" or "fillet".
+    inlet_mode : str
+        How to handle inlet geometry: "open", "capped", or "flared"
+        Default "open" for microfluidic voids.
+    outlet_mode : str
+        How to handle outlet geometry: "open", "capped", or "flared"
+        Default "open" for microfluidic voids.
+    cap_style : str
+        Style for caps when inlet_mode or outlet_mode is "capped": "flat" or "hemisphere"
+    degenerate_segment_mode : str
+        How to handle degenerate (near-zero length) segments:
+        - "skip": Do not add geometry
+        - "short_frustum": Create a micro-frustum along parent direction
+        - "micro_sphere": Create a small sphere (not recommended)
+        Default "short_frustum" to maintain continuity without bulbs.
+    degenerate_length_threshold : float
+        Segments shorter than this are considered degenerate.
+    min_segment_length_enforced : float
+        Minimum length for short_frustum mode.
+    """
+    node_mode: Literal["none", "sphere", "fillet"] = "none"
+    node_radius_scale: float = 0.2
+    inlet_mode: Literal["open", "capped", "flared"] = "open"
+    outlet_mode: Literal["open", "capped", "flared"] = "open"
+    cap_style: Literal["flat", "hemisphere"] = "flat"
+    degenerate_segment_mode: Literal["skip", "short_frustum", "micro_sphere"] = "short_frustum"
+    degenerate_length_threshold: float = 1e-6
+    min_segment_length_enforced: float = 1e-7
+    
+    @classmethod
+    def for_microfluidic_voids(cls) -> "JunctionGeometryPolicy":
+        """Create a policy optimized for microfluidic void generation."""
+        return cls(
+            node_mode="none",
+            inlet_mode="open",
+            outlet_mode="open",
+            degenerate_segment_mode="short_frustum",
+        )
+    
+    @classmethod
+    def for_visualization(cls) -> "JunctionGeometryPolicy":
+        """Create a policy optimized for visualization with smooth junctions."""
+        return cls(
+            node_mode="sphere",
+            node_radius_scale=0.3,
+            inlet_mode="capped",
+            outlet_mode="capped",
+            cap_style="hemisphere",
+            degenerate_segment_mode="micro_sphere",
+        )
+
+
+def _precompute_node_radii(network: VascularNetwork) -> Dict[int, float]:
+    """
+    Precompute the maximum radius at each node from attached segments.
+    
+    This is O(N_segments) instead of O(N_nodes × N_segments), providing
+    significant performance improvement for large networks.
+    
+    Parameters
+    ----------
+    network : VascularNetwork
+        The vascular network to analyze
+        
+    Returns
+    -------
+    Dict[int, float]
+        Mapping from node_id to maximum radius at that node
+    """
+    node_radii: Dict[int, float] = {}
+    
+    for segment in network.segments.values():
+        # Update start node radius
+        start_id = segment.start_node_id
+        start_radius = segment.geometry.radius_start
+        if start_id not in node_radii:
+            node_radii[start_id] = start_radius
+        else:
+            node_radii[start_id] = max(node_radii[start_id], start_radius)
+        
+        # Update end node radius
+        end_id = segment.end_node_id
+        end_radius = segment.geometry.radius_end
+        if end_id not in node_radii:
+            node_radii[end_id] = end_radius
+        else:
+            node_radii[end_id] = max(node_radii[end_id], end_radius)
+    
+    return node_radii
+
+
+def _precompute_node_radii_with_wall(
+    network: VascularNetwork,
+    wall_thickness: float,
+    min_inner_radius: float,
+) -> Dict[int, Tuple[float, float]]:
+    """
+    Precompute outer and inner radii at each node for hollow tube generation.
+    
+    This is O(N_segments) instead of O(N_nodes × N_segments), providing
+    significant performance improvement for large networks.
+    
+    Parameters
+    ----------
+    network : VascularNetwork
+        The vascular network to analyze
+    wall_thickness : float
+        Wall thickness for inner radius calculation
+    min_inner_radius : float
+        Minimum inner radius to prevent degenerate geometry
+        
+    Returns
+    -------
+    Dict[int, Tuple[float, float]]
+        Mapping from node_id to (max_outer_radius, max_inner_radius)
+    """
+    node_radii: Dict[int, Tuple[float, float]] = {}
+    
+    for segment in network.segments.values():
+        # Process start node
+        start_id = segment.start_node_id
+        outer_r = segment.geometry.radius_start
+        inner_r = max(outer_r - wall_thickness, min_inner_radius)
+        
+        if start_id not in node_radii:
+            node_radii[start_id] = (outer_r, inner_r)
+        else:
+            current_outer, current_inner = node_radii[start_id]
+            node_radii[start_id] = (
+                max(current_outer, outer_r),
+                max(current_inner, inner_r),
+            )
+        
+        # Process end node
+        end_id = segment.end_node_id
+        outer_r = segment.geometry.radius_end
+        inner_r = max(outer_r - wall_thickness, min_inner_radius)
+        
+        if end_id not in node_radii:
+            node_radii[end_id] = (outer_r, inner_r)
+        else:
+            current_outer, current_inner = node_radii[end_id]
+            node_radii[end_id] = (
+                max(current_outer, outer_r),
+                max(current_inner, inner_r),
+            )
+    
+    return node_radii
+
+
+def to_trimesh(
+    network: VascularNetwork,
+    mode: Literal["fast", "robust", "voxel_repair"] = "fast",
+    radial_resolution: int = 8,
+    include_caps: bool = True,
+    include_node_spheres: bool = False,
+    min_segment_length: float = 1e-6,
+    max_triangles: Optional[int] = None,
+    adaptive_resolution: bool = False,
+    min_radial_resolution: int = 4,
+    max_radial_resolution: int = 32,
+    voxel_pitch: Optional[float] = None,
+) -> OperationResult:
+    """
+    Convert VascularNetwork to trimesh.Trimesh for STL export.
+    
+    Three modes:
+    - "fast": Concatenate all segment meshes (may have self-intersections)
+    - "robust": Attempt boolean union (requires Blender backend), fallback to fast
+    - "voxel_repair": Voxelize and remesh for watertight output (deterministic, no external deps)
+    
+    Parameters
+    ----------
+    network : VascularNetwork
+        The vascular network to convert
+    mode : {"fast", "robust", "voxel_repair"}
+        Export mode. "voxel_repair" is recommended for complex networks as it
+        produces watertight meshes without depending on Blender.
+    radial_resolution : int
+        Number of vertices around each cylinder (base resolution)
+    include_caps : bool
+        Whether to include hemispherical caps at segment ends.
+        Default True. Set to False for large networks to reduce triangle count.
+    include_node_spheres : bool
+        Whether to include spheres at junction nodes.
+        Default False. Node spheres are a major triangle multiplier.
+    min_segment_length : float
+        Skip segments shorter than this
+    max_triangles : int, optional
+        Maximum triangle budget. If exceeded, resolution is reduced.
+        If None, no budget is enforced.
+    adaptive_resolution : bool
+        If True, scale radial resolution based on vessel radius.
+        Larger vessels get higher resolution, smaller vessels get lower.
+    min_radial_resolution : int
+        Minimum radial resolution when using adaptive mode
+    max_radial_resolution : int
+        Maximum radial resolution when using adaptive mode
+    voxel_pitch : float, optional
+        Voxel size for "voxel_repair" mode. If None, auto-computed from
+        minimum vessel radius (pitch = min_radius / 2).
+        
+    Returns
+    -------
+    OperationResult
+        Result with mesh in metadata['mesh']
+        
+    Notes
+    -----
+    LOD (Level of Detail) recommendations for large networks:
+    - Set include_caps=False and include_node_spheres=False
+    - Use adaptive_resolution=True for varied vessel sizes
+    - Set max_triangles to enforce a budget (e.g., 500000)
+    
+    Union/Repair Strategy (Priority 2C):
+    - "fast" mode: Simple concatenation, may have self-intersections
+    - "robust" mode: Boolean union via Blender (not always available)
+    - "voxel_repair" mode: Deterministic voxel-based repair, always works
+    """
+    try:
+        meshes = []
+        
+        # Compute radius statistics for adaptive resolution
+        all_radii = []
+        for segment in network.segments.values():
+            all_radii.append(segment.geometry.radius_start)
+            all_radii.append(segment.geometry.radius_end)
+        
+        if all_radii:
+            min_radius = min(all_radii)
+            max_radius_global = max(all_radii)
+            radius_range = max_radius_global - min_radius if max_radius_global > min_radius else 1.0
+        else:
+            min_radius = 0.0
+            max_radius_global = 1.0
+            radius_range = 1.0
+        
+        for seg_id, segment in network.segments.items():
+            start = np.array([
+                segment.geometry.start.x,
+                segment.geometry.start.y,
+                segment.geometry.start.z,
+            ])
+            end = np.array([
+                segment.geometry.end.x,
+                segment.geometry.end.y,
+                segment.geometry.end.z,
+            ])
+            
+            length = np.linalg.norm(end - start)
+            if length < min_segment_length:
+                continue
+            
+            r_start = segment.geometry.radius_start
+            r_end = segment.geometry.radius_end
+            
+            # Compute adaptive resolution based on vessel radius
+            if adaptive_resolution and radius_range > 0:
+                avg_radius = (r_start + r_end) / 2
+                # Scale resolution linearly with radius
+                normalized_radius = (avg_radius - min_radius) / radius_range
+                seg_resolution = int(
+                    min_radial_resolution + 
+                    normalized_radius * (max_radial_resolution - min_radial_resolution)
+                )
+                seg_resolution = max(min_radial_resolution, min(max_radial_resolution, seg_resolution))
+            else:
+                seg_resolution = radial_resolution
+            
+            mesh = _create_capsule_mesh(
+                start, end, r_start, r_end,
+                radial_resolution=seg_resolution,
+                include_caps=include_caps,
+            )
+            meshes.append(mesh)
+        
+        # Only add node spheres if explicitly requested (LOD control)
+        if include_node_spheres:
+            # Precompute node radii in O(N_segments) instead of O(N_nodes × N_segments)
+            node_radii = _precompute_node_radii(network)
+            
+            for node_id, node in network.nodes.items():
+                # Look up precomputed radius (O(1) instead of O(N_segments))
+                max_radius = node_radii.get(node_id, 0.0)
+            
+                # If no segments touch this node, skip making a sphere
+                if max_radius <= 0.00002:
+                    continue
+            
+                # Make node spheres much smaller than vessel radii
+                sphere_radius = max_radius * 0.2  # try 0.1–0.3 depending how subtle you want it
+
+                
+                center = np.array([node.position.x, node.position.y, node.position.z])
+                sphere = trimesh.creation.icosphere(subdivisions=2, radius=sphere_radius)
+                sphere.apply_translation(center)
+                meshes.append(sphere)
+        
+        if not meshes:
+            return OperationResult.failure(
+                "No meshes created",
+                error_codes=[ErrorCode.MESH_EXPORT_FAILED.value],
+            )
+        
+        # Voxel-based repair mode (Priority 2C: deterministic union/repair strategy)
+        if mode == "voxel_repair":
+            try:
+                from skimage.measure import marching_cubes
+                
+                # First concatenate all meshes
+                combined = trimesh.util.concatenate(meshes)
+                
+                # Auto-compute voxel pitch if not provided
+                pitch = voxel_pitch
+                if pitch is None:
+                    # Use half of minimum radius for good resolution
+                    # If min_radius is not available, derive from network extent
+                    if min_radius > 0:
+                        pitch = min_radius / 2
+                    else:
+                        # Derive pitch from network extent (1/1000th of diagonal)
+                        extent = combined.bounding_box.extents
+                        pitch = float(np.min(extent)) / 100.0
+                
+                # Voxelize the combined mesh
+                try:
+                    voxels = combined.voxelized(pitch)
+                    voxel_matrix = voxels.matrix
+                except (MemoryError, ValueError) as e:
+                    # If voxelization fails, try with coarser pitch
+                    pitch *= 2
+                    voxels = combined.voxelized(pitch)
+                    voxel_matrix = voxels.matrix
+                
+                # Apply marching cubes to get watertight mesh
+                verts, faces, _, _ = marching_cubes(
+                    volume=voxel_matrix.astype(np.uint8),
+                    level=0.5,
+                    spacing=(pitch, pitch, pitch),
+                    allow_degenerate=False,
+                )
+                
+                # Transform vertices back to world coordinates
+                verts += voxels.transform[:3, 3]
+                
+                # Create the repaired mesh
+                repaired_mesh = trimesh.Trimesh(
+                    vertices=verts,
+                    faces=faces.astype(np.int64),
+                    process=False,
+                )
+                
+                # Clean up the mesh
+                repaired_mesh.remove_unreferenced_vertices()
+                if repaired_mesh.volume < 0:
+                    repaired_mesh.invert()
+                trimesh.repair.fix_normals(repaired_mesh)
+                
+                triangle_count = len(repaired_mesh.faces)
+                budget_exceeded = max_triangles is not None and triangle_count > max_triangles
+                
+                result = OperationResult.success(
+                    f"Voxel repair mesh export: {len(meshes)} components voxelized and remeshed",
+                    metadata={
+                        'mesh': repaired_mesh,
+                        'mode': 'voxel_repair',
+                        'num_components': len(meshes),
+                        'is_watertight': repaired_mesh.is_watertight,
+                        'voxel_pitch': pitch,
+                        'triangle_count': triangle_count,
+                        'max_triangles': max_triangles,
+                        'budget_exceeded': budget_exceeded,
+                        'lod_settings': {
+                            'include_caps': include_caps,
+                            'include_node_spheres': include_node_spheres,
+                            'adaptive_resolution': adaptive_resolution,
+                            'radial_resolution': radial_resolution,
+                        },
+                    },
+                )
+                
+                if budget_exceeded:
+                    result.add_warning(
+                        f"Triangle budget exceeded: {triangle_count} > {max_triangles}. "
+                        f"Consider increasing voxel_pitch for coarser mesh."
+                    )
+                
+                return result
+                
+            except Exception as e:
+                # Fall back to fast mode if voxel repair fails
+                result = OperationResult.partial_success(
+                    f"Voxel repair failed, falling back to fast mode: {e}",
+                )
+                result.add_warning(f"Voxel repair mode failed: {e}")
+                mode = "fast"
+        
+        if mode == "robust":
+            try:
+                combined = meshes[0]
+                for mesh in meshes[1:]:
+                    combined = trimesh.boolean.union([combined, mesh], engine='blender')
+                
+                result = OperationResult.success(
+                    f"Robust mesh export: {len(meshes)} components unioned",
+                    metadata={
+                        'mesh': combined,
+                        'mode': 'robust',
+                        'num_components': len(meshes),
+                        'is_watertight': combined.is_watertight,
+                    },
+                )
+                return result
+                
+            except Exception as e:
+                result = OperationResult.partial_success(
+                    f"Boolean union failed, falling back to fast mode: {e}",
+                )
+                result.add_warning(f"Robust mode failed: {e}")
+                mode = "fast"
+        
+        combined = trimesh.util.concatenate(meshes)
+        
+        # Check triangle budget and warn if exceeded
+        triangle_count = len(combined.faces)
+        budget_exceeded = False
+        if max_triangles is not None and triangle_count > max_triangles:
+            budget_exceeded = True
+        
+        result = OperationResult.success(
+            f"Fast mesh export: {len(meshes)} components concatenated",
+            metadata={
+                'mesh': combined,
+                'mode': mode,
+                'num_components': len(meshes),
+                'is_watertight': combined.is_watertight,
+                'needs_repair': not combined.is_watertight,
+                'triangle_count': triangle_count,
+                'max_triangles': max_triangles,
+                'budget_exceeded': budget_exceeded,
+                'lod_settings': {
+                    'include_caps': include_caps,
+                    'include_node_spheres': include_node_spheres,
+                    'adaptive_resolution': adaptive_resolution,
+                    'radial_resolution': radial_resolution,
+                },
+            },
+        )
+        
+        if budget_exceeded:
+            result.add_warning(
+                f"Triangle budget exceeded: {triangle_count} > {max_triangles}. "
+                f"Consider: include_caps=False, include_node_spheres=False, "
+                f"or lower radial_resolution."
+            )
+        
+        return result
+        
+    except Exception as e:
+        return OperationResult.failure(
+            f"Mesh export failed: {e}",
+            error_codes=[ErrorCode.MESH_EXPORT_FAILED.value],
+        )
+
+
+def _create_capsule_mesh(
+    start: np.ndarray,
+    end: np.ndarray,
+    r_start: float,
+    r_end: float,
+    radial_resolution: int = 8,
+    include_caps: bool = True,
+) -> trimesh.Trimesh:
+    """
+    Create a capsule mesh (frustum/tapered cylinder with optional hemispherical caps).
+    
+    This function properly handles tapering by creating a frustum (truncated cone)
+    when r_start != r_end, rather than ignoring the end radius.
+    
+    Parameters
+    ----------
+    start : np.ndarray
+        Start point [x, y, z]
+    end : np.ndarray
+        End point [x, y, z]
+    r_start : float
+        Radius at start
+    r_end : float
+        Radius at end
+    radial_resolution : int
+        Number of vertices around cylinder
+    include_caps : bool
+        Whether to include hemispherical caps
+        
+    Returns
+    -------
+    trimesh.Trimesh
+        Capsule mesh with proper tapering
+    """
+    direction = end - start
+    length = np.linalg.norm(direction)
+    direction = direction / length
+    
+    frustum = _create_frustum(
+        length=length,
+        radius_start=r_start,
+        radius_end=r_end,
+        sections=radial_resolution,
+    )
+    
+    z_axis = np.array([0, 0, 1])
+    if not np.allclose(direction, z_axis) and not np.allclose(direction, -z_axis):
+        rotation_axis = np.cross(z_axis, direction)
+        if np.linalg.norm(rotation_axis) > 1e-6:
+            rotation_axis = rotation_axis / np.linalg.norm(rotation_axis)
+            angle = np.arccos(np.clip(np.dot(z_axis, direction), -1, 1))
+            rotation_matrix = trimesh.transformations.rotation_matrix(
+                angle, rotation_axis
+            )
+            frustum.apply_transform(rotation_matrix)
+    elif np.allclose(direction, -z_axis):
+        rotation_matrix = trimesh.transformations.rotation_matrix(np.pi, [1, 0, 0])
+        frustum.apply_transform(rotation_matrix)
+    
+    center = (start + end) / 2
+    frustum.apply_translation(center)
+    
+    if include_caps:
+        cap_start = trimesh.creation.icosphere(subdivisions=1, radius=r_start)
+        cap_start.apply_translation(start)
+        
+        cap_end = trimesh.creation.icosphere(subdivisions=1, radius=r_end)
+        cap_end.apply_translation(end)
+        
+        return trimesh.util.concatenate([frustum, cap_start, cap_end])
+    
+    return frustum
+
+
+def _create_frustum(
+    length: float,
+    radius_start: float,
+    radius_end: float,
+    sections: int = 8,
+) -> trimesh.Trimesh:
+    """
+    Create a frustum (truncated cone) mesh.
+    
+    This is used for tapered vessel segments where the radius changes
+    from start to end.
+    
+    Parameters
+    ----------
+    length : float
+        Length of the frustum along z-axis
+    radius_start : float
+        Radius at z = -length/2 (start)
+    radius_end : float
+        Radius at z = +length/2 (end)
+    sections : int
+        Number of vertices around the circumference
+        
+    Returns
+    -------
+    trimesh.Trimesh
+        Frustum mesh centered at origin, aligned with z-axis
+    """
+    if abs(radius_start - radius_end) < 1e-10:
+        return trimesh.creation.cylinder(
+            radius=radius_start,
+            height=length,
+            sections=sections,
+        )
+    
+    angles = np.linspace(0, 2 * np.pi, sections, endpoint=False)
+    
+    z_bottom = -length / 2
+    z_top = length / 2
+    
+    bottom_vertices = np.column_stack([
+        radius_start * np.cos(angles),
+        radius_start * np.sin(angles),
+        np.full(sections, z_bottom),
+    ])
+    
+    top_vertices = np.column_stack([
+        radius_end * np.cos(angles),
+        radius_end * np.sin(angles),
+        np.full(sections, z_top),
+    ])
+    
+    vertices = np.vstack([bottom_vertices, top_vertices])
+    
+    faces = []
+    for i in range(sections):
+        next_i = (i + 1) % sections
+        
+        faces.append([i, next_i, sections + i])
+        faces.append([next_i, sections + next_i, sections + i])
+    
+    bottom_center_idx = len(vertices)
+    vertices = np.vstack([vertices, [[0, 0, z_bottom]]])
+    for i in range(sections):
+        next_i = (i + 1) % sections
+        faces.append([bottom_center_idx, i, next_i])
+    
+    top_center_idx = len(vertices)
+    vertices = np.vstack([vertices, [[0, 0, z_top]]])
+    for i in range(sections):
+        next_i = (i + 1) % sections
+        faces.append([top_center_idx, sections + i, sections + next_i])
+    
+    faces = np.array(faces)
+    
+    return trimesh.Trimesh(vertices=vertices, faces=faces)
+
+
+def export_stl(
+    network: VascularNetwork,
+    output_path: str,
+    mode: Literal["fast", "robust", "voxel_repair"] = "voxel_repair",
+    repair: bool = True,
+    output_units: str = "mm",
+    write_metadata: bool = True,
+    **kwargs,
+) -> OperationResult:
+    """
+    Export VascularNetwork to STL file with unit scaling.
+    
+    The library uses DIMENSIONLESS internal units where 1 internal unit = 1 output unit.
+    When output_units="mm", 1 internal unit = 1 mm in the output STL file.
+    
+    Parameters
+    ----------
+    network : VascularNetwork
+        The vascular network to export
+    output_path : str
+        Path to output STL file
+    mode : {"fast", "robust", "voxel_repair"}
+        Export mode. Default: "voxel_repair" which produces smoother meshes
+        without sharp ridges. Options:
+        - "fast": Simple concatenation, may have self-intersections
+        - "robust": Boolean union via Blender (not always available)
+        - "voxel_repair": Voxelize and remesh for watertight, smooth output
+    repair : bool
+        Whether to repair mesh before export
+    output_units : str
+        Units for the output STL file. Default: "mm"
+        Supported: "m", "mm", "cm", "um"
+        Since internal units are dimensionless (1 = 1mm equivalent),
+        this controls the scale of coordinates in the output file.
+    write_metadata : bool
+        Whether to write a sidecar JSON file with unit metadata.
+        The sidecar file will be named {output_path}.units.json
+    **kwargs
+        Additional arguments passed to to_trimesh
+        
+    Returns
+    -------
+    OperationResult
+        Result of export operation
+        
+    Notes
+    -----
+    STL files do not encode units. The output_units parameter controls
+    the numeric scale of vertex coordinates. A sidecar JSON file is
+    written to document the units used.
+    """
+    from generation.utils.units import UnitContext
+    import json
+    from pathlib import Path
+    
+    result = to_trimesh(network, mode=mode, **kwargs)
+    
+    if not result.is_success():
+        return result
+    
+    mesh = result.metadata['mesh']
+    
+    if repair and not mesh.is_watertight:
+        try:
+            from validity.mesh.repair import meshfix_repair
+            mesh = meshfix_repair(mesh, keep_largest_component=True)
+            result.add_warning("Mesh repaired with meshfix")
+            result.metadata['was_repaired'] = True
+            result.metadata['is_watertight'] = mesh.is_watertight
+        except Exception as e:
+            result.add_warning(f"Mesh repair failed: {e}")
+            result.metadata['repair_failed'] = True
+    
+    unit_ctx = UnitContext(output_units=output_units)
+    scaled_mesh = unit_ctx.scale_mesh(mesh)
+    
+    result.metadata['output_units'] = output_units
+    result.metadata['scale_factor'] = unit_ctx.scale_factor
+    
+    try:
+        scaled_mesh.export(output_path)
+        result.message = f"Exported to {output_path} (units: {output_units})"
+        result.metadata['output_path'] = output_path
+        
+        if write_metadata:
+            metadata_path = str(output_path) + ".units.json"
+            metadata = unit_ctx.get_metadata()
+            metadata['stl_file'] = str(output_path)
+            with open(metadata_path, 'w') as f:
+                json.dump(metadata, f, indent=2)
+            result.metadata['metadata_path'] = metadata_path
+        
+        return result
+    except Exception as e:
+        return OperationResult.failure(
+            f"Export failed: {e}",
+            error_codes=[ErrorCode.MESH_EXPORT_FAILED.value],
+        )
+
+
+def to_hollow_tube_mesh(
+    network: VascularNetwork,
+    wall_thickness: float,
+    radial_resolution: int = 16,
+    min_segment_length: float = 1e-6,
+    min_inner_radius: Optional[float] = None,
+) -> OperationResult:
+    """
+    Convert VascularNetwork to a hollow tube mesh for fluid flow.
+    
+    Creates a continuous hollow channel from inlet to terminal nodes,
+    with walls of specified thickness. The inner channel allows water
+    or other fluids to flow through the entire vascular network.
+    
+    Parameters
+    ----------
+    network : VascularNetwork
+        The vascular network to convert
+    wall_thickness : float
+        Thickness of the tube walls (in same units as network, typically mm).
+        The inner radius will be: outer_radius - wall_thickness
+    radial_resolution : int
+        Number of vertices around each cylinder (higher = smoother)
+    min_segment_length : float
+        Skip segments shorter than this
+    min_inner_radius : float
+        Minimum inner radius to prevent degenerate geometry.
+        If inner_radius would be smaller, a warning is issued.
+        
+    Returns
+    -------
+    OperationResult
+        Result with metadata containing:
+        - 'mesh': trimesh.Trimesh of the hollow tube
+        - 'outer_mesh': trimesh.Trimesh of outer surface only
+        - 'inner_mesh': trimesh.Trimesh of inner surface only
+        - 'num_segments': number of segments processed
+        - 'warnings': list of any warnings (e.g., segments with thin walls)
+    
+    Example
+    -------
+    >>> from vascular_lib import create_network, add_inlet, grow_branch
+    >>> from generation.adapters.mesh_adapter import to_hollow_tube_mesh
+    >>> 
+    >>> # Create a simple network
+    >>> network = create_network(domain, seed=42)
+    >>> add_inlet(network, position=(0, 0, 0), direction=(1, 0, 0), radius=5.0)
+    >>> grow_branch(network, from_node_id=0, length=20.0, direction=(1, 0, 0))
+    >>> 
+    >>> # Convert to hollow tube with 1mm wall thickness
+    >>> result = to_hollow_tube_mesh(network, wall_thickness=1.0)
+    >>> if result.is_success():
+    ...     hollow_mesh = result.metadata['mesh']
+    ...     hollow_mesh.export('hollow_network.stl')
+    """
+    try:
+        outer_meshes = []
+        inner_meshes = []
+        warnings = []
+        segments_processed = 0
+        
+        # Derive min_inner_radius from network if not provided
+        if min_inner_radius is None:
+            # Use 1% of minimum vessel radius as minimum inner radius
+            if network.segments:
+                radii = [seg.geometry.mean_radius() for seg in network.segments.values()]
+                min_inner_radius = min(radii) * 0.01 if radii else wall_thickness * 0.1
+            else:
+                min_inner_radius = wall_thickness * 0.1
+        
+        for seg_id, segment in network.segments.items():
+            start = np.array([
+                segment.geometry.start.x,
+                segment.geometry.start.y,
+                segment.geometry.start.z,
+            ])
+            end = np.array([
+                segment.geometry.end.x,
+                segment.geometry.end.y,
+                segment.geometry.end.z,
+            ])
+            
+            length = np.linalg.norm(end - start)
+            if length < min_segment_length:
+                continue
+            
+            r_start_outer = segment.geometry.radius_start
+            r_end_outer = segment.geometry.radius_end
+            
+            r_start_inner = r_start_outer - wall_thickness
+            r_end_inner = r_end_outer - wall_thickness
+            
+            if r_start_inner < min_inner_radius:
+                warnings.append(
+                    f"Segment {seg_id}: start inner radius {r_start_inner:.4f} "
+                    f"below minimum {min_inner_radius:.4f}, clamping"
+                )
+                r_start_inner = min_inner_radius
+            
+            if r_end_inner < min_inner_radius:
+                warnings.append(
+                    f"Segment {seg_id}: end inner radius {r_end_inner:.4f} "
+                    f"below minimum {min_inner_radius:.4f}, clamping"
+                )
+                r_end_inner = min_inner_radius
+            
+            outer_tube = _create_hollow_tube_segment(
+                start, end, r_start_outer, r_end_outer,
+                radial_resolution=radial_resolution,
+                is_outer=True,
+            )
+            outer_meshes.append(outer_tube)
+            
+            inner_tube = _create_hollow_tube_segment(
+                start, end, r_start_inner, r_end_inner,
+                radial_resolution=radial_resolution,
+                is_outer=False,
+            )
+            inner_meshes.append(inner_tube)
+            
+            segments_processed += 1
+        
+        # Precompute node radii in O(N_segments) instead of O(N_nodes × N_segments)
+        node_radii = _precompute_node_radii_with_wall(network, wall_thickness, min_inner_radius)
+        
+        for node_id, node in network.nodes.items():
+            # Look up precomputed radii (O(1) instead of O(N_segments))
+            if node_id not in node_radii:
+                continue
+            
+            max_outer_radius, max_inner_radius = node_radii[node_id]
+            
+            if max_outer_radius <= min_inner_radius:
+                continue
+            
+            center = np.array([node.position.x, node.position.y, node.position.z])
+            
+            outer_sphere = trimesh.creation.icosphere(
+                subdivisions=2, radius=max_outer_radius
+            )
+            outer_sphere.apply_translation(center)
+            outer_meshes.append(outer_sphere)
+            
+            inner_sphere = trimesh.creation.icosphere(
+                subdivisions=2, radius=max_inner_radius
+            )
+            inner_sphere.apply_translation(center)
+            inner_meshes.append(inner_sphere)
+        
+        if not outer_meshes:
+            return OperationResult.failure(
+                "No meshes created - network may be empty",
+                error_codes=[ErrorCode.MESH_EXPORT_FAILED.value],
+            )
+        
+        outer_combined = trimesh.util.concatenate(outer_meshes)
+        inner_combined = trimesh.util.concatenate(inner_meshes)
+        
+        inner_combined.invert()
+        
+        hollow_mesh = trimesh.util.concatenate([outer_combined, inner_combined])
+        
+        end_cap_meshes = _create_end_caps(
+            network, wall_thickness, radial_resolution, min_inner_radius
+        )
+        if end_cap_meshes:
+            hollow_mesh = trimesh.util.concatenate([hollow_mesh] + end_cap_meshes)
+        
+        result = OperationResult.success(
+            f"Created hollow tube mesh from {segments_processed} segments",
+            metadata={
+                'mesh': hollow_mesh,
+                'outer_mesh': outer_combined,
+                'inner_mesh': inner_combined,
+                'num_segments': segments_processed,
+                'wall_thickness': wall_thickness,
+                'is_watertight': hollow_mesh.is_watertight,
+            },
+        )
+        
+        for warning in warnings:
+            result.add_warning(warning)
+        
+        return result
+        
+    except Exception as e:
+        return OperationResult.failure(
+            f"Hollow tube mesh creation failed: {e}",
+            error_codes=[ErrorCode.MESH_EXPORT_FAILED.value],
+        )
+
+
+def _create_hollow_tube_segment(
+    start: np.ndarray,
+    end: np.ndarray,
+    r_start: float,
+    r_end: float,
+    radial_resolution: int = 16,
+    is_outer: bool = True,
+) -> trimesh.Trimesh:
+    """
+    Create a single tube segment (cylinder without caps).
+    
+    Parameters
+    ----------
+    start : np.ndarray
+        Start point [x, y, z]
+    end : np.ndarray
+        End point [x, y, z]
+    r_start : float
+        Radius at start
+    r_end : float
+        Radius at end
+    radial_resolution : int
+        Number of vertices around cylinder
+    is_outer : bool
+        If True, normals point outward; if False, normals point inward
+        
+    Returns
+    -------
+    trimesh.Trimesh
+        Tube segment mesh (open-ended cylinder)
+    """
+    direction = end - start
+    length = np.linalg.norm(direction)
+    if length < 1e-10:
+        return trimesh.Trimesh()
+    
+    direction = direction / length
+    
+    mean_radius = (r_start + r_end) / 2.0
+    
+    cylinder = trimesh.creation.cylinder(
+        radius=mean_radius,
+        height=length,
+        sections=radial_resolution,
+        cap=False,
+    )
+    
+    z_axis = np.array([0, 0, 1])
+    if not np.allclose(direction, z_axis) and not np.allclose(direction, -z_axis):
+        rotation_axis = np.cross(z_axis, direction)
+        if np.linalg.norm(rotation_axis) > 1e-6:
+            rotation_axis = rotation_axis / np.linalg.norm(rotation_axis)
+            angle = np.arccos(np.clip(np.dot(z_axis, direction), -1, 1))
+            rotation_matrix = trimesh.transformations.rotation_matrix(
+                angle, rotation_axis
+            )
+            cylinder.apply_transform(rotation_matrix)
+    elif np.allclose(direction, -z_axis):
+        rotation_matrix = trimesh.transformations.rotation_matrix(
+            np.pi, [1, 0, 0]
+        )
+        cylinder.apply_transform(rotation_matrix)
+    
+    center = (start + end) / 2
+    cylinder.apply_translation(center)
+    
+    return cylinder
+
+
+def _create_end_caps(
+    network: VascularNetwork,
+    wall_thickness: float,
+    radial_resolution: int,
+    min_inner_radius: float,
+) -> list:
+    """
+    Create annular end caps at inlet and outlet nodes.
+    
+    These caps seal the hollow tube at the entry/exit points while
+    leaving the inner channel open for fluid flow.
+    
+    Parameters
+    ----------
+    network : VascularNetwork
+        The vascular network
+    wall_thickness : float
+        Wall thickness for computing inner radius
+    radial_resolution : int
+        Number of vertices around each ring
+    min_inner_radius : float
+        Minimum inner radius
+        
+    Returns
+    -------
+    list
+        List of trimesh.Trimesh objects for end caps
+    """
+    caps = []
+    
+    for node_id, node in network.nodes.items():
+        if node.node_type not in ("inlet", "outlet", "terminal"):
+            continue
+        
+        connected_segments = []
+        for seg in network.segments.values():
+            if seg.start_node_id == node_id:
+                connected_segments.append((seg, "start"))
+            elif seg.end_node_id == node_id:
+                connected_segments.append((seg, "end"))
+        
+        if not connected_segments:
+            continue
+        
+        seg, end_type = connected_segments[0]
+        
+        if end_type == "start":
+            outer_radius = seg.geometry.radius_start
+            seg_start = np.array([
+                seg.geometry.start.x,
+                seg.geometry.start.y,
+                seg.geometry.start.z,
+            ])
+            seg_end = np.array([
+                seg.geometry.end.x,
+                seg.geometry.end.y,
+                seg.geometry.end.z,
+            ])
+            direction = seg_end - seg_start
+            cap_center = seg_start
+        else:
+            outer_radius = seg.geometry.radius_end
+            seg_start = np.array([
+                seg.geometry.start.x,
+                seg.geometry.start.y,
+                seg.geometry.start.z,
+            ])
+            seg_end = np.array([
+                seg.geometry.end.x,
+                seg.geometry.end.y,
+                seg.geometry.end.z,
+            ])
+            direction = seg_start - seg_end
+            cap_center = seg_end
+        
+        inner_radius = max(outer_radius - wall_thickness, min_inner_radius)
+        
+        direction_len = np.linalg.norm(direction)
+        if direction_len < 1e-10:
+            continue
+        direction = direction / direction_len
+        
+        cap = _create_annular_cap(
+            center=cap_center,
+            normal=direction,
+            inner_radius=inner_radius,
+            outer_radius=outer_radius,
+            radial_resolution=radial_resolution,
+        )
+        caps.append(cap)
+    
+    return caps
+
+
+def _create_annular_cap(
+    center: np.ndarray,
+    normal: np.ndarray,
+    inner_radius: float,
+    outer_radius: float,
+    radial_resolution: int = 16,
+) -> trimesh.Trimesh:
+    """
+    Create an annular (ring-shaped) cap.
+    
+    Parameters
+    ----------
+    center : np.ndarray
+        Center point of the cap
+    normal : np.ndarray
+        Normal direction of the cap (pointing outward from tube)
+    inner_radius : float
+        Inner radius of the ring (hole for fluid flow)
+    outer_radius : float
+        Outer radius of the ring
+    radial_resolution : int
+        Number of vertices around each ring
+        
+    Returns
+    -------
+    trimesh.Trimesh
+        Annular cap mesh
+    """
+    angles = np.linspace(0, 2 * np.pi, radial_resolution, endpoint=False)
+    
+    inner_circle = np.column_stack([
+        inner_radius * np.cos(angles),
+        inner_radius * np.sin(angles),
+        np.zeros(radial_resolution),
+    ])
+    
+    outer_circle = np.column_stack([
+        outer_radius * np.cos(angles),
+        outer_radius * np.sin(angles),
+        np.zeros(radial_resolution),
+    ])
+    
+    vertices = np.vstack([inner_circle, outer_circle])
+    
+    faces = []
+    n = radial_resolution
+    for i in range(n):
+        i_next = (i + 1) % n
+        faces.append([i, i_next, n + i])
+        faces.append([i_next, n + i_next, n + i])
+    
+    faces = np.array(faces)
+    
+    cap = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+    
+    z_axis = np.array([0, 0, 1])
+    normal = normal / np.linalg.norm(normal)
+    
+    if not np.allclose(normal, z_axis) and not np.allclose(normal, -z_axis):
+        rotation_axis = np.cross(z_axis, normal)
+        if np.linalg.norm(rotation_axis) > 1e-6:
+            rotation_axis = rotation_axis / np.linalg.norm(rotation_axis)
+            angle = np.arccos(np.clip(np.dot(z_axis, normal), -1, 1))
+            rotation_matrix = trimesh.transformations.rotation_matrix(
+                angle, rotation_axis
+            )
+            cap.apply_transform(rotation_matrix)
+    elif np.allclose(normal, -z_axis):
+        rotation_matrix = trimesh.transformations.rotation_matrix(
+            np.pi, [1, 0, 0]
+        )
+        cap.apply_transform(rotation_matrix)
+    
+    cap.apply_translation(center)
+    
+    return cap
+
+
+def export_hollow_tube_stl(
+    network: VascularNetwork,
+    output_path: str,
+    wall_thickness: float,
+    repair: bool = True,
+    output_units: str = "mm",
+    write_metadata: bool = True,
+    **kwargs,
+) -> OperationResult:
+    """
+    Export VascularNetwork as a hollow tube STL file with unit scaling.
+    
+    Creates a hollow tube mesh where water can flow through the entire
+    network from inlet to terminal nodes, then exports to STL.
+    
+    The library uses DIMENSIONLESS internal units where 1 internal unit = 1 output unit.
+    When output_units="mm", 1 internal unit = 1 mm in the output STL file.
+    
+    Parameters
+    ----------
+    network : VascularNetwork
+        The vascular network to export
+    output_path : str
+        Path to output STL file
+    wall_thickness : float
+        Thickness of tube walls (in internal dimensionless units)
+    repair : bool
+        Whether to attempt mesh repair before export
+    output_units : str
+        Units for the output STL file. Default: "mm"
+        Supported: "m", "mm", "cm", "um"
+    write_metadata : bool
+        Whether to write a sidecar JSON file with unit metadata.
+    **kwargs
+        Additional arguments passed to to_hollow_tube_mesh
+        
+    Returns
+    -------
+    OperationResult
+        Result of export operation
+        
+    Example
+    -------
+    >>> from generation.adapters.mesh_adapter import export_hollow_tube_stl
+    >>> result = export_hollow_tube_stl(
+    ...     network,
+    ...     output_path='hollow_network.stl',
+    ...     wall_thickness=1.0,  # 1 internal unit (= 1mm if output_units="mm")
+    ...     output_units="mm",
+    ... )
+    """
+    from generation.utils.units import UnitContext
+    import json
+    
+    result = to_hollow_tube_mesh(network, wall_thickness=wall_thickness, **kwargs)
+    
+    if not result.is_success():
+        return result
+    
+    mesh = result.metadata['mesh']
+    
+    if repair and not mesh.is_watertight:
+        try:
+            from validity.mesh.repair import meshfix_repair
+            mesh = meshfix_repair(mesh, keep_largest_component=False)
+            result.add_warning("Mesh repaired with meshfix")
+            result.metadata['was_repaired'] = True
+            result.metadata['is_watertight'] = mesh.is_watertight
+        except Exception as e:
+            result.add_warning(f"Mesh repair failed: {e}")
+            result.metadata['repair_failed'] = True
+    
+    unit_ctx = UnitContext(output_units=output_units)
+    scaled_mesh = unit_ctx.scale_mesh(mesh)
+    
+    result.metadata['output_units'] = output_units
+    result.metadata['scale_factor'] = unit_ctx.scale_factor
+    
+    try:
+        scaled_mesh.export(output_path)
+        result.message = f"Exported hollow tube to {output_path} (units: {output_units})"
+        result.metadata['output_path'] = output_path
+        
+        if write_metadata:
+            metadata_path = str(output_path) + ".units.json"
+            metadata = unit_ctx.get_metadata()
+            metadata['stl_file'] = str(output_path)
+            metadata['wall_thickness_internal'] = wall_thickness
+            metadata['wall_thickness_output'] = unit_ctx.to_output(wall_thickness)
+            with open(metadata_path, 'w') as f:
+                json.dump(metadata, f, indent=2)
+            result.metadata['metadata_path'] = metadata_path
+        
+        return result
+    except Exception as e:
+        return OperationResult.failure(
+            f"Export failed: {e}",
+            error_codes=[ErrorCode.MESH_EXPORT_FAILED.value],
+        )

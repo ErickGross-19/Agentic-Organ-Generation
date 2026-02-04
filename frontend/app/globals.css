@@ -1,0 +1,322 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 210 40% 98%;
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+    --primary: 221.2 83.2% 53.3%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --accent: 160 84.1% 39.4%;
+    --accent-foreground: 0 0% 100%;
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 221.2 83.2% 53.3%;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+    --card: 222.2 84% 4.9%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222.2 84% 4.9%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 217.2 91.2% 59.8%;
+    --primary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+    --accent: 160 84.1% 39.4%;
+    --accent-foreground: 0 0% 100%;
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 224.3 76.3% 48%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* ========================================
+   THEME SWITCHING STYLES
+   ======================================== */
+
+/* Light mode specific overrides for components using hardcoded dark colors */
+:root:not(.dark) {
+  /* Override black backgrounds to use proper light theme */
+  --page-bg: 210 40% 98%;
+  --panel-bg: 0 0% 100%;
+  --panel-border: 214.3 31.8% 91.4%;
+}
+
+.dark {
+  --page-bg: 0 0% 0%;
+  --panel-bg: 0 0% 3%;
+  --panel-border: 0 0% 15%;
+}
+
+/* ========================================
+   ACCENT COLOR UTILITIES
+   Uses the --accent CSS variable set by ThemeProvider
+   ======================================== */
+
+/* Text colors */
+.text-accent {
+  color: hsl(var(--accent));
+}
+
+.text-accent-foreground {
+  color: hsl(var(--accent-foreground));
+}
+
+/* Background colors */
+.bg-accent {
+  background-color: hsl(var(--accent));
+}
+
+.bg-accent\/10 {
+  background-color: hsl(var(--accent) / 0.1);
+}
+
+.bg-accent\/20 {
+  background-color: hsl(var(--accent) / 0.2);
+}
+
+.bg-accent\/50 {
+  background-color: hsl(var(--accent) / 0.5);
+}
+
+/* Border colors */
+.border-accent {
+  border-color: hsl(var(--accent));
+}
+
+.border-accent\/30 {
+  border-color: hsl(var(--accent) / 0.3);
+}
+
+.border-accent\/50 {
+  border-color: hsl(var(--accent) / 0.5);
+}
+
+/* Ring colors */
+.ring-accent {
+  --tw-ring-color: hsl(var(--accent));
+}
+
+/* Shadows */
+.shadow-accent {
+  box-shadow: 0 0 20px hsl(var(--accent) / 0.5);
+}
+
+/* ========================================
+   ACCESSIBILITY STYLES
+   ======================================== */
+
+/* Reduced Motion */
+.reduce-motion *,
+.reduce-motion *::before,
+.reduce-motion *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
+/* Larger Text */
+.larger-text {
+  font-size: 112.5%; /* 18px base instead of 16px */
+}
+
+.larger-text .text-xs {
+  font-size: 0.8125rem; /* 13px */
+}
+
+.larger-text .text-sm {
+  font-size: 0.9375rem; /* 15px */
+}
+
+/* High Contrast Mode */
+.high-contrast {
+  --foreground: 0 0% 100%;
+  --background: 0 0% 0%;
+  --border: 0 0% 100%;
+  --muted-foreground: 0 0% 80%;
+}
+
+.high-contrast .dark {
+  --foreground: 0 0% 100%;
+  --background: 0 0% 0%;
+  --border: 0 0% 100%;
+}
+
+.high-contrast *:focus {
+  outline: 3px solid hsl(var(--accent)) !important;
+  outline-offset: 2px !important;
+}
+
+/* Compact Mode */
+.compact {
+  --spacing-multiplier: 0.75;
+}
+
+.compact .p-4 {
+  padding: 0.75rem;
+}
+
+.compact .p-6 {
+  padding: 1rem;
+}
+
+.compact .p-8 {
+  padding: 1.5rem;
+}
+
+.compact .py-4 {
+  padding-top: 0.75rem;
+  padding-bottom: 0.75rem;
+}
+
+.compact .py-5 {
+  padding-top: 0.875rem;
+  padding-bottom: 0.875rem;
+}
+
+.compact .mb-4 {
+  margin-bottom: 0.75rem;
+}
+
+.compact .mb-6 {
+  margin-bottom: 1rem;
+}
+
+.compact .mb-8 {
+  margin-bottom: 1.5rem;
+}
+
+.compact .gap-4 {
+  gap: 0.75rem;
+}
+
+.compact .gap-6 {
+  gap: 1rem;
+}
+
+.compact .gap-8 {
+  gap: 1.5rem;
+}
+
+/* ========================================
+   LIGHT MODE COMPONENT OVERRIDES
+   For components that use hardcoded bg-black
+   ======================================== */
+
+/* Light mode: replace bg-black with light background */
+:root:not(.dark) .bg-black {
+  background-color: hsl(var(--background)) !important;
+}
+
+/* Light mode: invert text colors where needed */
+:root:not(.dark) .text-white {
+  color: hsl(var(--foreground)) !important;
+}
+
+:root:not(.dark) .text-white\/40 {
+  color: hsl(var(--muted-foreground)) !important;
+}
+
+:root:not(.dark) .text-white\/60 {
+  color: hsl(var(--muted-foreground)) !important;
+}
+
+/* Light mode: adjust borders */
+:root:not(.dark) .border-white\/10 {
+  border-color: hsl(var(--border)) !important;
+}
+
+:root:not(.dark) .border-white\/20 {
+  border-color: hsl(var(--border)) !important;
+}
+
+/* Light mode: adjust hover states */
+:root:not(.dark) .hover\:bg-white\/5:hover {
+  background-color: hsl(var(--secondary)) !important;
+}
+
+:root:not(.dark) .hover\:bg-white\/10:hover {
+  background-color: hsl(var(--secondary)) !important;
+}
+
+:root:not(.dark) .bg-white\/5 {
+  background-color: hsl(var(--secondary)) !important;
+}
+
+:root:not(.dark) .bg-white\/\[0\.02\] {
+  background-color: hsl(var(--card)) !important;
+}
+
+/* Light mode: fix emerald colors to use accent */
+:root:not(.dark) .text-emerald-400,
+:root:not(.dark) .text-emerald-500 {
+  color: hsl(var(--accent)) !important;
+}
+
+:root:not(.dark) .bg-emerald-400 {
+  background-color: hsl(var(--accent)) !important;
+}
+
+:root:not(.dark) .border-emerald-400,
+:root:not(.dark) .border-emerald-400\/50 {
+  border-color: hsl(var(--accent)) !important;
+}
+
+:root:not(.dark) .bg-emerald-400\/10,
+:root:not(.dark) .bg-emerald-400\/20 {
+  background-color: hsl(var(--accent) / 0.15) !important;
+}
+
+/* ========================================
+   ANIMATION UTILITIES
+   ======================================== */
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.animate-in {
+  animation: fade-in 0.3s ease-out;
+}
+
+.fade-in {
+  animation-name: fade-in;
+}
+
+.duration-300 {
+  animation-duration: 300ms;
+}
