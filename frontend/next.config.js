@@ -5,25 +5,8 @@ const nextConfig = {
   // Transpile Three.js packages for better compatibility
   transpilePackages: ['three', '@react-three/fiber', '@react-three/drei'],
 
-  webpack: (config, { isServer }) => {
-    // Fix for React Three Fiber
-    if (!isServer) {
-      config.resolve.alias = {
-        ...config.resolve.alias,
-        react: require.resolve('react'),
-        'react-dom': require.resolve('react-dom'),
-      };
-    }
-
-    // Handle .glsl, .vs, .fs shader files for Three.js
-    config.module.rules.push({
-      test: /\.(glsl|vs|fs|vert|frag)$/,
-      exclude: /node_modules/,
-      use: ['raw-loader'],
-    });
-
-    return config;
-  },
+  // Empty turbopack config to enable Turbopack (default in Next.js 16)
+  turbopack: {},
 
   async headers() {
     return [
