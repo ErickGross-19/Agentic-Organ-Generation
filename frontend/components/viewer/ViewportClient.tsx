@@ -30,23 +30,53 @@ export function ViewportClient({ meshData, isLoading }: ViewportProps) {
   useEffect(() => {
     // Only load Three.js on the client side
     if (typeof window !== 'undefined') {
+      console.log('ViewportClient: Starting to load Three.js modules...');
+
       Promise.all([
         import('@react-three/fiber').then(mod => {
+          console.log('ViewportClient: Loaded @react-three/fiber');
           Canvas = mod.Canvas;
+        }).catch(err => {
+          console.error('ViewportClient: Failed to load @react-three/fiber:', err);
+          throw err;
         }),
         import('@react-three/drei').then(mod => {
+          console.log('ViewportClient: Loaded @react-three/drei');
           OrbitControls = mod.OrbitControls;
           Grid = mod.Grid;
           Center = mod.Center;
           Environment = mod.Environment;
+        }).catch(err => {
+          console.error('ViewportClient: Failed to load @react-three/drei:', err);
+          throw err;
         }),
-        import('./ScaffoldMesh').then(mod => setScaffoldMesh(() => mod.ScaffoldMesh)),
-        import('./ViewControls').then(mod => setViewControls(() => mod.ViewControls)),
-        import('./VascularOverlay').then(mod => setVascularOverlay(() => mod.VascularOverlay)),
+        import('./ScaffoldMesh').then(mod => {
+          console.log('ViewportClient: Loaded ScaffoldMesh');
+          setScaffoldMesh(() => mod.ScaffoldMesh);
+        }).catch(err => {
+          console.error('ViewportClient: Failed to load ScaffoldMesh:', err);
+          throw err;
+        }),
+        import('./ViewControls').then(mod => {
+          console.log('ViewportClient: Loaded ViewControls');
+          setViewControls(() => mod.ViewControls);
+        }).catch(err => {
+          console.error('ViewportClient: Failed to load ViewControls:', err);
+          throw err;
+        }),
+        import('./VascularOverlay').then(mod => {
+          console.log('ViewportClient: Loaded VascularOverlay');
+          setVascularOverlay(() => mod.VascularOverlay);
+        }).catch(err => {
+          console.error('ViewportClient: Failed to load VascularOverlay:', err);
+          throw err;
+        }),
       ]).then(() => {
+        console.log('ViewportClient: All modules loaded successfully!');
         setThreejsLoaded(true);
       }).catch(err => {
-        console.error('Failed to load Three.js:', err);
+        console.error('ViewportClient: Failed to load Three.js modules:', err);
+        console.error('ViewportClient: Error details:', err.message, err.stack);
       });
     }
   }, []);
