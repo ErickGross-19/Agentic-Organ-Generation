@@ -65,6 +65,10 @@ const SCAFFOLD_TYPES: { value: ScaffoldType; label: string; description: string 
   { value: ScaffoldType.ORGAN_ON_CHIP, label: 'Organ-on-Chip', description: 'Microfluidic organ model' },
   { value: ScaffoldType.GRADIENT_SCAFFOLD, label: 'Gradient Scaffold', description: 'Spatially graded properties' },
   { value: ScaffoldType.PERFUSABLE_NETWORK, label: 'Perfusable Network', description: 'Flow-optimized channel system' },
+
+  // Advanced Vascular (2) - AOG-powered
+  { value: ScaffoldType.SPACE_COLONIZATION, label: 'Space Colonization', description: 'Organic vascular growth algorithm (AOG)' },
+  { value: ScaffoldType.BIFURCATING_TREE, label: 'Bifurcating Tree', description: 'Regular geometric branching tree (AOG)' },
 ];
 
 interface ScaffoldTypeSelectorProps {
