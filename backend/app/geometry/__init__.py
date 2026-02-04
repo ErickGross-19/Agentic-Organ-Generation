@@ -95,16 +95,6 @@ from .primitives import (
     MODIFICATIONS,
 )
 
-# New primitives module exports (registry-based)
-from .primitives import (
-    get_primitive,
-    list_primitives,
-    get_schema,
-    get_all_schemas,
-    evaluate_csg_tree,
-    apply_transforms,
-    PRIMITIVES,
-)
 from .tubular import (
     TubularConduitParams,
     generate_tubular_conduit,
@@ -290,14 +280,6 @@ __all__ = [
     "generate_primitive_from_dict",
     "SHAPE_CREATORS",
     "MODIFICATIONS",
-    # New primitives module (registry-based)
-    "get_primitive",
-    "list_primitives",
-    "get_schema",
-    "get_all_schemas",
-    "evaluate_csg_tree",
-    "apply_transforms",
-    "PRIMITIVES",
     # Tubular conduit
     "TubularConduitParams",
     "generate_tubular_conduit",
