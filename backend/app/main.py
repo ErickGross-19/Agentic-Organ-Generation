@@ -6,7 +6,7 @@ from starlette.requests import Request
 from app.config import get_settings
 from app.api.scaffolds import router as scaffolds_router
 from app.api.chat import router as chat_router
-from app.api.vision import router as vision_router
+# from app.api.vision import router as vision_router  # Module not available
 from app.db.database import init_db
 from app.api import auth, saved_scaffolds
 from app.core.logging import get_logger
@@ -55,7 +55,7 @@ app.add_middleware(SecurityHeadersMiddleware)
 # Include routers
 app.include_router(scaffolds_router)
 app.include_router(chat_router)
-app.include_router(vision_router)
+# app.include_router(vision_router)  # Module not available
 app.include_router(auth.router)
 app.include_router(saved_scaffolds.router)
 
@@ -77,7 +77,6 @@ async def root():
         "endpoints": {
             "scaffolds": "/api/generate, /api/preview, /api/validate, /api/export/{id}, /api/presets",
             "chat": "/api/chat",
-            "vision": "/api/vision/analyze, /api/vision/status",
             "health": "/health",
         },
     }
