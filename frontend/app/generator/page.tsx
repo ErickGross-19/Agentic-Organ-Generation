@@ -2,8 +2,14 @@
 
 import { useCallback, useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { ViewportClient } from '@/components/viewer/ViewportClient';
+import dynamic from 'next/dynamic';
 import { ParameterPanel } from '@/components/controls';
+
+// Dynamic import to avoid SSR issues with Three.js (Next.js 15)
+const Viewport = dynamic(
+  () => import('@/components/viewer/Viewport').then(mod => ({ default: mod.Viewport })),
+  { ssr: false }
+);
 import { ChatPanel } from '@/components/chat';
 import { ExportPanel } from '@/components/export';
 import { useScaffoldStore, useChatStore } from '@/lib/store';
@@ -206,7 +212,7 @@ export default function GeneratorPage() {
         <div className="flex-1 flex flex-col overflow-hidden p-4 gap-4 bg-gradient-to-br from-slate-950 via-slate-900 to-emerald-950">
           {/* 3D Viewport */}
           <div className="flex-1 min-h-0">
-            <ViewportClient
+            <Viewport
               meshData={meshData || undefined}
               isLoading={isGenerating}
             />

@@ -2,12 +2,8 @@
 const nextConfig = {
   reactStrictMode: true,
 
-  // Exclude Three.js packages from server-side bundling (Next.js 16+)
-  // Note: Cannot use transpilePackages with serverExternalPackages for same packages
-  serverExternalPackages: ['three', '@react-three/fiber', '@react-three/drei'],
-
-  // Empty turbopack config to enable Turbopack (default in Next.js 16)
-  turbopack: {},
+  // Transpile Three.js packages for Next.js 15 compatibility
+  transpilePackages: ['three'],
 
   async headers() {
     return [
