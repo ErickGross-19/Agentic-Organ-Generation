@@ -1,23 +1,29 @@
 'use client';
 
-import { useCallback, useState, useEffect } from 'react';
+import { useCallback, useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { ParameterPanel } from '@/components/controls';
 
-// Dynamic import to avoid SSR issues with Three.js (Next.js 15)
 const Viewport = dynamic(
   () => import('@/components/viewer/Viewport').then(mod => ({ default: mod.Viewport })),
   { ssr: false }
 );
 import { ChatPanel } from '@/components/chat';
+import type { PipelineProgressData } from '@/components/chat';
 import { ExportPanel } from '@/components/export';
+import { SpecViewer } from '@/components/designspec';
 import { useScaffoldStore, useChatStore } from '@/lib/store';
 import { useAuthStore } from '@/lib/store/authStore';
 import { usePreferencesStore } from '@/lib/store/preferencesStore';
-import { generateScaffold, exportSTL, downloadBlob, sendChatMessage } from '@/lib/api';
+import {
+  generateScaffold, exportSTL, downloadBlob, sendChatMessage,
+  sendDesignSpecMessage, approveDesignSpecPatch, rejectDesignSpecPatch,
+  createDesignSpecProject, getDesignSpec,
+} from '@/lib/api';
 import { ScaffoldType } from '@/lib/types/scaffolds';
 import { NavHeader } from '@/components/NavHeader';
+import { Workflow, Wrench } from 'lucide-react';
 
 export default function GeneratorPage() {
   const router = useRouter();
@@ -66,6 +72,13 @@ export default function GeneratorPage() {
 
   // Export state
   const [isExporting, setIsExporting] = useState(false);
+
+  // DesignSpec mode state
+  const [mode, setMode] = useState<'scaffold' | 'designspec'>('scaffold');
+  const [designSpec, setDesignSpec] = useState<Record<string, any> | null>(null);
+  const [pipelineProgress, setPipelineProgress] = useState<PipelineProgressData | null>(null);
+  const [isPipelineRunning, setIsPipelineRunning] = useState(false);
+  const designSpecInitialized = useRef(false);
 
   // Get generation timeout from preferences (default 60s)
   const generationTimeout = usePreferencesStore((state) => state.preferences?.generation_timeout_seconds) || 60;
@@ -121,35 +134,59 @@ export default function GeneratorPage() {
     }
   }, [scaffoldId, scaffoldType, generationTimeout]);
 
-  // Handle chat messages
+  // Handle scaffold-mode chat messages
   const handleSendMessage = useCallback(async (message: string) => {
     addMessage({ role: 'user', content: message });
     setChatLoading(true);
 
     try {
-      const response = await sendChatMessage(
-        message,
-        getConversationHistory(),
-        { type: scaffoldType, ...params }
-      );
-
-      addMessage({
-        role: 'assistant',
-        content: response.message,
-        suggestions: response.suggestions,
-      });
-
-      setSuggestions(response.suggestions);
-
-      // If action is generate, update params and generate
-      if (response.action === 'generate' && response.suggested_params) {
-        const { type, ...newParams } = response.suggested_params;
-        if (type && type !== scaffoldType) {
-          setScaffoldType(type as ScaffoldType);
+      if (mode === 'designspec') {
+        if (!designSpecInitialized.current) {
+          await createDesignSpecProject('web-session');
+          designSpecInitialized.current = true;
         }
-        setParams({ ...params, ...newParams });
-        // Auto-generate after param update
-        setTimeout(() => handleGenerate(), 100);
+
+        const dsResponse = await sendDesignSpecMessage(message);
+
+        const assistantContent = dsResponse.messages.join('\n\n') || 'Processing...';
+        const patches = dsResponse.patches.map(p => ({
+          patch_id: p.patch_id,
+          description: p.description,
+          diff: p.diff,
+        }));
+
+        addMessage({
+          role: 'assistant',
+          content: assistantContent,
+          patches: patches.length > 0 ? patches : undefined,
+        });
+
+        if (dsResponse.spec) {
+          setDesignSpec(dsResponse.spec);
+        }
+      } else {
+        const response = await sendChatMessage(
+          message,
+          getConversationHistory(),
+          { type: scaffoldType, ...params }
+        );
+
+        addMessage({
+          role: 'assistant',
+          content: response.message,
+          suggestions: response.suggestions,
+        });
+
+        setSuggestions(response.suggestions);
+
+        if (response.action === 'generate' && response.suggested_params) {
+          const { type, ...newParams } = response.suggested_params;
+          if (type && type !== scaffoldType) {
+            setScaffoldType(type as ScaffoldType);
+          }
+          setParams({ ...params, ...newParams });
+          setTimeout(() => handleGenerate(), 100);
+        }
       }
     } catch (error) {
       console.error('Chat failed:', error);
@@ -160,8 +197,52 @@ export default function GeneratorPage() {
     } finally {
       setChatLoading(false);
     }
-  }, [addMessage, setChatLoading, getConversationHistory, scaffoldType, params,
+  }, [mode, addMessage, setChatLoading, getConversationHistory, scaffoldType, params,
       setSuggestions, setScaffoldType, setParams, handleGenerate]);
+
+  const handleApprovePatch = useCallback(async (patchId: string) => {
+    setChatLoading(true);
+    try {
+      const result = await approveDesignSpecPatch(patchId);
+      if (result.spec) {
+        setDesignSpec(result.spec);
+      }
+      addMessage({
+        role: 'assistant',
+        content: `Patch applied successfully.`,
+      });
+    } catch (error) {
+      console.error('Patch approval failed:', error);
+    } finally {
+      setChatLoading(false);
+    }
+  }, [addMessage, setChatLoading]);
+
+  const handleRejectPatch = useCallback(async (patchId: string, reason: string) => {
+    setChatLoading(true);
+    try {
+      await rejectDesignSpecPatch(patchId, reason);
+      addMessage({
+        role: 'assistant',
+        content: `Patch rejected.${reason ? ` Reason: ${reason}` : ''}`,
+      });
+    } catch (error) {
+      console.error('Patch rejection failed:', error);
+    } finally {
+      setChatLoading(false);
+    }
+  }, [addMessage, setChatLoading]);
+
+  const handleRefreshSpec = useCallback(async () => {
+    try {
+      const result = await getDesignSpec();
+      if (result.spec) {
+        setDesignSpec(result.spec);
+      }
+    } catch {
+      // spec not available yet
+    }
+  }, []);
 
   // Handle scaffold type change
   const handleScaffoldTypeChange = useCallback((type: ScaffoldType) => {
@@ -176,41 +257,87 @@ export default function GeneratorPage() {
     <div className="h-screen flex flex-col bg-black">
       <NavHeader currentPage="generator" />
 
+      {/* Mode Toggle */}
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-emerald-500/20 bg-black/50">
+        <button
+          onClick={() => setMode('scaffold')}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+            mode === 'scaffold'
+              ? 'bg-emerald-600 text-white'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800'
+          }`}
+        >
+          <Wrench className="w-4 h-4" />
+          Direct Generate
+        </button>
+        <button
+          onClick={() => setMode('designspec')}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+            mode === 'designspec'
+              ? 'bg-purple-600 text-white'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800'
+          }`}
+        >
+          <Workflow className="w-4 h-4" />
+          DesignSpec Agent
+        </button>
+      </div>
+
       {/* Main content */}
       <div className="flex-1 flex overflow-hidden">
         {/* Left sidebar */}
         <aside className="w-80 border-r border-emerald-500/20 flex flex-col overflow-hidden shrink-0 bg-black/50">
-          {/* Parameter Panel */}
-          <div className="flex-1 overflow-y-auto">
-            <ParameterPanel
-              scaffoldType={scaffoldType}
-              onScaffoldTypeChange={handleScaffoldTypeChange}
-              params={params}
-              onParamsChange={setParams}
-              onGenerate={handleGenerate}
-              onReset={resetParams}
-              isGenerating={isGenerating}
-              invert={invert}
-              onInvertChange={setInvert}
-              previewMode={previewMode}
-              onPreviewModeChange={setPreviewMode}
-            />
-          </div>
-
-          {/* Chat Panel */}
-          <div className="border-t border-emerald-500/20">
-            <ChatPanel
-              messages={messages}
-              onSendMessage={handleSendMessage}
-              isLoading={chatLoading}
-              suggestions={suggestions}
-            />
-          </div>
+          {mode === 'scaffold' ? (
+            <>
+              <div className="flex-1 overflow-y-auto">
+                <ParameterPanel
+                  scaffoldType={scaffoldType}
+                  onScaffoldTypeChange={handleScaffoldTypeChange}
+                  params={params}
+                  onParamsChange={setParams}
+                  onGenerate={handleGenerate}
+                  onReset={resetParams}
+                  isGenerating={isGenerating}
+                  invert={invert}
+                  onInvertChange={setInvert}
+                  previewMode={previewMode}
+                  onPreviewModeChange={setPreviewMode}
+                />
+              </div>
+              <div className="border-t border-emerald-500/20">
+                <ChatPanel
+                  messages={messages}
+                  onSendMessage={handleSendMessage}
+                  isLoading={chatLoading}
+                  suggestions={suggestions}
+                  mode="scaffold"
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="p-3 border-b border-emerald-500/20">
+                <SpecViewer spec={designSpec} />
+              </div>
+              <div className="flex-1 overflow-hidden">
+                <ChatPanel
+                  messages={messages}
+                  onSendMessage={handleSendMessage}
+                  isLoading={chatLoading}
+                  suggestions={suggestions}
+                  mode="designspec"
+                  onApprovePatch={handleApprovePatch}
+                  onRejectPatch={handleRejectPatch}
+                  pipelineProgress={pipelineProgress}
+                  isPipelineRunning={isPipelineRunning}
+                />
+              </div>
+            </>
+          )}
         </aside>
 
         {/* Right content area */}
         <div className="flex-1 flex flex-col overflow-hidden p-4 gap-4 bg-gradient-to-br from-slate-950 via-slate-900 to-emerald-950">
-          {/* 3D Viewport */}
           <div className="flex-1 min-h-0">
             <Viewport
               meshData={meshData || undefined}
@@ -218,7 +345,6 @@ export default function GeneratorPage() {
             />
           </div>
 
-          {/* Export Panel */}
           <div className="h-auto shrink-0">
             <ExportPanel
               scaffoldId={scaffoldId}
