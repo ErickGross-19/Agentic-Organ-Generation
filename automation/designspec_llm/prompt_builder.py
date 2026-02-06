@@ -236,11 +236,32 @@ Components define vascular networks within domains. Each component MUST have:
 **Valid build types:**
 1. `"backend_network"` - Generate vascular network using a backend algorithm
 2. `"primitive_channels"` - Create simple channel/tube geometry from ports
+3. `"manifold_generator"` - Generate scaffold geometry using a MorphoStruct manifold generator (41 types available)
 
 **Valid backends (for backend_network build type):**
 1. `"space_colonization"` - Organic tree growth using attractor points (RECOMMENDED for organic branching)
 2. `"scaffold_topdown"` - Recursive bifurcating tree structure (RECOMMENDED for regular trees)
 3. `"programmatic"` - DSL-based explicit topology definition
+
+**Valid generator_type values (for manifold_generator build type):**
+
+*Original (6):* vascular_network, vascular_perfusion_dish, primitive, tubular_conduit, porous_disc, lattice
+
+*Advanced Lattice / TPMS (5):* gyroid, schwarz_p, octet_truss, voronoi, honeycomb
+
+*Skeletal Tissue (7):* trabecular_bone, osteochondral, articular_cartilage, meniscus, tendon_ligament, intervertebral_disc, haversian_bone
+
+*Organ-Specific (6):* hepatic_lobule, cardiac_patch, kidney_tubule, lung_alveoli, pancreatic_islet, liver_sinusoid
+
+*Soft Tissue (4):* multilayer_skin, skeletal_muscle, cornea, adipose_tissue
+
+*Tubular Organs (5):* blood_vessel, nerve_conduit, spinal_cord, bladder, trachea
+
+*Dental / Craniofacial (3):* dentin_pulp, ear_auricle, nasal_septum
+
+*Microfluidic (3):* organ_on_chip, gradient_scaffold, perfusable_network
+
+*Vascular Backends (2):* space_colonization, top_down_scaffold
 
 ### Port Schema (CRITICAL - All fields required)
 
@@ -297,7 +318,32 @@ Each port (inlet or outlet) MUST have ALL of these fields:
 }
 ```
 
-**Example 2: Tapered Channels (primitive_channels) - REQUIRES channels policy**
+**Example 2: Manifold Generator (trabecular_bone scaffold)**
+```json
+{
+  "id": "bone_scaffold",
+  "domain_ref": "box_domain",
+  "ports": {
+    "inlets": [],
+    "outlets": []
+  },
+  "build": {
+    "type": "manifold_generator",
+    "generator_type": "trabecular_bone",
+    "generator_params": {
+      "width": 10.0,
+      "height": 10.0,
+      "depth": 10.0,
+      "porosity": 0.7,
+      "trabecular_thickness": 0.3
+    }
+  }
+}
+```
+
+Note: The `manifold_generator` build type does NOT require ports (they can be empty). Parameters are generator-specific and passed in `generator_params`. Unit conversion from mm to m is automatic.
+
+**Example 3: Tapered Channels (primitive_channels) - REQUIRES channels policy**
 
 When using `primitive_channels` build type, you MUST configure the `channels` policy in the `policies` section.
 
@@ -1055,8 +1101,8 @@ Ridges are configured in `policies/ridge`, NOT in a top-level `features` section
 3. **Incorrect units** - All dimensions MUST be in meters (input_units: "m"). Millimeters are NOT supported.
 4. **Missing domain_ref in components** - Components must reference a valid domain by name
 5. **Missing required port fields** - Every port needs: name, position, direction, radius, vessel_type
-6. **Invalid build type** - Only use: "backend_network" or "primitive_channels"
-7. **Invalid backend** - Only use: "space_colonization", "scaffold_topdown", or "programmatic"
+6. **Invalid build type** - Only use: "backend_network", "primitive_channels", or "manifold_generator"
+7. **Invalid backend** - Only use: "space_colonization", "scaffold_topdown", or "programmatic" (for backend_network type). For manifold_generator, use `generator_type` instead of `backend`.
 8. **Invalid vessel_type** - Only use: "arterial" or "venous"
 9. **Wrong direction vector** - For inlets on top face (+z), direction should be [0, 0, -1] (pointing down into domain)
 10. **Position outside domain** - Port positions must be on or near the domain boundary
@@ -1289,6 +1335,7 @@ Before proposing patches for a new structure, ask guiding questions to understan
    - Space colonization (organic branching network)
    - Scaffold topdown (recursive bifurcating tree)
    - Programmatic (DSL-based explicit topology)
+   - Manifold generator (41 specialized scaffold types: bone, organ, soft tissue, lattice, tubular, dental, microfluidic)
 4. **Features**: Do you need ridges around any faces? Any specific policies?
 
 ### Example Guiding Flow

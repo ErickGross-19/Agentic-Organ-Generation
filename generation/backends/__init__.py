@@ -4,6 +4,7 @@ Backend interfaces for vascular network generation.
 This module provides a unified interface for different generation methods:
 - CCO hybrid backend (Sexton-style accelerated)
 - Space colonization backend (wrapper for existing ops)
+- Manifold backend (bridge to 41 MorphoStruct geometry generators)
 
 Backend Registration Pattern:
 - Backends are registered with their capabilities (dual_tree, closed_loop support)
@@ -51,6 +52,15 @@ except Exception as e:
     _BACKEND_LOAD_ERRORS["scaffold_topdown"] = f"Unexpected error: {e}"
     ScaffoldTopDownBackend = None
     ScaffoldTopDownConfig = None
+
+try:
+    from .manifold_backend import ManifoldBackend
+except ImportError as e:
+    _BACKEND_LOAD_ERRORS["manifold"] = f"Import failed: {e}"
+    ManifoldBackend = None
+except Exception as e:
+    _BACKEND_LOAD_ERRORS["manifold"] = f"Unexpected error: {e}"
+    ManifoldBackend = None
 
 
 def get_available_backends() -> List[str]:
@@ -150,6 +160,7 @@ __all__ = [
     "SpaceColonizationConfig",
     "ScaffoldTopDownBackend",
     "ScaffoldTopDownConfig",
+    "ManifoldBackend",
     "get_available_backends",
     "get_backend",
     "get_backend_config",

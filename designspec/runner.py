@@ -375,6 +375,7 @@ class DesignSpecRunner:
             DomainMeshingPolicy,
             RidgePolicy,
             NetworkCleanupPolicy,
+            ManifoldGeneratorPolicy,
         )
         
         warnings = []
@@ -417,6 +418,7 @@ class DesignSpecRunner:
             "domain_meshing": DomainMeshingPolicy,
             "ridge": RidgePolicy,
             "network_cleanup": NetworkCleanupPolicy,
+            "manifold_generator": ManifoldGeneratorPolicy,
         }
         
         for policy_name, policy_dict in self.spec.policies.items():
@@ -803,7 +805,16 @@ class DesignSpecRunner:
                 self._component_voids[component_id] = void_mesh
                 metadata["vertex_count"] = len(void_mesh.vertices)
                 metadata["face_count"] = len(void_mesh.faces)
-                
+
+            elif build_type == "manifold_generator":
+                void_mesh, mg_report = self._build_manifold_generator(
+                    build, component_id
+                )
+                self._component_voids[component_id] = void_mesh
+                metadata["vertex_count"] = len(void_mesh.vertices)
+                metadata["face_count"] = len(void_mesh.faces)
+                metadata.update(mg_report.metadata)
+
             else:
                 return StageReport(
                     stage=f"{Stage.COMPONENT_BUILD.value}:{component_id}",
@@ -1655,6 +1666,43 @@ class DesignSpecRunner:
         
         return void_mesh, report
     
+    def _build_manifold_generator(
+        self, build: Dict[str, Any], component_id: str
+    ) -> "Tuple[trimesh.Trimesh, StageReport]":
+        """Build a scaffold using a MorphoStruct manifold generator.
+
+        Reads ``generator_type`` and ``generator_params`` from the build
+        dict, falling back to values from the compiled
+        ``ManifoldGeneratorPolicy`` if present.
+        """
+        from generation.backends.manifold_backend import ManifoldBackend
+
+        generator_type = build.get("generator_type", "")
+        generator_params = build.get("generator_params", {})
+        convert_units = build.get("convert_units", True)
+
+        manifold_policy = self._compiled_policies.get("manifold_generator")
+        if manifold_policy is not None and hasattr(manifold_policy, "generator_type"):
+            if not generator_type:
+                generator_type = manifold_policy.generator_type
+            if not generator_params:
+                generator_params = manifold_policy.generator_params
+            convert_units = manifold_policy.convert_units
+
+        backend = ManifoldBackend()
+        mesh, stats = backend.generate(
+            generator_type=generator_type,
+            params=generator_params,
+            convert_units=convert_units,
+        )
+
+        report = StageReport(
+            stage=f"{Stage.COMPONENT_BUILD.value}:{component_id}",
+            success=True,
+            metadata=stats,
+        )
+        return mesh, report
+
     def _import_void_mesh(self, build: Dict[str, Any]) -> "trimesh.Trimesh":
         """Import a void mesh from file."""
         import trimesh

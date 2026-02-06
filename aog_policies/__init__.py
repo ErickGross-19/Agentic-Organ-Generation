@@ -76,6 +76,10 @@ from .space_colonization import (
     SpaceColonizationPolicy,
 )
 
+from .manifold import (
+    ManifoldGeneratorPolicy,
+)
+
 __all__ = [
     # Base
     "OperationReport",
@@ -122,4 +126,6 @@ __all__ = [
     "PortPreservationPolicy",
     # Space colonization policy
     "SpaceColonizationPolicy",
+    # Manifold generator policy
+    "ManifoldGeneratorPolicy",
 ]
