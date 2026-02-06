@@ -1,15 +1,61 @@
+# Python
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv/
 *.egg-info/
 dist/
 build/
 .eggs/
 *.egg
+
+# Node
+node_modules/
+.next/
+out/
+.turbo/
+npm-debug.log*
+.pnpm-debug.log*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env*.local
+
+# Logs
+logs/
+*.log
+
+# Cache
+.cache/
 .pytest_cache/
 .coverage
 htmlcov/
-.env
-.venv/
-venv/
+
+# Build artifacts
+*.stl
+*.obj
+*.ply
+output/
+exports/
+
+# AOG specific
+*.pkl
+*.npy
 
