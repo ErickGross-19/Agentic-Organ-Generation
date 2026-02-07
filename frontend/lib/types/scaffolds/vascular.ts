@@ -57,7 +57,7 @@ export interface SpaceColonizationParams extends BaseParams {
 
 export const DEFAULT_SPACE_COLONIZATION: SpaceColonizationParams = {
   type: ScaffoldType.SPACE_COLONIZATION,
-  resolution: 'medium',
+  resolution: 16,
 
   // Inlets
   inlets: [{
@@ -140,7 +140,7 @@ export interface BifurcatingTreeParams extends BaseParams {
 
 export const DEFAULT_BIFURCATING_TREE: BifurcatingTreeParams = {
   type: ScaffoldType.BIFURCATING_TREE,
-  resolution: 'medium',
+  resolution: 16,
 
   // Root
   root_position: [0.0, 0.0, 0.001],

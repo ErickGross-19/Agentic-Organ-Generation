@@ -16,6 +16,7 @@ export interface Preferences {
 
   // Provider settings
   default_provider?: 'openai' | 'anthropic' | 'custom';
+  custom_endpoint?: string;
 
   // Appearance additions
   accent_color?: 'emerald' | 'blue' | 'purple' | 'orange' | 'pink';
