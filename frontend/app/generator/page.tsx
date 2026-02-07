@@ -19,7 +19,7 @@ import { usePreferencesStore } from '@/lib/store/preferencesStore';
 import {
   generateScaffold, exportSTL, downloadBlob, sendChatMessage,
   sendDesignSpecMessage, approveDesignSpecPatch, rejectDesignSpecPatch,
-  createDesignSpecProject, getDesignSpec,
+  createDesignSpecProject,
 } from '@/lib/api';
 import { ScaffoldType } from '@/lib/types/scaffolds';
 import { NavHeader } from '@/components/NavHeader';
@@ -213,6 +213,10 @@ export default function GeneratorPage() {
       });
     } catch (error) {
       console.error('Patch approval failed:', error);
+      addMessage({
+        role: 'assistant',
+        content: 'Failed to apply patch. Please try again.',
+      });
     } finally {
       setChatLoading(false);
     }
@@ -228,21 +232,14 @@ export default function GeneratorPage() {
       });
     } catch (error) {
       console.error('Patch rejection failed:', error);
+      addMessage({
+        role: 'assistant',
+        content: 'Failed to reject patch. Please try again.',
+      });
     } finally {
       setChatLoading(false);
     }
   }, [addMessage, setChatLoading]);
-
-  const handleRefreshSpec = useCallback(async () => {
-    try {
-      const result = await getDesignSpec();
-      if (result.spec) {
-        setDesignSpec(result.spec);
-      }
-    } catch {
-      // spec not available yet
-    }
-  }, []);
 
   // Handle scaffold type change
   const handleScaffoldTypeChange = useCallback((type: ScaffoldType) => {
