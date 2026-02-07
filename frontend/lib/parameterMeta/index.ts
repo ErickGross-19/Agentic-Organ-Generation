@@ -91,6 +91,8 @@ export function getScaffoldTypeLabel(type: ScaffoldType): string {
     [ScaffoldType.ORGAN_ON_CHIP]: 'Organ-on-Chip',
     [ScaffoldType.GRADIENT_SCAFFOLD]: 'Gradient Scaffold',
     [ScaffoldType.PERFUSABLE_NETWORK]: 'Perfusable Network',
+    [ScaffoldType.SPACE_COLONIZATION]: 'Space Colonization',
+    [ScaffoldType.BIFURCATING_TREE]: 'Bifurcating Tree',
   };
   return labels[type] || type;
 }

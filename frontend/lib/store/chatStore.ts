@@ -1,4 +1,6 @@
 import { create } from 'zustand';
+import type { PatchData } from '@/components/chat/PatchApprovalCard';
+import type { PipelineProgressData } from '@/components/chat/PipelineProgress';
 
 export interface ChatMessage {
   id: string;
@@ -7,6 +9,8 @@ export interface ChatMessage {
   timestamp: Date;
   suggestions?: string[];
   paramsChange?: Record<string, any>;
+  patches?: PatchData[];
+  pipelineProgress?: PipelineProgressData;
 }
 
 interface ChatStore {

@@ -421,9 +421,9 @@ const DEFAULT_PARAMS: Record<ScaffoldType, Record<string, any>> = {
     max_deviation_deg: 70.0,
     radial_resolution: 12,
     random_seed: 42,
-    resolution: 'medium',
+    resolution: 16,
   },
-  [ScaffoldType.BIFURCATING_TREE]: {
+  [ScaffoldType.BIFURCATING_TREE]:{
     root_position: [0.0, 0.0, 0.001],
     root_direction: [0.0, 0.0, -1.0],
     root_radius: 0.0002,
@@ -441,7 +441,7 @@ const DEFAULT_PARAMS: Record<ScaffoldType, Record<string, any>> = {
     length_variation_pct: 15.0,
     radial_resolution: 12,
     random_seed: 42,
-    resolution: 'medium',
+    resolution: 16,
   },
 };
 
