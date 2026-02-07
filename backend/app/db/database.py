@@ -55,3 +55,36 @@ def init_db():
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
         raise
+
+
+def seed_default_user():
+    """Create a default user if none exists (development convenience)."""
+    db = SessionLocal()
+    try:
+        from ..models.user import User, UserPreferences
+        from ..services.auth import get_password_hash
+
+        existing = db.query(User).filter(User.username == "Erick").first()
+        if existing:
+            logger.info("Default user 'Erick' already exists, skipping seed")
+            return
+
+        user = User(
+            username="Erick",
+            email="ErickGross1924@gmail.com",
+            hashed_password=get_password_hash("Abcd1234"),
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+        preferences = UserPreferences(user_id=user.id)
+        db.add(preferences)
+        db.commit()
+
+        logger.info("Default user 'Erick' created successfully")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Failed to seed default user: {e}")
+    finally:
+        db.close()

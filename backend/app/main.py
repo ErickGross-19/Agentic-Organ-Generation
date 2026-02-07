@@ -7,7 +7,7 @@ from app.config import get_settings
 from app.api.scaffolds import router as scaffolds_router
 from app.api.chat import router as chat_router
 from app.api.designspec import router as designspec_router
-from app.db.database import init_db
+from app.db.database import init_db, seed_default_user
 from app.api import auth, saved_scaffolds
 from app.core.logging import get_logger
 
@@ -66,6 +66,7 @@ async def startup_event():
     logger.info(f"App name: {settings.app_name}, Debug: {settings.debug}")
     init_db()
     logger.info("Database initialized successfully")
+    seed_default_user()
 
 
 @app.get("/")
