@@ -1,20 +1,22 @@
 # Test Suite Audit Report
 
-This document summarizes the test suite overhaul for the Agentic-Organ-Generation repository, aligning tests with the new DesignSpec + DesignSpecRunner architecture where all orchestration is policy-controlled via `aog_policies`.
+Test suite organization for the Agentic-Organ-Generation repository, covering the DesignSpec pipeline, generation backends (including ManifoldBackend with 44 generators), FastAPI backend, and LLM agent integration.
 
-## Executive Summary
+## Current Test Suite (71 tests passing)
 
-The test suite has been audited and reorganized to ensure:
-1. Everything is policy-controlled via `aog_policies`
-2. Everything is JSON serializable and runner-orchestratable
-3. Scale/budget behavior works (mm/um, 20um min diameter, budgets, pitch relaxation)
-4. Hierarchical pathfinding is mandatory and correct
-5. Multi-component voids are unioned then embedded once
-6. Embedding preserves ports via voxel recarve
-7. Validity orchestrates checks consistently including open ports
-8. Reports and artifacts are JSON-clean and reproducible
+The test suite validates:
+1. Policy-controlled orchestration via `aog_policies` (including `ManifoldGeneratorPolicy`)
+2. JSON serializable specs and runner output
+3. Scale/budget behavior (mm/um, 20um min diameter, budgets, pitch relaxation)
+4. Hierarchical pathfinding
+5. Multi-component union-before-embed
+6. Port preservation via voxel recarve
+7. Validity checks including open ports
+8. ManifoldBackend generator registry and dispatch
+9. FastAPI DesignSpec bridge endpoints
+10. LLM prompt scaffold type coverage (all 44 types)
 
-## New Test Taxonomy
+## Test Taxonomy
 
 ```
 tests/
@@ -25,6 +27,9 @@ tests/
   quality/             # Targeted code hygiene for runner-critical code only
   legacy_disabled/     # Quarantined tests, not run by default
   fixtures/            # Golden fixtures and test data
+  test_manifold_backend.py       # ManifoldBackend registry, dispatch, all 44 generator types
+  test_designspec_bridge.py      # FastAPI DesignSpec bridge endpoints (message, approve, reject, run)
+  test_prompt_scaffold_types.py  # LLM prompt coverage for all scaffold types
 ```
 
 ## File Categorization
@@ -240,15 +245,15 @@ pytest -q tests/
 
 | Category | File Count | Status |
 |----------|------------|--------|
-| Contract Tests | 5 existing + 2 new = 7 | Keep/Add |
-| Unit Tests | 31 existing + 1 new = 32 | Keep/Add |
-| Integration Tests | 4 existing + 5 new = 9 | Keep/Add |
-| Regression Tests | 2 | Keep |
-| Quality Tests | 2 | Keep |
+| Contract Tests | 7 | Active |
+| Unit Tests | 32 | Active |
+| Integration Tests | 9 | Active |
+| Regression Tests | 2 | Active |
+| Quality Tests | 2 | Active |
+| Backend Tests (ManifoldBackend, Bridge, Prompts) | 3 | Active |
 | Legacy/Quarantine | 2 | Quarantine |
-| Duplicates | 2 | Delete |
 | Non-Runner (Exclude) | 2 | Exclude from gate |
-| **Total** | **57 original → 54 after cleanup + 8 new = 62** | |
+| **Total** | **~71 tests passing** | |
 
 ## Coverage Restoration Notes
 

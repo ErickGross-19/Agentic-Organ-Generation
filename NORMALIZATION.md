@@ -1,10 +1,8 @@
 # DesignSpec Unit Normalization
 
-This document explains how unit conversion works in the DesignSpec pipeline, which keys/paths are considered unitful, how defaults are applied, and how to interpret the audit report.
+How unit conversion works in the DesignSpec pipeline. All geometric values are normalized to **meters** internally. Input units are specified via `meta.input_units` and converted on load.
 
-## Overview
-
-All geometric values in DesignSpec are normalized to **meters** internally. Input units are specified via `meta.input_units` and converted on load. This ensures consistent behavior regardless of the input unit system.
+This applies to all build types: vascular backends (scaffold_topdown, space_colonization, programmatic), primitive channels, and the ManifoldBackend (44 geometry generators). The ManifoldBackend generators receive parameters in the original units and handle conversion internally via `ManifoldGeneratorPolicy`.
 
 ## Supported Input Units
 

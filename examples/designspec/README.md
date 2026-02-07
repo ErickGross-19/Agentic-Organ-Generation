@@ -1,8 +1,8 @@
 # DesignSpec Examples
 
-This directory contains malaria venule insert DesignSpec JSON examples that showcase the capabilities of the Agentic Organ Generation system and serve as runnable "spec fixtures" to exercise the DesignSpec + DesignSpecRunner pipeline.
+Runnable DesignSpec JSON files that exercise the DesignSpec + DesignSpecRunner pipeline. These serve as spec fixtures for testing and as starting points for new designs.
 
-## How to Run an Example
+## How to Run
 
 ### Using the Runner Script
 
@@ -12,139 +12,76 @@ python scripts/run_designspec_example.py --spec examples/designspec/malaria_venu
 python scripts/run_designspec_example.py --spec examples/designspec/malaria_venule_bifurcating_tree.json --out ./output --run-until compile_domains
 ```
 
-### Using Python Directly
+### Using Python
 
 ```python
 from designspec.spec import DesignSpec
 from designspec.runner import DesignSpecRunner
-from designspec.plan import ExecutionPlan
 from pathlib import Path
 
 spec = DesignSpec.from_file("examples/designspec/malaria_venule_bifurcating_tree.json")
-
-output_dir = Path("./output/malaria_venule_bifurcating_tree")
-output_dir.mkdir(parents=True, exist_ok=True)
-
-runner = DesignSpecRunner(spec, output_dir=output_dir)
+runner = DesignSpecRunner(spec, output_dir=Path("./output"))
 result = runner.run()
-
 print(f"Success: {result.success}")
-print(f"Stages completed: {result.stages_completed}")
 ```
 
-## Where Outputs Go
+### Using the Web UI
 
-Each example specifies its output directory in `policies.output.output_dir`. When running via the runner script with `--out`, outputs are placed in:
+1. Start the backend: `cd backend && python run.py`
+2. Start the frontend: `cd frontend && npm run dev`
+3. Open http://localhost:3000
+4. Switch to "DesignSpec Agent" mode
+5. Describe your scaffold in the chat — the LLM agent will create and iterate on DesignSpec JSON
+
+## Output Structure
 
 ```
 <output_dir>/
 ├── artifacts/
-│   ├── <component>_network.json    # Network graph data
-│   ├── <component>_void.stl        # Component void mesh
-│   └── union_void.stl              # Combined void mesh
-├── domain_with_void.stl            # Final embedded domain
-├── void_union.stl                  # Final void mesh
-├── shell.stl                       # Optional shell mesh
-├── run_report.json                 # Execution report
-└── validity_report.json            # Validation results
-```
-
-## What "Success" Means
-
-A successful run produces:
-
-1. **run_report.json**: Contains stage-by-stage execution details, timing, and any warnings
-2. **validity_report.json**: Contains validation results (when validity is enabled)
-3. **Output meshes**: domain_with_void.stl, void_union.stl, and optionally shell.stl
-4. **No fatal errors**: All stages complete without exceptions
-
-The validity report should show:
-- `watertight: true` - The mesh is closed
-- `components: 1` - Single connected component
-- `open_ports: all_open` - All ports are accessible
-- `void_inside_domain: true` - Void is properly contained
-
-## Partial Execution for Debugging
-
-Use the `--run-until` flag to stop at a specific stage:
-
-```bash
-# Stop after domain compilation (fast, tests domain parsing)
-python scripts/run_designspec_example.py --spec example.json --out ./out --run-until compile_domains
-
-# Stop after void union (tests generation without embedding)
-python scripts/run_designspec_example.py --spec example.json --out ./out --run-until union_voids
-
-# Stop after embedding (tests full pipeline without validation)
-python scripts/run_designspec_example.py --spec example.json --out ./out --run-until embed
+│   ├── <component>_network.json
+│   ├── <component>_void.stl
+│   └── union_void.stl
+├── domain_with_void.stl
+├── void_union.stl
+├── shell.stl (optional)
+├── run_report.json
+└── validity_report.json
 ```
 
 ## Malaria Venule Insert Examples
 
-| Example | Description | Backend |
-|---------|-------------|---------|
-| malaria_venule_bifurcating_tree | Bifurcating tree with scaffold_topdown backend, 5 inlets | scaffold_topdown |
-| malaria_venule_bifurcating_tree_with_merge | Bifurcating tree with merge on collision enabled | scaffold_topdown |
-| malaria_venule_control_ridge_only | Control spec: ridged cylinder only, no network/void | none |
-| malaria_venule_vertical_channels | 9 straight tapered vertical channels | primitive_channels |
-| malaria_venule_fang_hook_channels | 9 radial-out fang-hook curved channels | primitive_channels |
-| malaria_venule_space_colonization | Dense multi-inlet space colonization network | space_colonization |
+| Example | Backend | Description |
+|---------|---------|-------------|
+| malaria_venule_bifurcating_tree | scaffold_topdown | 5-inlet bifurcating tree |
+| malaria_venule_bifurcating_tree_with_merge | scaffold_topdown | Bifurcating tree with merge on collision |
+| malaria_venule_control_ridge_only | none | Control spec: ridged cylinder only |
+| malaria_venule_vertical_channels | primitive_channels | 9 straight tapered vertical channels |
+| malaria_venule_fang_hook_channels | primitive_channels | 9 radial-out fang-hook curved channels |
+| malaria_venule_space_colonization | space_colonization | Dense multi-inlet space colonization |
 
-All malaria venule insert examples share common characteristics:
-- Cylinder domain: R=5mm, H=2mm
-- Ridge enabled on top face
-- Multiple inlets for multi-channel flow
-- Consistent composition policies (`keep_largest_component: false`)
+All malaria venule examples use a cylinder domain (R=5mm, H=2mm) with ridge enabled and multiple inlets.
+
+## Available Build Types
+
+These examples use vascular backends. The pipeline also supports `manifold_generator` build type for 44 geometry generators (lattice, skeletal, organ, soft tissue, tubular, dental, microfluidic). See `generation/README.md` for the full list.
 
 ## Backend Status
 
-See `docs/status.md` for the current status of generation backends:
-- **scaffold_topdown**: Active, preferred for bifurcating trees
-- **space_colonization**: Active, recommended for organic growth
-- **programmatic**: Active, for DSL-based generation
-- **kary_tree**: DEPRECATED - use scaffold_topdown instead
-- **cco_hybrid**: BLOCKED - not finished, do not use
-- **NLP optimization**: BLOCKED - not finished, do not use
+See [docs/status.md](../../docs/status.md) for current backend status.
 
-## Running Integration Tests
+## Partial Execution
+
+Use `--run-until` to stop at a specific stage for debugging:
 
 ```bash
-# Run fast smoke tests (CI subset)
-pytest -q tests/integration/test_examples_smoke.py
-
-# Run all examples including slow ones
-pytest -q -m slow tests/integration/test_examples_smoke.py
-
-# Run specific example test
-pytest -q tests/integration/test_examples_smoke.py::test_01_minimal_box_network
+python scripts/run_designspec_example.py --spec example.json --out ./out --run-until compile_domains
+python scripts/run_designspec_example.py --spec example.json --out ./out --run-until union_voids
+python scripts/run_designspec_example.py --spec example.json --out ./out --run-until embed
 ```
 
 ## Design Rules
 
-All examples follow these design rules:
-
-1. **Top-level structure**: schema, meta, policies, domains, components, composition, embedding, validity, outputs
-2. **Deterministic**: Every example includes `meta.seed` for reproducibility
-3. **Fast execution**: Small domains (5-30 mm), low iteration counts, reasonable voxel budgets
-4. **Union-before-embed**: Multi-component examples union all voids before single embedding
-5. **Port preservation**: Uses voxel recarve mode for port preservation
-6. **Validity enabled**: All examples enable validity checking by default
-
-## Troubleshooting
-
-### Common Issues
-
-1. **"max_voxels exceeded"**: The domain is too large for the voxel budget. Either increase `max_voxels` or use a smaller domain.
-
-2. **"pitch relaxation warning"**: The requested pitch was too fine for the voxel budget. The system automatically relaxes the pitch. Check `run_report.json` for the effective pitch used.
-
-3. **"open port validation failed"**: A port is blocked after embedding. Ensure `preserve_mode: "recarve"` is enabled and `carve_depth` is sufficient.
-
-4. **"watertight check failed"**: The mesh has holes. Enable `repair.fill_holes_enabled: true` and `repair.voxel_repair_enabled: true`.
-
-### Getting Help
-
-For issues with examples, check:
-1. The `run_report.json` for stage-by-stage details and warnings
-2. The `validity_report.json` for specific validation failures
-3. The intermediate artifacts in the `artifacts/` directory
+1. **Deterministic**: Every example includes `meta.seed` for reproducibility
+2. **Fast execution**: Small domains, low iteration counts
+3. **Union-before-embed**: Multi-component examples union all voids before embedding
+4. **Validity enabled**: All examples enable validity checking by default

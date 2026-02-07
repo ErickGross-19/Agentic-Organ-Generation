@@ -1,98 +1,49 @@
 # Backend Status
 
-This document describes the current status of generation backends in the AOG system.
+Generation backends available in the AOG system. These are used by the DesignSpec pipeline's `component_build` stage to produce vascular networks and scaffold geometry.
 
-## Active Backends
+## DesignSpec Build Types
 
-### scaffold_topdown (Preferred)
+| Build Type | Backend | Status | Purpose |
+|------------|---------|--------|---------|
+| `scaffold_topdown` | `scaffold_topdown_backend.py` | Active | Recursive top-down bifurcating tree generation with collision avoidance |
+| `space_colonization` | `space_colonization_backend.py` | Active | Attractor-based organic growth, multi-inlet forests |
+| `programmatic` | `programmatic_backend.py` | Active | DSL-based generation with A* pathfinding and waypoints |
+| `primitive_channels` | (inline in runner) | Active | Simple channel geometry (taper, fang-hook profiles) |
+| `manifold_generator` | `manifold_backend.py` | Active | 44 MorphoStruct geometry generators via ManifoldBackend |
 
-The `scaffold_topdown` backend is the recommended choice for generating bifurcating tree structures. It provides:
+## Vascular Backends (Detail)
 
-- Recursive top-down tree generation with configurable branching
-- Online collision avoidance during growth
-- Post-pass collision resolution
-- Support for multiple inlets (forest mode)
-- Configurable cone angles, jitter, and curvature
+### scaffold_topdown (Preferred for Trees)
 
-Use this backend for any bifurcating tree generation needs.
+Recursive top-down tree generation with online collision avoidance, post-pass collision resolution, multiple inlets (forest mode), and configurable cone angles, jitter, and curvature. Used via `GrowthPolicy(backend="scaffold_topdown")`.
 
 ### space_colonization
 
-The `space_colonization` backend implements attractor-based organic growth, suitable for:
-
-- Dense vascular networks
-- Organic-looking tree structures
-- Multi-inlet forest generation with merge support
+Attractor-based organic growth for dense vascular networks. Supports multi-inlet blended and partitioned modes, stall detection, KD-tree caching, and interleaving strategies. See [space_colonization_refactor.md](space_colonization_refactor.md) for the single-step architecture.
 
 ### programmatic
 
-The `programmatic` backend supports DSL-based generation for:
+DSL-based generation for explicit path definitions, waypoint-based routing, and custom network topologies with A* voxel pathfinding.
 
-- Explicit path definitions
-- Waypoint-based routing
-- Custom network topologies
+## ManifoldBackend (44 Generators)
 
-## Deprecated Backends
+The `ManifoldBackend` dispatches to 44 geometry generators from the MorphoStruct integration. Each generator produces manifold3d geometry that is converted to trimesh for the DesignSpec pipeline. Generators are organized by category in `backend/app/geometry/`:
 
-### kary_tree (Deprecated)
+- **Lattice/TPMS**: Gyroid, Schwarz-P, Octet Truss, Voronoi, Honeycomb
+- **Skeletal**: Trabecular Bone, Osteochondral, Haversian Bone, Articular Cartilage, Intervertebral Disc, Meniscus, Tendon/Ligament
+- **Organ**: Hepatic Lobule, Cardiac Patch, Kidney Tubule, Lung Alveoli, Pancreatic Islet, Liver Sinusoid
+- **Soft Tissue**: Multilayer Skin, Skeletal Muscle, Cornea, Adipose
+- **Tubular**: Blood Vessel, Nerve Conduit, Trachea, Spinal Cord, Bladder, Simple Conduit
+- **Dental/Craniofacial**: Dentin-Pulp, Ear Auricle, Nasal Septum
+- **Microfluidic**: Organ-on-Chip, Gradient Scaffold, Perfusable Network
 
-**Status:** DEPRECATED - Will be removed in a future release
+Used via `ManifoldGeneratorPolicy(generator_type="hepatic_lobule", generator_params={...})` in DesignSpec.
 
-**Replacement:** Use `scaffold_topdown` instead
-
-The `kary_tree` backend is deprecated because `scaffold_topdown` provides better collision avoidance and more flexible tree generation. Existing specs using `kary_tree` will continue to work but will emit deprecation warnings.
-
-To migrate, change:
-```json
-{
-  "policies": {
-    "growth": {
-      "backend": "kary_tree"
-    }
-  }
-}
-```
-
-To:
-```json
-{
-  "policies": {
-    "growth": {
-      "backend": "scaffold_topdown"
-    }
-  }
-}
-```
-
-## Blocked/Unfinished Backends
-
-### cco_hybrid (Blocked)
-
-**Status:** NOT FINISHED - Blocked from use
-
-The CCO (Constrained Constructive Optimization) hybrid backend is not yet complete. Attempting to use this backend will result in an error:
-
-```
-CCO backend is not finished; do not use.
-```
-
-### NLP Optimization (Blocked)
-
-**Status:** NOT FINISHED - Blocked from use
-
-NLP (Non-Linear Programming) optimization for bifurcation point selection is not yet complete. Attempting to enable `use_nlp_optimization` in backend_params will result in an error:
-
-```
-NLP optimization is not finished; do not use.
-```
-
-## Summary Table
+## Deprecated / Blocked
 
 | Backend | Status | Notes |
 |---------|--------|-------|
-| scaffold_topdown | Active | Preferred for bifurcating trees |
-| space_colonization | Active | Recommended for organic growth |
-| programmatic | Active | For DSL-based generation |
-| kary_tree | Deprecated | Use scaffold_topdown instead |
-| cco_hybrid | Blocked | Not finished |
-| NLP optimization | Blocked | Not finished |
+| `kary_tree` | Deprecated | Use `scaffold_topdown` instead |
+| `cco_hybrid` | Blocked | Not finished, raises error on use |
+| NLP optimization | Blocked | Not finished, raises error on use |
