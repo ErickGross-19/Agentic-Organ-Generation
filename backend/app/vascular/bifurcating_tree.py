@@ -101,7 +101,6 @@ def generate_bifurcating_tree_from_dict(
         center=[0.0, 0.0, -max_depth/2],
         radius=domain_radius,
         height=domain_height,
-        axis_direction=[0.0, 0.0, 1.0]
     )
 
     # Calculate radius ratio based on mode
