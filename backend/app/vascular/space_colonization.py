@@ -88,7 +88,6 @@ def generate_space_colonization_from_dict(
         center=[0.0, 0.0, 0.0],
         radius=domain_radius,
         height=domain_height,
-        axis_direction=[0.0, 0.0, 1.0]
     )
 
     # Create AOG space colonization config
