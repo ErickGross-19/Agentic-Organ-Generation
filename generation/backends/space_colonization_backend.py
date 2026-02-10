@@ -1151,33 +1151,19 @@ class SpaceColonizationBackend(GenerationBackend):
             bifurcation_angle_threshold_deg=config.bifurcation_angle_threshold_deg,
         )
         
-        active_nodes = [arterial_inlet_node.id]
-        for iteration in range(config.max_iterations // 2):
-            if not arterial_attractors or not active_nodes:
-                break
-            
-            result = space_colonization_step(
-                network=network,
-                attractors=arterial_attractors,
-                active_node_ids=active_nodes,
-                config=sc_config,
-                base_radius=arterial_radius,
-                vessel_type="arterial",
-            )
-            
-            if result.is_success():
-                new_node_ids = result.new_ids.get("nodes", [])
-                consumed = result.metadata.get("consumed_attractors", [])
-                
-                if new_node_ids:
-                    active_nodes = new_node_ids
-                
-                arterial_attractors = [
-                    a for i, a in enumerate(arterial_attractors)
-                    if i not in consumed
-                ]
-            else:
-                break
+        if isinstance(arterial_attractors, list) and arterial_attractors and isinstance(arterial_attractors[0], Point3D):
+            arterial_tp = np.array([[p.x, p.y, p.z] for p in arterial_attractors], dtype=np.float64)
+        else:
+            arterial_tp = np.array(arterial_attractors, dtype=np.float64)
+        
+        _ = space_colonization_step(
+            network=network,
+            tissue_points=arterial_tp,
+            params=sc_config,
+            constraints=None,
+            seed=int(rng.integers(0, 2**31)),
+            seed_nodes=None,
+        )
         
         venous_outlet_point = Point3D.from_array(venous_outlet)
         venous_direction = self._compute_initial_direction(venous_outlet_point, domain)
@@ -1195,39 +1181,24 @@ class SpaceColonizationBackend(GenerationBackend):
         )
         network.add_node(venous_outlet_node)
         
-        # Get venous attractors from the second half
         if tissue_sampling_policy is not None:
             venous_attractors = all_attractor_points[len(all_attractor_points)//2:]
         else:
             venous_attractors = [Point3D.from_array(a) for a in all_attractors[len(all_attractors)//2:]]
         
-        active_nodes = [venous_outlet_node.id]
-        for iteration in range(config.max_iterations // 2):
-            if not venous_attractors or not active_nodes:
-                break
-            
-            result = space_colonization_step(
-                network=network,
-                attractors=venous_attractors,
-                active_node_ids=active_nodes,
-                config=sc_config,
-                base_radius=venous_radius,
-                vessel_type="venous",
-            )
-            
-            if result.is_success():
-                new_node_ids = result.new_ids.get("nodes", [])
-                consumed = result.metadata.get("consumed_attractors", [])
-                
-                if new_node_ids:
-                    active_nodes = new_node_ids
-                
-                venous_attractors = [
-                    a for i, a in enumerate(venous_attractors)
-                    if i not in consumed
-                ]
-            else:
-                break
+        if isinstance(venous_attractors, list) and venous_attractors and isinstance(venous_attractors[0], Point3D):
+            venous_tp = np.array([[p.x, p.y, p.z] for p in venous_attractors], dtype=np.float64)
+        else:
+            venous_tp = np.array(venous_attractors, dtype=np.float64)
+        
+        _ = space_colonization_step(
+            network=network,
+            tissue_points=venous_tp,
+            params=sc_config,
+            constraints=None,
+            seed=int(rng.integers(0, 2**31)),
+            seed_nodes=None,
+        )
         
         self._mark_terminals(network)
         
