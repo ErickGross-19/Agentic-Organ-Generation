@@ -1001,14 +1001,14 @@ class SpaceColonizationBackend(GenerationBackend):
             inlet_radius = state.metadata.get("inlet_radius", 0.002)
             vessel_type = state.metadata.get("vessel_type", "arterial")
             
-            if attractors and active_nodes:
+            if attractors:
                 sc_config = SCParams(
                     influence_radius=config.attraction_distance,
                     kill_radius=config.kill_distance,
                     step_size=config.step_size,
                     min_radius=config.min_radius,
                     taper_factor=config.taper_factor,
-                    max_steps=config.max_steps,
+                    max_steps=1,
                     encourage_bifurcation=config.encourage_bifurcation,
                     max_children_per_node=config.max_children_per_node,
                     bifurcation_probability=config.bifurcation_probability,
@@ -1016,26 +1016,20 @@ class SpaceColonizationBackend(GenerationBackend):
                     bifurcation_angle_threshold_deg=config.bifurcation_angle_threshold_deg,
                 )
                 
-                result = space_colonization_step(
-                    network=state.network,
-                    attractors=attractors,
-                    active_node_ids=active_nodes,
-                    config=sc_config,
-                    base_radius=inlet_radius,
-                    vessel_type=vessel_type,
-                )
+                if isinstance(attractors, list) and attractors and isinstance(attractors[0], Point3D):
+                    tissue_points = np.array([[p.x, p.y, p.z] for p in attractors], dtype=np.float64)
+                else:
+                    tissue_points = np.array(attractors, dtype=np.float64)
                 
-                if result.is_success():
-                    new_node_ids = result.new_ids.get("nodes", [])
-                    consumed_attractors = result.metadata.get("consumed_attractors", [])
-                    
-                    if new_node_ids:
-                        state.metadata["active_nodes"] = new_node_ids
-                    
-                    state.metadata["attractors"] = [
-                        a for i, a in enumerate(attractors)
-                        if i not in consumed_attractors
-                    ]
+                rng = np.random.default_rng(config.seed)
+                _ = space_colonization_step(
+                    network=state.network,
+                    tissue_points=tissue_points,
+                    params=sc_config,
+                    constraints=None,
+                    seed=int(rng.integers(0, 2**31)),
+                    seed_nodes=None,
+                )
             
             state.iteration += 1
         
@@ -1151,33 +1145,19 @@ class SpaceColonizationBackend(GenerationBackend):
             bifurcation_angle_threshold_deg=config.bifurcation_angle_threshold_deg,
         )
         
-        active_nodes = [arterial_inlet_node.id]
-        for iteration in range(config.max_iterations // 2):
-            if not arterial_attractors or not active_nodes:
-                break
-            
-            result = space_colonization_step(
-                network=network,
-                attractors=arterial_attractors,
-                active_node_ids=active_nodes,
-                config=sc_config,
-                base_radius=arterial_radius,
-                vessel_type="arterial",
-            )
-            
-            if result.is_success():
-                new_node_ids = result.new_ids.get("nodes", [])
-                consumed = result.metadata.get("consumed_attractors", [])
-                
-                if new_node_ids:
-                    active_nodes = new_node_ids
-                
-                arterial_attractors = [
-                    a for i, a in enumerate(arterial_attractors)
-                    if i not in consumed
-                ]
-            else:
-                break
+        if isinstance(arterial_attractors, list) and arterial_attractors and isinstance(arterial_attractors[0], Point3D):
+            arterial_tp = np.array([[p.x, p.y, p.z] for p in arterial_attractors], dtype=np.float64)
+        else:
+            arterial_tp = np.array(arterial_attractors, dtype=np.float64)
+        
+        _ = space_colonization_step(
+            network=network,
+            tissue_points=arterial_tp,
+            params=sc_config,
+            constraints=None,
+            seed=int(rng.integers(0, 2**31)),
+            seed_nodes=None,
+        )
         
         venous_outlet_point = Point3D.from_array(venous_outlet)
         venous_direction = self._compute_initial_direction(venous_outlet_point, domain)
@@ -1195,39 +1175,24 @@ class SpaceColonizationBackend(GenerationBackend):
         )
         network.add_node(venous_outlet_node)
         
-        # Get venous attractors from the second half
         if tissue_sampling_policy is not None:
             venous_attractors = all_attractor_points[len(all_attractor_points)//2:]
         else:
             venous_attractors = [Point3D.from_array(a) for a in all_attractors[len(all_attractors)//2:]]
         
-        active_nodes = [venous_outlet_node.id]
-        for iteration in range(config.max_iterations // 2):
-            if not venous_attractors or not active_nodes:
-                break
-            
-            result = space_colonization_step(
-                network=network,
-                attractors=venous_attractors,
-                active_node_ids=active_nodes,
-                config=sc_config,
-                base_radius=venous_radius,
-                vessel_type="venous",
-            )
-            
-            if result.is_success():
-                new_node_ids = result.new_ids.get("nodes", [])
-                consumed = result.metadata.get("consumed_attractors", [])
-                
-                if new_node_ids:
-                    active_nodes = new_node_ids
-                
-                venous_attractors = [
-                    a for i, a in enumerate(venous_attractors)
-                    if i not in consumed
-                ]
-            else:
-                break
+        if isinstance(venous_attractors, list) and venous_attractors and isinstance(venous_attractors[0], Point3D):
+            venous_tp = np.array([[p.x, p.y, p.z] for p in venous_attractors], dtype=np.float64)
+        else:
+            venous_tp = np.array(venous_attractors, dtype=np.float64)
+        
+        _ = space_colonization_step(
+            network=network,
+            tissue_points=venous_tp,
+            params=sc_config,
+            constraints=None,
+            seed=int(rng.integers(0, 2**31)),
+            seed_nodes=None,
+        )
         
         self._mark_terminals(network)
         
