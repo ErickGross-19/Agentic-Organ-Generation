@@ -10,7 +10,8 @@ Usage
     network, stats = run_space_colonization({"num_attractors": 2000, "step_size": 0.003})
 """
 
-import sys, os, time
+import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 

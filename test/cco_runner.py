@@ -10,7 +10,8 @@ Usage
     network, stats = run_cco({"use_nlp_optimization": True, "nlp_solver": "SLSQP"})
 """
 
-import sys, os, time
+import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
