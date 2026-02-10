@@ -1001,14 +1001,14 @@ class SpaceColonizationBackend(GenerationBackend):
             inlet_radius = state.metadata.get("inlet_radius", 0.002)
             vessel_type = state.metadata.get("vessel_type", "arterial")
             
-            if attractors and active_nodes:
+            if attractors:
                 sc_config = SCParams(
                     influence_radius=config.attraction_distance,
                     kill_radius=config.kill_distance,
                     step_size=config.step_size,
                     min_radius=config.min_radius,
                     taper_factor=config.taper_factor,
-                    max_steps=config.max_steps,
+                    max_steps=1,
                     encourage_bifurcation=config.encourage_bifurcation,
                     max_children_per_node=config.max_children_per_node,
                     bifurcation_probability=config.bifurcation_probability,
@@ -1016,26 +1016,20 @@ class SpaceColonizationBackend(GenerationBackend):
                     bifurcation_angle_threshold_deg=config.bifurcation_angle_threshold_deg,
                 )
                 
-                result = space_colonization_step(
-                    network=state.network,
-                    attractors=attractors,
-                    active_node_ids=active_nodes,
-                    config=sc_config,
-                    base_radius=inlet_radius,
-                    vessel_type=vessel_type,
-                )
+                if isinstance(attractors, list) and attractors and isinstance(attractors[0], Point3D):
+                    tissue_points = np.array([[p.x, p.y, p.z] for p in attractors], dtype=np.float64)
+                else:
+                    tissue_points = np.array(attractors, dtype=np.float64)
                 
-                if result.is_success():
-                    new_node_ids = result.new_ids.get("nodes", [])
-                    consumed_attractors = result.metadata.get("consumed_attractors", [])
-                    
-                    if new_node_ids:
-                        state.metadata["active_nodes"] = new_node_ids
-                    
-                    state.metadata["attractors"] = [
-                        a for i, a in enumerate(attractors)
-                        if i not in consumed_attractors
-                    ]
+                rng = np.random.default_rng(config.seed)
+                _ = space_colonization_step(
+                    network=state.network,
+                    tissue_points=tissue_points,
+                    params=sc_config,
+                    constraints=None,
+                    seed=int(rng.integers(0, 2**31)),
+                    seed_nodes=None,
+                )
             
             state.iteration += 1
         
