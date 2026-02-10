@@ -21,6 +21,7 @@ from ..core.types import Point3D, Direction3D
 from ..core.network import VascularNetwork
 from ..core.result import OperationResult, OperationStatus, Delta
 from ..rules.constraints import BranchingConstraints
+from .growth import grow_branch
 
 
 @dataclass
@@ -188,13 +189,15 @@ def space_colonization_step(
             errors=["No terminal nodes"],
         )
     
-    # Handle both Point3D objects and array-like inputs
-    tissue_points_list = [
-        p if isinstance(p, Point3D) else Point3D.from_array(p)
-        for p in tissue_points
-    ]
-    active_tissue_points = set(range(len(tissue_points_list)))
-    initial_count = len(tissue_points_list)
+    if isinstance(tissue_points, np.ndarray) and tissue_points.ndim == 2:
+        tissue_points_array = tissue_points.astype(np.float64, copy=False)
+    else:
+        tissue_points_array = np.array([
+            [p.x, p.y, p.z] if isinstance(p, Point3D) else [p[0], p[1], p[2]]
+            for p in tissue_points
+        ], dtype=np.float64)
+    active_tissue_points = set(range(len(tissue_points_array)))
+    initial_count = len(tissue_points_array)
     
     new_node_ids = []
     new_segment_ids = []
@@ -248,10 +251,7 @@ def space_colonization_step(
             # Get active tissue point positions
             active_tp_indices = list(active_tissue_points)
             if active_tp_indices:
-                active_tp_positions = np.array([
-                    [tissue_points_list[idx].x, tissue_points_list[idx].y, tissue_points_list[idx].z]
-                    for idx in active_tp_indices
-                ])
+                active_tp_positions = tissue_points_array[active_tp_indices]
                 
                 # Query nearest terminal for each active tissue point
                 distances, nearest_indices = terminal_kdtree.query(active_tp_positions, k=1)
@@ -267,8 +267,9 @@ def space_colonization_step(
             if not attractions[node.id]:
                 continue
             
-            attracted_points = [tissue_points_list[idx] for idx in attractions[node.id]]
-            num_attractions = len(attracted_points)
+            attracted_indices = attractions[node.id]
+            attracted_positions = tissue_points_array[attracted_indices]
+            num_attractions = len(attracted_indices)
             
             # Check if bifurcation conditions are met
             should_bifurcate = (
@@ -277,17 +278,11 @@ def space_colonization_step(
             )
             
             if should_bifurcate:
-                # Compute attraction vectors
-                attraction_vectors = []
-                for tp in attracted_points:
-                    direction = np.array([
-                        tp.x - node.position.x,
-                        tp.y - node.position.y,
-                        tp.z - node.position.z,
-                    ])
-                    direction_norm = np.linalg.norm(direction)
-                    if direction_norm > 1e-10:
-                        attraction_vectors.append(direction / direction_norm)
+                node_pos = np.array([node.position.x, node.position.y, node.position.z])
+                raw_dirs = attracted_positions - node_pos
+                dir_norms = np.linalg.norm(raw_dirs, axis=1)
+                valid_mask = dir_norms > 1e-10
+                attraction_vectors = list(raw_dirs[valid_mask] / dir_norms[valid_mask, np.newaxis])
                 
                 if len(attraction_vectors) >= 2:
                     angle_spread = _compute_angle_spread(attraction_vectors)
@@ -309,7 +304,6 @@ def space_colonization_step(
                             else:
                                 child_radii = [parent_radius * params.taper_factor]
                             
-                            from .growth import grow_branch
                             for cluster_idx, cluster in enumerate(clusters):
                                 if cluster_idx >= params.max_children_per_node:
                                     break
@@ -358,17 +352,13 @@ def space_colonization_step(
                             
                             continue
             
-            avg_direction = np.zeros(3)
-            
-            for tp in attracted_points:
-                direction = np.array([
-                    tp.x - node.position.x,
-                    tp.y - node.position.y,
-                    tp.z - node.position.z,
-                ])
-                direction_norm = np.linalg.norm(direction)
-                if direction_norm > 1e-10:
-                    avg_direction += direction / direction_norm
+            node_pos_arr = np.array([node.position.x, node.position.y, node.position.z])
+            raw_directions = attracted_positions - node_pos_arr
+            direction_norms = np.linalg.norm(raw_directions, axis=1)
+            valid = direction_norms > 1e-10
+            if not np.any(valid):
+                continue
+            avg_direction = (raw_directions[valid] / direction_norms[valid, np.newaxis]).sum(axis=0)
             
             if np.linalg.norm(avg_direction) < 1e-10:
                 continue
@@ -396,7 +386,6 @@ def space_colonization_step(
             # This ensures growth continues even when taper would drop below min_radius
             new_radius = max(new_radius, params.min_radius)
             
-            from .growth import grow_branch
             result = grow_branch(
                 network,
                 from_node_id=node.id,
@@ -429,17 +418,13 @@ def space_colonization_step(
         # Use KDTree for efficient kill radius pruning - O(n log n) instead of O(n²)
         if network.nodes and active_tissue_points:
             all_node_positions = np.array([
-                [node.position.x, node.position.y, node.position.z]
-                for node in network.nodes.values()
+                [n.position.x, n.position.y, n.position.z]
+                for n in network.nodes.values()
             ])
             node_kdtree = cKDTree(all_node_positions)
             
-            # Get positions of active tissue points
             active_tp_indices = list(active_tissue_points)
-            active_tp_positions = np.array([
-                [tissue_points_list[idx].x, tissue_points_list[idx].y, tissue_points_list[idx].z]
-                for idx in active_tp_indices
-            ])
+            active_tp_positions = tissue_points_array[active_tp_indices]
             
             # Query all tissue points within kill_radius of any node
             # query_ball_point returns indices of nodes within radius for each query point
@@ -496,14 +481,13 @@ def _compute_angle_spread(vectors: List[np.ndarray]) -> float:
     if len(vectors) < 2:
         return 0.0
     
-    max_angle = 0.0
-    for i in range(len(vectors)):
-        for j in range(i + 1, len(vectors)):
-            cos_angle = np.clip(np.dot(vectors[i], vectors[j]), -1.0, 1.0)
-            angle = np.degrees(np.arccos(cos_angle))
-            max_angle = max(max_angle, angle)
-    
-    return max_angle
+    mat = np.array(vectors)
+    cos_matrix = np.clip(mat @ mat.T, -1.0, 1.0)
+    upper_indices = np.triu_indices_from(cos_matrix, k=1)
+    if len(upper_indices[0]) == 0:
+        return 0.0
+    min_cos = cos_matrix[upper_indices].min()
+    return float(np.degrees(np.arccos(min_cos)))
 
 
 def _cluster_attractions_by_angle(
@@ -524,85 +508,54 @@ def _cluster_attractions_by_angle(
     if max_clusters <= 1:
         return [[i for i in range(n)]]
     
-    normalized_vectors = []
-    for vec in attraction_vectors:
-        norm = np.linalg.norm(vec)
-        if norm > 1e-10:
-            normalized_vectors.append(vec / norm)
-        else:
-            normalized_vectors.append(vec)
+    vec_array = np.array(attraction_vectors)
+    norms = np.linalg.norm(vec_array, axis=1, keepdims=True)
+    norms = np.where(norms > 1e-10, norms, 1.0)
+    normalized_mat = vec_array / norms
     
     if n <= max_clusters:
         return [[i] for i in range(n)]
     
     K = min(max_clusters, n)
     
-    # Farthest-first initialization for K centroids
-    centroids = []
-    centroid_indices = []
+    similarity_matrix = normalized_mat @ normalized_mat.T
     
-    centroids.append(normalized_vectors[0].copy())
-    centroid_indices.append(0)
+    centroid_indices = [0]
+    centroids = [normalized_mat[0].copy()]
     
     for _ in range(K - 1):
-        max_min_dist = -1.0
-        farthest_idx = 0
-        
-        for i in range(n):
-            if i in centroid_indices:
-                continue
-            
-            # Find minimum distance (maximum similarity) to existing centroids
-            min_sim = 1.0
-            for centroid in centroids:
-                sim = np.dot(normalized_vectors[i], centroid)
-                if sim < min_sim:
-                    min_sim = sim
-            
-            # Distance metric: 1 - similarity (higher is more separated)
-            min_dist = 1.0 - min_sim
-            
-            if min_dist > max_min_dist:
-                max_min_dist = min_dist
-                farthest_idx = i
-        
-        centroids.append(normalized_vectors[farthest_idx].copy())
+        sims_to_centroids = similarity_matrix[:, centroid_indices]
+        min_sims = sims_to_centroids.min(axis=1)
+        dists = 1.0 - min_sims
+        dists[centroid_indices] = -1.0
+        farthest_idx = int(np.argmax(dists))
+        centroids.append(normalized_mat[farthest_idx].copy())
         centroid_indices.append(farthest_idx)
     
+    centroid_mat = np.array(centroids)
     for iteration in range(10):
+        assignments = np.argmax(normalized_mat @ centroid_mat.T, axis=1)
+        
         clusters = [[] for _ in range(K)]
+        for idx, c in enumerate(assignments):
+            clusters[c].append(idx)
         
-        # Assign each vector to nearest centroid (highest dot product)
-        for idx, vec in enumerate(normalized_vectors):
-            best_cluster = 0
-            best_sim = np.dot(vec, centroids[0])
-            
-            for c in range(1, K):
-                sim = np.dot(vec, centroids[c])
-                if sim > best_sim:
-                    best_sim = sim
-                    best_cluster = c
-            
-            clusters[best_cluster].append(idx)
-        
-        # Update centroids
         changed = False
         for c in range(K):
             if clusters[c]:
-                new_centroid = np.mean([normalized_vectors[idx] for idx in clusters[c]], axis=0)
+                new_centroid = normalized_mat[clusters[c]].mean(axis=0)
                 centroid_norm = np.linalg.norm(new_centroid)
                 
                 if centroid_norm > 1e-10:
                     new_centroid = new_centroid / centroid_norm
                     
-                    if np.linalg.norm(new_centroid - centroids[c]) > 1e-6:
+                    if np.linalg.norm(new_centroid - centroid_mat[c]) > 1e-6:
                         changed = True
-                        centroids[c] = new_centroid
+                        centroid_mat[c] = new_centroid
         
         if not changed:
             break
     
-    # Filter out empty clusters
     clusters = [c for c in clusters if c]
     
     return clusters if clusters else [[i for i in range(n)]]
@@ -1391,7 +1344,6 @@ def space_colonization_step_v2(
                         child_radius = parent_radius * (1.0 / n_children) ** (1.0/3.0) * params.taper_factor
                         child_radii = [max(child_radius, params.min_radius)] * n_children
                     
-                    from .growth import grow_branch
                     
                     children_created = 0
                     for cluster_idx, cluster in enumerate(clusters):
@@ -1494,7 +1446,6 @@ def space_colonization_step_v2(
             new_radius = parent_radius * params.taper_factor
             new_radius = max(new_radius, params.min_radius)
             
-            from .growth import grow_branch
             result = grow_branch(
                 network,
                 from_node_id=node_id,
@@ -1924,15 +1875,8 @@ def space_colonization_one_step(
         if not attracted_indices:
             continue
         
-        attracted_points = [
-            Point3D(
-                state.tissue_points[idx][0],
-                state.tissue_points[idx][1],
-                state.tissue_points[idx][2]
-            )
-            for idx in attracted_indices
-        ]
-        num_attractions = len(attracted_points)
+        attracted_positions = state.tissue_points[attracted_indices]
+        num_attractions = len(attracted_indices)
         
         should_bifurcate = (
             params.encourage_bifurcation and
@@ -1940,16 +1884,11 @@ def space_colonization_one_step(
         )
         
         if should_bifurcate:
-            attraction_vectors = []
-            for tp in attracted_points:
-                direction = np.array([
-                    tp.x - node.position.x,
-                    tp.y - node.position.y,
-                    tp.z - node.position.z,
-                ])
-                direction_norm = np.linalg.norm(direction)
-                if direction_norm > 1e-10:
-                    attraction_vectors.append(direction / direction_norm)
+            node_pos = np.array([node.position.x, node.position.y, node.position.z])
+            raw_dirs = attracted_positions - node_pos
+            dir_norms = np.linalg.norm(raw_dirs, axis=1)
+            valid_mask = dir_norms > 1e-10
+            attraction_vectors = list(raw_dirs[valid_mask] / dir_norms[valid_mask, np.newaxis])
             
             if len(attraction_vectors) >= 2:
                 angle_spread = _compute_angle_spread(attraction_vectors)
@@ -1971,7 +1910,6 @@ def space_colonization_one_step(
                         else:
                             child_radii = [parent_radius * params.taper_factor]
                         
-                        from .growth import grow_branch
                         children_created = 0
                         for cluster_idx, cluster in enumerate(clusters):
                             if cluster_idx >= params.max_children_per_node:
@@ -2032,16 +1970,13 @@ def space_colonization_one_step(
                         
                         continue
         
-        avg_direction = np.zeros(3)
-        for tp in attracted_points:
-            direction = np.array([
-                tp.x - node.position.x,
-                tp.y - node.position.y,
-                tp.z - node.position.z,
-            ])
-            direction_norm = np.linalg.norm(direction)
-            if direction_norm > 1e-10:
-                avg_direction += direction / direction_norm
+        node_pos_arr = np.array([node.position.x, node.position.y, node.position.z])
+        raw_directions = attracted_positions - node_pos_arr
+        direction_norms = np.linalg.norm(raw_directions, axis=1)
+        valid = direction_norms > 1e-10
+        if not np.any(valid):
+            continue
+        avg_direction = (raw_directions[valid] / direction_norms[valid, np.newaxis]).sum(axis=0)
         
         if np.linalg.norm(avg_direction) < 1e-10:
             continue

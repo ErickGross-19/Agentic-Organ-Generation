@@ -13,6 +13,7 @@ import numpy as np
 
 import os
 from tqdm import tqdm
+from scipy.spatial.distance import cdist
 
 from .base import GenerationBackend, BackendConfig, GenerationState, GenerationAction
 from ..core.network import VascularNetwork, Node
@@ -663,11 +664,15 @@ class SpaceColonizationBackend(GenerationBackend):
                     total_nodes_added += result.nodes_added
                     for node_id in result.new_node_ids:
                         inlet_node_sets[inlet_idx].add(node_id)
-                        node = network.nodes.get(node_id)
-                        if node:
-                            node_pos = np.array([node.position.x, node.position.y, node.position.z])
-                            distances = np.linalg.norm(global_tissue_points - node_pos, axis=1)
-                            global_tissue_points = global_tissue_points[distances > config.kill_distance]
+                    # Batch kill-radius pruning against all new nodes
+                    new_positions = np.array([
+                        [network.nodes[nid].position.x, network.nodes[nid].position.y, network.nodes[nid].position.z]
+                        for nid in result.new_node_ids if nid in network.nodes
+                    ])
+                    if len(new_positions) > 0 and len(global_tissue_points) > 0:
+                        dists = cdist(global_tissue_points, new_positions)
+                        mask = np.all(dists > config.kill_distance, axis=1)
+                        global_tissue_points = global_tissue_points[mask]
                 
                 if result.stalled or result.exhausted:
                     stalled_inlets.add(inlet_idx)
