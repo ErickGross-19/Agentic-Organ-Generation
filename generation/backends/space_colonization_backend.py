@@ -235,34 +235,21 @@ class SpaceColonizationBackend(GenerationBackend):
             bifurcation_angle_threshold_deg=config.bifurcation_angle_threshold_deg,
         )
         
-        active_nodes = [inlet_node.id]
+        # Convert attractors to ndarray if needed (ops accepts Point3D list or ndarray)
+        if isinstance(attractor_list, list) and attractor_list and isinstance(attractor_list[0], Point3D):
+            tissue_points = np.array([[p.x, p.y, p.z] for p in attractor_list], dtype=np.float64)
+        else:
+            tissue_points = np.array(attractor_list, dtype=np.float64)
         
-        for iteration in range(config.max_iterations):
-            if not attractor_list or not active_nodes:
-                break
-            
-            result = space_colonization_step(
-                network=network,
-                attractors=attractor_list,
-                active_node_ids=active_nodes,
-                config=sc_config,
-                base_radius=inlet_radius,
-                vessel_type=vessel_type,
-            )
-            
-            if result.is_success():
-                new_node_ids = result.new_ids.get("nodes", [])
-                consumed_attractors = result.metadata.get("consumed_attractors", [])
-                
-                if new_node_ids:
-                    active_nodes = new_node_ids
-                
-                attractor_list = [
-                    a for i, a in enumerate(attractor_list)
-                    if i not in consumed_attractors
-                ]
-            else:
-                break
+        # Single call runs full internal loop controlled by sc_config.max_steps
+        _ = space_colonization_step(
+            network=network,
+            tissue_points=tissue_points,
+            params=sc_config,
+            constraints=None,
+            seed=int(rng.integers(0, 2**31)),
+            seed_nodes=None,
+        )
         
         self._mark_terminals(network)
         
