@@ -1999,7 +1999,6 @@ def space_colonization_one_step(
         parent_radius = node.attributes.get("radius", params.min_radius * 2)
         new_radius = max(parent_radius * params.taper_factor, params.min_radius)
         
-        from .growth import grow_branch
         branch_result = grow_branch(
             network,
             from_node_id=tip_id,
