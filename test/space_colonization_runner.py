@@ -215,6 +215,16 @@ def run_space_colonization(
     num_outlets = params.get("num_outlets", 50)
     rng_seed = params.get("rng_seed", params.get("seed", None))
 
+    ts_policy = None
+    ts_cfg = params.get("tissue_sampling", None)
+    if ts_cfg is not None:
+        try:
+            from aog_policies.generation import TissueSamplingPolicy
+            ts_policy = TissueSamplingPolicy.from_dict(ts_cfg)
+        except Exception:
+            from aog_policies.generation import TissueSamplingPolicy
+            ts_policy = TissueSamplingPolicy(**ts_cfg)
+
     t0 = time.perf_counter()
 
     if inlets and len(inlets) > 1:
