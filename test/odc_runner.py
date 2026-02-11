@@ -161,6 +161,8 @@ def run_odc(
         "inlet_position",
         [(bounds[0] + bounds[1]) / 2, (bounds[2] + bounds[3]) / 2, bounds[5]],
     )
+    if isinstance(inlet_pos, list):
+        inlet_pos = tuple(inlet_pos)
 
     ports = {
         "inlets": [{

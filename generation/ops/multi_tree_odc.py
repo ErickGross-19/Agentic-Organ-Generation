@@ -192,11 +192,11 @@ def _run_round_robin(
         params = dict(tc.params)
         sc_params = _build_colonization_params(params)
 
-        network = create_network()
+        network = create_network(domain)
         inlet_result = add_inlet(
             network,
-            position=tc.inlet_position,
-            direction=tc.inlet_direction,
+            position=tuple(tc.inlet_position),
+            direction=tuple(tc.inlet_direction),
             radius=tc.inlet_radius,
             vessel_type=tc.vessel_type,
         )
