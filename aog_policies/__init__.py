@@ -80,6 +80,11 @@ from .manifold import (
     ManifoldGeneratorPolicy,
 )
 
+from .odc import (
+    ODCPolicy,
+    HierarchicalTissuePolicy,
+)
+
 __all__ = [
     # Base
     "OperationReport",
@@ -128,4 +133,7 @@ __all__ = [
     "SpaceColonizationPolicy",
     # Manifold generator policy
     "ManifoldGeneratorPolicy",
+    # ODC policies
+    "ODCPolicy",
+    "HierarchicalTissuePolicy",
 ]

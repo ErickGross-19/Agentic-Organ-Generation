@@ -54,6 +54,19 @@ except Exception as e:
     ScaffoldTopDownConfig = None
 
 try:
+    from .odc_backend import ODCBackend, ODCConfig
+    _BACKEND_REGISTRY["odc"] = ODCBackend
+    _CONFIG_REGISTRY["odc"] = ODCConfig
+except ImportError as e:
+    _BACKEND_LOAD_ERRORS["odc"] = f"Import failed: {e}"
+    ODCBackend = None
+    ODCConfig = None
+except Exception as e:
+    _BACKEND_LOAD_ERRORS["odc"] = f"Unexpected error: {e}"
+    ODCBackend = None
+    ODCConfig = None
+
+try:
     from .manifold_backend import ManifoldBackend
 except ImportError as e:
     _BACKEND_LOAD_ERRORS["manifold"] = f"Import failed: {e}"
@@ -160,6 +173,8 @@ __all__ = [
     "SpaceColonizationConfig",
     "ScaffoldTopDownBackend",
     "ScaffoldTopDownConfig",
+    "ODCBackend",
+    "ODCConfig",
     "ManifoldBackend",
     "get_available_backends",
     "get_backend",
