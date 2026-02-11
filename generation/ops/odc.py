@@ -241,12 +241,14 @@ def _build_colonization_params(params: Dict[str, Any]) -> SpaceColonizationParam
         taper_factor=params.get("taper_factor", 0.95),
         vessel_type=params.get("vessel_type", "arterial"),
         max_steps=params.get("max_steps", 500),
-        smoothing_weight=params.get("smoothing_weight", 0.2),
+        smoothing_weight=params.get("smoothing_weight", 0.4),
         encourage_bifurcation=True,
         min_attractions_for_bifurcation=params.get("min_attractions_for_bifurcation", 3),
         max_children_per_node=params.get("max_children_per_node", 2),
         bifurcation_angle_threshold_deg=params.get("bifurcation_angle_threshold", 40.0),
         bifurcation_probability=params.get("bifurcation_probability", 0.7),
+        max_curvature_deg=params.get("max_curvature_deg", 45.0),
+        min_clearance=params.get("min_clearance"),
     )
 
 

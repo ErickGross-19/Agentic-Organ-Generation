@@ -28,6 +28,7 @@ from generation.backends.space_colonization_backend import (
     SpaceColonizationBackend,
     SpaceColonizationConfig,
 )
+from generation.ops.murray_propagation import propagate_murray_radii
 
 
 DOMAIN_BUILDERS = {
@@ -249,6 +250,13 @@ def run_space_colonization(
             vessel_type=params.get("vessel_type", "arterial"),
             config=config,
             rng_seed=rng_seed,
+        )
+
+    if params.get("apply_murray", False):
+        propagate_murray_radii(
+            network,
+            terminal_radius=params.get("terminal_radius", 0.0003),
+            gamma=params.get("murray_exponent", 3.0),
         )
 
     elapsed = time.perf_counter() - t0

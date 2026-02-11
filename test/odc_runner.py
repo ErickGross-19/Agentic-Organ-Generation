@@ -187,7 +187,11 @@ def run_odc(
         "murray_exponent": params.get("murray_exponent", 3.0),
         "terminal_radius": params.get("terminal_radius", 0.0003),
         "max_stall_steps": params.get("max_stall_steps", 30),
+        "smoothing_weight": params.get("smoothing_weight", 0.4),
+        "max_curvature_deg": params.get("max_curvature_deg", 45.0),
     }
+    if params.get("min_clearance") is not None:
+        odc_params["min_clearance"] = params["min_clearance"]
 
     seed = params.get("seed", None)
 
