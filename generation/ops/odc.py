@@ -78,7 +78,7 @@ def run_odc_colonization(
     inlet_direction = inlet.get("direction", inlet.get("growth_inward_direction", [0, 0, -1]))
     vessel_type = inlet.get("vessel_type", sc_params.vessel_type)
 
-    network = create_network()
+    network = create_network(domain)
     inlet_result = add_inlet(
         network,
         position=inlet_pos,
