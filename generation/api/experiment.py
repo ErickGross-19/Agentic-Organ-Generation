@@ -3,9 +3,13 @@
 This module provides a high-level run_experiment() function that combines
 network generation and evaluation into a single workflow with automatic
 file saving and logging.
+
+It also provides run_odc_experiment() for running ODC-specific experiments
+with anti-starburst branching, flexible tissue distributions, and multi-tree
+coordination.
 """
 
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from pathlib import Path
 import json
 import time
@@ -156,3 +160,162 @@ def run_experiment(
             'overall_score': eval_result.scores.overall_score,
         }
     }
+
+
+def run_odc_experiment(
+    params: Optional[Dict[str, Any]] = None,
+    output_dir: Optional[str] = None,
+    save_results: bool = True,
+) -> Dict[str, Any]:
+    """Run an ODC-specific experiment with v2 features.
+
+    Exercises anti-starburst branching, flexible tissue distributions,
+    expanded search space, and (optionally) multi-tree coordination.
+
+    Parameters
+    ----------
+    params : dict, optional
+        Override any parameter accepted by ``test.odc_runner.run_odc``.
+        Additional keys recognised here:
+
+        * ``anti_starburst`` (bool, default True) – enable anti-starburst
+        * ``tissue_distribution`` (str) – distribution type for tissue
+          points (e.g. "uniform", "poisson_disk", "liver_lobule")
+        * ``multi_tree`` (bool, default False) – run multi-tree mode
+        * ``preset`` (str) – named ODC policy preset to apply first
+    output_dir : str, optional
+        Where to write JSON artefacts.  Defaults to ``"./odc_output"``.
+    save_results : bool
+        Persist summary JSON to *output_dir*.
+
+    Returns
+    -------
+    dict
+        ``network``, ``stats``, ``odc_features`` summary, ``timing``,
+        and ``paths`` (when *save_results* is True).
+    """
+    if params is None:
+        params = {}
+    if output_dir is None:
+        output_dir = "./odc_output"
+
+    from aog_policies.odc import get_odc_preset
+
+    preset_name = params.pop("preset", None)
+    if preset_name is not None:
+        preset = get_odc_preset(preset_name)
+        preset_dict = preset.to_dict()
+        anti_starburst_dict = preset_dict.get("anti_starburst", {})
+        for k, v in anti_starburst_dict.items():
+            params.setdefault(k, v)
+
+    enable_anti_starburst = params.pop("anti_starburst", True)
+    tissue_distribution = params.pop("tissue_distribution", None)
+    enable_multi_tree = params.pop("multi_tree", False)
+
+    if enable_anti_starburst:
+        params.setdefault("min_generations_before_tissue", 2)
+        params.setdefault("max_initial_branches", 3)
+        params.setdefault("force_bifurcation_depth", 3)
+
+    start_time = time.time()
+    timing: Dict[str, float] = {}
+
+    tissue_pts = None
+    if tissue_distribution is not None:
+        from ..tissue.distributions import TissueDistributionSpec
+        from ..core.domain import BoxDomain
+
+        domain_type = params.get("domain_type", "cylinder")
+        if domain_type == "box":
+            domain_for_dist = BoxDomain(
+                x_min=params.get("x_min", -0.005),
+                x_max=params.get("x_max", 0.005),
+                y_min=params.get("y_min", -0.005),
+                y_max=params.get("y_max", 0.005),
+                z_min=params.get("z_min", -0.005),
+                z_max=params.get("z_max", 0.005),
+            )
+        else:
+            from ..core.domain import CylinderDomain
+            from ..core.types import Point3D
+            domain_for_dist = CylinderDomain(
+                radius=params.get("domain_radius", 0.005),
+                height=params.get("domain_height", 0.010),
+                center=Point3D(*params.get("domain_center", [0.0, 0.0, 0.0])),
+            )
+
+        dist_start = time.time()
+        spec = TissueDistributionSpec(
+            distribution_type=tissue_distribution,
+            n_points=params.get("tissue_n_points", 200),
+            seed=params.get("seed"),
+        )
+        tissue_pts = spec.generate(domain_for_dist)
+        timing["tissue_distribution"] = time.time() - dist_start
+
+        params["tissue_levels"] = [
+            {
+                "priority": 1,
+                "points": tissue_pts.tolist(),
+                "label": tissue_distribution,
+                "weight": 1.0,
+                "coverage_threshold": 0.003,
+            }
+        ]
+
+    gen_start = time.time()
+
+    import sys
+    from pathlib import Path as _Path
+    _root = str(_Path(__file__).resolve().parent.parent.parent)
+    if _root not in sys.path:
+        sys.path.insert(0, _root)
+    from test.odc_runner import run_odc
+
+    network, stats = run_odc(params)
+    timing["generation"] = time.time() - gen_start
+
+    odc_features: Dict[str, Any] = {
+        "anti_starburst_enabled": enable_anti_starburst,
+        "tissue_distribution": tissue_distribution,
+        "multi_tree_enabled": enable_multi_tree,
+        "preset": preset_name,
+    }
+
+    if enable_anti_starburst:
+        odc_features["min_generations_before_tissue"] = params.get(
+            "min_generations_before_tissue", 2
+        )
+        odc_features["max_initial_branches"] = params.get(
+            "max_initial_branches", 3
+        )
+        odc_features["force_bifurcation_depth"] = params.get(
+            "force_bifurcation_depth", 3
+        )
+
+    timing["total"] = time.time() - start_time
+
+    result: Dict[str, Any] = {
+        "network": network,
+        "stats": stats,
+        "odc_features": odc_features,
+        "timing": timing,
+    }
+
+    if save_results:
+        out_path = Path(output_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+        summary = {
+            "experiment_type": "odc_v2",
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "stats": {k: v for k, v in stats.items() if not isinstance(v, (dict, list))},
+            "odc_features": odc_features,
+            "timing": timing,
+        }
+        summary_path = out_path / "odc_experiment_summary.json"
+        with open(summary_path, "w") as f:
+            json.dump(summary, f, indent=2)
+        result["paths"] = {"summary": str(summary_path)}
+
+    return result

@@ -36,6 +36,8 @@ class ODCConfig(BackendConfig):
     timeout_seconds: Optional[float] = None
 
     tissue_levels: Optional[List[Dict[str, Any]]] = None
+    tissue_distribution_type: str = "uniform"
+    tissue_distribution_params: Optional[Dict[str, Any]] = None
 
     search_space_overrides: Optional[Dict[str, Any]] = None
     objective_overrides: Optional[Dict[str, Any]] = None
@@ -51,6 +53,14 @@ class ODCConfig(BackendConfig):
     auto_n_levels: int = 3
     auto_points_per_level: int = 200
 
+    enable_anti_starburst: bool = True
+    anti_starburst_params: Optional[Dict[str, Any]] = None
+
+    enable_multi_tree: bool = False
+    multi_tree_configs: Optional[List[Dict[str, Any]]] = None
+    multi_tree_collision_radius: float = 0.001
+    multi_tree_strategy: str = "round_robin"
+
 
 class ODCBackend(GenerationBackend):
     """
@@ -61,7 +71,7 @@ class ODCBackend(GenerationBackend):
 
     @property
     def supports_dual_tree(self) -> bool:
-        return False
+        return True
 
     @property
     def supports_closed_loop(self) -> bool:
@@ -228,9 +238,14 @@ class ODCBackend(GenerationBackend):
         rng_seed: Optional[int],
     ) -> VascularNetwork:
         """Generate with default parameters (no training)."""
+        if config.enable_multi_tree and config.multi_tree_configs:
+            return self._generate_multi_tree(
+                domain, tissue_spec, config, rng_seed
+            )
+
         from ..ops.odc import run_odc_colonization
 
-        default_params = {
+        default_params: Dict[str, Any] = {
             "influence_radius": 0.015,
             "kill_radius": 0.003,
             "step_size": 0.005,
@@ -242,6 +257,9 @@ class ODCBackend(GenerationBackend):
             "terminal_radius": config.terminal_radius,
         }
 
+        if config.enable_anti_starburst and config.anti_starburst_params:
+            default_params.update(config.anti_starburst_params)
+
         result = run_odc_colonization(
             domain=domain,
             tissue_spec=tissue_spec,
@@ -251,3 +269,32 @@ class ODCBackend(GenerationBackend):
         )
 
         return result.network
+
+    def _generate_multi_tree(
+        self,
+        domain: DomainSpec,
+        tissue_spec: HierarchicalTissueSpec,
+        config: ODCConfig,
+        rng_seed: Optional[int],
+    ) -> VascularNetwork:
+        """Generate multi-tree vascular network."""
+        from ..ops.multi_tree_odc import run_multi_tree_odc, TreeConfig
+
+        tree_configs = []
+        for tc_dict in (config.multi_tree_configs or []):
+            tree_configs.append(TreeConfig.from_dict(tc_dict))
+
+        if not tree_configs:
+            raise ValueError("multi_tree_configs must be provided when enable_multi_tree is True")
+
+        result = run_multi_tree_odc(
+            domain=domain,
+            tissue_spec=tissue_spec,
+            tree_configs=tree_configs,
+            collision_radius=config.multi_tree_collision_radius,
+            interleave_strategy=config.multi_tree_strategy,
+            seed=rng_seed,
+        )
+
+        first_tree_id = tree_configs[0].tree_id
+        return result.networks[first_tree_id]
