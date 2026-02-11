@@ -17,6 +17,7 @@ import numpy as np
 
 from .space_colonization import (
     SpaceColonizationParams,
+    SpaceColonizationState,
     create_space_colonization_state,
     space_colonization_one_step,
 )
@@ -155,6 +156,7 @@ def run_odc_colonization(
         else:
             stall_counter = 0
 
+        level_unlocked_this_step = False
         if current_level_idx < tissue_spec.num_levels:
             level = tissue_spec.levels[current_level_idx]
             coverage = _check_level_coverage(network, level)
@@ -168,6 +170,7 @@ def run_odc_colonization(
                     levels_unlocked[next_idx] = True
                     current_level_idx = next_idx
                     stall_counter = 0
+                    level_unlocked_this_step = True
 
                     logger.info(
                         "Level %d unlocked (coverage=%.3f, step=%d). "
@@ -184,7 +187,7 @@ def run_odc_colonization(
                     )
                     break
 
-        if step_result.exhausted or step_result.stalled:
+        if not level_unlocked_this_step and (step_result.exhausted or step_result.stalled):
             if current_level_idx + 1 < tissue_spec.num_levels:
                 next_idx = current_level_idx + 1
                 new_points = tissue_spec.levels[next_idx].points
@@ -280,7 +283,7 @@ def _check_level_coverage(
 
 
 def _inject_attractors(
-    state: Any,
+    state: SpaceColonizationState,
     new_points: np.ndarray,
 ) -> None:
     """Inject new attractor points into an active SpaceColonizationState."""
