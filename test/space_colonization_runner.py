@@ -225,6 +225,7 @@ def run_space_colonization(
             vessel_type=params.get("vessel_type", "arterial"),
             config=config,
             rng_seed=rng_seed,
+            tissue_sampling_policy=ts_policy,
         )
     else:
         if inlets and len(inlets) == 1:
@@ -250,6 +251,7 @@ def run_space_colonization(
             vessel_type=params.get("vessel_type", "arterial"),
             config=config,
             rng_seed=rng_seed,
+            tissue_sampling_policy=ts_policy,
         )
 
     if params.get("apply_murray", False):
@@ -298,6 +300,17 @@ def run_space_colonization_dual_tree(
 
     rng_seed = params.get("rng_seed", params.get("seed", None))
 
+    # Optional tissue sampling policy for attractor distribution
+    ts_policy = None
+    ts_cfg = params.get("tissue_sampling", None)
+    if ts_cfg is not None:
+        try:
+            from aog_policies.generation import TissueSamplingPolicy
+            ts_policy = TissueSamplingPolicy.from_dict(ts_cfg)
+        except Exception:
+            from aog_policies.generation import TissueSamplingPolicy
+            ts_policy = TissueSamplingPolicy(**ts_cfg)
+
     t0 = time.perf_counter()
     network = backend.generate_dual_tree(
         domain=domain,
@@ -311,6 +324,7 @@ def run_space_colonization_dual_tree(
         rng_seed=rng_seed,
         create_anastomoses=params.get("create_anastomoses", False),
         num_anastomoses=params.get("num_anastomoses", 0),
+        tissue_sampling_policy=ts_policy,
     )
     elapsed = time.perf_counter() - t0
     stats = _collect_stats(network, elapsed)
