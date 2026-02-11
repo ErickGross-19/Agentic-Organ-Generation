@@ -43,9 +43,12 @@ class TrainedODCModel:
     ) -> Tuple["VascularNetwork", Dict[str, Any]]:
         """
         Generate a network using the trained (best) parameters.
+
+        Murray propagation is NOT applied here; the caller (e.g. ODCBackend)
+        is responsible for post-hoc radius propagation to avoid double
+        application.
         """
         from ..ops.odc import run_odc_colonization
-        from ..ops.murray_propagation import propagate_murray_radii
 
         odc_result = run_odc_colonization(
             domain=domain,
@@ -57,24 +60,12 @@ class TrainedODCModel:
 
         network = odc_result.network
 
-        murray_result = propagate_murray_radii(
-            network,
-            terminal_radius=self.best_params.get("terminal_radius", 0.0003),
-            gamma=self.best_params.get("murray_exponent", 3.0),
-        )
-
         metadata = {
             "best_params": self.best_params,
             "best_reward": self.best_reward,
             "study_name": self.study_name,
             "levels_reached": odc_result.levels_reached,
             "iterations_used": odc_result.iterations_used,
-            "murray_propagation": {
-                "nodes_updated": murray_result.nodes_updated,
-                "segments_updated": murray_result.segments_updated,
-                "deviation_before": murray_result.mean_deviation_before,
-                "deviation_after": murray_result.mean_deviation_after,
-            },
         }
 
         return network, metadata
