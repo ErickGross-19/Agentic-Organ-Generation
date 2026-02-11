@@ -7,7 +7,12 @@ from generation.ops.multi_tree_odc import TreeConfig, MultiTreeResult
 
 class TestTreeConfig:
     def test_default_construction(self):
-        tc = TreeConfig(tree_id="arterial")
+        tc = TreeConfig(
+            tree_id="arterial",
+            vessel_type="arterial",
+            inlet_position=[0.0, 0.0, 0.005],
+            inlet_radius=0.001,
+        )
         assert tc.tree_id == "arterial"
         assert tc.vessel_type == "arterial"
         assert tc.params == {}
@@ -26,7 +31,12 @@ class TestTreeConfig:
         assert tc.params["step_size"] == 0.003
 
     def test_to_dict(self):
-        tc = TreeConfig(tree_id="arterial", inlet_radius=0.001)
+        tc = TreeConfig(
+            tree_id="arterial",
+            vessel_type="arterial",
+            inlet_position=[0.0, 0.0, 0.005],
+            inlet_radius=0.001,
+        )
         d = tc.to_dict()
         assert d["tree_id"] == "arterial"
         assert d["inlet_radius"] == 0.001
@@ -61,8 +71,8 @@ class TestMultiTreeResult:
     def test_construction(self):
         result = MultiTreeResult(
             networks={},
+            tree_results={},
             collision_count=0,
-            iterations_per_tree={},
         )
         assert result.collision_count == 0
         assert len(result.networks) == 0
@@ -70,11 +80,12 @@ class TestMultiTreeResult:
     def test_with_data(self):
         from unittest.mock import MagicMock
         mock_net = MagicMock()
+        mock_result = MagicMock()
         result = MultiTreeResult(
             networks={"arterial": mock_net},
+            tree_results={"arterial": mock_result},
             collision_count=5,
-            iterations_per_tree={"arterial": 100},
         )
         assert "arterial" in result.networks
         assert result.collision_count == 5
-        assert result.iterations_per_tree["arterial"] == 100
+        assert "arterial" in result.tree_results

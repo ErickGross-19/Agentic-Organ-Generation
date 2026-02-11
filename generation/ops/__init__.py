@@ -21,14 +21,23 @@ from .tree_ops import prune, add_branch
 # Import from packages (which re-export both legacy and new APIs)
 from .collision import get_collisions, avoid_collisions
 from .pathfinding import grow_toward_targets, CostWeights
-from .embedding import embed_tree_as_negative_space
-from .features import (
-    FaceId,
-    RidgeSpec,
-    create_annular_ridge,
-    create_frame_ridge,
-    add_raised_ridge,
-)
+
+# Optional heavy imports (mesh/voxel dependencies). Gracefully degrade if unavailable.
+try:
+    from .embedding import embed_tree_as_negative_space
+except Exception:  # ImportError or other optional-dep errors
+    embed_tree_as_negative_space = None  # type: ignore
+
+try:
+    from .features import (
+        FaceId,
+        RidgeSpec,
+        create_annular_ridge,
+        create_frame_ridge,
+        add_raised_ridge,
+    )
+except Exception:
+    FaceId = RidgeSpec = create_annular_ridge = create_frame_ridge = add_raised_ridge = None  # type: ignore
 
 __all__ = [
     "create_network",

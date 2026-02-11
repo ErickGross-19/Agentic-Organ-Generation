@@ -26,9 +26,8 @@ class TestUniformDistribution:
         spec = TissueDistributionSpec(distribution_type="uniform", n_points=50, seed=42)
         pts = spec.generate(box_domain)
         for pt in pts:
-            assert box_domain.contains(
-                __import__("generation.core.types", fromlist=["Point3D"]).Point3D(*pt)
-            )
+            from generation.core.types import Point3D
+            assert box_domain.contains(Point3D(*pt))
 
     def test_reproducibility(self, box_domain):
         spec1 = TissueDistributionSpec(distribution_type="uniform", n_points=20, seed=42)
