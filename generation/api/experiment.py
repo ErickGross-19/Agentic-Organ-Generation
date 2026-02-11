@@ -246,11 +246,28 @@ def run_odc_experiment(
             )
 
         dist_start = time.time()
-        spec = TissueDistributionSpec(
-            distribution_type=tissue_distribution,
-            n_points=params.get("tissue_n_points", 200),
-            seed=params.get("seed"),
-        )
+        dist_kwargs: Dict[str, Any] = {
+            "distribution_type": tissue_distribution,
+            "n_points": params.get("tissue_n_points", 200),
+            "seed": params.get("seed"),
+        }
+        if params.get("gaussian_centers"):
+            dist_kwargs["gaussian_centers"] = [tuple(c) for c in params["gaussian_centers"]]
+        if params.get("gaussian_sigmas"):
+            dist_kwargs["gaussian_sigmas"] = [tuple(s) for s in params["gaussian_sigmas"]]
+        if params.get("gaussian_weights"):
+            dist_kwargs["gaussian_weights"] = params["gaussian_weights"]
+        if params.get("depth_axis") is not None:
+            dist_kwargs["depth_axis"] = params["depth_axis"]
+        if params.get("depth_power") is not None:
+            dist_kwargs["depth_power"] = params["depth_power"]
+        if params.get("depth_distribution"):
+            dist_kwargs["depth_distribution"] = params["depth_distribution"]
+        if params.get("depth_beta_params"):
+            dist_kwargs["depth_beta_params"] = tuple(params["depth_beta_params"])
+        if params.get("min_distance") is not None:
+            dist_kwargs["min_distance"] = params["min_distance"]
+        spec = TissueDistributionSpec(**dist_kwargs)
         tissue_pts = spec.generate(domain_for_dist)
         timing["tissue_distribution"] = time.time() - dist_start
 
@@ -273,8 +290,83 @@ def run_odc_experiment(
         sys.path.insert(0, _root)
     from test.odc_runner import run_odc
 
-    network, stats = run_odc(params)
-    timing["generation"] = time.time() - gen_start
+    multi_tree_result = None
+    if enable_multi_tree:
+        tree_configs_raw = params.pop("tree_configs", None)
+        if tree_configs_raw is not None:
+            from ..ops.multi_tree_odc import run_multi_tree_odc, TreeConfig
+            from ..tissue.hierarchical import TissueLevel, HierarchicalTissueSpec
+            from ..core.domain import CylinderDomain, BoxDomain
+            from ..core.types import Point3D
+
+            domain_type = params.get("domain_type", "cylinder")
+            if domain_type == "box":
+                mt_domain = BoxDomain(
+                    x_min=params.get("x_min", -0.005),
+                    x_max=params.get("x_max", 0.005),
+                    y_min=params.get("y_min", -0.005),
+                    y_max=params.get("y_max", 0.005),
+                    z_min=params.get("z_min", -0.005),
+                    z_max=params.get("z_max", 0.005),
+                )
+            else:
+                mt_domain = CylinderDomain(
+                    radius=params.get("domain_radius", 0.005),
+                    height=params.get("domain_height", 0.010),
+                    center=Point3D(*params.get("domain_center", [0.0, 0.0, 0.0])),
+                )
+
+            tree_cfgs = [TreeConfig.from_dict(tc) for tc in tree_configs_raw]
+
+            if tissue_pts is not None:
+                tissue_levels = [
+                    TissueLevel(
+                        priority=1,
+                        points=tissue_pts,
+                        label=tissue_distribution or "custom",
+                        weight=1.0,
+                        coverage_threshold=0.003,
+                    )
+                ]
+            else:
+                from ..tissue.samplers import generate_hierarchical_from_strategy
+                tissue_spec_mt = generate_hierarchical_from_strategy(
+                    mt_domain,
+                    n_levels=params.get("auto_n_levels", 3),
+                    points_per_level=params.get("auto_points_per_level", 200),
+                    seed=params.get("seed"),
+                )
+                tissue_levels = tissue_spec_mt.levels
+
+            mt_tissue_spec = HierarchicalTissueSpec(levels=tissue_levels)
+
+            multi_tree_result = run_multi_tree_odc(
+                domain=mt_domain,
+                tissue_spec=mt_tissue_spec,
+                tree_configs=tree_cfgs,
+                collision_radius=params.get("collision_radius", 0.001),
+                interleave_strategy=params.get("interleave_strategy", "sequential"),
+                seed=params.get("seed"),
+            )
+
+    if multi_tree_result is not None:
+        first_tid = list(multi_tree_result.networks.keys())[0]
+        network = multi_tree_result.networks[first_tid]
+        stats = {
+            "trees": {
+                tid: {
+                    "nodes": len(net.nodes),
+                    "segments": len(net.segments),
+                    "iterations_used": multi_tree_result.tree_results[tid].iterations_used,
+                }
+                for tid, net in multi_tree_result.networks.items()
+            },
+            "collision_count": multi_tree_result.collision_count,
+        }
+        timing["generation"] = time.time() - gen_start
+    else:
+        network, stats = run_odc(params)
+        timing["generation"] = time.time() - gen_start
 
     odc_features: Dict[str, Any] = {
         "anti_starburst_enabled": enable_anti_starburst,
@@ -302,6 +394,10 @@ def run_odc_experiment(
         "odc_features": odc_features,
         "timing": timing,
     }
+
+    if multi_tree_result is not None:
+        result["multi_tree_result"] = multi_tree_result
+        result["all_networks"] = multi_tree_result.networks
 
     if save_results:
         out_path = Path(output_dir)
