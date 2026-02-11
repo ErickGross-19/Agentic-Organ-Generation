@@ -382,7 +382,13 @@ def generate_network(
             compiled_domain, ports, growth_policy, collision_policy, seed
         )
         metadata.update(gen_meta)
-        
+
+    elif generator_kind == "odc":
+        network, gen_meta = _generate_odc(
+            compiled_domain, ports, growth_policy, collision_policy, seed
+        )
+        metadata.update(gen_meta)
+
     else:
         raise ValueError(f"Unknown generator_kind: {generator_kind}")
     
@@ -1053,6 +1059,60 @@ def _generate_cco_hybrid(
         "node_count": len(network.nodes),
         "segment_count": len(network.segments),
     }
+
+
+def _generate_odc(
+    domain: "Domain",
+    ports: Dict[str, Any],
+    growth_policy: GrowthPolicy,
+    collision_policy: CollisionPolicy,
+    seed: Optional[int],
+) -> Tuple[VascularNetwork, Dict[str, Any]]:
+    """Generate network using Optimized Directed Colonization."""
+    from ..backends.odc_backend import ODCBackend, ODCConfig
+
+    backend_params = getattr(growth_policy, 'backend_params', None) or {}
+
+    config = ODCConfig(
+        seed=seed,
+        training_mode=backend_params.get("training_mode", False),
+        trained_model_path=backend_params.get("trained_model_path"),
+        n_trials=backend_params.get("n_trials", 100),
+        tissue_levels=backend_params.get("tissue_levels"),
+        apply_murray_propagation=backend_params.get("apply_murray_propagation", True),
+        murray_exponent=backend_params.get("murray_exponent", 3.0),
+        terminal_radius=backend_params.get("terminal_radius", 0.0003),
+        auto_generate_levels=backend_params.get("auto_generate_levels", True),
+    )
+
+    inlets = ports.get("inlets", [])
+    if not inlets:
+        raise ValueError("At least one inlet is required for ODC generation")
+
+    inlet = inlets[0]
+    inlet_position = np.array(inlet.get("position", [0, 0, 0]))
+    inlet_radius = inlet.get("radius", 0.002)
+    vessel_type = inlet.get("vessel_type", "arterial")
+
+    backend = ODCBackend()
+    network = backend.generate(
+        domain=domain,
+        num_outlets=backend_params.get("num_outlets", 50),
+        inlet_position=inlet_position,
+        inlet_radius=inlet_radius,
+        vessel_type=vessel_type,
+        config=config,
+        rng_seed=seed,
+    )
+
+    metadata = {
+        "backend": "odc",
+        "training_mode": config.training_mode,
+        "node_count": len(network.nodes),
+        "segment_count": len(network.segments),
+    }
+
+    return network, metadata
 
 
 def _generate_programmatic(

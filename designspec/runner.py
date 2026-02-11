@@ -377,6 +377,7 @@ class DesignSpecRunner:
             NetworkCleanupPolicy,
             ManifoldGeneratorPolicy,
         )
+        from aog_policies.odc import ODCPolicy, HierarchicalTissuePolicy
         
         warnings = []
         errors = []
@@ -419,6 +420,8 @@ class DesignSpecRunner:
             "ridge": RidgePolicy,
             "network_cleanup": NetworkCleanupPolicy,
             "manifold_generator": ManifoldGeneratorPolicy,
+            "odc": ODCPolicy,
+            "hierarchical_tissue": HierarchicalTissuePolicy,
         }
         
         for policy_name, policy_dict in self.spec.policies.items():
