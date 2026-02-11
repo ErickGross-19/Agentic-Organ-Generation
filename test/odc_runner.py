@@ -138,10 +138,15 @@ def run_odc(
         tissue_spec = HierarchicalTissueSpec(levels=levels)
     else:
         from generation.tissue.samplers import generate_hierarchical_from_strategy
+        n_levels = params.get("auto_n_levels", 3)
+        auto_ppl = params.get("auto_points_per_level", None)
+        if auto_ppl is None:
+            target_total = params.get("auto_total_points", 10000)
+            auto_ppl = int(np.ceil(target_total / n_levels))
         tissue_spec = generate_hierarchical_from_strategy(
             domain,
-            n_levels=params.get("auto_n_levels", 3),
-            points_per_level=params.get("auto_points_per_level", 200),
+            n_levels=n_levels,
+            points_per_level=auto_ppl,
             seed=params.get("seed"),
         )
 
@@ -177,7 +182,7 @@ def run_odc(
     odc_params = {
         "influence_radius": params.get("influence_radius", 0.015),
         "kill_radius": params.get("kill_radius", 0.003),
-        "step_size": params.get("step_size", 0.005),
+        "step_size": params.get("step_size", 0.0001),
         "max_steps": params.get("max_steps", 500),
         "bifurcation_probability": params.get("bifurcation_probability", 0.7),
         "max_children_per_node": params.get("max_children_per_node", 2),
