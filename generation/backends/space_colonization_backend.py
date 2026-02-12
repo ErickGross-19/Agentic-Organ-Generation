@@ -85,6 +85,9 @@ class SpaceColonizationConfig(BackendConfig):
     stall_steps_per_inlet: int = 10  # Mark inlet as stalled after N steps with no growth
     interleaving_strategy: str = "round_robin"  # "round_robin" or "weighted"
     
+    # Directional cone filter for single-inlet generate()
+    growth_cone_deg: float = 0.0  # 0 = disabled; e.g. 90 = hemisphere below inlet
+    
     # Partitioned mode parameters (only used when multi_inlet_mode="partitioned_xy" or "forest")
     partitioned_directional_bias: float = 1.0  # Directional bias for partitioned mode (0.0-1.0)
     partitioned_max_deviation_deg: float = 30.0  # Max angle deviation from inlet direction
@@ -241,7 +244,14 @@ class SpaceColonizationBackend(GenerationBackend):
         else:
             tissue_points = np.array(attractor_list, dtype=np.float64)
         
-        # Single call runs full internal loop controlled by sc_config.max_steps
+        if config.growth_cone_deg > 0:
+            tissue_points = self._filter_tissue_points_by_direction(
+                tissue_points,
+                origin=inlet_position,
+                direction=inlet_direction.to_array(),
+                cone_angle_deg=config.growth_cone_deg,
+            )
+        
         _ = space_colonization_step(
             network=network,
             tissue_points=tissue_points,

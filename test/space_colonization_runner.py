@@ -88,6 +88,7 @@ def _build_config(params: Dict[str, Any]) -> SpaceColonizationConfig:
         kdtree_rebuild_all_nodes_min_new_nodes=params.get("kdtree_rebuild_all_nodes_min_new_nodes", 5),
         stall_steps_per_inlet=params.get("stall_steps_per_inlet", 10),
         interleaving_strategy=params.get("interleaving_strategy", "round_robin"),
+        growth_cone_deg=params.get("growth_cone_deg", 0.0),
         partitioned_directional_bias=params.get("partitioned_directional_bias", 1.0),
         partitioned_max_deviation_deg=params.get("partitioned_max_deviation_deg", 30.0),
         partitioned_cone_angle_deg=params.get("partitioned_cone_angle_deg", 30.0),
