@@ -73,6 +73,7 @@ def synthesize_mesh(
         voxel_repair_auto_adjust=policy.voxel_repair_auto_adjust,
         voxel_repair_max_steps=policy.voxel_repair_max_steps,
         voxel_repair_step_factor=policy.voxel_repair_step_factor,
+        voxel_repair_max_voxels=policy.voxel_repair_max_voxels,
         segments_per_circle=policy.segments_per_circle,
         mutate_network_in_place=policy.mutate_network_in_place,
         radius_clamp_mode=policy.radius_clamp_mode,
