@@ -169,6 +169,7 @@ def synthesize_mesh(
                 auto_adjust=policy.voxel_repair_auto_adjust,
                 max_steps=policy.voxel_repair_max_steps,
                 step_factor=policy.voxel_repair_step_factor,
+                max_voxels=policy.voxel_repair_max_voxels,
             )
             metadata["voxel_repair_applied"] = True
             metadata["voxel_repair_metadata"] = repair_metadata
@@ -203,6 +204,7 @@ def _voxel_repair(
     auto_adjust: bool = True,
     max_steps: int = 4,
     step_factor: float = 1.5,
+    max_voxels: int = 100_000_000,
 ) -> Tuple["trimesh.Trimesh", Dict[str, Any]]:
     """
     PATCH 5: Apply voxel-based repair to a mesh with policy-driven parameters.
@@ -219,6 +221,9 @@ def _voxel_repair(
         Maximum number of pitch adjustment steps
     step_factor : float
         Factor to multiply pitch by on each adjustment step
+    max_voxels : int
+        Maximum allowed voxel count; pitches that would exceed this
+        are skipped (auto-adjusted upward) to avoid OOM allocations.
         
     Returns
     -------
@@ -242,6 +247,22 @@ def _voxel_repair(
     for step in range(max_steps):
         metadata["steps_taken"] = step + 1
         metadata["effective_pitch"] = current_pitch
+        
+        est_voxels = int(np.prod(np.ceil(mesh.extents / current_pitch)))
+        if est_voxels > max_voxels:
+            logger.warning(
+                f"Skipping voxel repair at pitch {current_pitch}: "
+                f"estimated {est_voxels:,} voxels exceeds budget {max_voxels:,}"
+            )
+            if not auto_adjust or step >= max_steps - 1:
+                metadata["error"] = (
+                    f"Estimated {est_voxels:,} voxels at pitch {current_pitch} "
+                    f"exceeds budget {max_voxels:,}"
+                )
+                return mesh, metadata
+            current_pitch *= step_factor
+            metadata["auto_adjusted"] = True
+            continue
         
         try:
             voxels = mesh.voxelized(current_pitch)
