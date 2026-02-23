@@ -14,6 +14,7 @@ Max split degree per node <= 3.
 
 from dataclasses import dataclass, field
 from typing import List, Optional, Set, Dict, Tuple
+import logging
 import numpy as np
 from scipy.spatial import cKDTree
 from tqdm import tqdm
@@ -22,6 +23,10 @@ from ..core.network import VascularNetwork
 from ..core.result import OperationResult, OperationStatus, Delta
 from ..rules.constraints import BranchingConstraints
 from .growth import grow_branch
+from ._gpu_nn import nearest_neighbor as _nn_query, range_search as _range_search, vectorized_direction_average as _vec_dir_avg
+from ._spatial_hash import SpatialHash
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -239,28 +244,25 @@ def space_colonization_step(
         
         attractions: Dict[int, List[int]] = {node.id: [] for node in terminal_nodes}
         
-        # Build KDTree from terminal node positions for O(n log n) nearest neighbor queries
         if terminal_nodes:
             terminal_positions = np.array([
                 [node.position.x, node.position.y, node.position.z]
                 for node in terminal_nodes
             ])
-            terminal_kdtree = cKDTree(terminal_positions)
             terminal_id_list = [node.id for node in terminal_nodes]
+            terminal_id_arr = np.array(terminal_id_list)
             
-            # Get active tissue point positions
-            active_tp_indices = list(active_tissue_points)
-            if active_tp_indices:
+            active_tp_indices = np.array(list(active_tissue_points), dtype=np.intp)
+            if len(active_tp_indices) > 0:
                 active_tp_positions = tissue_points_array[active_tp_indices]
                 
-                # Query nearest terminal for each active tissue point
-                distances, nearest_indices = terminal_kdtree.query(active_tp_positions, k=1)
+                distances, nearest_indices = _nn_query(active_tp_positions, terminal_positions, k=1)
                 
-                # Assign tissue points to their nearest terminal within influence_radius
-                for i, tp_idx in enumerate(active_tp_indices):
-                    if distances[i] < params.influence_radius:
-                        nearest_terminal_id = terminal_id_list[nearest_indices[i]]
-                        attractions[nearest_terminal_id].append(tp_idx)
+                within_range = distances < params.influence_radius
+                valid_tp = active_tp_indices[within_range]
+                valid_nearest = terminal_id_arr[nearest_indices[within_range]]
+                for tp_idx, tid in zip(valid_tp, valid_nearest):
+                    attractions[int(tid)].append(int(tp_idx))
         
         grown_any = False
         for node in terminal_nodes:
@@ -415,25 +417,27 @@ def space_colonization_step(
             'coverage': f'{(initial_count - len(active_tissue_points)) / initial_count:.1%}' if initial_count > 0 else '0%'
         })
         
-        # Use KDTree for efficient kill radius pruning - O(n log n) instead of O(n²)
         if network.nodes and active_tissue_points:
             all_node_positions = np.array([
                 [n.position.x, n.position.y, n.position.z]
                 for n in network.nodes.values()
             ])
-            node_kdtree = cKDTree(all_node_positions)
             
-            active_tp_indices = list(active_tissue_points)
-            active_tp_positions = tissue_points_array[active_tp_indices]
+            active_tp_idx_arr = np.array(list(active_tissue_points), dtype=np.intp)
+            active_tp_positions = tissue_points_array[active_tp_idx_arr]
             
-            # Query all tissue points within kill_radius of any node
-            # query_ball_point returns indices of nodes within radius for each query point
-            nearby_results = node_kdtree.query_ball_point(active_tp_positions, params.kill_radius)
+            if len(all_node_positions) > 5000:
+                sh = SpatialHash(params.kill_radius)
+                sh.build(all_node_positions)
+                kill_mask = sh.has_neighbor_mask(
+                    active_tp_positions, all_node_positions,
+                    params.kill_radius,
+                )
+            else:
+                kill_mask = _range_search(active_tp_positions, all_node_positions, params.kill_radius)
             
-            # Remove tissue points that have at least one node within kill_radius
-            for i, tp_idx in enumerate(active_tp_indices):
-                if nearby_results[i]:  # Non-empty list means at least one node is within kill_radius
-                    active_tissue_points.discard(tp_idx)
+            killed_indices = active_tp_idx_arr[kill_mask]
+            active_tissue_points -= set(killed_indices.tolist())
     
     pbar.close()
     
@@ -1580,6 +1584,13 @@ class SpaceColonizationState:
     tip_kdtree_node_ids: List[int] = field(default_factory=list)
     all_nodes_kdtree_node_ids: List[int] = field(default_factory=list)
     
+    node_positions_array: Optional[np.ndarray] = None
+    node_ids_array: Optional[np.ndarray] = None
+    n_tracked_nodes: int = 0
+    _node_pos_capacity: int = 0
+    
+    _kill_spatial_hash: Optional[SpatialHash] = None
+    
     global_step: int = 0
     steps_since_tip_kdtree_rebuild: int = 0
     steps_since_all_nodes_kdtree_rebuild: int = 0
@@ -1594,8 +1605,8 @@ class SpaceColonizationState:
     inlet_id: Optional[int] = None
     vessel_type: str = "arterial"
     
-    kdtree_rebuild_tip_every: int = 1
-    kdtree_rebuild_all_nodes_every: int = 10
+    kdtree_rebuild_tip_every: int = 5
+    kdtree_rebuild_all_nodes_every: int = 15
     kdtree_rebuild_all_nodes_min_new_nodes: int = 5
     stall_steps_threshold: int = 10
     
@@ -1617,35 +1628,95 @@ class SpaceColonizationState:
             return True
         return False
     
+    def _ensure_position_capacity(self, needed: int) -> None:
+        """Grow the pre-allocated position/id arrays if necessary."""
+        if self.node_positions_array is None:
+            cap = max(needed, 4096)
+            self.node_positions_array = np.empty((cap, 3), dtype=np.float64)
+            self.node_ids_array = np.empty(cap, dtype=np.intp)
+            self._node_pos_capacity = cap
+            return
+        if needed > self._node_pos_capacity:
+            new_cap = max(needed, self._node_pos_capacity * 2)
+            new_pos = np.empty((new_cap, 3), dtype=np.float64)
+            new_ids = np.empty(new_cap, dtype=np.intp)
+            new_pos[:self.n_tracked_nodes] = self.node_positions_array[:self.n_tracked_nodes]
+            new_ids[:self.n_tracked_nodes] = self.node_ids_array[:self.n_tracked_nodes]
+            self.node_positions_array = new_pos
+            self.node_ids_array = new_ids
+            self._node_pos_capacity = new_cap
+
+    def sync_node_positions(self) -> None:
+        """Rebuild the contiguous position array from the network."""
+        nodes = list(self.network.nodes.values())
+        n = len(nodes)
+        self._ensure_position_capacity(n)
+        for i, node in enumerate(nodes):
+            self.node_positions_array[i, 0] = node.position.x
+            self.node_positions_array[i, 1] = node.position.y
+            self.node_positions_array[i, 2] = node.position.z
+            self.node_ids_array[i] = node.id
+        self.n_tracked_nodes = n
+
+    def append_node_position(self, node_id: int, position: Point3D) -> None:
+        """Append a single new node to the contiguous array (avoids full resync)."""
+        self._ensure_position_capacity(self.n_tracked_nodes + 1)
+        idx = self.n_tracked_nodes
+        self.node_positions_array[idx, 0] = position.x
+        self.node_positions_array[idx, 1] = position.y
+        self.node_positions_array[idx, 2] = position.z
+        self.node_ids_array[idx] = node_id
+        self.n_tracked_nodes += 1
+
+    def get_all_node_positions(self) -> np.ndarray:
+        """Return (N, 3) view of all tracked node positions."""
+        return self.node_positions_array[:self.n_tracked_nodes]
+
     def rebuild_tip_kdtree(self) -> None:
         """Rebuild the KD-tree for active tip nodes."""
-        tip_nodes = [
-            self.network.nodes[tid] for tid in self.active_tip_ids
-            if tid in self.network.nodes
-        ]
-        if tip_nodes:
-            positions = np.array([
-                [n.position.x, n.position.y, n.position.z] for n in tip_nodes
-            ])
-            self.tip_kdtree = cKDTree(positions)
-            self.tip_kdtree_node_ids = [n.id for n in tip_nodes]
+        if self.n_tracked_nodes > 0 and self.active_tip_ids:
+            tip_id_set = self.active_tip_ids
+            ids_arr = self.node_ids_array[:self.n_tracked_nodes]
+            mask = np.array([int(nid) in tip_id_set for nid in ids_arr], dtype=bool)
+            if np.any(mask):
+                positions = self.node_positions_array[:self.n_tracked_nodes][mask]
+                self.tip_kdtree = cKDTree(positions)
+                self.tip_kdtree_node_ids = ids_arr[mask].tolist()
+            else:
+                self.tip_kdtree = None
+                self.tip_kdtree_node_ids = []
         else:
-            self.tip_kdtree = None
-            self.tip_kdtree_node_ids = []
+            tip_nodes = [
+                self.network.nodes[tid] for tid in self.active_tip_ids
+                if tid in self.network.nodes
+            ]
+            if tip_nodes:
+                positions = np.array([
+                    [n.position.x, n.position.y, n.position.z] for n in tip_nodes
+                ])
+                self.tip_kdtree = cKDTree(positions)
+                self.tip_kdtree_node_ids = [n.id for n in tip_nodes]
+            else:
+                self.tip_kdtree = None
+                self.tip_kdtree_node_ids = []
         self.steps_since_tip_kdtree_rebuild = 0
-    
+
     def rebuild_all_nodes_kdtree(self) -> None:
         """Rebuild the KD-tree for all nodes (used for kill radius)."""
-        if self.network.nodes:
-            nodes = list(self.network.nodes.values())
-            positions = np.array([
-                [n.position.x, n.position.y, n.position.z] for n in nodes
-            ])
+        self.sync_node_positions()
+        if self.n_tracked_nodes > 0:
+            positions = self.get_all_node_positions()
             self.all_nodes_kdtree = cKDTree(positions)
-            self.all_nodes_kdtree_node_ids = [n.id for n in nodes]
+            self.all_nodes_kdtree_node_ids = self.node_ids_array[:self.n_tracked_nodes].tolist()
+            if self.n_tracked_nodes > 5000:
+                self._kill_spatial_hash = SpatialHash(self.params.kill_radius)
+                self._kill_spatial_hash.build(positions)
+            else:
+                self._kill_spatial_hash = None
         else:
             self.all_nodes_kdtree = None
             self.all_nodes_kdtree_node_ids = []
+            self._kill_spatial_hash = None
         self.steps_since_all_nodes_kdtree_rebuild = 0
         self.nodes_added_since_all_nodes_kdtree_rebuild = 0
     
@@ -1842,22 +1913,33 @@ def space_colonization_one_step(
         result.active_tips = 0
         return result
     
-    active_tp_indices = list(state.active_tissue_indices)
-    if not active_tp_indices:
+    active_tp_indices = np.array(list(state.active_tissue_indices), dtype=np.intp)
+    if len(active_tp_indices) == 0:
         result.exhausted = True
         result.active_tips = len(state.active_tip_ids)
         return result
     
     active_tp_positions = state.tissue_points[active_tp_indices]
     
-    distances, nearest_indices = state.tip_kdtree.query(active_tp_positions, k=1)
+    tip_positions = np.array([
+        [state.network.nodes[tid].position.x,
+         state.network.nodes[tid].position.y,
+         state.network.nodes[tid].position.z]
+        for tid in state.tip_kdtree_node_ids
+        if tid in state.network.nodes
+    ])
+    tip_id_arr = np.array(state.tip_kdtree_node_ids, dtype=np.intp)
+    
+    distances, nearest_indices = _nn_query(active_tp_positions, tip_positions, k=1)
     
     attractions: Dict[int, List[int]] = {tid: [] for tid in state.active_tip_ids}
-    for i, tp_idx in enumerate(active_tp_indices):
-        if distances[i] < params.influence_radius:
-            nearest_tip_id = state.tip_kdtree_node_ids[nearest_indices[i]]
-            if nearest_tip_id in attractions:
-                attractions[nearest_tip_id].append(tp_idx)
+    within_range = distances < params.influence_radius
+    valid_tp = active_tp_indices[within_range]
+    valid_nearest = tip_id_arr[nearest_indices[within_range]]
+    for tp_idx, tid in zip(valid_tp, valid_nearest):
+        tid_int = int(tid)
+        if tid_int in attractions:
+            attractions[tid_int].append(int(tp_idx))
     
     grown_any = False
     new_node_ids = []
@@ -1952,6 +2034,8 @@ def space_colonization_one_step(
                                 grown_any = True
                                 children_created += 1
                                 
+                                new_node_obj = network.nodes[new_node_id]
+                                state.append_node_position(new_node_id, new_node_obj.position)
                                 state.active_tip_ids.add(new_node_id)
                                 state.tip_states[new_node_id] = TipState(
                                     node_id=new_node_id,
@@ -1971,17 +2055,9 @@ def space_colonization_one_step(
                         continue
         
         node_pos_arr = np.array([node.position.x, node.position.y, node.position.z])
-        raw_directions = attracted_positions - node_pos_arr
-        direction_norms = np.linalg.norm(raw_directions, axis=1)
-        valid = direction_norms > 1e-10
-        if not np.any(valid):
-            continue
-        avg_direction = (raw_directions[valid] / direction_norms[valid, np.newaxis]).sum(axis=0)
-        
+        avg_direction = _vec_dir_avg(attracted_positions, node_pos_arr)
         if np.linalg.norm(avg_direction) < 1e-10:
             continue
-        
-        avg_direction = avg_direction / np.linalg.norm(avg_direction)
         avg_direction = _apply_directional_blending(avg_direction, node, params)
         avg_direction = _apply_curvature_constraint(avg_direction, node, params)
         
@@ -2016,6 +2092,8 @@ def space_colonization_one_step(
             new_segment_ids.append(branch_result.new_ids["segment"])
             grown_any = True
             
+            new_node_obj = network.nodes[new_node_id]
+            state.append_node_position(new_node_id, new_node_obj.position)
             state.active_tip_ids.discard(tip_id)
             state.active_tip_ids.add(new_node_id)
             
@@ -2047,21 +2125,23 @@ def space_colonization_one_step(
         if state.needs_all_nodes_kdtree_rebuild():
             state.rebuild_all_nodes_kdtree()
         
-        if state.all_nodes_kdtree is not None and state.active_tissue_indices:
-            active_tp_indices = list(state.active_tissue_indices)
-            active_tp_positions = state.tissue_points[active_tp_indices]
+        if state.active_tissue_indices:
+            kill_tp_indices = np.array(list(state.active_tissue_indices), dtype=np.intp)
+            kill_tp_positions = state.tissue_points[kill_tp_indices]
             
-            nearby_results = state.all_nodes_kdtree.query_ball_point(
-                active_tp_positions, params.kill_radius
-            )
+            all_pos = state.get_all_node_positions()
+            if state._kill_spatial_hash is not None:
+                kill_mask = state._kill_spatial_hash.has_neighbor_mask(
+                    kill_tp_positions, all_pos, params.kill_radius,
+                )
+            elif state.all_nodes_kdtree is not None:
+                kill_mask = _range_search(kill_tp_positions, all_pos, params.kill_radius)
+            else:
+                kill_mask = np.zeros(len(kill_tp_indices), dtype=bool)
             
-            attractors_killed = 0
-            for i, tp_idx in enumerate(active_tp_indices):
-                if nearby_results[i]:
-                    state.active_tissue_indices.discard(tp_idx)
-                    attractors_killed += 1
-            
-            result.attractors_killed = attractors_killed
+            killed = kill_tp_indices[kill_mask]
+            state.active_tissue_indices -= set(killed.tolist())
+            result.attractors_killed = int(kill_mask.sum())
     
     state.global_step += 1
     state.steps_since_tip_kdtree_rebuild += 1
