@@ -444,10 +444,17 @@ class MeshSynthesisPolicy:
     voxel_repair_max_steps: int = 4
     voxel_repair_step_factor: float = 1.5
     voxel_repair_max_voxels: int = 100_000_000  # 100M voxels budget
+    max_voxels: Optional[int] = None
     segments_per_circle: int = 16
     mutate_network_in_place: bool = False
     radius_clamp_mode: Literal["copy", "mutate"] = "copy"
     use_resolution_policy: bool = False
+
+    def __post_init__(self) -> None:
+        if self.max_voxels is not None:
+            self.voxel_repair_max_voxels = self.max_voxels
+        else:
+            self.max_voxels = self.voxel_repair_max_voxels
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
