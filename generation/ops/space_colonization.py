@@ -446,10 +446,15 @@ def space_colonization_step(
                 step, n_total_attracted, len(terminal_nodes),
             )
             if n_total_attracted == 0:
+                min_dist = float('inf')
+                try:
+                    if len(distances) > 0:
+                        min_dist = float(distances.min())
+                except NameError:
+                    pass
                 _logger.warning(
                     "No attractors within influence_radius (%.4f). Min distance to nearest tip: %.6f",
-                    params.influence_radius,
-                    float(distances.min()) if len(active_tp_indices) > 0 and len(distances) > 0 else float('inf'),
+                    params.influence_radius, min_dist,
                 )
             pbar.close()
             break
@@ -2128,6 +2133,12 @@ def space_colonization_one_step(
                                     is_root=False,
                                 )
                             else:
+                                if branch_result.errors:
+                                    _logger.warning(
+                                        "SC one_step (inlet=%s) step %d: bifurcation grow_branch failed (tip=%s): %s",
+                                        state.inlet_id, state.global_step, tip_id,
+                                        "; ".join(branch_result.errors[:3]),
+                                    )
                                 warnings.extend(branch_result.errors)
                         
                         if children_created > 0:
