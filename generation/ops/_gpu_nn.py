@@ -34,8 +34,8 @@ try:
         logger.info("PyTorch CUDA detected — GPU-accelerated NN enabled")
     else:
         logger.debug("PyTorch installed but CUDA unavailable — using CPU fallback")
-except ImportError:
-    logger.debug("PyTorch not installed — using scipy cKDTree fallback")
+except Exception as exc:
+    logger.debug("PyTorch unavailable (%s: %s) — using scipy cKDTree fallback", type(exc).__name__, exc)
 
 
 def gpu_available() -> bool:
