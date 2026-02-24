@@ -209,10 +209,18 @@ def space_colonization_step(
     warnings = []
     steps_taken = 0
     
+    _logger.info(
+        "SC init: %d terminal nodes, %d tissue points, influence_radius=%.4f, "
+        "kill_radius=%.4f, step_size=%.6f, max_steps=%d",
+        len(terminal_nodes), initial_count, params.influence_radius,
+        params.kill_radius, params.step_size, params.max_steps,
+    )
+    
     pbar = tqdm(total=params.max_steps, desc="Space colonization", unit="step")
     
     for step in range(params.max_steps):
         if not active_tissue_points:
+            _logger.info("SC step %d: no active tissue points remain, stopping", step)
             pbar.close()
             break
         
@@ -263,6 +271,21 @@ def space_colonization_step(
                 valid_nearest = terminal_id_arr[nearest_indices[within_range]]
                 for tp_idx, tid in zip(valid_tp, valid_nearest):
                     attractions[int(tid)].append(int(tp_idx))
+                
+                if step == 0:
+                    n_attracted = int(within_range.sum())
+                    _logger.info(
+                        "SC step 0: %d/%d attractors within influence_radius (%.4f) of %d tips",
+                        n_attracted, len(active_tp_indices), params.influence_radius, len(terminal_nodes),
+                    )
+                    if n_attracted == 0:
+                        _logger.warning(
+                            "SC step 0: NO attractors within influence_radius! "
+                            "Nearest attractor is %.6f away (influence_radius=%.4f). "
+                            "Consider increasing attraction_distance or num_attractors.",
+                            float(distances.min()) if len(distances) > 0 else float('inf'),
+                            params.influence_radius,
+                        )
         
         grown_any = False
         for node in terminal_nodes:
@@ -350,6 +373,11 @@ def space_colonization_step(
                                     new_segment_ids.append(result.new_ids["segment"])
                                     grown_any = True
                                 else:
+                                    if result.errors:
+                                        _logger.warning(
+                                            "SC step %d: grow_branch failed (tip=%s): %s",
+                                            step, node.id, "; ".join(result.errors[:3]),
+                                        )
                                     warnings.extend(result.errors)
                             
                             continue
@@ -404,9 +432,30 @@ def space_colonization_step(
                 new_segment_ids.append(result.new_ids["segment"])
                 grown_any = True
             else:
+                if result.errors:
+                    _logger.warning(
+                        "SC step %d: grow_branch failed (tip=%s): %s",
+                        step, node.id, "; ".join(result.errors[:3]),
+                    )
                 warnings.extend(result.errors)
         
         if not grown_any:
+            n_total_attracted = sum(len(v) for v in attractions.values())
+            _logger.warning(
+                "SC step %d: no growth occurred (attracted=%d, tips=%d). Stopping.",
+                step, n_total_attracted, len(terminal_nodes),
+            )
+            if n_total_attracted == 0:
+                min_dist = float('inf')
+                try:
+                    if len(distances) > 0:
+                        min_dist = float(distances.min())
+                except NameError:
+                    pass
+                _logger.warning(
+                    "No attractors within influence_radius (%.4f). Min distance to nearest tip: %.6f",
+                    params.influence_radius, min_dist,
+                )
             pbar.close()
             break
         
@@ -1482,9 +1531,18 @@ def space_colonization_step_v2(
                 if node_id in tip_states:
                     del tip_states[node_id]
             else:
+                if result.errors:
+                    _logger.warning(
+                        "SC v2 step %d: grow_branch failed (tip=%s): %s",
+                        step, node_id, "; ".join(result.errors[:3]),
+                    )
                 warnings.extend(result.errors)
         
         if not grown_any:
+            _logger.warning(
+                "SC v2 step %d: no growth occurred (tips=%d, active_tissue=%d). Stopping.",
+                step, len(tip_states), len(active_tissue_points),
+            )
             pbar.close()
             break
         
@@ -1902,6 +1960,11 @@ def space_colonization_one_step(
         result.exhausted = True
         result.active_attractors = len(state.active_tissue_indices)
         result.active_tips = len(state.active_tip_ids)
+        _logger.info(
+            "SC one_step (inlet=%s) step %d: exhausted (tips=%d, attractors=%d)",
+            state.inlet_id, state.global_step,
+            len(state.active_tip_ids), len(state.active_tissue_indices),
+        )
         return result
     
     if state.needs_tip_kdtree_rebuild():
@@ -1911,12 +1974,20 @@ def space_colonization_one_step(
         result.exhausted = True
         result.active_attractors = len(state.active_tissue_indices)
         result.active_tips = 0
+        _logger.warning(
+            "SC one_step (inlet=%s) step %d: no tips in KDTree",
+            state.inlet_id, state.global_step,
+        )
         return result
     
     active_tp_indices = np.array(list(state.active_tissue_indices), dtype=np.intp)
     if len(active_tp_indices) == 0:
         result.exhausted = True
         result.active_tips = len(state.active_tip_ids)
+        _logger.info(
+            "SC one_step (inlet=%s) step %d: no active attractors remain",
+            state.inlet_id, state.global_step,
+        )
         return result
     
     active_tp_positions = state.tissue_points[active_tp_indices]
@@ -1940,6 +2011,23 @@ def space_colonization_one_step(
         tid_int = int(tid)
         if tid_int in attractions:
             attractions[tid_int].append(int(tp_idx))
+    
+    if state.global_step == 0:
+        n_attracted = int(within_range.sum())
+        _logger.info(
+            "SC one_step (inlet=%s) step 0: %d/%d attractors within influence_radius (%.4f) of %d tips",
+            state.inlet_id, n_attracted, len(active_tp_indices),
+            params.influence_radius, len(state.tip_kdtree_node_ids),
+        )
+        if n_attracted == 0:
+            _logger.warning(
+                "SC one_step (inlet=%s) step 0: NO attractors within influence_radius! "
+                "Nearest attractor is %.6f away (influence_radius=%.4f). "
+                "Consider increasing attraction_distance or num_attractors.",
+                state.inlet_id,
+                float(distances.min()) if len(distances) > 0 else float('inf'),
+                params.influence_radius,
+            )
     
     grown_any = False
     new_node_ids = []
@@ -2045,6 +2133,12 @@ def space_colonization_one_step(
                                     is_root=False,
                                 )
                             else:
+                                if branch_result.errors:
+                                    _logger.warning(
+                                        "SC one_step (inlet=%s) step %d: bifurcation grow_branch failed (tip=%s): %s",
+                                        state.inlet_id, state.global_step, tip_id,
+                                        "; ".join(branch_result.errors[:3]),
+                                    )
                                 warnings.extend(branch_result.errors)
                         
                         if children_created > 0:
@@ -2116,7 +2210,21 @@ def space_colonization_one_step(
                     is_root=False,
                 )
         else:
+            if branch_result.errors:
+                _logger.warning(
+                    "SC one_step (inlet=%s) step %d: grow_branch failed (tip=%s): %s",
+                    state.inlet_id, state.global_step, tip_id,
+                    "; ".join(branch_result.errors[:3]),
+                )
             warnings.extend(branch_result.errors)
+    
+    if not grown_any and state.global_step > 0:
+        n_total_attracted = sum(len(v) for v in attractions.values())
+        _logger.warning(
+            "SC one_step (inlet=%s) step %d: no growth (attracted=%d, tips=%d)",
+            state.inlet_id, state.global_step,
+            n_total_attracted, len(state.active_tip_ids),
+        )
     
     if new_node_ids:
         state.nodes_added_since_tip_kdtree_rebuild += len(new_node_ids)
