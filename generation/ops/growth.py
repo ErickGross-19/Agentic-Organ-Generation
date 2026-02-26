@@ -111,6 +111,7 @@ def grow_branch(
     check_collisions: bool = True,
     seed: Optional[int] = None,
     spatial_index: Optional["DynamicSpatialIndex"] = None,
+    collision_mode: str = "break",
 ) -> OperationResult:
     """
     Grow a branch from an existing node.
@@ -242,10 +243,36 @@ def grow_branch(
             )
         
         if has_collision:
-            return OperationResult.failure(
-                message="Growth blocked by collision",
-                errors=["Collision detected"],
-            )
+            if collision_mode == "deflect":
+                deflected = _deflect_around_collision(
+                    network, parent_node, direction_arr, length, target_radius,
+                    constraints, spatial_index,
+                )
+                if deflected is not None:
+                    new_position, direction_arr = deflected
+                    direction = Direction3D.from_array(direction_arr)
+                    warnings.append("Deflected around collision")
+                else:
+                    return OperationResult.failure(
+                        message="Growth blocked by collision (deflect failed)",
+                        errors=["Collision detected, deflection failed"],
+                    )
+            elif collision_mode == "merge":
+                merged = _merge_at_collision(
+                    network, parent_node, from_node_id, new_pos, target_radius,
+                    constraints, spatial_index,
+                )
+                if merged is not None:
+                    return merged
+                return OperationResult.failure(
+                    message="Growth blocked by collision (merge failed)",
+                    errors=["Collision detected, no merge target found"],
+                )
+            else:
+                return OperationResult.failure(
+                    message="Growth blocked by collision",
+                    errors=["Collision detected"],
+                )
         
         if hasattr(network, 'domain') and network.domain is not None:
             from .collision import check_domain_boundary_clearance
@@ -307,6 +334,140 @@ def grow_branch(
         message=f"Grew branch from node {from_node_id}",
         new_ids={"node": new_node_id, "segment": segment_id},
         warnings=warnings,
+        delta=delta,
+        rng_state=network.id_gen.get_state(),
+    )
+
+
+def _deflect_around_collision(
+    network: VascularNetwork,
+    parent_node: Node,
+    direction_arr: np.ndarray,
+    length: float,
+    target_radius: float,
+    constraints: BranchingConstraints,
+    spatial_index: Optional["DynamicSpatialIndex"],
+    max_attempts: int = 6,
+    deflect_angle_deg: float = 30.0,
+) -> Optional[Tuple[Point3D, np.ndarray]]:
+    parent_pos = np.array([parent_node.position.x, parent_node.position.y, parent_node.position.z])
+    perp = np.cross(direction_arr, [0, 0, 1])
+    if np.linalg.norm(perp) < 1e-10:
+        perp = np.cross(direction_arr, [0, 1, 0])
+    perp = perp / np.linalg.norm(perp)
+    perp2 = np.cross(direction_arr, perp)
+    perp2 = perp2 / np.linalg.norm(perp2)
+
+    for attempt in range(max_attempts):
+        angle_rad = np.radians(deflect_angle_deg)
+        theta = (2 * np.pi / max_attempts) * attempt
+        deflected = (
+            direction_arr * np.cos(angle_rad)
+            + perp * np.sin(angle_rad) * np.cos(theta)
+            + perp2 * np.sin(angle_rad) * np.sin(theta)
+        )
+        deflected = deflected / np.linalg.norm(deflected)
+
+        new_pos_arr = parent_pos + deflected * length
+        candidate = Point3D(float(new_pos_arr[0]), float(new_pos_arr[1]), float(new_pos_arr[2]))
+
+        if not network.domain.contains(candidate):
+            candidate = network.domain.project_inside(candidate)
+            if not network.domain.contains(candidate):
+                continue
+
+        new_pos_check = np.array([candidate.x, candidate.y, candidate.z])
+        if spatial_index is not None:
+            collides = spatial_index.check_capsule_collision(
+                start=parent_pos, end=new_pos_check, radius=target_radius,
+                buffer=constraints.collision_min_clearance,
+                exclude_adjacent_to=parent_pos,
+            )
+        else:
+            from .collision import check_segment_collision_swept
+            collides, _ = check_segment_collision_swept(
+                network, new_seg_start=parent_pos, new_seg_end=new_pos_check,
+                new_seg_radius=target_radius, exclude_node_ids=[parent_node.id],
+                min_clearance=constraints.collision_min_clearance,
+            )
+
+        if not collides:
+            return candidate, deflected
+
+    return None
+
+
+def _merge_at_collision(
+    network: VascularNetwork,
+    parent_node: Node,
+    from_node_id: int,
+    candidate_pos: np.ndarray,
+    target_radius: float,
+    constraints: BranchingConstraints,
+    spatial_index: Optional["DynamicSpatialIndex"],
+    merge_search_radius: float = 0.0,
+) -> Optional[OperationResult]:
+    if merge_search_radius <= 0.0:
+        merge_search_radius = constraints.collision_min_clearance * 3.0
+
+    parent_pos = np.array([parent_node.position.x, parent_node.position.y, parent_node.position.z])
+    best_node_id = None
+    best_dist = float("inf")
+
+    for nid, node in network.nodes.items():
+        if nid == from_node_id:
+            continue
+        seg_ids = [s.id for s in network.segments.values()
+                   if s.start_node_id == from_node_id or s.end_node_id == from_node_id]
+        adjacent_nodes = set()
+        for sid in seg_ids:
+            seg = network.segments[sid]
+            adjacent_nodes.add(seg.start_node_id)
+            adjacent_nodes.add(seg.end_node_id)
+        if nid in adjacent_nodes:
+            continue
+
+        node_pos = np.array([node.position.x, node.position.y, node.position.z])
+        dist = float(np.linalg.norm(candidate_pos - node_pos))
+        if dist < merge_search_radius and dist < best_dist:
+            best_dist = dist
+            best_node_id = nid
+
+    if best_node_id is None:
+        return None
+
+    merge_node = network.nodes[best_node_id]
+    merge_radius = merge_node.attributes.get("radius", target_radius)
+
+    segment_id = network.id_gen.next_id()
+    geometry = TubeGeometry(
+        start=parent_node.position,
+        end=merge_node.position,
+        radius_start=parent_node.attributes.get("radius", target_radius),
+        radius_end=merge_radius,
+    )
+    segment = VesselSegment(
+        id=segment_id,
+        start_node_id=from_node_id,
+        end_node_id=best_node_id,
+        geometry=geometry,
+        vessel_type=parent_node.vessel_type,
+    )
+    network.add_segment(segment)
+
+    if parent_node.node_type == "terminal":
+        parent_node.node_type = "junction"
+    if merge_node.node_type == "terminal":
+        merge_node.node_type = "junction"
+
+    delta = Delta(
+        created_segment_ids=[segment_id],
+    )
+    return OperationResult(
+        status=OperationStatus.SUCCESS,
+        message=f"Merged node {from_node_id} to node {best_node_id} (dist={best_dist:.6f}m)",
+        new_ids={"node": best_node_id, "segment": segment_id, "merged": True},
+        warnings=[f"Collision resolved by merge to node {best_node_id}"],
         delta=delta,
         rng_state=network.id_gen.get_state(),
     )
