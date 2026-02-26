@@ -235,6 +235,7 @@ class SpaceColonizationBackend(GenerationBackend):
             min_attractions_for_bifurcation=config.min_attractions_for_bifurcation,
             bifurcation_angle_threshold_deg=config.bifurcation_angle_threshold_deg,
             collision_mode=config.collision_mode,
+            min_clearance=config.collision_clearance,
         )
         
         # Convert attractors to ndarray if needed (ops accepts Point3D list or ndarray)
@@ -530,6 +531,7 @@ class SpaceColonizationBackend(GenerationBackend):
             min_attractions_for_bifurcation=config.min_attractions_for_bifurcation,
             bifurcation_angle_threshold_deg=config.bifurcation_angle_threshold_deg,
             collision_mode=config.collision_mode,
+            min_clearance=config.collision_clearance,
         )
         
         def compute_attractor_weights(tissue_points: np.ndarray) -> np.ndarray:
@@ -752,6 +754,7 @@ class SpaceColonizationBackend(GenerationBackend):
                 min_attractions_for_bifurcation=config.min_attractions_for_bifurcation,
                 bifurcation_angle_threshold_deg=config.bifurcation_angle_threshold_deg,
                 collision_mode=config.collision_mode,
+                min_clearance=config.collision_clearance,
             )
             
             tissue_points = self._filter_tissue_points_by_cylinder(
@@ -1019,6 +1022,7 @@ class SpaceColonizationBackend(GenerationBackend):
                     min_attractions_for_bifurcation=config.min_attractions_for_bifurcation,
                     bifurcation_angle_threshold_deg=config.bifurcation_angle_threshold_deg,
                     collision_mode=config.collision_mode,
+                    min_clearance=config.collision_clearance,
                 )
                 
                 if isinstance(attractors, list) and attractors and isinstance(attractors[0], Point3D):
@@ -1149,6 +1153,7 @@ class SpaceColonizationBackend(GenerationBackend):
             min_attractions_for_bifurcation=config.min_attractions_for_bifurcation,
             bifurcation_angle_threshold_deg=config.bifurcation_angle_threshold_deg,
             collision_mode=config.collision_mode,
+            min_clearance=config.collision_clearance,
         )
         
         if isinstance(arterial_attractors, list)and arterial_attractors and isinstance(arterial_attractors[0], Point3D):
