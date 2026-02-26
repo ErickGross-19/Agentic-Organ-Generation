@@ -171,6 +171,7 @@ def space_colonization_step(
         constraints = BranchingConstraints(
             min_segment_length=params.step_size,
             min_radius=params.min_radius,
+            collision_min_clearance=params.min_clearance if params.min_clearance is not None else 0.001,
         )
     
     rng = np.random.default_rng(seed) if seed is not None else network.id_gen.rng
@@ -1202,6 +1203,7 @@ def space_colonization_step_v2(
         constraints = BranchingConstraints(
             min_segment_length=max(params.step_size, sc_policy.min_branch_segment_length),
             min_radius=params.min_radius,
+            collision_min_clearance=params.min_clearance if params.min_clearance is not None else 0.001,
         )
     
     rng = np.random.default_rng(seed) if seed is not None else network.id_gen.rng
@@ -1938,6 +1940,7 @@ def create_space_colonization_state(
         constraints = BranchingConstraints(
             min_segment_length=params.step_size,
             min_radius=params.min_radius,
+            collision_min_clearance=params.min_clearance if params.min_clearance is not None else 0.001,
         )
     
     rng = np.random.default_rng(seed) if seed is not None else network.id_gen.rng
