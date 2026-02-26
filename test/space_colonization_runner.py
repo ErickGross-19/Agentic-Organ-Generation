@@ -92,6 +92,7 @@ def _build_config(params: Dict[str, Any]) -> SpaceColonizationConfig:
         partitioned_max_deviation_deg=params.get("partitioned_max_deviation_deg", 30.0),
         partitioned_cone_angle_deg=params.get("partitioned_cone_angle_deg", 30.0),
         partitioned_cylinder_radius=params.get("partitioned_cylinder_radius", 0.001),
+        collision_mode=params.get("collision_mode", "break"),
     )
 
 

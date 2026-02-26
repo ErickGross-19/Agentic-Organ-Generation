@@ -64,6 +64,7 @@ class SpaceColonizationParams:
     # Phase 1b: Quality constraints
     max_curvature_deg: Optional[float] = None  # Maximum curvature angle (None = no limit)
     min_clearance: Optional[float] = None  # Minimum clearance from other segments (None = no check)
+    collision_mode: str = "break"  # "break" (stop), "deflect" (steer away), "merge" (connect to nearby)
     
     def to_dict(self) -> dict:
         """Convert to dictionary."""
@@ -86,6 +87,7 @@ class SpaceColonizationParams:
             "bifurcation_probability": self.bifurcation_probability,
             "max_curvature_deg": self.max_curvature_deg,
             "min_clearance": self.min_clearance,
+            "collision_mode": self.collision_mode,
             "grow_from_terminals_only": self.grow_from_terminals_only,
         }
     
@@ -111,6 +113,7 @@ class SpaceColonizationParams:
             bifurcation_probability=d.get("bifurcation_probability", 0.7),
             max_curvature_deg=d.get("max_curvature_deg"),
             min_clearance=d.get("min_clearance"),
+            collision_mode=d.get("collision_mode", "break"),
             grow_from_terminals_only=d.get("grow_from_terminals_only", False),
         )
 
@@ -383,10 +386,10 @@ def space_colonization_step(
                                     check_collisions=True,
                                     seed=seed,
                                     spatial_index=_sc_spatial_index,
+                                    collision_mode=params.collision_mode,
                                 )
                                 
                                 if result.is_success():
-                                    new_node_ids.append(result.new_ids["node"])
                                     _new_seg_id = result.new_ids["segment"]
                                     new_segment_ids.append(_new_seg_id)
                                     _seg = network.segments.get(_new_seg_id)
@@ -397,6 +400,8 @@ def space_colonization_step(
                                             np.array([_seg.geometry.end.x, _seg.geometry.end.y, _seg.geometry.end.z]),
                                             _seg.geometry.mean_radius(),
                                         )
+                                    if not result.new_ids.get("merged"):
+                                        new_node_ids.append(result.new_ids["node"])
                                     grown_any = True
                                 else:
                                     if result.errors:
@@ -452,10 +457,10 @@ def space_colonization_step(
                 check_collisions=True,
                 seed=seed,
                 spatial_index=_sc_spatial_index,
+                collision_mode=params.collision_mode,
             )
             
             if result.is_success():
-                new_node_ids.append(result.new_ids["node"])
                 _new_seg_id = result.new_ids["segment"]
                 new_segment_ids.append(_new_seg_id)
                 _seg = network.segments.get(_new_seg_id)
@@ -466,6 +471,8 @@ def space_colonization_step(
                         np.array([_seg.geometry.end.x, _seg.geometry.end.y, _seg.geometry.end.z]),
                         _seg.geometry.mean_radius(),
                     )
+                if not result.new_ids.get("merged"):
+                    new_node_ids.append(result.new_ids["node"])
                 grown_any = True
             else:
                 if result.errors:
@@ -1474,22 +1481,23 @@ def space_colonization_step_v2(
                             constraints=constraints,
                             check_collisions=True,
                             seed=seed,
+                            collision_mode=params.collision_mode,
                         )
                         
                         if result.is_success():
-                            new_node_id = result.new_ids["node"]
-                            new_node_ids.append(new_node_id)
                             new_segment_ids.append(result.new_ids["segment"])
                             grown_any = True
                             children_created += 1
-                            
-                            tip_states[new_node_id] = TipState(
-                                node_id=new_node_id,
-                                steps_since_split=0,
-                                total_steps=tip_state.total_steps + 1,
-                                distance_from_root=tip_state.distance_from_root + params.step_size,
-                                is_root=False,
-                            )
+                            if not result.new_ids.get("merged"):
+                                new_node_id = result.new_ids["node"]
+                                new_node_ids.append(new_node_id)
+                                tip_states[new_node_id] = TipState(
+                                    node_id=new_node_id,
+                                    steps_since_split=0,
+                                    total_steps=tip_state.total_steps + 1,
+                                    distance_from_root=tip_state.distance_from_root + params.step_size,
+                                    is_root=False,
+                                )
                         else:
                             warnings.extend(result.errors)
                     
@@ -1544,26 +1552,25 @@ def space_colonization_step_v2(
                 constraints=constraints,
                 check_collisions=True,
                 seed=seed,
+                collision_mode=params.collision_mode,
             )
             
             if result.is_success():
-                new_node_id = result.new_ids["node"]
-                new_node_ids.append(new_node_id)
                 new_segment_ids.append(result.new_ids["segment"])
                 grown_any = True
-                
-                new_tip_state = TipState(
-                    node_id=new_node_id,
-                    steps_since_split=tip_state.steps_since_split + 1,
-                    total_steps=tip_state.total_steps + 1,
-                    distance_from_root=tip_state.distance_from_root + params.step_size,
-                    is_root=False,
-                )
-                tip_states[new_node_id] = new_tip_state
-                
-                if in_trunk_phase and node_id == trunk_tip_id:
-                    trunk_tip_id = new_node_id
-                
+                if not result.new_ids.get("merged"):
+                    new_node_id = result.new_ids["node"]
+                    new_node_ids.append(new_node_id)
+                    new_tip_state = TipState(
+                        node_id=new_node_id,
+                        steps_since_split=tip_state.steps_since_split + 1,
+                        total_steps=tip_state.total_steps + 1,
+                        distance_from_root=tip_state.distance_from_root + params.step_size,
+                        is_root=False,
+                    )
+                    tip_states[new_node_id] = new_tip_state
+                    if in_trunk_phase and node_id == trunk_tip_id:
+                        trunk_tip_id = new_node_id
                 if node_id in tip_states:
                     del tip_states[node_id]
             else:
@@ -2256,27 +2263,28 @@ def space_colonization_one_step(
                 check_collisions=True,
                 seed=int(rng.integers(0, 2**31)) if rng else None,
                 spatial_index=state._collision_spatial_index,
+                collision_mode=params.collision_mode,
             )
             
             if branch_result.is_success():
-                new_node_id = branch_result.new_ids["node"]
                 new_seg_id = branch_result.new_ids["segment"]
-                new_node_ids.append(new_node_id)
                 new_segment_ids.append(new_seg_id)
                 grown_any = True
                 children_created += 1
-                
                 state.insert_segment_into_spatial_index(new_seg_id)
-                new_node_obj = network.nodes[new_node_id]
-                state.append_node_position(new_node_id, new_node_obj.position)
-                state.active_tip_ids.add(new_node_id)
-                state.tip_states[new_node_id] = TipState(
-                    node_id=new_node_id,
-                    steps_since_split=0,
-                    total_steps=state.tip_states.get(tip_id, TipState(tip_id)).total_steps + 1,
-                    distance_from_root=state.tip_states.get(tip_id, TipState(tip_id)).distance_from_root + params.step_size,
-                    is_root=False,
-                )
+                if not branch_result.new_ids.get("merged"):
+                    new_node_id = branch_result.new_ids["node"]
+                    new_node_ids.append(new_node_id)
+                    new_node_obj = network.nodes[new_node_id]
+                    state.append_node_position(new_node_id, new_node_obj.position)
+                    state.active_tip_ids.add(new_node_id)
+                    state.tip_states[new_node_id] = TipState(
+                        node_id=new_node_id,
+                        steps_since_split=0,
+                        total_steps=state.tip_states.get(tip_id, TipState(tip_id)).total_steps + 1,
+                        distance_from_root=state.tip_states.get(tip_id, TipState(tip_id)).distance_from_root + params.step_size,
+                        is_root=False,
+                    )
             else:
                 if branch_result.errors:
                     _logger.warning(
@@ -2323,32 +2331,23 @@ def space_colonization_one_step(
             check_collisions=do_collision,
             seed=int(rng.integers(0, 2**31)) if rng else None,
             spatial_index=state._collision_spatial_index if do_collision else None,
+            collision_mode=params.collision_mode,
         )
         
         if branch_result.is_success():
-            new_node_id = branch_result.new_ids["node"]
             new_seg_id = branch_result.new_ids["segment"]
-            new_node_ids.append(new_node_id)
             new_segment_ids.append(new_seg_id)
             grown_any = True
-            
             state.insert_segment_into_spatial_index(new_seg_id)
-            new_node_obj = network.nodes[new_node_id]
-            state.append_node_position(new_node_id, new_node_obj.position)
             state.active_tip_ids.discard(tip_id)
-            state.active_tip_ids.add(new_node_id)
-            
             if tip_id in state.tip_states:
-                old_state = state.tip_states[tip_id]
-                state.tip_states[new_node_id] = TipState(
-                    node_id=new_node_id,
-                    steps_since_split=old_state.steps_since_split + 1,
-                    total_steps=old_state.total_steps + 1,
-                    distance_from_root=old_state.distance_from_root + params.step_size,
-                    is_root=False,
-                )
                 del state.tip_states[tip_id]
-            else:
+            if not branch_result.new_ids.get("merged"):
+                new_node_id = branch_result.new_ids["node"]
+                new_node_ids.append(new_node_id)
+                new_node_obj = network.nodes[new_node_id]
+                state.append_node_position(new_node_id, new_node_obj.position)
+                state.active_tip_ids.add(new_node_id)
                 state.tip_states[new_node_id] = TipState(
                     node_id=new_node_id,
                     steps_since_split=1,

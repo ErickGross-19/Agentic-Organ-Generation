@@ -463,3 +463,128 @@ class TestSCIntegrationWithPhases234:
                 break
 
         assert total_nodes > 0, "SC with all phases should produce growth"
+
+
+class TestCollisionModes:
+    """Tests for collision_mode parameter in grow_branch (break/deflect/merge)."""
+
+    def _make_colliding_setup(self):
+        from generation.core.domain import CylinderDomain
+        domain = CylinderDomain(radius=0.05, height=0.1, center=Point3D(0, 0, 0))
+        net = VascularNetwork(domain=domain)
+
+        root_id = net.id_gen.next_id()
+        root = Node(
+            id=root_id, position=Point3D(0, 0, 0.04),
+            node_type="inlet", vessel_type="arterial",
+            attributes={"radius": 0.001, "direction": Direction3D(0, 0, -1).to_dict()},
+        )
+        net.add_node(root)
+
+        tip_id = root_id
+        for i in range(5):
+            parent = net.get_node(tip_id)
+            new_id = net.id_gen.next_id()
+            z = 0.04 - (i + 1) * 0.005
+            new_node = Node(
+                id=new_id, position=Point3D(0, 0, z),
+                node_type="terminal", vessel_type="arterial",
+                attributes={"radius": 0.0008, "direction": Direction3D(0, 0, -1).to_dict()},
+            )
+            net.add_node(new_node)
+            seg_id = net.id_gen.next_id()
+            seg = VesselSegment(
+                id=seg_id, start_node_id=tip_id, end_node_id=new_id,
+                geometry=TubeGeometry(start=parent.position, end=new_node.position,
+                                      radius_start=0.001, radius_end=0.0008),
+                vessel_type="arterial",
+            )
+            net.add_segment(seg)
+            tip_id = new_id
+
+        blocker_start_id = net.id_gen.next_id()
+        blocker_start = Node(
+            id=blocker_start_id, position=Point3D(-0.002, 0, 0.01),
+            node_type="junction", vessel_type="arterial",
+            attributes={"radius": 0.001},
+        )
+        net.add_node(blocker_start)
+        blocker_end_id = net.id_gen.next_id()
+        blocker_end = Node(
+            id=blocker_end_id, position=Point3D(0.002, 0, 0.01),
+            node_type="terminal", vessel_type="arterial",
+            attributes={"radius": 0.001},
+        )
+        net.add_node(blocker_end)
+        blocker_seg_id = net.id_gen.next_id()
+        blocker_seg = VesselSegment(
+            id=blocker_seg_id, start_node_id=blocker_start_id, end_node_id=blocker_end_id,
+            geometry=TubeGeometry(start=blocker_start.position, end=blocker_end.position,
+                                  radius_start=0.001, radius_end=0.001),
+            vessel_type="arterial",
+        )
+        net.add_segment(blocker_seg)
+
+        idx = _build_spatial_index(net)
+        return net, tip_id, idx
+
+    def test_break_mode_fails_on_collision(self):
+        net, tip_id, idx = self._make_colliding_setup()
+        constraints = BranchingConstraints(
+            min_segment_length=0.0001, min_radius=0.0001,
+            collision_min_clearance=0.002,
+        )
+        result = grow_branch(
+            net, tip_id, length=0.005, direction=(0, 0, -1),
+            target_radius=0.0005, constraints=constraints,
+            check_collisions=True, spatial_index=idx,
+            collision_mode="break",
+        )
+        assert not result.is_success(), "break mode should fail on collision"
+
+    def test_deflect_mode_finds_alternate(self):
+        net, tip_id, idx = self._make_colliding_setup()
+        constraints = BranchingConstraints(
+            min_segment_length=0.0001, min_radius=0.0001,
+            collision_min_clearance=0.002,
+        )
+        result = grow_branch(
+            net, tip_id, length=0.005, direction=(0, 0, -1),
+            target_radius=0.0005, constraints=constraints,
+            check_collisions=True, spatial_index=idx,
+            collision_mode="deflect",
+        )
+        if result.is_success():
+            assert "node" in result.new_ids
+            assert "segment" in result.new_ids
+            assert not result.new_ids.get("merged")
+
+    def test_merge_mode_connects_nearby(self):
+        net, tip_id, idx = self._make_colliding_setup()
+        constraints = BranchingConstraints(
+            min_segment_length=0.0001, min_radius=0.0001,
+            collision_min_clearance=0.002,
+        )
+        result = grow_branch(
+            net, tip_id, length=0.005, direction=(0, 0, -1),
+            target_radius=0.0005, constraints=constraints,
+            check_collisions=True, spatial_index=idx,
+            collision_mode="merge",
+        )
+        if result.is_success():
+            assert result.new_ids.get("merged") is True
+            assert "segment" in result.new_ids
+
+    def test_break_is_default(self):
+        from generation.ops.space_colonization import SpaceColonizationParams
+        params = SpaceColonizationParams()
+        assert params.collision_mode == "break"
+
+    def test_collision_mode_roundtrip(self):
+        from generation.ops.space_colonization import SpaceColonizationParams
+        for mode in ("break", "deflect", "merge"):
+            params = SpaceColonizationParams(collision_mode=mode)
+            d = params.to_dict()
+            assert d["collision_mode"] == mode
+            restored = SpaceColonizationParams.from_dict(d)
+            assert restored.collision_mode == mode
