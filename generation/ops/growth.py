@@ -2,9 +2,12 @@
 Growth operations for extending vascular networks.
 """
 
+import logging
 from dataclasses import dataclass, field
 from typing import Optional, Tuple, List
 import numpy as np
+
+_log = logging.getLogger(__name__)
 from ..core.types import Point3D, Direction3D, TubeGeometry
 from ..core.network import VascularNetwork, Node, VesselSegment
 from ..core.result import OperationResult, OperationStatus, Delta, ErrorCode
@@ -244,6 +247,7 @@ def grow_branch(
         
         if has_collision:
             if collision_mode == "deflect":
+                _log.debug("Collision at tip %d, attempting deflection (40 candidates)", from_node_id)
                 deflected = _deflect_around_collision(
                     network, parent_node, direction_arr, length, target_radius,
                     constraints, spatial_index,
@@ -253,17 +257,21 @@ def grow_branch(
                     direction = Direction3D.from_array(direction_arr)
                     warnings.append("Deflected around collision")
                 else:
+                    _log.warning("Deflection failed at tip %d — all 40 candidates collide", from_node_id)
                     return OperationResult.failure(
                         message="Growth blocked by collision (deflect failed)",
-                        errors=["Collision detected, deflection failed"],
+                        errors=["Collision detected, deflection failed after 40 candidates"],
                     )
             elif collision_mode == "merge":
+                _log.debug("Collision at tip %d, attempting merge", from_node_id)
                 merged = _merge_at_collision(
                     network, parent_node, from_node_id, new_pos, target_radius,
                     constraints, spatial_index,
                 )
                 if merged is not None:
+                    _log.info("Merged tip %d -> %s", from_node_id, merged.new_ids.get("node"))
                     return merged
+                _log.warning("Merge failed at tip %d — no candidate within search radius", from_node_id)
                 return OperationResult.failure(
                     message="Growth blocked by collision (merge failed)",
                     errors=["Collision detected, no merge target found"],
@@ -347,8 +355,8 @@ def _deflect_around_collision(
     target_radius: float,
     constraints: BranchingConstraints,
     spatial_index: Optional["DynamicSpatialIndex"],
-    max_attempts: int = 6,
-    deflect_angle_deg: float = 30.0,
+    azimuthal_samples: int = 8,
+    deflect_angles_deg: Tuple[float, ...] = (15.0, 30.0, 45.0, 60.0, 90.0),
 ) -> Optional[Tuple[Point3D, np.ndarray]]:
     parent_pos = np.array([parent_node.position.x, parent_node.position.y, parent_node.position.z])
     perp = np.cross(direction_arr, [0, 0, 1])
@@ -358,41 +366,45 @@ def _deflect_around_collision(
     perp2 = np.cross(direction_arr, perp)
     perp2 = perp2 / np.linalg.norm(perp2)
 
-    for attempt in range(max_attempts):
-        angle_rad = np.radians(deflect_angle_deg)
-        theta = (2 * np.pi / max_attempts) * attempt
-        deflected = (
-            direction_arr * np.cos(angle_rad)
-            + perp * np.sin(angle_rad) * np.cos(theta)
-            + perp2 * np.sin(angle_rad) * np.sin(theta)
-        )
-        deflected = deflected / np.linalg.norm(deflected)
+    has_domain = hasattr(network, "domain") and network.domain is not None
 
-        new_pos_arr = parent_pos + deflected * length
-        candidate = Point3D(float(new_pos_arr[0]), float(new_pos_arr[1]), float(new_pos_arr[2]))
-
-        if not network.domain.contains(candidate):
-            candidate = network.domain.project_inside(candidate)
-            if not network.domain.contains(candidate):
-                continue
-
-        new_pos_check = np.array([candidate.x, candidate.y, candidate.z])
-        if spatial_index is not None:
-            collides = spatial_index.check_capsule_collision(
-                start=parent_pos, end=new_pos_check, radius=target_radius,
-                buffer=constraints.collision_min_clearance,
-                exclude_adjacent_to=parent_pos,
+    for angle_deg in deflect_angles_deg:
+        angle_rad = np.radians(angle_deg)
+        for az in range(azimuthal_samples):
+            theta = (2 * np.pi / azimuthal_samples) * az
+            deflected = (
+                direction_arr * np.cos(angle_rad)
+                + perp * np.sin(angle_rad) * np.cos(theta)
+                + perp2 * np.sin(angle_rad) * np.sin(theta)
             )
-        else:
-            from .collision import check_segment_collision_swept
-            collides, _ = check_segment_collision_swept(
-                network, new_seg_start=parent_pos, new_seg_end=new_pos_check,
-                new_seg_radius=target_radius, exclude_node_ids=[parent_node.id],
-                min_clearance=constraints.collision_min_clearance,
-            )
+            deflected = deflected / np.linalg.norm(deflected)
 
-        if not collides:
-            return candidate, deflected
+            new_pos_arr = parent_pos + deflected * length
+            candidate = Point3D(float(new_pos_arr[0]), float(new_pos_arr[1]), float(new_pos_arr[2]))
+
+            if has_domain:
+                if not network.domain.contains(candidate):
+                    candidate = network.domain.project_inside(candidate)
+                    if not network.domain.contains(candidate):
+                        continue
+
+            new_pos_check = np.array([candidate.x, candidate.y, candidate.z])
+            if spatial_index is not None:
+                collides = spatial_index.check_capsule_collision(
+                    start=parent_pos, end=new_pos_check, radius=target_radius,
+                    buffer=constraints.collision_min_clearance,
+                    exclude_adjacent_to=parent_pos,
+                )
+            else:
+                from .collision import check_segment_collision_swept
+                collides, _ = check_segment_collision_swept(
+                    network, new_seg_start=parent_pos, new_seg_end=new_pos_check,
+                    new_seg_radius=target_radius, exclude_node_ids=[parent_node.id],
+                    min_clearance=constraints.collision_min_clearance,
+                )
+
+            if not collides:
+                return candidate, deflected
 
     return None
 
