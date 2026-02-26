@@ -110,6 +110,7 @@ def grow_branch(
     constraints: Optional[BranchingConstraints] = None,
     check_collisions: bool = True,
     seed: Optional[int] = None,
+    spatial_index: Optional["DynamicSpatialIndex"] = None,
 ) -> OperationResult:
     """
     Grow a branch from an existing node.
@@ -203,8 +204,6 @@ def grow_branch(
     
     warnings = []
     if check_collisions:
-        from .collision import check_segment_collision_swept, check_domain_boundary_clearance
-        
         parent_pos = np.array([
             parent_node.position.x,
             parent_node.position.y,
@@ -216,15 +215,25 @@ def grow_branch(
             new_position.z,
         ])
         
-        # A2 FIX: Use policy-controlled collision parameters instead of hardcoded values
-        has_collision, collision_details = check_segment_collision_swept(
-            network,
-            new_seg_start=parent_pos,
-            new_seg_end=new_pos,
-            new_seg_radius=target_radius,
-            exclude_node_ids=[from_node_id],
-            min_clearance=constraints.collision_min_clearance,
-        )
+        if spatial_index is not None:
+            has_collision = spatial_index.check_capsule_collision(
+                start=parent_pos,
+                end=new_pos,
+                radius=target_radius,
+                buffer=constraints.collision_min_clearance,
+                exclude_adjacent_to=parent_pos,
+            )
+            collision_details = []
+        else:
+            from .collision import check_segment_collision_swept
+            has_collision, collision_details = check_segment_collision_swept(
+                network,
+                new_seg_start=parent_pos,
+                new_seg_end=new_pos,
+                new_seg_radius=target_radius,
+                exclude_node_ids=[from_node_id],
+                min_clearance=constraints.collision_min_clearance,
+            )
         
         for detail in collision_details:
             warnings.append(
@@ -232,7 +241,14 @@ def grow_branch(
                 f"(clearance: {detail['clearance']:.4f}m, required: {detail['min_required']:.4f}m)"
             )
         
+        if has_collision:
+            return OperationResult.failure(
+                message="Growth blocked by collision",
+                errors=["Collision detected"],
+            )
+        
         if hasattr(network, 'domain') and network.domain is not None:
+            from .collision import check_domain_boundary_clearance
             fits, margin = check_domain_boundary_clearance(
                 network.domain,
                 parent_pos,

@@ -23,8 +23,16 @@ from ..core.network import VascularNetwork
 from ..core.result import OperationResult, OperationStatus, Delta
 from ..rules.constraints import BranchingConstraints
 from .growth import grow_branch
-from ._gpu_nn import nearest_neighbor as _nn_query, range_search as _range_search, vectorized_direction_average as _vec_dir_avg
+from ._gpu_nn import (
+    nearest_neighbor as _nn_query,
+    range_search as _range_search,
+    vectorized_direction_average as _vec_dir_avg,
+    batch_collision_prefilter,
+    batch_direction_average,
+    PersistentGPUIndex,
+)
 from ._spatial_hash import SpatialHash
+from ..spatial.grid_index import DynamicSpatialIndex
 
 _logger = logging.getLogger(__name__)
 
@@ -216,6 +224,14 @@ def space_colonization_step(
         params.kill_radius, params.step_size, params.max_steps,
     )
     
+    cell_size = max(params.step_size * 3, 0.001)
+    _sc_spatial_index = DynamicSpatialIndex(cell_size=cell_size)
+    for seg_id, seg in network.segments.items():
+        start = np.array([seg.geometry.start.x, seg.geometry.start.y, seg.geometry.start.z])
+        end = np.array([seg.geometry.end.x, seg.geometry.end.y, seg.geometry.end.z])
+        radius = seg.geometry.mean_radius()
+        _sc_spatial_index.insert_segment(seg_id, start, end, radius)
+    
     pbar = tqdm(total=params.max_steps, desc="Space colonization", unit="step")
     
     for step in range(params.max_steps):
@@ -366,11 +382,21 @@ def space_colonization_step(
                                     constraints=constraints,
                                     check_collisions=True,
                                     seed=seed,
+                                    spatial_index=_sc_spatial_index,
                                 )
                                 
                                 if result.is_success():
                                     new_node_ids.append(result.new_ids["node"])
-                                    new_segment_ids.append(result.new_ids["segment"])
+                                    _new_seg_id = result.new_ids["segment"]
+                                    new_segment_ids.append(_new_seg_id)
+                                    _seg = network.segments.get(_new_seg_id)
+                                    if _seg is not None:
+                                        _sc_spatial_index.insert_segment(
+                                            _new_seg_id,
+                                            np.array([_seg.geometry.start.x, _seg.geometry.start.y, _seg.geometry.start.z]),
+                                            np.array([_seg.geometry.end.x, _seg.geometry.end.y, _seg.geometry.end.z]),
+                                            _seg.geometry.mean_radius(),
+                                        )
                                     grown_any = True
                                 else:
                                     if result.errors:
@@ -425,11 +451,21 @@ def space_colonization_step(
                 constraints=constraints,
                 check_collisions=True,
                 seed=seed,
+                spatial_index=_sc_spatial_index,
             )
             
             if result.is_success():
                 new_node_ids.append(result.new_ids["node"])
-                new_segment_ids.append(result.new_ids["segment"])
+                _new_seg_id = result.new_ids["segment"]
+                new_segment_ids.append(_new_seg_id)
+                _seg = network.segments.get(_new_seg_id)
+                if _seg is not None:
+                    _sc_spatial_index.insert_segment(
+                        _new_seg_id,
+                        np.array([_seg.geometry.start.x, _seg.geometry.start.y, _seg.geometry.start.z]),
+                        np.array([_seg.geometry.end.x, _seg.geometry.end.y, _seg.geometry.end.z]),
+                        _seg.geometry.mean_radius(),
+                    )
                 grown_any = True
             else:
                 if result.errors:
@@ -1648,6 +1684,8 @@ class SpaceColonizationState:
     _node_pos_capacity: int = 0
     
     _kill_spatial_hash: Optional[SpatialHash] = None
+    _collision_spatial_index: Optional[DynamicSpatialIndex] = None
+    _persistent_gpu_index: Optional[PersistentGPUIndex] = None
     
     global_step: int = 0
     steps_since_tip_kdtree_rebuild: int = 0
@@ -1777,6 +1815,28 @@ class SpaceColonizationState:
             self._kill_spatial_hash = None
         self.steps_since_all_nodes_kdtree_rebuild = 0
         self.nodes_added_since_all_nodes_kdtree_rebuild = 0
+    
+    def build_collision_spatial_index(self) -> None:
+        """Build DynamicSpatialIndex from all existing network segments."""
+        cell_size = max(self.params.step_size * 3, 0.001)
+        self._collision_spatial_index = DynamicSpatialIndex(cell_size=cell_size)
+        for seg_id, seg in self.network.segments.items():
+            start = np.array([seg.geometry.start.x, seg.geometry.start.y, seg.geometry.start.z])
+            end = np.array([seg.geometry.end.x, seg.geometry.end.y, seg.geometry.end.z])
+            radius = seg.geometry.mean_radius()
+            self._collision_spatial_index.insert_segment(seg_id, start, end, radius)
+    
+    def insert_segment_into_spatial_index(self, seg_id: int) -> None:
+        """Insert a newly created segment into the collision spatial index."""
+        if self._collision_spatial_index is None:
+            return
+        seg = self.network.segments.get(seg_id)
+        if seg is None:
+            return
+        start = np.array([seg.geometry.start.x, seg.geometry.start.y, seg.geometry.start.z])
+        end = np.array([seg.geometry.end.x, seg.geometry.end.y, seg.geometry.end.z])
+        radius = seg.geometry.mean_radius()
+        self._collision_spatial_index.insert_segment(seg_id, start, end, radius)
     
     def is_stalled(self) -> bool:
         """Check if growth has stalled."""
@@ -1927,6 +1987,8 @@ def create_space_colonization_state(
     
     state.rebuild_tip_kdtree()
     state.rebuild_all_nodes_kdtree()
+    state.build_collision_spatial_index()
+    state._persistent_gpu_index = PersistentGPUIndex(tissue_points_arr)
     
     return state
 
@@ -2001,7 +2063,11 @@ def space_colonization_one_step(
     ])
     tip_id_arr = np.array(state.tip_kdtree_node_ids, dtype=np.intp)
     
-    distances, nearest_indices = _nn_query(active_tp_positions, tip_positions, k=1)
+    gpu_idx = state._persistent_gpu_index
+    if gpu_idx is not None and gpu_idx.on_gpu:
+        distances, nearest_indices = gpu_idx.nn_query(active_tp_indices, tip_positions)
+    else:
+        distances, nearest_indices = _nn_query(active_tp_positions, tip_positions, k=1)
     
     attractions: Dict[int, List[int]] = {tid: [] for tid in state.active_tip_ids}
     within_range = distances < params.influence_radius
@@ -2034,127 +2100,203 @@ def space_colonization_one_step(
     new_segment_ids = []
     warnings = []
     
+    bifurc_tip_ids = []
+    linear_tip_ids = []
+    linear_tip_positions_list = []
+    linear_attracted_positions_list = []
+    
     for tip_id in list(state.active_tip_ids):
         if tip_id not in network.nodes:
             state.active_tip_ids.discard(tip_id)
             continue
         
-        node = network.nodes[tip_id]
         attracted_indices = attractions.get(tip_id, [])
-        
         if not attracted_indices:
             continue
         
-        attracted_positions = state.tissue_points[attracted_indices]
         num_attractions = len(attracted_indices)
-        
         should_bifurcate = (
             params.encourage_bifurcation and
             num_attractions >= params.min_attractions_for_bifurcation
         )
         
         if should_bifurcate:
-            node_pos = np.array([node.position.x, node.position.y, node.position.z])
-            raw_dirs = attracted_positions - node_pos
-            dir_norms = np.linalg.norm(raw_dirs, axis=1)
-            valid_mask = dir_norms > 1e-10
-            attraction_vectors = list(raw_dirs[valid_mask] / dir_norms[valid_mask, np.newaxis])
-            
-            if len(attraction_vectors) >= 2:
-                angle_spread = _compute_angle_spread(attraction_vectors)
-                
-                if angle_spread >= params.bifurcation_angle_threshold_deg:
-                    if rng.random() < params.bifurcation_probability:
-                        clusters = _cluster_attractions_by_angle(
-                            attraction_vectors,
-                            max_clusters=min(params.max_children_per_node, len(attraction_vectors))
-                        )
-                        
-                        parent_radius = node.attributes.get("radius", params.min_radius * 2)
-                        n_children = len(clusters)
-                        if n_children > 1:
-                            child_radii = [
-                                parent_radius * (1.0 / n_children) ** (1.0/3.0) * params.taper_factor
-                                for _ in range(n_children)
-                            ]
-                        else:
-                            child_radii = [parent_radius * params.taper_factor]
-                        
-                        children_created = 0
-                        for cluster_idx, cluster in enumerate(clusters):
-                            if cluster_idx >= params.max_children_per_node:
-                                break
-                            
-                            cluster_direction = np.mean([attraction_vectors[i] for i in cluster], axis=0)
-                            cluster_direction = cluster_direction / np.linalg.norm(cluster_direction)
-                            
-                            cluster_direction = _apply_directional_blending(cluster_direction, node, params)
-                            cluster_direction = _apply_curvature_constraint(cluster_direction, node, params)
-                            
-                            growth_direction = Direction3D.from_array(cluster_direction)
-                            
-                            new_pos = Point3D(
-                                node.position.x + growth_direction.dx * params.step_size,
-                                node.position.y + growth_direction.dy * params.step_size,
-                                node.position.z + growth_direction.dz * params.step_size,
-                            )
-                            
-                            if not _check_clearance(new_pos, network, tip_id, params):
-                                continue
-                            
-                            new_radius = max(child_radii[cluster_idx], params.min_radius)
-                            
-                            branch_result = grow_branch(
-                                network,
-                                from_node_id=tip_id,
-                                length=params.step_size,
-                                direction=growth_direction,
-                                target_radius=new_radius,
-                                constraints=constraints,
-                                check_collisions=True,
-                                seed=int(rng.integers(0, 2**31)) if rng else None,
-                            )
-                            
-                            if branch_result.is_success():
-                                new_node_id = branch_result.new_ids["node"]
-                                new_node_ids.append(new_node_id)
-                                new_segment_ids.append(branch_result.new_ids["segment"])
-                                grown_any = True
-                                children_created += 1
-                                
-                                new_node_obj = network.nodes[new_node_id]
-                                state.append_node_position(new_node_id, new_node_obj.position)
-                                state.active_tip_ids.add(new_node_id)
-                                state.tip_states[new_node_id] = TipState(
-                                    node_id=new_node_id,
-                                    steps_since_split=0,
-                                    total_steps=state.tip_states.get(tip_id, TipState(tip_id)).total_steps + 1,
-                                    distance_from_root=state.tip_states.get(tip_id, TipState(tip_id)).distance_from_root + params.step_size,
-                                    is_root=False,
-                                )
-                            else:
-                                if branch_result.errors:
-                                    _logger.warning(
-                                        "SC one_step (inlet=%s) step %d: bifurcation grow_branch failed (tip=%s): %s",
-                                        state.inlet_id, state.global_step, tip_id,
-                                        "; ".join(branch_result.errors[:3]),
-                                    )
-                                warnings.extend(branch_result.errors)
-                        
-                        if children_created > 0:
-                            state.active_tip_ids.discard(tip_id)
-                            if tip_id in state.tip_states:
-                                del state.tip_states[tip_id]
-                        
-                        continue
+            bifurc_tip_ids.append(tip_id)
+        else:
+            node = network.nodes[tip_id]
+            linear_tip_ids.append(tip_id)
+            linear_tip_positions_list.append(
+                np.array([node.position.x, node.position.y, node.position.z])
+            )
+            linear_attracted_positions_list.append(
+                state.tissue_points[attracted_indices]
+            )
+    
+    linear_directions = {}
+    if linear_tip_ids:
+        tip_pos_batch = np.array(linear_tip_positions_list)
+        batch_dirs = batch_direction_average(tip_pos_batch, linear_attracted_positions_list)
+        for i, tid in enumerate(linear_tip_ids):
+            d = batch_dirs[i]
+            if np.linalg.norm(d) < 1e-10:
+                continue
+            node = network.nodes[tid]
+            d = _apply_directional_blending(d, node, params)
+            d = _apply_curvature_constraint(d, node, params)
+            if np.linalg.norm(d) > 1e-10:
+                linear_directions[tid] = d
+    
+    cand_starts = []
+    cand_ends = []
+    cand_radii_list = []
+    cand_tip_ids_for_prefilter = []
+    
+    for tid, direction in linear_directions.items():
+        node = network.nodes[tid]
+        start = np.array([node.position.x, node.position.y, node.position.z])
+        end = start + direction * params.step_size
+        parent_radius = node.attributes.get("radius", params.min_radius * 2)
+        radius = max(parent_radius * params.taper_factor, params.min_radius)
+        cand_starts.append(start)
+        cand_ends.append(end)
+        cand_radii_list.append(radius)
+        cand_tip_ids_for_prefilter.append(tid)
+    
+    skip_collision = set()
+    if cand_starts and network.segments:
+        seg_starts_list = []
+        seg_ends_list = []
+        seg_radii_list = []
+        for seg in network.segments.values():
+            s_node = network.nodes[seg.start_node_id]
+            e_node = network.nodes[seg.end_node_id]
+            seg_starts_list.append([s_node.position.x, s_node.position.y, s_node.position.z])
+            seg_ends_list.append([e_node.position.x, e_node.position.y, e_node.position.z])
+            seg_radii_list.append(seg.attributes.get("radius", params.min_radius))
         
-        node_pos_arr = np.array([node.position.x, node.position.y, node.position.z])
-        avg_direction = _vec_dir_avg(attracted_positions, node_pos_arr)
-        if np.linalg.norm(avg_direction) < 1e-10:
+        might_collide = batch_collision_prefilter(
+            np.array(cand_starts),
+            np.array(cand_ends),
+            np.array(cand_radii_list),
+            np.array(seg_starts_list),
+            np.array(seg_ends_list),
+            np.array(seg_radii_list),
+            buffer=params.min_clearance if params.min_clearance is not None else 0.0,
+        )
+        for i, tid in enumerate(cand_tip_ids_for_prefilter):
+            if not might_collide[i]:
+                skip_collision.add(tid)
+    
+    for tip_id in bifurc_tip_ids:
+        node = network.nodes[tip_id]
+        attracted_indices = attractions.get(tip_id, [])
+        attracted_positions = state.tissue_points[attracted_indices]
+        
+        node_pos = np.array([node.position.x, node.position.y, node.position.z])
+        raw_dirs = attracted_positions - node_pos
+        dir_norms = np.linalg.norm(raw_dirs, axis=1)
+        valid_mask = dir_norms > 1e-10
+        attraction_vectors = list(raw_dirs[valid_mask] / dir_norms[valid_mask, np.newaxis])
+        
+        if len(attraction_vectors) < 2:
             continue
-        avg_direction = _apply_directional_blending(avg_direction, node, params)
-        avg_direction = _apply_curvature_constraint(avg_direction, node, params)
         
+        angle_spread = _compute_angle_spread(attraction_vectors)
+        if angle_spread < params.bifurcation_angle_threshold_deg:
+            continue
+        if rng.random() >= params.bifurcation_probability:
+            continue
+        
+        clusters = _cluster_attractions_by_angle(
+            attraction_vectors,
+            max_clusters=min(params.max_children_per_node, len(attraction_vectors))
+        )
+        
+        parent_radius = node.attributes.get("radius", params.min_radius * 2)
+        n_children = len(clusters)
+        if n_children > 1:
+            child_radii = [
+                parent_radius * (1.0 / n_children) ** (1.0/3.0) * params.taper_factor
+                for _ in range(n_children)
+            ]
+        else:
+            child_radii = [parent_radius * params.taper_factor]
+        
+        children_created = 0
+        for cluster_idx, cluster in enumerate(clusters):
+            if cluster_idx >= params.max_children_per_node:
+                break
+            
+            cluster_direction = np.mean([attraction_vectors[i] for i in cluster], axis=0)
+            cluster_direction = cluster_direction / np.linalg.norm(cluster_direction)
+            
+            cluster_direction = _apply_directional_blending(cluster_direction, node, params)
+            cluster_direction = _apply_curvature_constraint(cluster_direction, node, params)
+            
+            growth_direction = Direction3D.from_array(cluster_direction)
+            
+            new_pos = Point3D(
+                node.position.x + growth_direction.dx * params.step_size,
+                node.position.y + growth_direction.dy * params.step_size,
+                node.position.z + growth_direction.dz * params.step_size,
+            )
+            
+            if not _check_clearance(new_pos, network, tip_id, params):
+                continue
+            
+            new_radius = max(child_radii[cluster_idx], params.min_radius)
+            
+            branch_result = grow_branch(
+                network,
+                from_node_id=tip_id,
+                length=params.step_size,
+                direction=growth_direction,
+                target_radius=new_radius,
+                constraints=constraints,
+                check_collisions=True,
+                seed=int(rng.integers(0, 2**31)) if rng else None,
+                spatial_index=state._collision_spatial_index,
+            )
+            
+            if branch_result.is_success():
+                new_node_id = branch_result.new_ids["node"]
+                new_seg_id = branch_result.new_ids["segment"]
+                new_node_ids.append(new_node_id)
+                new_segment_ids.append(new_seg_id)
+                grown_any = True
+                children_created += 1
+                
+                state.insert_segment_into_spatial_index(new_seg_id)
+                new_node_obj = network.nodes[new_node_id]
+                state.append_node_position(new_node_id, new_node_obj.position)
+                state.active_tip_ids.add(new_node_id)
+                state.tip_states[new_node_id] = TipState(
+                    node_id=new_node_id,
+                    steps_since_split=0,
+                    total_steps=state.tip_states.get(tip_id, TipState(tip_id)).total_steps + 1,
+                    distance_from_root=state.tip_states.get(tip_id, TipState(tip_id)).distance_from_root + params.step_size,
+                    is_root=False,
+                )
+            else:
+                if branch_result.errors:
+                    _logger.warning(
+                        "SC one_step (inlet=%s) step %d: bifurcation grow_branch failed (tip=%s): %s",
+                        state.inlet_id, state.global_step, tip_id,
+                        "; ".join(branch_result.errors[:3]),
+                    )
+                warnings.extend(branch_result.errors)
+        
+        if children_created > 0:
+            state.active_tip_ids.discard(tip_id)
+            if tip_id in state.tip_states:
+                del state.tip_states[tip_id]
+    
+    for tip_id in linear_tip_ids:
+        if tip_id not in linear_directions:
+            continue
+        
+        node = network.nodes[tip_id]
+        avg_direction = linear_directions[tip_id]
         growth_direction = Direction3D.from_array(avg_direction)
         
         new_pos = Point3D(
@@ -2169,6 +2311,8 @@ def space_colonization_one_step(
         parent_radius = node.attributes.get("radius", params.min_radius * 2)
         new_radius = max(parent_radius * params.taper_factor, params.min_radius)
         
+        do_collision = tip_id not in skip_collision
+        
         branch_result = grow_branch(
             network,
             from_node_id=tip_id,
@@ -2176,16 +2320,19 @@ def space_colonization_one_step(
             direction=growth_direction,
             target_radius=new_radius,
             constraints=constraints,
-            check_collisions=True,
+            check_collisions=do_collision,
             seed=int(rng.integers(0, 2**31)) if rng else None,
+            spatial_index=state._collision_spatial_index if do_collision else None,
         )
         
         if branch_result.is_success():
             new_node_id = branch_result.new_ids["node"]
+            new_seg_id = branch_result.new_ids["segment"]
             new_node_ids.append(new_node_id)
-            new_segment_ids.append(branch_result.new_ids["segment"])
+            new_segment_ids.append(new_seg_id)
             grown_any = True
             
+            state.insert_segment_into_spatial_index(new_seg_id)
             new_node_obj = network.nodes[new_node_id]
             state.append_node_position(new_node_id, new_node_obj.position)
             state.active_tip_ids.discard(tip_id)
@@ -2235,14 +2382,17 @@ def space_colonization_one_step(
         
         if state.active_tissue_indices:
             kill_tp_indices = np.array(list(state.active_tissue_indices), dtype=np.intp)
-            kill_tp_positions = state.tissue_points[kill_tp_indices]
-            
             all_pos = state.get_all_node_positions()
-            if state._kill_spatial_hash is not None:
+            
+            if gpu_idx is not None and gpu_idx.on_gpu:
+                kill_mask = gpu_idx.kill_within_radius(kill_tp_indices, all_pos, params.kill_radius)
+            elif state._kill_spatial_hash is not None:
+                kill_tp_positions = state.tissue_points[kill_tp_indices]
                 kill_mask = state._kill_spatial_hash.has_neighbor_mask(
                     kill_tp_positions, all_pos, params.kill_radius,
                 )
             elif state.all_nodes_kdtree is not None:
+                kill_tp_positions = state.tissue_points[kill_tp_indices]
                 kill_mask = _range_search(kill_tp_positions, all_pos, params.kill_radius)
             else:
                 kill_mask = np.zeros(len(kill_tp_indices), dtype=bool)
