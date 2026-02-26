@@ -56,6 +56,7 @@ class SpaceColonizationConfig(BackendConfig):
     branch_angle_deg: float = 30.0
     multi_inlet_mode: str = "blended"  # "blended", "partitioned_xy", "forest", or "forest_with_merge"
     collision_merge_distance: float = 0.0003  # 0.3mm in meters
+    collision_mode: str = "break"  # "break" (stop), "deflect" (steer away), "merge" (connect to nearby)
     max_inlets: int = 10
     # Blended mode parameters
     multi_inlet_blend_sigma: float = 0.0  # If 0, auto-computed as domain_radius/2
@@ -233,6 +234,7 @@ class SpaceColonizationBackend(GenerationBackend):
             bifurcation_probability=config.bifurcation_probability,
             min_attractions_for_bifurcation=config.min_attractions_for_bifurcation,
             bifurcation_angle_threshold_deg=config.bifurcation_angle_threshold_deg,
+            collision_mode=config.collision_mode,
         )
         
         # Convert attractors to ndarray if needed (ops accepts Point3D list or ndarray)
@@ -527,6 +529,7 @@ class SpaceColonizationBackend(GenerationBackend):
             bifurcation_probability=config.bifurcation_probability,
             min_attractions_for_bifurcation=config.min_attractions_for_bifurcation,
             bifurcation_angle_threshold_deg=config.bifurcation_angle_threshold_deg,
+            collision_mode=config.collision_mode,
         )
         
         def compute_attractor_weights(tissue_points: np.ndarray) -> np.ndarray:
@@ -748,6 +751,7 @@ class SpaceColonizationBackend(GenerationBackend):
                 bifurcation_probability=config.bifurcation_probability,
                 min_attractions_for_bifurcation=config.min_attractions_for_bifurcation,
                 bifurcation_angle_threshold_deg=config.bifurcation_angle_threshold_deg,
+                collision_mode=config.collision_mode,
             )
             
             tissue_points = self._filter_tissue_points_by_cylinder(
@@ -1014,6 +1018,7 @@ class SpaceColonizationBackend(GenerationBackend):
                     bifurcation_probability=config.bifurcation_probability,
                     min_attractions_for_bifurcation=config.min_attractions_for_bifurcation,
                     bifurcation_angle_threshold_deg=config.bifurcation_angle_threshold_deg,
+                    collision_mode=config.collision_mode,
                 )
                 
                 if isinstance(attractors, list) and attractors and isinstance(attractors[0], Point3D):
@@ -1143,9 +1148,10 @@ class SpaceColonizationBackend(GenerationBackend):
             bifurcation_probability=config.bifurcation_probability,
             min_attractions_for_bifurcation=config.min_attractions_for_bifurcation,
             bifurcation_angle_threshold_deg=config.bifurcation_angle_threshold_deg,
+            collision_mode=config.collision_mode,
         )
         
-        if isinstance(arterial_attractors, list) and arterial_attractors and isinstance(arterial_attractors[0], Point3D):
+        if isinstance(arterial_attractors, list)and arterial_attractors and isinstance(arterial_attractors[0], Point3D):
             arterial_tp = np.array([[p.x, p.y, p.z] for p in arterial_attractors], dtype=np.float64)
         else:
             arterial_tp = np.array(arterial_attractors, dtype=np.float64)
