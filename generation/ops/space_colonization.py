@@ -25,6 +25,7 @@ from ..rules.constraints import BranchingConstraints
 from .growth import grow_branch
 from ._gpu_nn import nearest_neighbor as _nn_query, range_search as _range_search, vectorized_direction_average as _vec_dir_avg
 from ._spatial_hash import SpatialHash
+from ..spatial.grid_index import DynamicSpatialIndex
 
 _logger = logging.getLogger(__name__)
 
@@ -216,6 +217,14 @@ def space_colonization_step(
         params.kill_radius, params.step_size, params.max_steps,
     )
     
+    cell_size = max(params.step_size * 3, 0.001)
+    _sc_spatial_index = DynamicSpatialIndex(cell_size=cell_size)
+    for seg_id, seg in network.segments.items():
+        start = np.array([seg.geometry.start.x, seg.geometry.start.y, seg.geometry.start.z])
+        end = np.array([seg.geometry.end.x, seg.geometry.end.y, seg.geometry.end.z])
+        radius = seg.geometry.mean_radius()
+        _sc_spatial_index.insert_segment(seg_id, start, end, radius)
+    
     pbar = tqdm(total=params.max_steps, desc="Space colonization", unit="step")
     
     for step in range(params.max_steps):
@@ -366,11 +375,21 @@ def space_colonization_step(
                                     constraints=constraints,
                                     check_collisions=True,
                                     seed=seed,
+                                    spatial_index=_sc_spatial_index,
                                 )
                                 
                                 if result.is_success():
                                     new_node_ids.append(result.new_ids["node"])
-                                    new_segment_ids.append(result.new_ids["segment"])
+                                    _new_seg_id = result.new_ids["segment"]
+                                    new_segment_ids.append(_new_seg_id)
+                                    _seg = network.segments.get(_new_seg_id)
+                                    if _seg is not None:
+                                        _sc_spatial_index.insert_segment(
+                                            _new_seg_id,
+                                            np.array([_seg.geometry.start.x, _seg.geometry.start.y, _seg.geometry.start.z]),
+                                            np.array([_seg.geometry.end.x, _seg.geometry.end.y, _seg.geometry.end.z]),
+                                            _seg.geometry.mean_radius(),
+                                        )
                                     grown_any = True
                                 else:
                                     if result.errors:
@@ -425,11 +444,21 @@ def space_colonization_step(
                 constraints=constraints,
                 check_collisions=True,
                 seed=seed,
+                spatial_index=_sc_spatial_index,
             )
             
             if result.is_success():
                 new_node_ids.append(result.new_ids["node"])
-                new_segment_ids.append(result.new_ids["segment"])
+                _new_seg_id = result.new_ids["segment"]
+                new_segment_ids.append(_new_seg_id)
+                _seg = network.segments.get(_new_seg_id)
+                if _seg is not None:
+                    _sc_spatial_index.insert_segment(
+                        _new_seg_id,
+                        np.array([_seg.geometry.start.x, _seg.geometry.start.y, _seg.geometry.start.z]),
+                        np.array([_seg.geometry.end.x, _seg.geometry.end.y, _seg.geometry.end.z]),
+                        _seg.geometry.mean_radius(),
+                    )
                 grown_any = True
             else:
                 if result.errors:
@@ -1648,6 +1677,7 @@ class SpaceColonizationState:
     _node_pos_capacity: int = 0
     
     _kill_spatial_hash: Optional[SpatialHash] = None
+    _collision_spatial_index: Optional[DynamicSpatialIndex] = None
     
     global_step: int = 0
     steps_since_tip_kdtree_rebuild: int = 0
@@ -1777,6 +1807,28 @@ class SpaceColonizationState:
             self._kill_spatial_hash = None
         self.steps_since_all_nodes_kdtree_rebuild = 0
         self.nodes_added_since_all_nodes_kdtree_rebuild = 0
+    
+    def build_collision_spatial_index(self) -> None:
+        """Build DynamicSpatialIndex from all existing network segments."""
+        cell_size = max(self.params.step_size * 3, 0.001)
+        self._collision_spatial_index = DynamicSpatialIndex(cell_size=cell_size)
+        for seg_id, seg in self.network.segments.items():
+            start = np.array([seg.geometry.start.x, seg.geometry.start.y, seg.geometry.start.z])
+            end = np.array([seg.geometry.end.x, seg.geometry.end.y, seg.geometry.end.z])
+            radius = seg.geometry.mean_radius()
+            self._collision_spatial_index.insert_segment(seg_id, start, end, radius)
+    
+    def insert_segment_into_spatial_index(self, seg_id: int) -> None:
+        """Insert a newly created segment into the collision spatial index."""
+        if self._collision_spatial_index is None:
+            return
+        seg = self.network.segments.get(seg_id)
+        if seg is None:
+            return
+        start = np.array([seg.geometry.start.x, seg.geometry.start.y, seg.geometry.start.z])
+        end = np.array([seg.geometry.end.x, seg.geometry.end.y, seg.geometry.end.z])
+        radius = seg.geometry.mean_radius()
+        self._collision_spatial_index.insert_segment(seg_id, start, end, radius)
     
     def is_stalled(self) -> bool:
         """Check if growth has stalled."""
@@ -1927,6 +1979,7 @@ def create_space_colonization_state(
     
     state.rebuild_tip_kdtree()
     state.rebuild_all_nodes_kdtree()
+    state.build_collision_spatial_index()
     
     return state
 
@@ -2113,15 +2166,18 @@ def space_colonization_one_step(
                                 constraints=constraints,
                                 check_collisions=True,
                                 seed=int(rng.integers(0, 2**31)) if rng else None,
+                                spatial_index=state._collision_spatial_index,
                             )
                             
                             if branch_result.is_success():
                                 new_node_id = branch_result.new_ids["node"]
+                                new_seg_id = branch_result.new_ids["segment"]
                                 new_node_ids.append(new_node_id)
-                                new_segment_ids.append(branch_result.new_ids["segment"])
+                                new_segment_ids.append(new_seg_id)
                                 grown_any = True
                                 children_created += 1
                                 
+                                state.insert_segment_into_spatial_index(new_seg_id)
                                 new_node_obj = network.nodes[new_node_id]
                                 state.append_node_position(new_node_id, new_node_obj.position)
                                 state.active_tip_ids.add(new_node_id)
@@ -2178,14 +2234,17 @@ def space_colonization_one_step(
             constraints=constraints,
             check_collisions=True,
             seed=int(rng.integers(0, 2**31)) if rng else None,
+            spatial_index=state._collision_spatial_index,
         )
         
         if branch_result.is_success():
             new_node_id = branch_result.new_ids["node"]
+            new_seg_id = branch_result.new_ids["segment"]
             new_node_ids.append(new_node_id)
-            new_segment_ids.append(branch_result.new_ids["segment"])
+            new_segment_ids.append(new_seg_id)
             grown_any = True
             
+            state.insert_segment_into_spatial_index(new_seg_id)
             new_node_obj = network.nodes[new_node_id]
             state.append_node_position(new_node_id, new_node_obj.position)
             state.active_tip_ids.discard(tip_id)
