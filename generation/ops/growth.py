@@ -219,25 +219,34 @@ def grow_branch(
             new_position.z,
         ])
         
-        if spatial_index is not None:
-            sibling_seg_ids: set = set()
-            parent_node_ids: set = set()
-            for seg in network.segments.values():
-                if seg.start_node_id == from_node_id or seg.end_node_id == from_node_id:
-                    sibling_seg_ids.add(seg.id)
-                    other = seg.end_node_id if seg.start_node_id == from_node_id else seg.start_node_id
-                    parent_node_ids.add(other)
-            for seg in network.segments.values():
-                if seg.start_node_id in parent_node_ids or seg.end_node_id in parent_node_ids:
-                    sibling_seg_ids.add(seg.id)
+        ancestor_seg_ids: set = set()
+        visited_ancestor: set = set()
+        seg_by_node: dict = {}
+        for seg in network.segments.values():
+            seg_by_node.setdefault(seg.start_node_id, []).append(seg)
+            seg_by_node.setdefault(seg.end_node_id, []).append(seg)
 
+        cur_nid = from_node_id
+        while cur_nid is not None and cur_nid not in visited_ancestor:
+            visited_ancestor.add(cur_nid)
+            next_nid = None
+            for seg in seg_by_node.get(cur_nid, []):
+                ancestor_seg_ids.add(seg.id)
+                other = seg.end_node_id if seg.start_node_id == cur_nid else seg.start_node_id
+                node_obj = network.nodes.get(other)
+                if node_obj is not None and other not in visited_ancestor:
+                    if node_obj.node_type in ("inlet", "outlet", "junction"):
+                        next_nid = other
+            cur_nid = next_nid
+
+        if spatial_index is not None:
             has_collision = spatial_index.check_capsule_collision(
                 start=parent_pos,
                 end=new_pos,
                 radius=target_radius,
                 buffer=constraints.collision_min_clearance,
                 exclude_adjacent_to=parent_pos,
-                exclude_segment_ids=sibling_seg_ids,
+                exclude_segment_ids=ancestor_seg_ids,
             )
             collision_details = []
         else:
@@ -247,7 +256,7 @@ def grow_branch(
                 new_seg_start=parent_pos,
                 new_seg_end=new_pos,
                 new_seg_radius=target_radius,
-                exclude_node_ids=[from_node_id],
+                exclude_node_ids=list(visited_ancestor),
                 min_clearance=constraints.collision_min_clearance,
             )
         
@@ -263,7 +272,7 @@ def grow_branch(
                 deflected = _deflect_around_collision(
                     network, parent_node, direction_arr, length, target_radius,
                     constraints, spatial_index,
-                    exclude_segment_ids=sibling_seg_ids if spatial_index is not None else None,
+                    exclude_segment_ids=ancestor_seg_ids if spatial_index is not None else None,
                 )
                 if deflected is not None:
                     new_position, direction_arr = deflected
