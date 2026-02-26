@@ -220,12 +220,24 @@ def grow_branch(
         ])
         
         if spatial_index is not None:
+            sibling_seg_ids: set = set()
+            parent_node_ids: set = set()
+            for seg in network.segments.values():
+                if seg.start_node_id == from_node_id or seg.end_node_id == from_node_id:
+                    sibling_seg_ids.add(seg.id)
+                    other = seg.end_node_id if seg.start_node_id == from_node_id else seg.start_node_id
+                    parent_node_ids.add(other)
+            for seg in network.segments.values():
+                if seg.start_node_id in parent_node_ids or seg.end_node_id in parent_node_ids:
+                    sibling_seg_ids.add(seg.id)
+
             has_collision = spatial_index.check_capsule_collision(
                 start=parent_pos,
                 end=new_pos,
                 radius=target_radius,
                 buffer=constraints.collision_min_clearance,
                 exclude_adjacent_to=parent_pos,
+                exclude_segment_ids=sibling_seg_ids,
             )
             collision_details = []
         else:
@@ -251,6 +263,7 @@ def grow_branch(
                 deflected = _deflect_around_collision(
                     network, parent_node, direction_arr, length, target_radius,
                     constraints, spatial_index,
+                    exclude_segment_ids=sibling_seg_ids if spatial_index is not None else None,
                 )
                 if deflected is not None:
                     new_position, direction_arr = deflected
@@ -357,6 +370,7 @@ def _deflect_around_collision(
     spatial_index: Optional["DynamicSpatialIndex"],
     azimuthal_samples: int = 8,
     deflect_angles_deg: Tuple[float, ...] = (15.0, 30.0, 45.0, 60.0, 90.0),
+    exclude_segment_ids: Optional[set] = None,
 ) -> Optional[Tuple[Point3D, np.ndarray]]:
     parent_pos = np.array([parent_node.position.x, parent_node.position.y, parent_node.position.z])
     perp = np.cross(direction_arr, [0, 0, 1])
@@ -394,6 +408,7 @@ def _deflect_around_collision(
                     start=parent_pos, end=new_pos_check, radius=target_radius,
                     buffer=constraints.collision_min_clearance,
                     exclude_adjacent_to=parent_pos,
+                    exclude_segment_ids=exclude_segment_ids,
                 )
             else:
                 from .collision import check_segment_collision_swept
