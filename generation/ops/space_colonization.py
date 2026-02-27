@@ -308,6 +308,7 @@ def space_colonization_step(
                         )
         
         grown_any = False
+        _step_bif = {"attempted": 0, "angle_low": 0, "prob_skip": 0, "clearance_fail": 0, "grow_fail": 0, "success": 0}
         for node in terminal_nodes:
             if not attractions[node.id]:
                 continue
@@ -323,6 +324,7 @@ def space_colonization_step(
             )
             
             if should_bifurcate:
+                _step_bif["attempted"] += 1
                 node_pos = np.array([node.position.x, node.position.y, node.position.z])
                 raw_dirs = attracted_positions - node_pos
                 dir_norms = np.linalg.norm(raw_dirs, axis=1)
@@ -371,6 +373,7 @@ def space_colonization_step(
                                 )
                                 
                                 if not _check_clearance(new_pos, network, node.id, params):
+                                    _step_bif["clearance_fail"] += 1
                                     continue
                                 
                                 new_radius = child_radii[cluster_idx]
@@ -391,6 +394,7 @@ def space_colonization_step(
                                 )
                                 
                                 if result.is_success():
+                                    _step_bif["success"] += 1
                                     _new_seg_id = result.new_ids["segment"]
                                     new_segment_ids.append(_new_seg_id)
                                     _seg = network.segments.get(_new_seg_id)
@@ -405,6 +409,7 @@ def space_colonization_step(
                                         new_node_ids.append(result.new_ids["node"])
                                     grown_any = True
                                 else:
+                                    _step_bif["grow_fail"] += 1
                                     if result.errors:
                                         _logger.warning(
                                             "SC step %d: grow_branch failed (tip=%s): %s",
@@ -413,6 +418,10 @@ def space_colonization_step(
                                     warnings.extend(result.errors)
                             
                             continue
+                        else:
+                            _step_bif["prob_skip"] += 1
+                    else:
+                        _step_bif["angle_low"] += 1
             
             node_pos_arr = np.array([node.position.x, node.position.y, node.position.z])
             raw_directions = attracted_positions - node_pos_arr
@@ -482,6 +491,13 @@ def space_colonization_step(
                         step, node.id, "; ".join(result.errors[:3]),
                     )
                 warnings.extend(result.errors)
+        
+        if step % 50 == 0 or not grown_any:
+            _logger.info(
+                "SC step %d bifurcation: attempted=%d angle_low=%d prob_skip=%d clearance_fail=%d grow_fail=%d success=%d",
+                step, _step_bif["attempted"], _step_bif["angle_low"], _step_bif["prob_skip"],
+                _step_bif["clearance_fail"], _step_bif["grow_fail"], _step_bif["success"],
+            )
         
         if not grown_any:
             n_total_attracted = sum(len(v) for v in attractions.values())
