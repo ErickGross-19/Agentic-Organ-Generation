@@ -232,11 +232,8 @@ def grow_branch(
             next_nid = None
             for seg in seg_by_node.get(cur_nid, []):
                 ancestor_seg_ids.add(seg.id)
-                other = seg.end_node_id if seg.start_node_id == cur_nid else seg.start_node_id
-                node_obj = network.nodes.get(other)
-                if node_obj is not None and other not in visited_ancestor:
-                    if node_obj.node_type in ("inlet", "outlet", "junction"):
-                        next_nid = other
+                if seg.end_node_id == cur_nid and seg.start_node_id not in visited_ancestor:
+                    next_nid = seg.start_node_id
             cur_nid = next_nid
 
         if spatial_index is not None:
