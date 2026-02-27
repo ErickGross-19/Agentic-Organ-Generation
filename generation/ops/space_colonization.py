@@ -365,17 +365,6 @@ def space_colonization_step(
                                 
                                 growth_direction = Direction3D.from_array(cluster_direction)
                                 
-                                # Check clearance
-                                new_pos = Point3D(
-                                    node.position.x + growth_direction.dx * params.step_size,
-                                    node.position.y + growth_direction.dy * params.step_size,
-                                    node.position.z + growth_direction.dz * params.step_size,
-                                )
-                                
-                                if not _check_clearance(new_pos, network, node.id, params):
-                                    _step_bif["clearance_fail"] += 1
-                                    continue
-                                
                                 new_radius = child_radii[cluster_idx]
                                 # Policy-driven clamping: clamp to min_radius instead of skipping
                                 new_radius = max(new_radius, params.min_radius)
@@ -817,6 +806,9 @@ def _check_clearance(
         next_nid = None
         for seg in seg_by_node.get(cur_nid, []):
             ancestor_seg_ids.add(seg.id)
+            neighbor = seg.end_node_id if seg.start_node_id == cur_nid else seg.start_node_id
+            for neighbor_seg in seg_by_node.get(neighbor, []):
+                ancestor_seg_ids.add(neighbor_seg.id)
             if seg.end_node_id == cur_nid and seg.start_node_id not in visited_ancestor:
                 next_nid = seg.start_node_id
         cur_nid = next_nid
@@ -844,7 +836,7 @@ def _check_clearance(
             projection = p1.to_array() + t * v
             dist = np.linalg.norm(new_position.to_array() - projection)
         
-        seg_radius = seg.attributes.get("radius", 0.001)
+        seg_radius = seg.mean_radius
         required_clearance = params.min_clearance + seg_radius
         
         if dist < required_clearance:
