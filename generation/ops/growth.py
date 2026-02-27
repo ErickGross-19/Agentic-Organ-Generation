@@ -232,6 +232,9 @@ def grow_branch(
             next_nid = None
             for seg in seg_by_node.get(cur_nid, []):
                 ancestor_seg_ids.add(seg.id)
+                neighbor = seg.end_node_id if seg.start_node_id == cur_nid else seg.start_node_id
+                for neighbor_seg in seg_by_node.get(neighbor, []):
+                    ancestor_seg_ids.add(neighbor_seg.id)
                 if seg.end_node_id == cur_nid and seg.start_node_id not in visited_ancestor:
                     next_nid = seg.start_node_id
             cur_nid = next_nid
