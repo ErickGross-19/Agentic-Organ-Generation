@@ -779,49 +779,65 @@ def _check_clearance(
     Uses SpatialIndex for efficient local neighborhood queries instead of
     scanning all segments (O(local) instead of O(segments)).
     
+    Walks the ancestor chain from from_node_id to root to exclude all
+    segments attached to the branch's own lineage (same logic as
+    grow_branch's ancestor-chain exclusion).
+    
     Returns True if clearance is acceptable, False otherwise.
     """
     if params.min_clearance is None:
         return True  # No clearance check
     
-    # Use spatial index for efficient local neighborhood query
-    # Search radius includes clearance plus typical segment radius
-    search_radius = params.min_clearance * 3.0  # Conservative search radius
-    
+    seg_by_node: dict = {}
+    for seg in network.segments.values():
+        seg_by_node.setdefault(seg.start_node_id, []).append(seg)
+        seg_by_node.setdefault(seg.end_node_id, []).append(seg)
+
+    ancestor_seg_ids: set = set()
+    visited_ancestor: set = set()
+    cur_nid = from_node_id
+    while cur_nid is not None and cur_nid not in visited_ancestor:
+        visited_ancestor.add(cur_nid)
+        next_nid = None
+        for seg in seg_by_node.get(cur_nid, []):
+            ancestor_seg_ids.add(seg.id)
+            other = seg.end_node_id if seg.start_node_id == cur_nid else seg.start_node_id
+            node_obj = network.nodes.get(other)
+            if node_obj is not None and other not in visited_ancestor:
+                if node_obj.node_type in ("inlet", "outlet", "junction"):
+                    next_nid = other
+        cur_nid = next_nid
+
+    search_radius = params.min_clearance * 3.0
+
     spatial_index = network.get_spatial_index()
     nearby_segments = spatial_index.query_nearby_segments(new_position, search_radius)
     
-    # Check distance only to nearby segments not connected to from_node
     for seg in nearby_segments:
-        # Skip segments connected to from_node
-        if seg.start_node_id == from_node_id or seg.end_node_id == from_node_id:
+        if seg.id in ancestor_seg_ids:
             continue
         
-        # Compute distance from new_position to segment
         p1 = network.nodes[seg.start_node_id].position
         p2 = network.nodes[seg.end_node_id].position
         
-        # Distance from point to line segment
         v = np.array([p2.x - p1.x, p2.y - p1.y, p2.z - p1.z])
         w = np.array([new_position.x - p1.x, new_position.y - p1.y, new_position.z - p1.z])
         
         v_len_sq = np.dot(v, v)
         if v_len_sq < 1e-10:
-            # Degenerate segment
             dist = np.linalg.norm(w)
         else:
             t = np.clip(np.dot(w, v) / v_len_sq, 0.0, 1.0)
             projection = p1.to_array() + t * v
             dist = np.linalg.norm(new_position.to_array() - projection)
         
-        # Check clearance (accounting for radii)
         seg_radius = seg.attributes.get("radius", 0.001)
         required_clearance = params.min_clearance + seg_radius
         
         if dist < required_clearance:
-            return False  # Too close
+            return False
     
-    return True  # Clearance OK
+    return True
 
 
 @dataclass
