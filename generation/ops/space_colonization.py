@@ -793,6 +793,28 @@ def _check_clearance(
     if params.min_clearance is None:
         return True  # No clearance check
     
+    children_by_node: dict = {}
+    for seg in network.segments.values():
+        children_by_node.setdefault(seg.start_node_id, []).append(seg)
+
+    max_radius = max(
+        (seg.mean_radius for seg in network.segments.values()),
+        default=0.001,
+    )
+    step_sz = params.step_size if params.step_size > 0 else 0.0001
+    clearance = params.min_clearance if params.min_clearance is not None else 0.0
+    excl_depth = max(int((2 * max_radius + clearance) / step_sz) + 5, 10)
+
+    def _collect_subtree_segs(root_nid: int, out: set, depth_limit: int) -> None:
+        stack: list = [(root_nid, 0)]
+        while stack:
+            nid, d = stack.pop()
+            if d >= depth_limit:
+                continue
+            for seg in children_by_node.get(nid, []):
+                out.add(seg.id)
+                stack.append((seg.end_node_id, d + 1))
+
     seg_by_node: dict = {}
     for seg in network.segments.values():
         seg_by_node.setdefault(seg.start_node_id, []).append(seg)
@@ -803,12 +825,10 @@ def _check_clearance(
     cur_nid = from_node_id
     while cur_nid is not None and cur_nid not in visited_ancestor:
         visited_ancestor.add(cur_nid)
+        _collect_subtree_segs(cur_nid, ancestor_seg_ids, excl_depth)
         next_nid = None
         for seg in seg_by_node.get(cur_nid, []):
             ancestor_seg_ids.add(seg.id)
-            neighbor = seg.end_node_id if seg.start_node_id == cur_nid else seg.start_node_id
-            for neighbor_seg in seg_by_node.get(neighbor, []):
-                ancestor_seg_ids.add(neighbor_seg.id)
             if seg.end_node_id == cur_nid and seg.start_node_id not in visited_ancestor:
                 next_nid = seg.start_node_id
         cur_nid = next_nid
