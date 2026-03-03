@@ -115,6 +115,9 @@ def grow_branch(
     seed: Optional[int] = None,
     spatial_index: Optional["DynamicSpatialIndex"] = None,
     collision_mode: str = "break",
+    _children_by_node: Optional[dict] = None,
+    _seg_by_node: Optional[dict] = None,
+    _excl_depth: Optional[int] = None,
 ) -> OperationResult:
     """
     Grow a branch from an existing node.
@@ -221,37 +224,35 @@ def grow_branch(
         
         ancestor_seg_ids: set = set()
         visited_ancestor: set = set()
-        children_by_node: dict = {}
-        for seg in network.segments.values():
-            children_by_node.setdefault(seg.start_node_id, []).append(seg)
-
-        max_radius = max(
-            (seg.geometry.mean_radius() for seg in network.segments.values()),
-            default=0.001,
-        )
-        excl_depth = max(int((2 * max_radius + constraints.collision_min_clearance) / length) + 5, 10)
-
-        def _collect_subtree_segs(root_nid: int, out: set, depth_limit: int) -> None:
-            stack: list = [(root_nid, 0)]
-            while stack:
-                nid, d = stack.pop()
-                if d >= depth_limit:
-                    continue
-                for seg in children_by_node.get(nid, []):
-                    out.add(seg.id)
-                    stack.append((seg.end_node_id, d + 1))
-
-        seg_by_node: dict = {}
-        for seg in network.segments.values():
-            seg_by_node.setdefault(seg.start_node_id, []).append(seg)
-            seg_by_node.setdefault(seg.end_node_id, []).append(seg)
+        if _children_by_node is None:
+            _children_by_node = {}
+            for seg in network.segments.values():
+                _children_by_node.setdefault(seg.start_node_id, []).append(seg)
+        if _excl_depth is None:
+            max_radius = max(
+                (seg.geometry.mean_radius() for seg in network.segments.values()),
+                default=0.001,
+            )
+            _excl_depth = max(int((2 * max_radius + constraints.collision_min_clearance) / length) + 5, 10)
+        if _seg_by_node is None:
+            _seg_by_node = {}
+            for seg in network.segments.values():
+                _seg_by_node.setdefault(seg.start_node_id, []).append(seg)
+                _seg_by_node.setdefault(seg.end_node_id, []).append(seg)
 
         cur_nid = from_node_id
         while cur_nid is not None and cur_nid not in visited_ancestor:
             visited_ancestor.add(cur_nid)
-            _collect_subtree_segs(cur_nid, ancestor_seg_ids, excl_depth)
+            stack: list = [(cur_nid, 0)]
+            while stack:
+                nid, d = stack.pop()
+                if d >= _excl_depth:
+                    continue
+                for seg in _children_by_node.get(nid, []):
+                    ancestor_seg_ids.add(seg.id)
+                    stack.append((seg.end_node_id, d + 1))
             next_nid = None
-            for seg in seg_by_node.get(cur_nid, []):
+            for seg in _seg_by_node.get(cur_nid, []):
                 ancestor_seg_ids.add(seg.id)
                 if seg.end_node_id == cur_nid and seg.start_node_id not in visited_ancestor:
                     next_nid = seg.start_node_id
