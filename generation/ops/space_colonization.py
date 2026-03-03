@@ -236,6 +236,20 @@ def space_colonization_step(
         radius = seg.geometry.mean_radius()
         _sc_spatial_index.insert_segment(seg_id, start, end, radius)
     
+    _sc_children_by_node: dict = {}
+    _sc_seg_by_node: dict = {}
+    for seg in network.segments.values():
+        _sc_children_by_node.setdefault(seg.start_node_id, []).append(seg)
+        _sc_seg_by_node.setdefault(seg.start_node_id, []).append(seg)
+        _sc_seg_by_node.setdefault(seg.end_node_id, []).append(seg)
+    _sc_max_radius = max(
+        (seg.geometry.mean_radius() for seg in network.segments.values()),
+        default=0.001,
+    )
+    _sc_step_sz = params.step_size if params.step_size > 0 else 0.0001
+    _sc_clearance = params.min_clearance if params.min_clearance is not None else constraints.collision_min_clearance
+    _sc_excl_depth = max(int((2 * _sc_max_radius + _sc_clearance) / _sc_step_sz) + 5, 10)
+    
     pbar = tqdm(total=params.max_steps, desc="Space colonization", unit="step")
     
     for step in range(params.max_steps):
@@ -380,6 +394,9 @@ def space_colonization_step(
                                     seed=seed,
                                     spatial_index=_sc_spatial_index,
                                     collision_mode=params.collision_mode,
+                                    _children_by_node=_sc_children_by_node,
+                                    _seg_by_node=_sc_seg_by_node,
+                                    _excl_depth=_sc_excl_depth,
                                 )
                                 
                                 if result.is_success():
@@ -394,6 +411,9 @@ def space_colonization_step(
                                             np.array([_seg.geometry.end.x, _seg.geometry.end.y, _seg.geometry.end.z]),
                                             _seg.geometry.mean_radius(),
                                         )
+                                        _sc_children_by_node.setdefault(_seg.start_node_id, []).append(_seg)
+                                        _sc_seg_by_node.setdefault(_seg.start_node_id, []).append(_seg)
+                                        _sc_seg_by_node.setdefault(_seg.end_node_id, []).append(_seg)
                                     if not result.new_ids.get("merged"):
                                         new_node_ids.append(result.new_ids["node"])
                                     grown_any = True
@@ -436,7 +456,10 @@ def space_colonization_step(
                 node.position.z + growth_direction.dz * params.step_size,
             )
             
-            if not _check_clearance(new_pos, network, node.id, params):
+            if not _check_clearance(new_pos, network, node.id, params,
+                                    _children_by_node=_sc_children_by_node,
+                                    _seg_by_node=_sc_seg_by_node,
+                                    _excl_depth=_sc_excl_depth):
                 continue
             
             parent_radius = node.attributes.get("radius", params.min_radius * 2)
@@ -457,6 +480,9 @@ def space_colonization_step(
                 seed=seed,
                 spatial_index=_sc_spatial_index,
                 collision_mode=params.collision_mode,
+                _children_by_node=_sc_children_by_node,
+                _seg_by_node=_sc_seg_by_node,
+                _excl_depth=_sc_excl_depth,
             )
             
             if result.is_success():
@@ -470,6 +496,9 @@ def space_colonization_step(
                         np.array([_seg.geometry.end.x, _seg.geometry.end.y, _seg.geometry.end.z]),
                         _seg.geometry.mean_radius(),
                     )
+                    _sc_children_by_node.setdefault(_seg.start_node_id, []).append(_seg)
+                    _sc_seg_by_node.setdefault(_seg.start_node_id, []).append(_seg)
+                    _sc_seg_by_node.setdefault(_seg.end_node_id, []).append(_seg)
                 if not result.new_ids.get("merged"):
                     new_node_ids.append(result.new_ids["node"])
                 grown_any = True
@@ -777,6 +806,9 @@ def _check_clearance(
     network: VascularNetwork,
     from_node_id: int,
     params: SpaceColonizationParams,
+    _children_by_node: Optional[dict] = None,
+    _seg_by_node: Optional[dict] = None,
+    _excl_depth: Optional[int] = None,
 ) -> bool:
     """
     Check if new position maintains minimum clearance from other segments.
@@ -793,41 +825,39 @@ def _check_clearance(
     if params.min_clearance is None:
         return True  # No clearance check
     
-    children_by_node: dict = {}
-    for seg in network.segments.values():
-        children_by_node.setdefault(seg.start_node_id, []).append(seg)
-
-    max_radius = max(
-        (seg.mean_radius for seg in network.segments.values()),
-        default=0.001,
-    )
-    step_sz = params.step_size if params.step_size > 0 else 0.0001
-    clearance = params.min_clearance if params.min_clearance is not None else 0.0
-    excl_depth = max(int((2 * max_radius + clearance) / step_sz) + 5, 10)
-
-    def _collect_subtree_segs(root_nid: int, out: set, depth_limit: int) -> None:
-        stack: list = [(root_nid, 0)]
-        while stack:
-            nid, d = stack.pop()
-            if d >= depth_limit:
-                continue
-            for seg in children_by_node.get(nid, []):
-                out.add(seg.id)
-                stack.append((seg.end_node_id, d + 1))
-
-    seg_by_node: dict = {}
-    for seg in network.segments.values():
-        seg_by_node.setdefault(seg.start_node_id, []).append(seg)
-        seg_by_node.setdefault(seg.end_node_id, []).append(seg)
+    if _children_by_node is None:
+        _children_by_node = {}
+        for seg in network.segments.values():
+            _children_by_node.setdefault(seg.start_node_id, []).append(seg)
+    if _excl_depth is None:
+        max_radius = max(
+            (seg.mean_radius for seg in network.segments.values()),
+            default=0.001,
+        )
+        step_sz = params.step_size if params.step_size > 0 else 0.0001
+        clearance = params.min_clearance if params.min_clearance is not None else 0.0
+        _excl_depth = max(int((2 * max_radius + clearance) / step_sz) + 5, 10)
+    if _seg_by_node is None:
+        _seg_by_node = {}
+        for seg in network.segments.values():
+            _seg_by_node.setdefault(seg.start_node_id, []).append(seg)
+            _seg_by_node.setdefault(seg.end_node_id, []).append(seg)
 
     ancestor_seg_ids: set = set()
     visited_ancestor: set = set()
     cur_nid = from_node_id
     while cur_nid is not None and cur_nid not in visited_ancestor:
         visited_ancestor.add(cur_nid)
-        _collect_subtree_segs(cur_nid, ancestor_seg_ids, excl_depth)
+        stack: list = [(cur_nid, 0)]
+        while stack:
+            nid, d = stack.pop()
+            if d >= _excl_depth:
+                continue
+            for seg in _children_by_node.get(nid, []):
+                ancestor_seg_ids.add(seg.id)
+                stack.append((seg.end_node_id, d + 1))
         next_nid = None
-        for seg in seg_by_node.get(cur_nid, []):
+        for seg in _seg_by_node.get(cur_nid, []):
             ancestor_seg_ids.add(seg.id)
             if seg.end_node_id == cur_nid and seg.start_node_id not in visited_ancestor:
                 next_nid = seg.start_node_id
