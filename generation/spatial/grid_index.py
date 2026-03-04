@@ -725,12 +725,9 @@ class DynamicSpatialIndex:
         tip_ancestors: Set[int] = set()
         if parent_of is not None:
             cur = from_node_id
-            for _ in range(excl_depth + 1):
+            while cur is not None and cur not in tip_ancestors:
                 tip_ancestors.add(cur)
-                nxt = parent_of.get(cur)
-                if nxt is None:
-                    break
-                cur = nxt
+                cur = parent_of.get(cur)
 
         for seg_id in candidates:
             seg_start = self._segment_starts[seg_id]

@@ -838,12 +838,9 @@ def _check_clearance(
     if use_lazy:
         tip_ancestors: set = set()
         cur = from_node_id
-        for _ in range(_excl_depth + 1):
+        while cur is not None and cur not in tip_ancestors:
             tip_ancestors.add(cur)
-            nxt = _parent_of.get(cur)
-            if nxt is None:
-                break
-            cur = nxt
+            cur = _parent_of.get(cur)
 
         search_radius = params.min_clearance * 3.0
         spatial_index = network.get_spatial_index()
