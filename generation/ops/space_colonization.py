@@ -236,12 +236,11 @@ def space_colonization_step(
         radius = seg.geometry.mean_radius()
         _sc_spatial_index.insert_segment(seg_id, start, end, radius)
     
-    _sc_children_by_node: dict = {}
-    _sc_seg_by_node: dict = {}
+    _sc_parent_of: dict = {}
+    _sc_seg_node_map: dict = {}
     for seg in network.segments.values():
-        _sc_children_by_node.setdefault(seg.start_node_id, []).append(seg)
-        _sc_seg_by_node.setdefault(seg.start_node_id, []).append(seg)
-        _sc_seg_by_node.setdefault(seg.end_node_id, []).append(seg)
+        _sc_parent_of[seg.end_node_id] = seg.start_node_id
+        _sc_seg_node_map[seg.id] = (seg.start_node_id, seg.end_node_id)
     _sc_max_radius = max(
         (seg.geometry.mean_radius() for seg in network.segments.values()),
         default=0.001,
@@ -394,8 +393,8 @@ def space_colonization_step(
                                     seed=seed,
                                     spatial_index=_sc_spatial_index,
                                     collision_mode=params.collision_mode,
-                                    _children_by_node=_sc_children_by_node,
-                                    _seg_by_node=_sc_seg_by_node,
+                                    _parent_of=_sc_parent_of,
+                                    _seg_node_map=_sc_seg_node_map,
                                     _excl_depth=_sc_excl_depth,
                                 )
                                 
@@ -411,9 +410,8 @@ def space_colonization_step(
                                             np.array([_seg.geometry.end.x, _seg.geometry.end.y, _seg.geometry.end.z]),
                                             _seg.geometry.mean_radius(),
                                         )
-                                        _sc_children_by_node.setdefault(_seg.start_node_id, []).append(_seg)
-                                        _sc_seg_by_node.setdefault(_seg.start_node_id, []).append(_seg)
-                                        _sc_seg_by_node.setdefault(_seg.end_node_id, []).append(_seg)
+                                        _sc_parent_of[_seg.end_node_id] = _seg.start_node_id
+                                        _sc_seg_node_map[_seg.id] = (_seg.start_node_id, _seg.end_node_id)
                                     if not result.new_ids.get("merged"):
                                         new_node_ids.append(result.new_ids["node"])
                                     grown_any = True
@@ -457,9 +455,9 @@ def space_colonization_step(
             )
             
             if not _check_clearance(new_pos, network, node.id, params,
-                                    _children_by_node=_sc_children_by_node,
-                                    _seg_by_node=_sc_seg_by_node,
-                                    _excl_depth=_sc_excl_depth):
+                                    _excl_depth=_sc_excl_depth,
+                                    _parent_of=_sc_parent_of,
+                                    _seg_node_map=_sc_seg_node_map):
                 continue
             
             parent_radius = node.attributes.get("radius", params.min_radius * 2)
@@ -480,8 +478,8 @@ def space_colonization_step(
                 seed=seed,
                 spatial_index=_sc_spatial_index,
                 collision_mode=params.collision_mode,
-                _children_by_node=_sc_children_by_node,
-                _seg_by_node=_sc_seg_by_node,
+                _parent_of=_sc_parent_of,
+                _seg_node_map=_sc_seg_node_map,
                 _excl_depth=_sc_excl_depth,
             )
             
@@ -496,9 +494,8 @@ def space_colonization_step(
                         np.array([_seg.geometry.end.x, _seg.geometry.end.y, _seg.geometry.end.z]),
                         _seg.geometry.mean_radius(),
                     )
-                    _sc_children_by_node.setdefault(_seg.start_node_id, []).append(_seg)
-                    _sc_seg_by_node.setdefault(_seg.start_node_id, []).append(_seg)
-                    _sc_seg_by_node.setdefault(_seg.end_node_id, []).append(_seg)
+                    _sc_parent_of[_seg.end_node_id] = _seg.start_node_id
+                    _sc_seg_node_map[_seg.id] = (_seg.start_node_id, _seg.end_node_id)
                 if not result.new_ids.get("merged"):
                     new_node_ids.append(result.new_ids["node"])
                 grown_any = True
@@ -809,6 +806,8 @@ def _check_clearance(
     _children_by_node: Optional[dict] = None,
     _seg_by_node: Optional[dict] = None,
     _excl_depth: Optional[int] = None,
+    _parent_of: Optional[dict] = None,
+    _seg_node_map: Optional[dict] = None,
 ) -> bool:
     """
     Check if new position maintains minimum clearance from other segments.
@@ -816,19 +815,15 @@ def _check_clearance(
     Uses SpatialIndex for efficient local neighborhood queries instead of
     scanning all segments (O(local) instead of O(segments)).
     
-    Walks the ancestor chain from from_node_id to root to exclude all
-    segments attached to the branch's own lineage (same logic as
-    grow_branch's ancestor-chain exclusion).
+    When _parent_of and _seg_node_map are provided, uses lazy per-candidate
+    ancestry check (O(candidates * excl_depth)) instead of the exhaustive
+    exclusion-set walk (O(tree_depth * subtree_size)).
     
     Returns True if clearance is acceptable, False otherwise.
     """
     if params.min_clearance is None:
-        return True  # No clearance check
-    
-    if _children_by_node is None:
-        _children_by_node = {}
-        for seg in network.segments.values():
-            _children_by_node.setdefault(seg.start_node_id, []).append(seg)
+        return True
+
     if _excl_depth is None:
         max_radius = max(
             (seg.mean_radius for seg in network.segments.values()),
@@ -837,6 +832,65 @@ def _check_clearance(
         step_sz = params.step_size if params.step_size > 0 else 0.0001
         clearance = params.min_clearance if params.min_clearance is not None else 0.0
         _excl_depth = max(int((2 * max_radius + clearance) / step_sz) + 5, 10)
+
+    use_lazy = _parent_of is not None and _seg_node_map is not None
+
+    if use_lazy:
+        tip_ancestors: set = set()
+        cur = from_node_id
+        while cur is not None and cur not in tip_ancestors:
+            tip_ancestors.add(cur)
+            cur = _parent_of.get(cur)
+
+        search_radius = params.min_clearance * 3.0
+        spatial_index = network.get_spatial_index()
+        nearby_segments = spatial_index.query_nearby_segments(new_position, search_radius)
+
+        for seg in nearby_segments:
+            if seg.id in _seg_node_map:
+                cand_start_nid, cand_end_nid = _seg_node_map[seg.id]
+                skip = False
+                for cand_nid in (cand_start_nid, cand_end_nid):
+                    cur = cand_nid
+                    for _ in range(_excl_depth + 1):
+                        if cur in tip_ancestors:
+                            skip = True
+                            break
+                        nxt = _parent_of.get(cur)
+                        if nxt is None:
+                            break
+                        cur = nxt
+                    if skip:
+                        break
+                if skip:
+                    continue
+
+            p1 = network.nodes[seg.start_node_id].position
+            p2 = network.nodes[seg.end_node_id].position
+
+            v = np.array([p2.x - p1.x, p2.y - p1.y, p2.z - p1.z])
+            w = np.array([new_position.x - p1.x, new_position.y - p1.y, new_position.z - p1.z])
+
+            v_len_sq = np.dot(v, v)
+            if v_len_sq < 1e-10:
+                dist = np.linalg.norm(w)
+            else:
+                t = np.clip(np.dot(w, v) / v_len_sq, 0.0, 1.0)
+                projection = p1.to_array() + t * v
+                dist = np.linalg.norm(new_position.to_array() - projection)
+
+            seg_radius = seg.mean_radius
+            required_clearance = params.min_clearance + seg_radius
+
+            if dist < required_clearance:
+                return False
+
+        return True
+
+    if _children_by_node is None:
+        _children_by_node = {}
+        for seg in network.segments.values():
+            _children_by_node.setdefault(seg.start_node_id, []).append(seg)
     if _seg_by_node is None:
         _seg_by_node = {}
         for seg in network.segments.values():

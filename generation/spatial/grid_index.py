@@ -668,6 +668,115 @@ class DynamicSpatialIndex:
         
         return False
     
+    def check_capsule_collision_lazy(
+        self,
+        start: np.ndarray,
+        end: np.ndarray,
+        radius: float,
+        buffer: float = 0.0,
+        exclude_adjacent_to: Optional[np.ndarray] = None,
+        adjacent_tolerance: float = 1e-6,
+        from_node_id: int = -1,
+        parent_of: Optional[Dict[int, int]] = None,
+        seg_node_map: Optional[Dict[int, Tuple[int, int]]] = None,
+        excl_depth: int = 10,
+    ) -> bool:
+        """
+        Collision check with lazy per-candidate ancestry exclusion.
+
+        Instead of receiving a pre-built exclusion set, this method checks
+        each spatial candidate on-the-fly: if the candidate segment's nodes
+        share a common ancestor with *from_node_id* within *excl_depth*
+        hops, the candidate is skipped.
+
+        Parameters
+        ----------
+        start, end : np.ndarray
+            Query capsule endpoints.
+        radius : float
+            Query capsule radius.
+        buffer : float
+            Additional clearance.
+        exclude_adjacent_to : np.ndarray, optional
+            Legacy point-adjacency exclusion.
+        adjacent_tolerance : float
+            Tolerance for shared-endpoint checks.
+        from_node_id : int
+            The node the new segment grows from.
+        parent_of : dict
+            Maps child_node_id -> parent_node_id.
+        seg_node_map : dict
+            Maps segment_id -> (start_node_id, end_node_id).
+        excl_depth : int
+            Max hops to walk when checking ancestry.
+
+        Returns
+        -------
+        bool
+            True if collision detected.
+        """
+        start = np.asarray(start, dtype=np.float64)
+        end = np.asarray(end, dtype=np.float64)
+
+        candidates = self.query_candidate_segments_for_capsule(start, end, radius + buffer)
+        if not candidates:
+            return False
+
+        tip_ancestors: Set[int] = set()
+        if parent_of is not None:
+            cur = from_node_id
+            while cur is not None and cur not in tip_ancestors:
+                tip_ancestors.add(cur)
+                cur = parent_of.get(cur)
+
+        for seg_id in candidates:
+            seg_start = self._segment_starts[seg_id]
+            seg_end = self._segment_ends[seg_id]
+            seg_radius = self._segment_radii[seg_id]
+            centerline = self._segment_centerlines.get(seg_id)
+
+            if np.linalg.norm(seg_start - start) < adjacent_tolerance:
+                continue
+            if np.linalg.norm(seg_end - start) < adjacent_tolerance:
+                continue
+            if np.linalg.norm(seg_start - end) < adjacent_tolerance:
+                continue
+            if np.linalg.norm(seg_end - end) < adjacent_tolerance:
+                continue
+
+            if exclude_adjacent_to is not None:
+                if np.linalg.norm(seg_start - exclude_adjacent_to) < adjacent_tolerance:
+                    continue
+                if np.linalg.norm(seg_end - exclude_adjacent_to) < adjacent_tolerance:
+                    continue
+
+            if parent_of is not None and seg_node_map is not None and seg_id in seg_node_map:
+                cand_start_nid, cand_end_nid = seg_node_map[seg_id]
+                skip = False
+                for cand_nid in (cand_start_nid, cand_end_nid):
+                    cur = cand_nid
+                    for _ in range(excl_depth + 1):
+                        if cur in tip_ancestors:
+                            skip = True
+                            break
+                        nxt = parent_of.get(cur)
+                        if nxt is None:
+                            break
+                        cur = nxt
+                    if skip:
+                        break
+                if skip:
+                    continue
+
+            dist = self._segment_to_segment_distance(
+                start, end, seg_start, seg_end, centerline
+            )
+            min_allowed = radius + seg_radius + buffer
+            if dist < min_allowed:
+                return True
+
+        return False
+
     def check_polyline_collision(
         self,
         points: List[np.ndarray],

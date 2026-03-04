@@ -104,6 +104,55 @@ class KaryTreeSpec:
         return self.envelope_r_frac_start + frac * (self.envelope_r_frac_end - self.envelope_r_frac_start)
 
 
+def _build_parent_map(network: VascularNetwork) -> tuple:
+    """Build parent-of and segment-node maps from a network.
+
+    Returns
+    -------
+    parent_of : dict[int, int]
+        Maps child_node_id -> parent_node_id (via segment direction).
+    seg_node_map : dict[int, tuple[int, int]]
+        Maps segment_id -> (start_node_id, end_node_id).
+    """
+    parent_of: dict = {}
+    seg_node_map: dict = {}
+    for seg in network.segments.values():
+        parent_of[seg.end_node_id] = seg.start_node_id
+        seg_node_map[seg.id] = (seg.start_node_id, seg.end_node_id)
+    return parent_of, seg_node_map
+
+
+def _is_tree_neighbor(
+    node_a_id: int,
+    node_b_id: int,
+    parent_of: dict,
+    max_hops: int,
+) -> bool:
+    """Check if two nodes share a common ancestor within max_hops.
+
+    Walks UP from both nodes using parent_of, collecting ancestors
+    bounded by max_hops. Returns True if the ancestor sets overlap.
+    """
+    ancestors_a: set = set()
+    cur = node_a_id
+    for _ in range(max_hops + 1):
+        ancestors_a.add(cur)
+        nxt = parent_of.get(cur)
+        if nxt is None:
+            break
+        cur = nxt
+
+    cur = node_b_id
+    for _ in range(max_hops + 1):
+        if cur in ancestors_a:
+            return True
+        nxt = parent_of.get(cur)
+        if nxt is None:
+            break
+        cur = nxt
+    return False
+
+
 def grow_branch(
     network: VascularNetwork,
     from_node_id: int,
@@ -118,6 +167,8 @@ def grow_branch(
     _children_by_node: Optional[dict] = None,
     _seg_by_node: Optional[dict] = None,
     _excl_depth: Optional[int] = None,
+    _parent_of: Optional[dict] = None,
+    _seg_node_map: Optional[dict] = None,
 ) -> OperationResult:
     """
     Grow a branch from an existing node.
@@ -222,62 +273,82 @@ def grow_branch(
             new_position.z,
         ])
         
-        ancestor_seg_ids: set = set()
-        visited_ancestor: set = set()
-        if _children_by_node is None:
-            _children_by_node = {}
-            for seg in network.segments.values():
-                _children_by_node.setdefault(seg.start_node_id, []).append(seg)
         if _excl_depth is None:
             max_radius = max(
                 (seg.geometry.mean_radius() for seg in network.segments.values()),
                 default=0.001,
             )
             _excl_depth = max(int((2 * max_radius + constraints.collision_min_clearance) / length) + 5, 10)
-        if _seg_by_node is None:
-            _seg_by_node = {}
-            for seg in network.segments.values():
-                _seg_by_node.setdefault(seg.start_node_id, []).append(seg)
-                _seg_by_node.setdefault(seg.end_node_id, []).append(seg)
 
-        cur_nid = from_node_id
-        while cur_nid is not None and cur_nid not in visited_ancestor:
-            visited_ancestor.add(cur_nid)
-            stack: list = [(cur_nid, 0)]
-            while stack:
-                nid, d = stack.pop()
-                if d >= _excl_depth:
-                    continue
-                for seg in _children_by_node.get(nid, []):
-                    ancestor_seg_ids.add(seg.id)
-                    stack.append((seg.end_node_id, d + 1))
-            next_nid = None
-            for seg in _seg_by_node.get(cur_nid, []):
-                ancestor_seg_ids.add(seg.id)
-                if seg.end_node_id == cur_nid and seg.start_node_id not in visited_ancestor:
-                    next_nid = seg.start_node_id
-            cur_nid = next_nid
+        use_lazy = _parent_of is not None and _seg_node_map is not None and spatial_index is not None
 
-        if spatial_index is not None:
-            has_collision = spatial_index.check_capsule_collision(
+        if use_lazy:
+            has_collision = spatial_index.check_capsule_collision_lazy(
                 start=parent_pos,
                 end=new_pos,
                 radius=target_radius,
                 buffer=constraints.collision_min_clearance,
                 exclude_adjacent_to=parent_pos,
-                exclude_segment_ids=ancestor_seg_ids,
+                from_node_id=from_node_id,
+                parent_of=_parent_of,
+                seg_node_map=_seg_node_map,
+                excl_depth=_excl_depth,
             )
             collision_details = []
+            ancestor_seg_ids = None
+            visited_ancestor = set()
         else:
-            from .collision import check_segment_collision_swept
-            has_collision, collision_details = check_segment_collision_swept(
-                network,
-                new_seg_start=parent_pos,
-                new_seg_end=new_pos,
-                new_seg_radius=target_radius,
-                exclude_node_ids=list(visited_ancestor),
-                min_clearance=constraints.collision_min_clearance,
-            )
+            ancestor_seg_ids: set = set()
+            visited_ancestor: set = set()
+            if _children_by_node is None:
+                _children_by_node = {}
+                for seg in network.segments.values():
+                    _children_by_node.setdefault(seg.start_node_id, []).append(seg)
+            if _seg_by_node is None:
+                _seg_by_node = {}
+                for seg in network.segments.values():
+                    _seg_by_node.setdefault(seg.start_node_id, []).append(seg)
+                    _seg_by_node.setdefault(seg.end_node_id, []).append(seg)
+
+            cur_nid = from_node_id
+            while cur_nid is not None and cur_nid not in visited_ancestor:
+                visited_ancestor.add(cur_nid)
+                stack: list = [(cur_nid, 0)]
+                while stack:
+                    nid, d = stack.pop()
+                    if d >= _excl_depth:
+                        continue
+                    for seg in _children_by_node.get(nid, []):
+                        ancestor_seg_ids.add(seg.id)
+                        stack.append((seg.end_node_id, d + 1))
+                next_nid = None
+                for seg in _seg_by_node.get(cur_nid, []):
+                    ancestor_seg_ids.add(seg.id)
+                    if seg.end_node_id == cur_nid and seg.start_node_id not in visited_ancestor:
+                        next_nid = seg.start_node_id
+                cur_nid = next_nid
+
+        if not use_lazy:
+            if spatial_index is not None:
+                has_collision = spatial_index.check_capsule_collision(
+                    start=parent_pos,
+                    end=new_pos,
+                    radius=target_radius,
+                    buffer=constraints.collision_min_clearance,
+                    exclude_adjacent_to=parent_pos,
+                    exclude_segment_ids=ancestor_seg_ids,
+                )
+                collision_details = []
+            else:
+                from .collision import check_segment_collision_swept
+                has_collision, collision_details = check_segment_collision_swept(
+                    network,
+                    new_seg_start=parent_pos,
+                    new_seg_end=new_pos,
+                    new_seg_radius=target_radius,
+                    exclude_node_ids=list(visited_ancestor),
+                    min_clearance=constraints.collision_min_clearance,
+                )
         
         for detail in collision_details:
             warnings.append(
@@ -291,7 +362,11 @@ def grow_branch(
                 deflected = _deflect_around_collision(
                     network, parent_node, direction_arr, length, target_radius,
                     constraints, spatial_index,
-                    exclude_segment_ids=ancestor_seg_ids if spatial_index is not None else None,
+                    exclude_segment_ids=ancestor_seg_ids if ancestor_seg_ids is not None else None,
+                    from_node_id=from_node_id,
+                    parent_of=_parent_of,
+                    seg_node_map=_seg_node_map,
+                    excl_depth=_excl_depth,
                 )
                 if deflected is not None:
                     new_position, direction_arr = deflected
@@ -399,6 +474,10 @@ def _deflect_around_collision(
     azimuthal_samples: int = 8,
     deflect_angles_deg: Tuple[float, ...] = (15.0, 30.0, 45.0, 60.0, 90.0),
     exclude_segment_ids: Optional[set] = None,
+    from_node_id: int = -1,
+    parent_of: Optional[dict] = None,
+    seg_node_map: Optional[dict] = None,
+    excl_depth: int = 10,
 ) -> Optional[Tuple[Point3D, np.ndarray]]:
     parent_pos = np.array([parent_node.position.x, parent_node.position.y, parent_node.position.z])
     perp = np.cross(direction_arr, [0, 0, 1])
@@ -409,6 +488,7 @@ def _deflect_around_collision(
     perp2 = perp2 / np.linalg.norm(perp2)
 
     has_domain = hasattr(network, "domain") and network.domain is not None
+    use_lazy = parent_of is not None and seg_node_map is not None and spatial_index is not None
 
     for angle_deg in deflect_angles_deg:
         angle_rad = np.radians(angle_deg)
@@ -431,7 +511,17 @@ def _deflect_around_collision(
                         continue
 
             new_pos_check = np.array([candidate.x, candidate.y, candidate.z])
-            if spatial_index is not None:
+            if use_lazy:
+                collides = spatial_index.check_capsule_collision_lazy(
+                    start=parent_pos, end=new_pos_check, radius=target_radius,
+                    buffer=constraints.collision_min_clearance,
+                    exclude_adjacent_to=parent_pos,
+                    from_node_id=from_node_id,
+                    parent_of=parent_of,
+                    seg_node_map=seg_node_map,
+                    excl_depth=excl_depth,
+                )
+            elif spatial_index is not None:
                 collides = spatial_index.check_capsule_collision(
                     start=parent_pos, end=new_pos_check, radius=target_radius,
                     buffer=constraints.collision_min_clearance,
