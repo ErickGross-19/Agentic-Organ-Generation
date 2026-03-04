@@ -362,7 +362,11 @@ def grow_branch(
                 deflected = _deflect_around_collision(
                     network, parent_node, direction_arr, length, target_radius,
                     constraints, spatial_index,
-                    exclude_segment_ids=ancestor_seg_ids if spatial_index is not None else None,
+                    exclude_segment_ids=ancestor_seg_ids if ancestor_seg_ids is not None else None,
+                    from_node_id=from_node_id,
+                    parent_of=_parent_of,
+                    seg_node_map=_seg_node_map,
+                    excl_depth=_excl_depth,
                 )
                 if deflected is not None:
                     new_position, direction_arr = deflected
@@ -470,6 +474,10 @@ def _deflect_around_collision(
     azimuthal_samples: int = 8,
     deflect_angles_deg: Tuple[float, ...] = (15.0, 30.0, 45.0, 60.0, 90.0),
     exclude_segment_ids: Optional[set] = None,
+    from_node_id: int = -1,
+    parent_of: Optional[dict] = None,
+    seg_node_map: Optional[dict] = None,
+    excl_depth: int = 10,
 ) -> Optional[Tuple[Point3D, np.ndarray]]:
     parent_pos = np.array([parent_node.position.x, parent_node.position.y, parent_node.position.z])
     perp = np.cross(direction_arr, [0, 0, 1])
@@ -480,6 +488,7 @@ def _deflect_around_collision(
     perp2 = perp2 / np.linalg.norm(perp2)
 
     has_domain = hasattr(network, "domain") and network.domain is not None
+    use_lazy = parent_of is not None and seg_node_map is not None and spatial_index is not None
 
     for angle_deg in deflect_angles_deg:
         angle_rad = np.radians(angle_deg)
@@ -502,7 +511,17 @@ def _deflect_around_collision(
                         continue
 
             new_pos_check = np.array([candidate.x, candidate.y, candidate.z])
-            if spatial_index is not None:
+            if use_lazy:
+                collides = spatial_index.check_capsule_collision_lazy(
+                    start=parent_pos, end=new_pos_check, radius=target_radius,
+                    buffer=constraints.collision_min_clearance,
+                    exclude_adjacent_to=parent_pos,
+                    from_node_id=from_node_id,
+                    parent_of=parent_of,
+                    seg_node_map=seg_node_map,
+                    excl_depth=excl_depth,
+                )
+            elif spatial_index is not None:
                 collides = spatial_index.check_capsule_collision(
                     start=parent_pos, end=new_pos_check, radius=target_radius,
                     buffer=constraints.collision_min_clearance,
